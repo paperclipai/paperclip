@@ -34,8 +34,11 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
+  heartbeatRunHoldsIssueLock,
   ISSUE_LIST_MAX_LIMIT,
+  type IssueLockHolderRun,
   issueService,
+  NEVER_STARTED_RUN_LOCK_GRACE_MS,
 } from "../services/issues.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -6701,5 +6704,276 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     const comment = await svc.addComment(issueId, "hello from a live run", { runId });
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+});
+
+describe("heartbeatRunHoldsIssueLock (SYN-3144)", () => {
+  const NOW = Date.parse("2026-08-03T18:00:00.000Z");
+  const GRACE = NEVER_STARTED_RUN_LOCK_GRACE_MS;
+  const run = (over: Partial<IssueLockHolderRun>): IssueLockHolderRun => ({
+    status: "running",
+    startedAt: new Date(NOW - 60_000),
+    scheduledRetryAt: null,
+    updatedAt: new Date(NOW - 60_000),
+    ...over,
+  });
+
+  it("holds nothing when the run row is missing", () => {
+    expect(heartbeatRunHoldsIssueLock(null, NOW)).toBe(false);
+    expect(heartbeatRunHoldsIssueLock(undefined, NOW)).toBe(false);
+  });
+
+  it("holds nothing in a terminal status", () => {
+    for (const status of ["succeeded", "interrupted", "failed", "cancelled", "timed_out"]) {
+      expect(heartbeatRunHoldsIssueLock(run({ status }), NOW)).toBe(false);
+    }
+  });
+
+  it("holds the lock while a started run is non-terminal", () => {
+    expect(heartbeatRunHoldsIssueLock(run({ status: "running" }), NOW)).toBe(true);
+  });
+
+  // The predicate is about `started_at`, not about the status name. A run that DID
+  // execute and then parked keeps its lock — it may hold a workspace.
+  it("holds the lock for a scheduled_retry run that already started once", () => {
+    expect(
+      heartbeatRunHoldsIssueLock(
+        run({ status: "scheduled_retry", scheduledRetryAt: new Date(NOW + 5 * 86_400_000) }),
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  // The SYN-3144 defect: 20 issues held against a scheduled_retry_at 5 days out.
+  it("releases a never-started run parked at a future scheduled_retry_at", () => {
+    expect(
+      heartbeatRunHoldsIssueLock(
+        run({
+          status: "scheduled_retry",
+          startedAt: null,
+          scheduledRetryAt: new Date(NOW + 5 * 86_400_000),
+          updatedAt: new Date(NOW),
+        }),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  // ...but an imminent park is a real hand-forward reservation and is honoured.
+  it("holds the lock for a never-started run whose retry is due inside the grace window", () => {
+    expect(
+      heartbeatRunHoldsIssueLock(
+        run({
+          status: "scheduled_retry",
+          startedAt: null,
+          scheduledRetryAt: new Date(NOW + GRACE / 2),
+          updatedAt: new Date(NOW),
+        }),
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("holds a fresh queued reservation and releases it once it goes stale", () => {
+    const queued = (updatedAt: Date) => run({ status: "queued", startedAt: null, updatedAt });
+    expect(heartbeatRunHoldsIssueLock(queued(new Date(NOW - GRACE / 2)), NOW)).toBe(true);
+    expect(heartbeatRunHoldsIssueLock(queued(new Date(NOW - GRACE - 1_000)), NOW)).toBe(false);
+  });
+});
+
+describeEmbeddedPostgres("issue execution lock — never-started holders (SYN-3144)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-never-started-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  const staleReservation = () => new Date(Date.now() - NEVER_STARTED_RUN_LOCK_GRACE_MS - 60_000);
+
+  async function seedCompanyAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  async function insertRun(
+    companyId: string,
+    agentId: string,
+    values: { status: string; startedAt?: Date | null; scheduledRetryAt?: Date | null; updatedAt?: Date },
+  ) {
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId, agentId, invocationSource: "manual", ...values });
+    return id;
+  }
+
+  async function insertLockedIssue(
+    companyId: string,
+    agentId: string,
+    lock: { checkoutRunId?: string | null; executionRunId?: string | null },
+  ) {
+    const id = randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Held by a run that never started",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: lock.checkoutRunId ?? null,
+      executionRunId: lock.executionRunId ?? null,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+    return id;
+  }
+
+  // The measured production shape: heartbeat.ts hands the execution lock forward to
+  // the retry run and NULLs checkoutRunId, so the issue is held by a run parked days out.
+  it("clears an execution lock held by a never-started scheduled_retry run", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const parkedRunId = await insertRun(companyId, agentId, {
+      status: "scheduled_retry",
+      startedAt: null,
+      scheduledRetryAt: new Date(Date.now() + 5 * 86_400_000),
+      updatedAt: staleReservation(),
+    });
+    const issueId = await insertLockedIssue(companyId, agentId, { executionRunId: parkedRunId });
+
+    await expect(svc.clearExecutionRunIfTerminal(issueId)).resolves.toBe(true);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId, executionLockedAt: issues.executionLockedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+
+  it("keeps a fresh hand-forward reservation for a queued run that has not been claimed yet", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const queuedRunId = await insertRun(companyId, agentId, { status: "queued", startedAt: null });
+    const issueId = await insertLockedIssue(companyId, agentId, { executionRunId: queuedRunId });
+
+    await expect(svc.clearExecutionRunIfTerminal(issueId)).resolves.toBe(false);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row?.executionRunId).toBe(queuedRunId);
+  });
+
+  it("clears a checkout lock held by a never-started run, symmetrically", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const parkedRunId = await insertRun(companyId, agentId, {
+      status: "scheduled_retry",
+      startedAt: null,
+      scheduledRetryAt: new Date(Date.now() + 5 * 86_400_000),
+      updatedAt: staleReservation(),
+    });
+    const issueId = await insertLockedIssue(companyId, agentId, {
+      checkoutRunId: parkedRunId,
+      executionRunId: parkedRunId,
+    });
+
+    await expect(svc.clearCheckoutRunIfTerminal(issueId)).resolves.toBe(true);
+
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ checkoutRunId: null, executionRunId: null });
+  });
+
+  // --- the 409 the ticket is actually about, and why a synthetic plant missed it ---
+
+  // Positive control: a genuinely live holder must still conflict.
+  it("409s the assignee when the execution lock is held by a live started run", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const liveHolderId = await insertRun(companyId, agentId, { status: "running", startedAt: new Date() });
+    const actorRunId = await insertRun(companyId, agentId, { status: "running", startedAt: new Date() });
+    const issueId = await insertLockedIssue(companyId, agentId, { executionRunId: liveHolderId });
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, actorRunId)).rejects.toThrow(
+      "Issue run ownership conflict",
+    );
+  });
+
+  // THE DISCRIMINATOR. `resolveSameRunOwnership` matches on checkoutRunId alone, so
+  // when the caller's own run already owns the checkout the execution lock is never
+  // consulted at all. A synthetic holder planted only on executionRunId of an issue
+  // the prober had already checked out therefore cannot reproduce the 409 — which is
+  // exactly why the synthetic run in SYN-3144 came back clean while the genuine one
+  // (checkoutRunId NULL, per heartbeat.ts's hand-forward) conflicted. Same run row,
+  // different lock COLUMN, opposite verdict.
+  it("grants ownership regardless of the execution lock when the actor owns the checkout", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const liveHolderId = await insertRun(companyId, agentId, { status: "running", startedAt: new Date() });
+    const actorRunId = await insertRun(companyId, agentId, { status: "running", startedAt: new Date() });
+    const issueId = await insertLockedIssue(companyId, agentId, {
+      checkoutRunId: actorRunId,
+      executionRunId: liveHolderId,
+    });
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, actorRunId)).resolves.toMatchObject({
+      id: issueId,
+      checkoutRunId: actorRunId,
+    });
+  });
+
+  // The regression: before SYN-3144 this threw for the whole backoff window.
+  it("lets the assignee take the issue back from a never-started parked run", async () => {
+    const { companyId, agentId } = await seedCompanyAgent();
+    const parkedRunId = await insertRun(companyId, agentId, {
+      status: "scheduled_retry",
+      startedAt: null,
+      scheduledRetryAt: new Date(Date.now() + 5 * 86_400_000),
+      updatedAt: staleReservation(),
+    });
+    const actorRunId = await insertRun(companyId, agentId, { status: "running", startedAt: new Date() });
+    const issueId = await insertLockedIssue(companyId, agentId, { executionRunId: parkedRunId });
+
+    await expect(svc.assertCheckoutOwner(issueId, agentId, actorRunId)).resolves.toMatchObject({
+      id: issueId,
+      checkoutRunId: actorRunId,
+      executionRunId: actorRunId,
+    });
   });
 });

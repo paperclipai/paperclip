@@ -40,7 +40,12 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import {
+  TERMINAL_HEARTBEAT_RUN_STATUSES,
+  heartbeatRunHoldsIssueLock,
+  issueService,
+  type IssueLockHolderRun,
+} from "../issues.js";
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -5511,18 +5516,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runRows =
       referencedRunIds.length > 0
         ? await db
-            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+              startedAt: heartbeatRuns.startedAt,
+              scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+              updatedAt: heartbeatRuns.updatedAt,
+            })
             .from(heartbeatRuns)
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
-    const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const runById = new Map<string, IssueLockHolderRun>();
+    for (const row of runRows) runById.set(row.id, row);
 
+    // SYN-3144: keyed on the same predicate as the clear helpers in issues.ts, so
+    // this backstop can reach a lock held by a never-started `scheduled_retry` /
+    // `queued` run. Keyed on the terminal set alone it skipped exactly the rows
+    // it exists to catch.
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
-      const status = runStatusById.get(runId);
-      if (!status) return true; // missing run row → no real claim
-      return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+      const run = runById.get(runId);
+      if (!run) return true; // missing run row → no real claim
+      return !heartbeatRunHoldsIssueLock(run);
     };
 
     for (const issue of candidates) {
@@ -5571,7 +5586,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: "recovery.sweep_stale_issue_locks",
           clearedCheckoutRunId: issue.checkoutRunId,
           clearedExecutionRunId: issue.executionRunId,
-          referencedRunStatuses: Object.fromEntries(runStatusById),
+          referencedRunStatuses: Object.fromEntries(
+            [...runById].map(([id, holder]) => [id, holder.status]),
+          ),
         },
       });
     }

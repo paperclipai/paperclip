@@ -731,6 +731,73 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+
+/**
+ * SYN-3144: how long a heartbeat run that has never started may keep holding an
+ * issue's lock columns.
+ *
+ * A run only ever reaches `started_at is not null` by being claimed, so a
+ * never-started run has nothing in flight. It can still legitimately hold the
+ * lock for a short window, because several paths deliberately hand the lock
+ * forward from a dying run to its not-yet-claimed successor (`process_lost_retry`,
+ * `issue_execution_promoted`, the scheduled-retry parks — see
+ * services/heartbeat.ts, which sets `executionRunId: retryRun.id` with
+ * `checkoutRunId: null`). That reservation stops a third party from taking the
+ * issue in the seconds between enqueue and claim, and it must be honoured.
+ *
+ * The normal wake path does NOT need this window: it locks lazily, stamping
+ * `executionRunId` only once the run is actually running.
+ */
+export const NEVER_STARTED_RUN_LOCK_GRACE_MS = 10 * 60_000;
+
+export type IssueLockHolderRun = {
+  status: string;
+  startedAt: Date | null;
+  scheduledRetryAt: Date | null;
+  updatedAt: Date;
+};
+
+/**
+ * SYN-3144: does this run hold a real claim on an issue's lock columns?
+ *
+ * Before SYN-3144 every caller asked only `TERMINAL_HEARTBEAT_RUN_STATUSES.has(status)`.
+ * `scheduled_retry` and `queued` are not in that set, so a run parked in
+ * `scheduled_retry` held the lock for the WHOLE backoff window and every
+ * structured field write by the issue's own assignee 409'd `Issue run ownership
+ * conflict` until the retry fired. Measured 2026-08-03: 20 issues held against a
+ * `scheduled_retry_at` of 2026-08-08 — a 5-day lockout by runs that had never
+ * executed a single step.
+ *
+ * A never-started run is honoured only while it is plausibly imminent: a run
+ * explicitly parked at a future `scheduled_retry_at` is not, and neither is a
+ * reservation that has sat unclaimed past the grace window. When such a run does
+ * eventually fire it checks the issue out again and re-acquires normally, so
+ * releasing the lock early costs nothing.
+ *
+ * A missing run row holds no claim either — the historical `terminal or missing`
+ * reading is preserved.
+ */
+export function heartbeatRunHoldsIssueLock(
+  run: IssueLockHolderRun | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!run) return false;
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+  if (run.startedAt != null) return true;
+  if (run.scheduledRetryAt != null && run.scheduledRetryAt.getTime() - now > NEVER_STARTED_RUN_LOCK_GRACE_MS) {
+    return false;
+  }
+  return now - run.updatedAt.getTime() <= NEVER_STARTED_RUN_LOCK_GRACE_MS;
+}
+
+/** Columns `heartbeatRunHoldsIssueLock` needs. Keep every lock-staleness read on this projection. */
+const ISSUE_LOCK_HOLDER_RUN_COLUMNS = {
+  status: heartbeatRuns.status,
+  startedAt: heartbeatRuns.startedAt,
+  scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+  updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -4712,8 +4779,16 @@ export function issueService(db: Db) {
     );
   }
 
+  // SYN-3144: lock staleness, NOT workspace-sync settling. Deliberately does not
+  // delegate to `heartbeatRunIsTerminalOrMissing`, whose callers ask a different
+  // question ("has this run's finalize settled?").
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
-    return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
+    const run = await dbOrTx
+      .select(ISSUE_LOCK_HOLDER_RUN_COLUMNS)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return !heartbeatRunHoldsIssueLock(run);
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -4757,7 +4832,7 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select(ISSUE_LOCK_HOLDER_RUN_COLUMNS)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
@@ -4767,7 +4842,10 @@ export function issueService(db: Db) {
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      // SYN-3144: `stale` is about the run being displaced. `actorLive` below is
+      // about the actor's OWN run and must keep the plain terminal test — the
+      // never-started clause would read a live caller as dead.
+      const stale = !heartbeatRunHoldsIssueLock(existingRun);
       const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
@@ -4880,11 +4958,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(ISSUE_LOCK_HOLDER_RUN_COLUMNS)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (heartbeatRunHoldsIssueLock(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4928,22 +5006,22 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select(ISSUE_LOCK_HOLDER_RUN_COLUMNS)
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (heartbeatRunHoldsIssueLock(run)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select(ISSUE_LOCK_HOLDER_RUN_COLUMNS)
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (heartbeatRunHoldsIssueLock(executionRun)) return false;
       }
 
       const updated = await tx
