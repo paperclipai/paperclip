@@ -58,8 +58,13 @@ def reset_unreachable_counter():
 
 # --- Absenden ------------------------------------------------------------
 
-def render_local(company, issue, brief, now):
-    iid = issue["id"]
+def _local_guards_block(iid):
+    """-> True, wenn der Auftrag JETZT nicht laufen darf.
+
+    Warteschlange und Tageslimit gelten fuer JEDEN lokalen Renderpfad. Sie
+    liegen hier gemeinsam, damit eine Aenderung nicht in einem der beiden
+    Pfade vergessen wird.
+    """
     if len(job_state.all()) >= config.MAX_INFLIGHT_JOBS:
         # Knoten voll: Auftrag bleibt liegen, naechster Zyklus versucht erneut.
         # blockParentUntilDone haengt die ordernde Agentin sonst ohne jedes
@@ -70,22 +75,41 @@ def render_local(company, issue, brief, now):
                                  "Auftrag wird gerendert, sobald ein Platz frei wird."
                                  % config.MAX_INFLIGHT_JOBS)
             job_state.mark_queue_notice(iid)
-        return
+        return True
     if cost_state.remaining_local_today(_today()) <= 0:
         api.add_comment(iid, "⚠️ Tageslimit (%d lokale Bilder) erreicht. "
                              "Morgen erneut versuchen." % config.DAILY_LOCAL_LIMIT)
         api.patch_status(iid, "cancelled")
+        return True
+    return False
+
+
+def _submit_local_job(iid, company, workflow, seed, modell, now, sources=None):
+    """Workflow abschicken und bei Erfolg registrieren.
+
+    Gemeinsamer Abschluss aller lokalen Renderpfade: submit, Registrierung in
+    job_state, Warteschlangen-Marker loeschen, Tageszaehler hochzaehlen. Bei
+    ComfyError bleibt der Auftrag unregistriert liegen -- der naechste
+    Zyklus versucht es erneut.
+    """
+    try:
+        prompt_id = comfy_client.submit(workflow)
+    except comfy_client.ComfyError:
+        return None
+    job_state.add(iid, prompt_id, company["id"], now, seed=seed, modell=modell, sources=sources)
+    job_state.clear_queue_notice(iid)
+    cost_state.record_local(_today())
+    return prompt_id
+
+
+def render_local(company, issue, brief, now):
+    iid = issue["id"]
+    if _local_guards_block(iid):
         return
     seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
     workflow = wt.fill(wt.load_raw(_workflow_name(brief["modell"])), brief["prompt"],
                        seed, brief["width"], brief["height"])
-    try:
-        prompt_id = comfy_client.submit(workflow)
-    except comfy_client.ComfyError:
-        return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
-    job_state.add(iid, prompt_id, company["id"], now, seed=seed, modell=brief["modell"])
-    job_state.clear_queue_notice(iid)
-    cost_state.record_local(_today())
+    _submit_local_job(iid, company, workflow, seed, brief["modell"], now)
 
 
 def upload_sources(issue_id):
@@ -107,17 +131,7 @@ def upload_sources(issue_id):
 
 def render_edit(company, issue, brief, now):
     iid = issue["id"]
-    if len(job_state.all()) >= config.MAX_INFLIGHT_JOBS:
-        if not job_state.has_queue_notice(iid):
-            api.add_comment(iid, "⏳ Warteschlange voll (max. %d gleichzeitige lokale Renders). "
-                                 "Auftrag wird gerendert, sobald ein Platz frei wird."
-                                 % config.MAX_INFLIGHT_JOBS)
-            job_state.mark_queue_notice(iid)
-        return
-    if cost_state.remaining_local_today(_today()) <= 0:
-        api.add_comment(iid, "⚠️ Tageslimit (%d lokale Bilder) erreicht. "
-                             "Morgen erneut versuchen." % config.DAILY_LOCAL_LIMIT)
-        api.patch_status(iid, "cancelled")
+    if _local_guards_block(iid):
         return
     if brief["format_ignored"]:
         api.add_comment(iid, "ℹ️ Das angegebene 'format' wird bei modell: qwenedit "
@@ -134,14 +148,7 @@ def render_edit(company, issue, brief, now):
     workflow = wt.set_images(
         wt.fill(wt.load_raw(_workflow_name(brief["modell"])), brief["prompt"], seed),
         namen)
-    try:
-        prompt_id = comfy_client.submit(workflow)
-    except comfy_client.ComfyError:
-        return
-    job_state.add(iid, prompt_id, company["id"], now, seed=seed,
-                  modell=brief["modell"], sources=namen)
-    job_state.clear_queue_notice(iid)
-    cost_state.record_local(_today())
+    _submit_local_job(iid, company, workflow, seed, brief["modell"], now, sources=namen)
 
 
 def render_openai(company, issue, brief):

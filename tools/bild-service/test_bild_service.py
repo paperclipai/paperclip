@@ -540,3 +540,62 @@ def test_process_new_issue_leitet_qwenedit_um(monkeypatch, tmp_path):
     issue = {"id": "issue-1", "description": "prompt: x\nmodell: qwenedit"}
     bild_service.process_new_issue(COMPANY, issue, now=1000.0)
     assert gerufen == ["edit"]
+
+
+# --- Review-Fix (Befund 2): die drei Schutzmechanismen gelten auch fuer -----
+# --- render_edit -- ohne diese Tests waere das unbelegt geblieben.       ---
+
+def test_edit_warteschlange_voll_kommentiert_einmal_und_schickt_nicht_ab(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    for i in range(config.MAX_INFLIGHT_JOBS):
+        job_state.add("other-%d" % i, "prompt-%d" % i, "company-a", now=1000.0)
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1060.0)
+
+    assert job_state.get("issue-1") is None
+    assert len(api.comments) == 1        # nur einmal, nicht bei jedem Zyklus
+    assert "Warteschlange" in api.comments[0][1]
+
+
+def test_edit_tageslimit_erreicht_bricht_ab_und_schickt_nicht_ab(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    for _ in range(cost_state.DAILY_LOCAL_LIMIT):
+        cost_state.record_local("2026-08-02")
+    monkeypatch.setattr(bild_service, "_today", lambda: "2026-08-02")
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+
+    assert api.status["issue-1"] == "cancelled"
+    assert "Tageslimit" in api.comments[0][1]
+    assert job_state.get("issue-1") is None
+
+
+def test_edit_knoten_weg_beim_upload_bleibt_liegen(monkeypatch, tmp_path):
+    """Wirft der Knoten waehrend upload_sources() eine ComfyError, muss der
+    Auftrag unangetastet liegen bleiben: kein 'cancelled', kein Eintrag in
+    job_state, kein hochgezaehlter Tageszaehler -- der naechste Zyklus soll
+    ihn ganz normal noch einmal versuchen."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda iid: [_att("eins", "2026-08-04T10:00:00.000Z")])
+    monkeypatch.setattr(bild_service.api, "fetch_attachment", lambda aid: b"BILD")
+
+    def kaputter_upload(name, content):
+        raise comfy_client.ComfyError("ComfyUI nicht erreichbar")
+
+    monkeypatch.setattr(comfy_client, "upload_image", kaputter_upload)
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+    verbleibend_vorher = cost_state.remaining_local_today("2026-08-04")
+
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+
+    assert job_state.get("issue-1") is None
+    assert "issue-1" not in api.status
+    assert api.comments == []
+    assert cost_state.remaining_local_today("2026-08-04") == verbleibend_vorher
