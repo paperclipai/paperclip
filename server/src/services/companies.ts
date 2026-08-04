@@ -125,7 +125,7 @@ export function companyService(
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, id),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
+        inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
       ))
       .then((rows) => rows.map((row) => row.id));
 
@@ -147,10 +147,14 @@ export function companyService(
   }
 
   async function getCompanyFileDeletionRunIds(tx: CompanyTx, id: string) {
+    // Wakeup admission takes this same lock before its final active-company
+    // check. The lock makes scheduling and destructive deletion mutually
+    // exclusive instead of relying on a timing-sensitive sequence of reads.
     const company = await tx
       .select({ status: companies.status })
       .from(companies)
       .where(eq(companies.id, id))
+      .for("update")
       .then((rows) => rows[0] ?? null);
     if (!company) return null;
     if (company.status !== "archived") {
@@ -161,7 +165,9 @@ export function companyService(
       .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, id));
-    if (runRows.some((run) => run.status === "queued" || run.status === "running")) {
+    if (runRows.some((run) =>
+      run.status === "scheduled_retry" || run.status === "queued" || run.status === "running"
+    )) {
       throw conflict("Wait for company runs to finish before deleting managed files");
     }
     return runRows.map((run) => run.id);

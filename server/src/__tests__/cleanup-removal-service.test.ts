@@ -344,6 +344,22 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removeManagedFiles).not.toHaveBeenCalled();
   });
 
+  it("rejects managed-file deletion while an archived company retry is scheduled", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Wait for company runs");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+  });
+
   it("does not delete managed files by default", async () => {
     const { companyId } = await seedFixture();
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
