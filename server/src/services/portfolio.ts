@@ -46,6 +46,7 @@ export interface PortfolioRunsRow {
   runs_total: number;
   runs_succeeded: number;
   runs_failed: number;
+  runs_other: number;
   seconds_on_task: number;
   distinct_issues: number;
   heartbeats_avg: number;
@@ -244,6 +245,7 @@ export function portfolioService(db: Db) {
             COUNT(DISTINCT hr.id)::int AS runs_total,
             COUNT(DISTINCT hr.id) FILTER (WHERE hr.status = 'succeeded')::int AS runs_succeeded,
             COUNT(DISTINCT hr.id) FILTER (WHERE hr.status IN (${failureStatusesParam}))::int AS runs_failed,
+            COUNT(DISTINCT hr.id) FILTER (WHERE hr.status <> 'succeeded' AND hr.status NOT IN (${failureStatusesParam}))::int AS runs_other,
             COALESCE(
               SUM(
                 CASE
@@ -281,6 +283,7 @@ export function portfolioService(db: Db) {
           COALESCE(r.runs_total, 0)::int AS runs_total,
           COALESCE(r.runs_succeeded, 0)::int AS runs_succeeded,
           COALESCE(r.runs_failed, 0)::int AS runs_failed,
+          COALESCE(r.runs_other, 0)::int AS runs_other,
           COALESCE(r.seconds_on_task, 0)::int AS seconds_on_task,
           COALESCE(r.distinct_issues, 0)::int AS distinct_issues,
           CASE
@@ -304,6 +307,7 @@ export function portfolioService(db: Db) {
         runs_total: Number(row.runs_total ?? 0),
         runs_succeeded: Number(row.runs_succeeded ?? 0),
         runs_failed: Number(row.runs_failed ?? 0),
+        runs_other: Number(row.runs_other ?? 0),
         seconds_on_task: Number(row.seconds_on_task ?? 0),
         distinct_issues: Number(row.distinct_issues ?? 0),
         heartbeats_avg: Number(row.heartbeats_avg ?? 0),

@@ -142,6 +142,7 @@ export function portfolioRoutes(db: Db) {
           "runs_total",
           "runs_succeeded",
           "runs_failed",
+          "runs_other",
           "seconds_on_task",
           "distinct_issues",
           "heartbeats_avg",

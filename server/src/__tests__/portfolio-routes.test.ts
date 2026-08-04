@@ -68,6 +68,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
     const outsiderAgentId = randomUUID();
     const runA = randomUUID();
     const runB = randomUUID();
+    const runInFlight = randomUUID();
     const runOutsider = randomUUID();
     const issueA = randomUUID();
     const issueB = randomUUID();
@@ -155,6 +156,15 @@ describeEmbeddedPostgres("portfolio routes", () => {
         contextSnapshot: { issueId: issueB },
       },
       {
+        id: runInFlight,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date("2026-06-12T10:00:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+      },
+      {
         id: runOutsider,
         companyId: outsiderId,
         agentId: outsiderAgentId,
@@ -211,6 +221,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         "runs_total",
         "runs_succeeded",
         "runs_failed",
+        "runs_other",
         "seconds_on_task",
         "distinct_issues",
         "heartbeats_avg",
@@ -223,11 +234,12 @@ describeEmbeddedPostgres("portfolio routes", () => {
       {
         company_id: opcoId,
         agent_id: opcoAgentId,
-        runs_total: 2,
+        runs_total: 3,
         runs_succeeded: 1,
         runs_failed: 1,
+        runs_other: 1,
         seconds_on_task: 300,
-        distinct_issues: 2,
+        distinct_issues: 3,
         heartbeats_avg: 1,
         cost_cents: 0,
         priced_cost_event_count: 0,
@@ -240,6 +252,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "runs_total",
       "runs_succeeded",
       "runs_failed",
+      "runs_other",
       "seconds_on_task",
       "distinct_issues",
       "heartbeats_avg",
@@ -247,6 +260,8 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "priced_cost_event_count",
       "unpriced_cost_event_count",
     ]);
+    const row = res.body.rows[0];
+    expect(row.runs_total).toBe(row.runs_succeeded + row.runs_failed + row.runs_other);
   });
 
   it("returns only digest-safe issue and summary metadata for a dedicated CEO capability", async () => {
