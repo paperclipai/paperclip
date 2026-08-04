@@ -92,3 +92,63 @@ def test_qwen360_applies_circular_padding():
     kinds = {n["class_type"] for n in wf.values()}
     assert "Apply Circular Padding Model" in kinds
     assert "Apply Circular Padding VAE" in kinds
+
+
+def test_edit_vorlage_hat_bild_platzhalter():
+    raw = wt.load_raw("qwen-edit")
+    for ph in wt.IMAGE_PLACEHOLDERS:
+        assert ph in raw
+    assert "__PROMPT__" in raw and "__SEED__" in raw
+
+
+def test_edit_vorlage_nutzt_das_edit_modell():
+    """Zeigt die Vorlage auf das normale Modell, rendert sie still ein neues
+    Bild statt das Quellbild zu bearbeiten."""
+    wf = wt.fill(wt.load_raw("qwen-edit"), "x", 1)
+    assert "edit" in wf["1"]["inputs"]["unet_name"]
+    normal = wt.fill(wt.load_raw("qwen-image"), "x", 1, 1024, 1024)
+    assert "edit" not in normal["1"]["inputs"]["unet_name"]
+
+
+def test_set_images_mit_drei_bildern_setzt_alle():
+    wf = wt.set_images(wt.fill(wt.load_raw("qwen-edit"), "x", 1),
+                       ["a.png", "b.png", "c.png"])
+    assert wf["20"]["inputs"]["image"] == "a.png"
+    assert wf["22"]["inputs"]["image"] == "b.png"
+    assert wf["24"]["inputs"]["image"] == "c.png"
+    assert "__IMAGE" not in json.dumps(wf)
+
+
+def test_set_images_mit_einem_bild_entfernt_die_anderen():
+    wf = wt.set_images(wt.fill(wt.load_raw("qwen-edit"), "x", 1), ["a.png"])
+    assert wf["20"]["inputs"]["image"] == "a.png"
+    # Loader und Skalierer der ungenutzten Slots sind weg
+    for tot in ("22", "23", "24", "25"):
+        assert tot not in wf
+    # und niemand verweist mehr auf sie
+    assert "image2" not in wf["6"]["inputs"]
+    assert "image3" not in wf["6"]["inputs"]
+    assert "image2" not in wf["7"]["inputs"]
+    assert "__IMAGE" not in json.dumps(wf)
+
+
+def test_set_images_mit_zwei_bildern():
+    wf = wt.set_images(wt.fill(wt.load_raw("qwen-edit"), "x", 1), ["a.png", "b.png"])
+    assert wf["20"]["inputs"]["image"] == "a.png"
+    assert wf["22"]["inputs"]["image"] == "b.png"
+    assert "24" not in wf and "25" not in wf
+    assert wf["6"]["inputs"]["image2"] == ["23", 0]
+    assert "image3" not in wf["6"]["inputs"]
+
+
+def test_set_images_laesst_den_latent_pfad_stehen():
+    """Die Ausgabegroesse haengt am VAEEncode des ersten Bildes -- faellt der
+    weg, rendert der Sampler ins Leere."""
+    wf = wt.set_images(wt.fill(wt.load_raw("qwen-edit"), "x", 1), ["a.png"])
+    assert wf["8"]["inputs"]["pixels"] == ["21", 0]
+    assert wf["9"]["inputs"]["latent_image"] == ["8", 0]
+
+
+def test_set_images_ergebnis_bleibt_serialisierbar():
+    wf = wt.set_images(wt.fill(wt.load_raw("qwen-edit"), "x", 1), ["a.png"])
+    assert json.loads(json.dumps(wf)) == wf
