@@ -2,7 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { useState, type AnchorHTMLAttributes, type ReactElement } from "react";
+import { act as reactAct, useState, type AnchorHTMLAttributes, type ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
@@ -10,7 +10,10 @@ import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { ToastViewport } from "./ToastViewport";
 import { ToastProvider } from "../context/ToastContext";
+import { ThemeProvider } from "../context/ThemeContext";
+import { pendingRequestItemVerdictsInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import { AttentionQueueRow } from "./AttentionQueueRow";
+import { TooltipProvider } from "./ui/tooltip";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
@@ -28,8 +31,13 @@ vi.mock("../api/approvals", () => ({
 
 vi.mock("../api/issues", () => ({
   issuesApi: {
+    listInteractions: vi.fn(),
     acceptInteraction: vi.fn(),
     rejectInteraction: vi.fn(),
+    respondToInteraction: vi.fn(),
+    cancelInteraction: vi.fn(),
+    submitInteractionVerdicts: vi.fn(),
+    addComment: vi.fn(),
   },
 }));
 
@@ -51,6 +59,20 @@ function act<T>(cb: () => T): T {
   return result as T;
 }
 
+async function actAsync(callback: () => void | Promise<void>) {
+  if (typeof reactAct === "function") {
+    await reactAct(callback);
+    return;
+  }
+
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
 
@@ -69,12 +91,16 @@ function render(element: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   act(() =>
     root?.render(
-      <ToastProvider>
-        <QueryClientProvider client={client}>
-          {element}
-          <ToastViewport />
-        </QueryClientProvider>
-      </ToastProvider>,
+      <TooltipProvider>
+        <ThemeProvider>
+          <ToastProvider>
+            <QueryClientProvider client={client}>
+              {element}
+              <ToastViewport />
+            </QueryClientProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </TooltipProvider>,
     ),
   );
   return container;
@@ -527,6 +553,71 @@ describe("AttentionQueueRow", () => {
 
     expect(onToggleExpand).toHaveBeenCalledOnce();
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
+  });
+
+  it("submits item-verdict Other text as a task comment from the expanded resolver", async () => {
+    vi.mocked(issuesApi.listInteractions).mockResolvedValue([
+      pendingRequestItemVerdictsInteraction,
+    ]);
+    vi.mocked(issuesApi.addComment).mockResolvedValue({} as never);
+
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: pendingRequestItemVerdictsInteraction.id,
+            companyId: "c1",
+            title: "Review drafted posts",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/issue-1#interaction-interaction-verdicts-default",
+            metadata: { kind: "request_item_verdicts", issueId: "issue-1" },
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    await actAsync(async () => {
+      await vi.waitFor(() => {
+        expect(container?.textContent).toContain("Review 5 blog posts");
+      });
+    });
+
+    const otherLink = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Other",
+    );
+    act(() => otherLink?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Other response"]',
+    );
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Rework the review criteria first");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const sendButton = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.includes("Send response"),
+    );
+    await actAsync(async () => {
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.waitFor(() => {
+        expect(issuesApi.addComment).toHaveBeenCalledWith(
+          "issue-1",
+          "Rework the review criteria first",
+        );
+      });
+    });
   });
 
   // The old context row bundled project identity + thumbnails together; project

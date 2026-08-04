@@ -18,6 +18,7 @@ import {
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
   pendingRequestConfirmationInteraction,
+  pendingRequestCheckboxConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
   planApprovalResumeFailedRequestConfirmationInteraction,
@@ -478,7 +479,8 @@ describe("IssueThreadInteractionCard", () => {
     expect(pendingShell.className).toContain("border-violet-500/80");
     expect(pendingShell.className).not.toContain("border-l-");
     expect(pending.textContent).toContain("Plan");
-    expect(pending.textContent).toContain("In review");
+    expect(pending.textContent).not.toContain("In review");
+    expect(pending.textContent).not.toContain("Plan/");
     // Approve is a neutral CTA (foreground/background), not the blue primary.
     const approve = Array.from(pending.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Approve plan"),
@@ -494,7 +496,7 @@ describe("IssueThreadInteractionCard", () => {
       interaction: { ...pendingRequestConfirmationInteraction, status: "accepted" },
     });
     expect((accepted.firstElementChild as HTMLElement).className).toContain("border-green-500/80");
-    expect(accepted.textContent).toContain("Approved");
+    expect(accepted.textContent).not.toContain("Plan / Approved");
 
     act(() => root?.unmount());
     accepted.remove();
@@ -504,7 +506,7 @@ describe("IssueThreadInteractionCard", () => {
       interaction: planApprovalResumeFailedRequestConfirmationInteraction,
     });
     expect((resumeFailed.firstElementChild as HTMLElement).className).toContain("border-amber-500/70");
-    expect(resumeFailed.textContent).toContain("Approved — agent resume failed");
+    expect(resumeFailed.textContent).not.toContain("Plan / Approved — agent resume failed");
     expect(resumeFailed.textContent).toContain("Agent resume failed");
     expect(resumeFailed.textContent).toContain("Paperclip needs attention before the agent can resume this approved work.");
     expect(resumeFailed.textContent).toContain("adapter_failed");
@@ -521,7 +523,7 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
     expect((rejected.firstElementChild as HTMLElement).className).toContain("border-red-500/80");
-    expect(rejected.textContent).toContain("Changes requested");
+    expect(rejected.textContent).not.toContain("Plan / Changes requested");
   });
 
   it("attaches screenshots to a plan request-changes reason as markdown images", async () => {
@@ -576,6 +578,65 @@ describe("IssueThreadInteractionCard", () => {
     expect(onRejectInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
       "![bug.png](https://cdn.example/shot.png)",
+    );
+  });
+
+  it("shows an Other free-text link for every pending interaction family", () => {
+    const cases: Array<Partial<ComponentProps<typeof IssueThreadInteractionCard>>> = [
+      { interaction: pendingAskUserQuestionsInteraction, onSubmitInteractionAnswers: vi.fn() },
+      { interaction: pendingSuggestedTasksInteraction, onRejectInteraction: vi.fn() },
+      { interaction: pendingRequestConfirmationInteraction, onRejectInteraction: vi.fn() },
+      { interaction: pendingRequestCheckboxConfirmationInteraction, onRejectInteraction: vi.fn() },
+      { interaction: pendingToolActionWriteInteraction, onRejectInteraction: vi.fn() },
+      { interaction: pendingRequestItemVerdictsInteraction, onSubmitOtherResponse: vi.fn() },
+    ];
+
+    for (const props of cases) {
+      const host = renderCard(props);
+      const otherLink = Array.from(host.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Other",
+      );
+      expect(otherLink).toBeTruthy();
+
+      act(() => root?.unmount());
+      host.remove();
+      root = null;
+      container = null;
+    }
+  });
+
+  it("submits item-verdict Other text through the free-text callback", async () => {
+    const onSubmitOtherResponse = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestItemVerdictsInteraction,
+      onSubmitOtherResponse,
+    });
+
+    const otherLink = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Other",
+    );
+    await act(async () => {
+      otherLink?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Other response"]');
+    expect(textarea).toBeTruthy();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      valueSetter?.call(textarea, "Use a different review approach");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const sendButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Send response"),
+    );
+    await act(async () => {
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitOtherResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_item_verdicts" }),
+      "Use a different review approach",
     );
   });
 
@@ -672,8 +733,8 @@ describe("IssueThreadInteractionCard tool-action card", () => {
       onRejectInteraction: vi.fn(),
     });
 
-    // Pending eyebrow, never a bare "Accepted".
-    expect(host.textContent).toContain("Awaiting approval");
+    // The formation title stays kind-only; state is conveyed by the card body and styling.
+    expect(host.textContent).not.toContain("Confirmation / Awaiting approval");
     // Identity header: tool display name + WRITE risk badge + app/tool sub-line.
     expect(host.textContent).toContain("Append row to spreadsheet");
     expect(host.textContent).toContain("WRITE");
@@ -727,7 +788,7 @@ describe("IssueThreadInteractionCard tool-action card", () => {
   it("renders the approved-running state with a spinner and no action buttons", () => {
     const host = renderCard({ interaction: runningToolActionInteraction });
 
-    expect(host.textContent).toContain("Running…");
+    expect(host.textContent).not.toContain("Confirmation / Running…");
     expect(host.textContent).toContain("running the action now");
     expect(host.textContent).not.toContain("Approve & run");
     expect(host.querySelector(".animate-spin")).toBeTruthy();

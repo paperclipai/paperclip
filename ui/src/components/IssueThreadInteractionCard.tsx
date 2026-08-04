@@ -71,6 +71,10 @@ interface IssueThreadInteractionCardProps {
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
+  onSubmitOtherResponse?: (
+    interaction: IssueThreadInteraction,
+    response: string,
+  ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
 }
@@ -90,27 +94,6 @@ function resolveActorLabel(args: {
     return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
   }
   return "Unknown";
-}
-
-function statusLabel(status: IssueThreadInteraction["status"]) {
-  switch (status) {
-    case "pending":
-      return "Pending";
-    case "accepted":
-      return "Accepted";
-    case "rejected":
-      return "Rejected";
-    case "answered":
-      return "Answered";
-    case "cancelled":
-      return "Cancelled";
-    case "expired":
-      return "Expired";
-    case "failed":
-      return "Failed";
-    default:
-      return status;
-  }
 }
 
 function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
@@ -785,6 +768,15 @@ function SuggestTasksCard({
               >
                 Reject
               </Button>
+              <button
+                type="button"
+                aria-expanded={rejecting}
+                disabled={!onRejectInteraction || working !== null}
+                className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => setRejecting((current) => !current)}
+              >
+                Other
+              </button>
               {selectedCount < totalTasks ? (
                 <Button
                   size="sm"
@@ -1781,6 +1773,15 @@ function RequestToolActionCard({
               >
                 Decline
               </Button>
+              <button
+                type="button"
+                aria-expanded={rejecting}
+                disabled={!onRejectInteraction || working !== null}
+                className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => setRejecting((current) => !current)}
+              >
+                Other
+              </button>
               <span className="text-(length:--text-micro) text-muted-foreground">
                 Approving runs this action now.
               </span>
@@ -2009,6 +2010,18 @@ function RequestConfirmationCard({
             >
               {interaction.payload.rejectLabel ?? "Decline"}
             </Button>
+            <button
+              type="button"
+              aria-expanded={rejecting}
+              disabled={!onRejectInteraction || working !== null}
+              className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                setRejectAttempted(false);
+                setRejecting((current) => !current);
+              }}
+            >
+              Other
+            </button>
           </div>
 
           {rejecting ? (
@@ -2497,6 +2510,18 @@ function RequestCheckboxConfirmationCard({
           >
             {interaction.payload.rejectLabel ?? "Request changes"}
           </Button>
+          <button
+            type="button"
+            aria-expanded={rejecting}
+            disabled={!onRejectInteraction || working !== null}
+            className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => {
+              setRejectAttempted(false);
+              setRejecting((current) => !current);
+            }}
+          >
+            Other
+          </button>
         </div>
 
         {rejecting ? (
@@ -2682,12 +2707,17 @@ interface VerdictDraft {
 function RequestItemVerdictsCard({
   interaction,
   onSubmitInteractionVerdicts,
+  onSubmitOtherResponse,
   externalReferences,
 }: {
   interaction: RequestItemVerdictsInteraction;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
+  onSubmitOtherResponse?: (
+    interaction: RequestItemVerdictsInteraction,
+    response: string,
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
@@ -2714,6 +2744,9 @@ function RequestItemVerdictsCard({
   const [working, setWorking] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherResponse, setOtherResponse] = useState("");
+  const [submittingOther, setSubmittingOther] = useState(false);
 
   // When the server merges newly-resolved items, drop their local drafts and
   // clear the applying/working state so the terminal chips take over (S3 → S4).
@@ -2806,6 +2839,22 @@ function RequestItemVerdictsCard({
       setActionError("Try again");
       setApplyingItemIds(new Set());
       setWorking(false);
+    }
+  }
+
+  async function handleSubmitOther() {
+    const response = otherResponse.trim();
+    if (!onSubmitOtherResponse || !response) return;
+    setSubmittingOther(true);
+    setActionError(null);
+    try {
+      await onSubmitOtherResponse(interaction, response);
+      setOtherOpen(false);
+      setOtherResponse("");
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setSubmittingOther(false);
     }
   }
 
@@ -2964,6 +3013,15 @@ function RequestItemVerdictsCard({
               : "Mark verdicts, then apply them in one pass."}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-expanded={otherOpen}
+              disabled={!onSubmitOtherResponse || working || submittingOther}
+              className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => setOtherOpen((current) => !current)}
+            >
+              Other
+            </button>
             {allowBulkApprove ? (
               <Button
                 type="button"
@@ -2991,6 +3049,36 @@ function RequestItemVerdictsCard({
                 </>
               ) : (
                 applyLabel
+              )}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {!isTerminal && otherOpen ? (
+        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
+          <Textarea
+            aria-label="Other response"
+            value={otherResponse}
+            onChange={(event) => setOtherResponse(event.target.value)}
+            placeholder="Type your response"
+            className="min-h-24 bg-background text-sm"
+          />
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!onSubmitOtherResponse || !otherResponse.trim() || submittingOther}
+              onClick={() => void handleSubmitOther()}
+            >
+              {submittingOther ? (
+                <>
+                  <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                  Sending…
+                </>
+              ) : (
+                "Send response"
               )}
             </Button>
           </div>
@@ -3056,6 +3144,7 @@ export function IssueThreadInteractionCard({
   onCancelInteraction,
   primaryActionOnRight,
   onSubmitInteractionVerdicts,
+  onSubmitOtherResponse,
   onUploadImage,
   externalReferences,
 }: IssueThreadInteractionCardProps) {
@@ -3105,8 +3194,6 @@ export function IssueThreadInteractionCard({
             <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)", styles.badge)}>
               <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
               {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
-              <span className="text-current/60">/</span>
-              {activeStyles ? activeStyles.label : statusLabel(interaction.status)}
             </span>
           </div>
 
@@ -3184,6 +3271,7 @@ export function IssueThreadInteractionCard({
           <RequestItemVerdictsCard
             interaction={interaction}
             onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+            onSubmitOtherResponse={onSubmitOtherResponse}
             externalReferences={externalReferences}
           />
         ) : (

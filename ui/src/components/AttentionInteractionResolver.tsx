@@ -101,6 +101,11 @@ export function AttentionInteractionResolver({
     onSuccess: invalidate,
   });
 
+  const otherResponseMutation = useMutation({
+    mutationFn: (response: string) => issuesApi.addComment(issueId, response),
+    onSuccess: invalidate,
+  });
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
@@ -137,6 +142,9 @@ export function AttentionInteractionResolver({
       }
       onSubmitInteractionVerdicts={(target: RequestItemVerdictsInteraction, verdicts) =>
         verdictsMutation.mutateAsync({ interactionId: target.id, verdicts }).then(() => undefined)
+      }
+      onSubmitOtherResponse={(_target, response) =>
+        otherResponseMutation.mutateAsync(response).then(() => undefined)
       }
     />
   );
