@@ -1695,6 +1695,17 @@ async function assertCanManageIssueMonitor(
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
 }
 
+// True when the agent is the participant of the currently pending execution-policy
+// stage. Such an agent owns the stage's signoff, so its `in_review -> done` PATCH is
+// a stage advance rather than a self-approval of its own work.
+function isPendingExecutionStageParticipant(executionState: unknown, agentId: string | null | undefined) {
+  if (!agentId) return false;
+  const state = parseIssueExecutionState(executionState);
+  if (state?.status !== "pending") return false;
+  const participant = state.currentParticipant;
+  return participant?.type === "agent" && participant.agentId === agentId;
+}
+
 function summarizeIssueMonitor(
   issue: {
     monitorNextCheckAt?: Date | null;
@@ -8149,11 +8160,18 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    // An agent may not rubber-stamp its own `in_review` work as `done` — approving
+    // is the board's/reviewer's call (PAP-16080 §4.4). Execution-policy signoff is
+    // the explicit exception: there, the policy reassigns the issue to each stage's
+    // participant, so the current reviewer/approver *is* the assignee and their
+    // `done` PATCH is a stage advance governed by
+    // `applyIssueExecutionPolicyTransition`, not a self-approval.
     if (
       req.actor.type === "agent"
       && existing.status === "in_review"
       && req.body.status === "done"
       && existing.assigneeAgentId === req.actor.agentId
+      && !isPendingExecutionStageParticipant(existing.executionState, req.actor.agentId)
     ) {
       throw forbidden("Agents cannot approve their own in-review work");
     }

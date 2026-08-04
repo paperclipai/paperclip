@@ -225,6 +225,37 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .expect(403, { error: "Agents cannot approve their own in-review work" });
   });
 
+  it("still lets the pending execution-policy stage participant sign off as done", async () => {
+    // Execution-policy signoff reassigns the issue to each stage's participant, so
+    // the reviewer/approver *is* the assignee. Their `done` PATCH is a stage advance
+    // governed by the policy, not a self-approval, and must not hit the guard above.
+    const seeded = await seedCompany("SGN");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "SGN-1",
+    });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+        returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+
+    const res = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Stage signoff." });
+
+    expect(res.body?.error).not.toBe("Agents cannot approve their own in-review work");
+  });
+
   it("persists request-changes notes as attributed comments and only wakes with a typed reference", async () => {
     const seeded = await seedCompany("SRC");
     const issueId = await seedReview({
