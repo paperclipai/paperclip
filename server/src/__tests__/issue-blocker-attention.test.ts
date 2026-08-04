@@ -8,11 +8,15 @@ import {
   approvals,
   companies,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
   issueThreadInteractions,
   issues,
+  projectWorkspaces,
+  projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -50,6 +54,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(workspaceOperations);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -101,6 +109,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    projectId?: string | null;
+    executionWorkspaceId?: string | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -110,6 +120,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       title: input.title,
       status: input.status,
       priority: "medium",
+      projectId: input.projectId ?? null,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       assigneeUserId: input.assigneeUserId ?? null,
@@ -236,6 +248,100 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       reason: "no_live_blocker",
       unresolvedBlockerCount: 0,
       satisfiedBlockerCount: 2,
+    });
+  });
+
+  it("applies the workspace-finalize barrier to an explicit blocker but not to a bare child", async () => {
+    // Both issues below are `done` on a workspace that has not recorded a
+    // successful `workspace_finalize`. They are still reported differently, and
+    // deliberately so: the finalize barrier is a readiness concept, and
+    // readiness is computed over `blocks` relations only, so nothing in the
+    // scheduler ever holds a parent for a child's finalize. Withholding
+    // "satisfied" from the bare child would make the badge assert a hold that
+    // no gate applies — the exact class of defect this counter exists to
+    // remove. The explicit blocker, which readiness *does* hold, keeps holding.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Company PBF",
+      issuePrefix: "PBF",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Finalize barrier project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Shared workspace",
+      sourceType: "local_path",
+      visibility: "default",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Shared exec workspace",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "PBF-1",
+      title: "Parent",
+      status: "blocked",
+      projectId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBF-2",
+      title: "Done child, finalize pending",
+      status: "done",
+      parentId,
+      projectId,
+      executionWorkspaceId,
+    });
+    const explicitBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBF-3",
+      title: "Done explicit blocker, finalize pending",
+      status: "done",
+      projectId,
+      executionWorkspaceId,
+    });
+    await block({ companyId, blockerIssueId: explicitBlockerId, blockedIssueId: parentId });
+
+    // The workspace was touched but never finalized, so the barrier is closed.
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: explicitBlockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      // The explicit blocker is held by the barrier...
+      unresolvedBlockerCount: 1,
+      // ...while the child, which no gate holds, reads as satisfied.
+      satisfiedBlockerCount: 1,
     });
   });
 

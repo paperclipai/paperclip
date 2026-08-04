@@ -2417,6 +2417,17 @@ async function listIssueBlockerAttentionMap(
   // as unresolved until an operator changes the relation), so such a root never
   // reaches the no-live-blocker branch at all; a cancelled *child* is dropped
   // by the walk, so it is counted as satisfied.
+  //
+  // The workspace-finalize barrier below is asymmetric for the same reason.
+  // `pendingFinalizeBlockerIssueIds` is derived from
+  // `listIssueDependencyReadinessMap`, which reads `blocks` relations only, so
+  // it never names a bare child — and correctly: no gate anywhere holds a
+  // parent for a child's finalize, so a `done` child whose workspace is still
+  // finalizing is genuinely satisfied as far as scheduling is concerned.
+  // Withholding "satisfied" from it would make this counter assert a hold that
+  // does not exist, which is the defect this counter exists to remove. Pinned
+  // by "applies the workspace-finalize barrier to an explicit blocker but not
+  // to a bare child" in issue-blocker-attention.test.ts.
   const satisfiedBlockerCountByRootId = new Map<string, number>();
   for (const chunk of chunkList(roots.map((root) => root.id), ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
     const [resolvedExplicitRows, terminalChildRows]: [
