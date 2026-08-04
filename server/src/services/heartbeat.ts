@@ -26836,6 +26836,24 @@ export function heartbeatService(
       queuedCommentIdsFromRunContext(enrichedContextSnapshot).length === 0 &&
       !isInteractionResolutionWakePayload(payload ?? {}) &&
       !hasInteractionContinuationWakeContext(enrichedContextSnapshot);
+
+    type WakeupTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    const lockActiveCompanyForWakeup = async (tx: WakeupTx) => {
+      // Managed company deletion takes the same row lock. Rechecking under
+      // that lock prevents a wake that observed stale active state from being
+      // admitted after destructive deletion has begun.
+      const lockedCompany = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, agent.companyId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (lockedCompany?.status === "active") return true;
+      if (opts.requestedByActorType === "user") {
+        throw conflict("Company is not active", { status: lockedCompany?.status ?? "missing" });
+      }
+      return false;
+    };
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
@@ -27224,6 +27242,9 @@ export function heartbeatService(
 
       const outcome = await db
         .transaction(async (tx) => {
+          if (!(await lockActiveCompanyForWakeup(tx))) {
+            return { kind: "skipped" as const };
+          }
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
@@ -28732,6 +28753,9 @@ export function heartbeatService(
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
+      if (!(await lockActiveCompanyForWakeup(tx))) {
+        return { kind: "skipped" as const };
+      }
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
