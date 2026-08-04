@@ -118,6 +118,54 @@ describeEmbeddedPostgres("resetPostgresDatabase", () => {
 });
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("applies recovery columns when upgrading from migration 0202", async () => {
+    const connectionString = await createTempDatabase();
+    const recoveryMigrationHash = await migrationHash("0203_recovery_kind_previous_assignee.sql");
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await applyPendingMigrations(connectionString);
+      await sql.unsafe(`
+        ALTER TABLE "issues"
+          DROP COLUMN "recovery_kind",
+          DROP COLUMN "previous_assignee_agent_id"
+      `);
+      await sql.unsafe(
+        `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${recoveryMigrationHash}'`,
+      );
+    } finally {
+      await sql.end();
+    }
+
+    await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+      status: "needsMigrations",
+      pendingMigrations: ["0203_recovery_kind_previous_assignee.sql"],
+      reason: "pending-migrations",
+    });
+    await applyPendingMigrations(connectionString);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const columns = await verifySql.unsafe<{ column_name: string }[]>(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'issues'
+          AND column_name IN ('recovery_kind', 'previous_assignee_agent_id')
+        ORDER BY column_name
+      `);
+      expect(columns.map((row) => row.column_name)).toEqual([
+        "previous_assignee_agent_id",
+        "recovery_kind",
+      ]);
+      const history = await verifySql.unsafe<{ count: string }[]>(
+        `SELECT COUNT(*)::text AS count FROM "drizzle"."__drizzle_migrations" WHERE hash = '${recoveryMigrationHash}'`,
+      );
+      expect(history[0]?.count).toBe("1");
+    } finally {
+      await verifySql.end();
+    }
+  }, 120_000);
+
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
     const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
       withFileTypes: true,

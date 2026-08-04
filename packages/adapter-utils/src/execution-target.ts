@@ -155,6 +155,7 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   runLogTail?: SandboxRunLogTailFactory | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
+  killSignalPromise?: Promise<void>;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -631,6 +632,7 @@ export async function runAdapterExecutionTargetProcess(
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
+    killSignalPromise: options.killSignalPromise,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }
