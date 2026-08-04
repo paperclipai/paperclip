@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
+import { evaluateCodexCredentialReadiness, testEnvironment } from "@paperclipai/adapter-codex-local/server";
 
 const itWindows = process.platform === "win32" ? it : it.skip;
 
@@ -67,6 +67,40 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a shared Codex home with auth.json as subscription-auth ready without OPENAI_API_KEY", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-shared-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const codexHome = path.join(root, "codex-home");
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", refreshToken: "fake-refresh" }),
+      );
+
+      const readiness = await evaluateCodexCredentialReadiness({
+        companyId: "company-1",
+        configuredCodexHome: null,
+        configuredApiKey: null,
+        env: {
+          CODEX_HOME: codexHome,
+          PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+          PAPERCLIP_INSTANCE_ID: "test-instance",
+        },
+      });
+
+      expect(readiness.managed).toBe(true);
+      expect(readiness.authMode).toBe("subscription");
+      expect(readiness.ready).toBe(true);
+      expect(readiness.sharedSourceHome).toBe(codexHome);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
