@@ -282,6 +282,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
   it("deletes managed files only when explicitly requested", async () => {
     const { companyId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
 
     const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {
@@ -292,13 +293,10 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
-  it("cancels active runs before deleting managed files", async () => {
+  it("drains archived company runs before deleting managed files", async () => {
     const { companyId, runId } = await seedFixture();
-    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const order: string[] = [];
-    const cancelRun = vi.fn(async () => {
-      order.push("cancel");
-    });
     const waitForRunExecutionDrain = vi.fn(async () => {
       order.push("drain");
     });
@@ -307,36 +305,38 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     const removed = await companyService(db, {
-      cancelRun,
       removeManagedFiles,
       waitForRunExecutionDrain,
     }).remove(companyId, { deleteFiles: true });
 
-    expect(cancelRun).toHaveBeenCalledWith(runId, "Cancelled because the company was deleted");
     expect(waitForRunExecutionDrain).toHaveBeenCalledWith(runId);
-    expect(order).toEqual(["cancel", "drain", "cleanup"]);
+    expect(order).toEqual(["drain", "cleanup"]);
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
-  it("restores paused agents when execution drain fails", async () => {
-    const { agentId, companyId, runId } = await seedFixture();
-    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+  it("requires the company to be archived before deleting managed files", async () => {
+    const { companyId } = await seedFixture();
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
-    const waitForRunExecutionDrain = vi.fn().mockRejectedValue(new Error("drain timeout"));
 
     await expect(
-      companyService(db, {
-        cancelRun: vi.fn().mockResolvedValue(undefined),
-        removeManagedFiles,
-        waitForRunExecutionDrain,
-      }).remove(companyId, { deleteFiles: true }),
-    ).rejects.toThrow("drain timeout");
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Archive the company");
 
     expect(removeManagedFiles).not.toHaveBeenCalled();
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(1);
-    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    expect(agent?.status).toBe("active");
-    expect(agent?.pauseReason).toBeNull();
+  });
+
+  it("rejects managed-file deletion while archived company runs are active", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      companyService(db, { removeManagedFiles }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Wait for company runs");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
   });
 
   it("does not delete managed files by default", async () => {
@@ -351,6 +351,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
   it("reports cleanup failure after completing database deletion", async () => {
     const { companyId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const removeManagedFiles = vi.fn().mockRejectedValue(new Error("permission denied"));
 
     const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {

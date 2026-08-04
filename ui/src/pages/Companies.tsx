@@ -296,9 +296,11 @@ export function Companies() {
                       <Checkbox
                         checked={deleteFiles}
                         onCheckedChange={(checked) => setDeleteFiles(checked === true)}
-                        disabled={deleteMutation.isPending}
+                        disabled={deleteMutation.isPending || company.status !== "archived"}
                       />
-                      Also delete Paperclip-managed local files
+                      {company.status === "archived"
+                        ? "Also delete Paperclip-managed local files"
+                        : "Archive the company first to delete managed files"}
                     </label>
                   </div>
                   <div className="flex items-center gap-2 ml-4 shrink-0">

@@ -35,7 +35,7 @@ import {
   routineRevisions,
   routines,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
@@ -90,7 +90,6 @@ export function companyService(
   db: Db,
   options: {
     removeManagedFiles?: (companyId: string) => Promise<void>;
-    cancelRun?: (runId: string, reason: string) => Promise<unknown>;
     waitForRunExecutionDrain?: (runId: string) => Promise<void>;
   } = {},
 ) {
@@ -146,66 +145,25 @@ export function companyService(
     return { agentsPaused: pausedAgentRows.length, activeRunIds };
   }
 
-  async function prepareCompanyDeletionInTx(tx: CompanyTx, id: string) {
-    const agentsToPause = await tx
-      .select({
-        id: agents.id,
-        status: agents.status,
-        pauseReason: agents.pauseReason,
-        pausedAt: agents.pausedAt,
-      })
-      .from(agents)
-      .where(and(
-        eq(agents.companyId, id),
-        notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
-      ));
-
-    if (agentsToPause.length > 0) {
-      await tx
-        .update(agents)
-        .set({
-          status: "paused",
-          pauseReason: "company_deleted",
-          pausedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(inArray(agents.id, agentsToPause.map((agent) => agent.id)));
+  async function getCompanyFileDeletionRunIds(tx: CompanyTx, id: string) {
+    const company = await tx
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!company) return null;
+    if (company.status !== "archived") {
+      throw conflict("Archive the company before deleting managed files");
     }
 
-    const activeRunIds = await tx
-      .select({ id: heartbeatRuns.id })
+    const runRows = await tx
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
       .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, id),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
-      ))
-      .then((rows) => rows.map((row) => row.id));
-
-    return { agentsToPause, activeRunIds };
-  }
-
-  async function rollbackCompanyDeletionPreparation(
-    id: string,
-    agentsToRestore: Awaited<ReturnType<typeof prepareCompanyDeletionInTx>>["agentsToPause"],
-  ) {
-    await db.transaction(async (tx) => {
-      for (const agent of agentsToRestore) {
-        await tx
-          .update(agents)
-          .set({
-            status: agent.status,
-            pauseReason: agent.pauseReason,
-            pausedAt: agent.pausedAt,
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(agents.id, agent.id),
-            eq(agents.companyId, id),
-            eq(agents.status, "paused"),
-            eq(agents.pauseReason, "company_deleted"),
-          ));
-      }
-    });
+      .where(eq(heartbeatRuns.companyId, id));
+    if (runRows.some((run) => run.status === "queued" || run.status === "running")) {
+      throw conflict("Wait for company runs to finish before deleting managed files");
+    }
+    return runRows.map((run) => run.id);
   }
 
   async function finalizeArchive(
@@ -548,22 +506,17 @@ export function companyService(
 
     remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
       if (removeOptions.deleteFiles) {
-        const preparation = await db.transaction((tx) => prepareCompanyDeletionInTx(tx, id));
-        try {
-          for (const runId of preparation.activeRunIds) {
-            await (options.cancelRun ?? heartbeat.cancelRun)(
-              runId,
-              "Cancelled because the company was deleted",
-            );
-            await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
-          }
-        } catch (err) {
-          await rollbackCompanyDeletionPreparation(id, preparation.agentsToPause);
-          throw err;
+        const runIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!runIds) return null;
+        for (const runId of runIds) {
+          await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
         }
       }
 
       const company = await db.transaction(async (tx) => {
+        if (removeOptions.deleteFiles && !(await getCompanyFileDeletionRunIds(tx, id))) {
+          return null;
+        }
         // Delete from child tables in dependency order
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
