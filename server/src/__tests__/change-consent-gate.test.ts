@@ -45,10 +45,12 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
   async function seedGateFixture() {
     const companyId = randomUUID();
     const coachId = randomUUID();
+    const approverId = randomUUID();
     const sourceRunId = randomUUID();
     const proposalIssueId = randomUUID();
     const skillId = randomUUID();
     const targetKey = skillChangeTargetKey(skillId);
+    const approvalStageId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -56,16 +58,28 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       issuePrefix: "PAP",
       defaultResponsibleUserId: "board-user",
     });
-    await db.insert(agents).values({
-      id: coachId,
-      companyId,
-      name: "Reflection Coach",
-      role: "general",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: { canCreateSkills: true },
-    });
+    await db.insert(agents).values([
+      {
+        id: coachId,
+        companyId,
+        name: "Reflection Coach",
+        role: "general",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { canCreateSkills: true },
+      },
+      {
+        id: approverId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
     await db.insert(heartbeatRuns).values({
       id: sourceRunId,
       companyId,
@@ -81,9 +95,27 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       identifier: "PAP-1",
       issueNumber: 1,
       createdByAgentId: coachId,
+      executionPolicy: {
+        mode: "auto",
+        commentRequired: true,
+        stages: [{ id: approvalStageId, type: "approval", approvalsNeeded: 1, participants: [{ type: "agent", agentId: approverId }] }],
+      },
+      executionState: {
+        status: "completed",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: coachId },
+        reviewRequest: null,
+        completedStageIds: [approvalStageId],
+        lastDecisionId: randomUUID(),
+        lastDecisionOutcome: "approved",
+        monitor: null,
+      },
     });
 
-    return { companyId, coachId, sourceRunId, proposalIssueId, skillId, targetKey };
+    return { companyId, coachId, approverId, sourceRunId, proposalIssueId, skillId, targetKey };
   }
 
   it("rejects Reflection Coach skill mutation without an accepted bound interaction", async () => {
@@ -101,7 +133,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
   });
 
   it("rejects accepted interactions from the same run as the apply mutation", async () => {
-    const { companyId, coachId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
+    const { companyId, coachId, approverId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
       companyId,
@@ -118,7 +150,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
       },
       result: { version: 1, outcome: "accepted" },
-      resolvedByUserId: "board-user",
+      resolvedByAgentId: approverId,
       resolvedAt: new Date(),
     });
 
@@ -134,7 +166,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
   });
 
   it("allows a previous-run accepted interaction with a displayed diff for the bound target", async () => {
-    const { companyId, coachId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
+    const { companyId, coachId, approverId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
     const interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({
       id: interactionId,
@@ -152,7 +184,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
       },
       result: { version: 1, outcome: "accepted" },
-      resolvedByUserId: "board-user",
+      resolvedByAgentId: approverId,
       resolvedAt: new Date(),
     });
     const actorRunId = randomUUID();
@@ -178,7 +210,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
   });
 
   it("rejects reusing an accepted interaction after it is consumed by a mutation", async () => {
-    const { companyId, coachId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
+    const { companyId, coachId, approverId, sourceRunId, proposalIssueId, targetKey } = await seedGateFixture();
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
       companyId,
@@ -195,7 +227,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
       },
       result: { version: 1, outcome: "accepted" },
-      resolvedByUserId: "board-user",
+      resolvedByAgentId: approverId,
       resolvedAt: new Date(),
     });
 
@@ -218,7 +250,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
   });
 
   it("allows legacy Reflection Coach target keys for durable accepted interactions", async () => {
-    const { companyId, coachId, sourceRunId, proposalIssueId, skillId, targetKey } = await seedGateFixture();
+    const { companyId, coachId, approverId, sourceRunId, proposalIssueId, skillId, targetKey } = await seedGateFixture();
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
       companyId,
@@ -235,7 +267,7 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         target: { type: "custom", key: `reflection-coach:company-skill:${skillId}`, revisionId: "proposal-v1" },
       },
       result: { version: 1, outcome: "accepted" },
-      resolvedByUserId: "board-user",
+      resolvedByAgentId: approverId,
       resolvedAt: new Date(),
     });
 

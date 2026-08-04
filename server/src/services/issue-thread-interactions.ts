@@ -7,6 +7,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueExecutionDecisions,
   issueThreadInteractions,
   issues,
   toolActionRequests,
@@ -54,6 +55,7 @@ import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -76,6 +78,24 @@ type ResolvedInteractionResult = {
   continuationIssue?: IssueWakeTarget | null;
 };
 
+type GovernedConfirmationAcceptance = {
+  executionState: Record<string, unknown>;
+  /**
+   * Normalized policy the transition was derived from. Revalidated under the
+   * issue row lock so a concurrently edited stage participant set cannot be
+   * approved from a superseded policy.
+   */
+  policySnapshot: unknown;
+  decision: {
+    id: string;
+    stageId: string;
+    stageType: "review" | "approval";
+    outcome: "approved";
+    body: string;
+    createdByRunId: string;
+  };
+};
+
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
 
@@ -85,6 +105,8 @@ type IssueResolutionContext = {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionState: unknown;
+  executionPolicy: unknown;
 };
 
 const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
@@ -246,12 +268,18 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   actor: InteractionActor;
 }) {
   if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
+  if (args.current.continuationPolicy !== "wake_assignee_on_accept") return false;
   if (!args.current.createdByAgentId) return false;
-  if (!args.actor.userId) return false;
-  if (!args.issue.assigneeUserId) return false;
-  if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
-  return true;
+  if (args.actor.userId) {
+    return Boolean(args.issue.assigneeUserId && !args.issue.assigneeAgentId);
+  }
+  return Boolean(
+    args.actor.agentId &&
+    args.actor.agentId !== args.current.createdByAgentId &&
+    args.issue.assigneeAgentId === args.actor.agentId &&
+    !args.issue.assigneeUserId
+  );
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
@@ -1044,6 +1072,7 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
+    governedAcceptance?: GovernedConfirmationAcceptance | null;
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
@@ -1091,6 +1120,10 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
+      // Serialize concurrent confirmation resolutions on the same issue so a
+      // governed execution-stage transition is decided exactly once: the loser
+      // re-reads the committed state below and is rejected instead of writing a
+      // duplicate approval decision for the same stage.
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -1098,13 +1131,32 @@ export function issueThreadInteractionService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
+          executionPolicy: issues.executionPolicy,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
+        .for("update")
         .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
 
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
+      }
+
+      if (args.governedAcceptance) {
+        const persistedState = parseIssueExecutionState(issueContext.executionState);
+        if (
+          persistedState?.status !== "pending" ||
+          persistedState.currentStageId !== args.governedAcceptance.decision.stageId
+        ) {
+          throw conflict("Issue execution stage has already been decided");
+        }
+        // Stage id alone is not enough: a concurrent policy edit can keep the
+        // pending stage id while changing its participants, which would let a
+        // removed approver commit a decision derived from the superseded policy.
+        if (!isDeepStrictEqual(issueContext.executionPolicy ?? null, args.governedAcceptance.policySnapshot)) {
+          throw conflict("Issue execution policy changed while the decision was being applied");
+        }
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
@@ -1118,11 +1170,26 @@ export function issueThreadInteractionService(db: Db) {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
           assigneeUserId: null,
+          ...(args.governedAcceptance ? { executionState: args.governedAcceptance.executionState } : {}),
           actorAgentId: args.actor.agentId ?? null,
           actorUserId: args.actor.userId ?? null,
         }, tx);
 
         if (returnedIssue) {
+          if (args.governedAcceptance) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: args.governedAcceptance.decision.id,
+              companyId: returnedIssue.companyId,
+              issueId: returnedIssue.id,
+              stageId: args.governedAcceptance.decision.stageId,
+              stageType: args.governedAcceptance.decision.stageType,
+              actorAgentId: args.actor.agentId ?? null,
+              actorUserId: null,
+              outcome: args.governedAcceptance.decision.outcome,
+              body: args.governedAcceptance.decision.body,
+              createdByRunId: args.governedAcceptance.decision.createdByRunId,
+            });
+          }
           continuationIssue = {
             id: returnedIssue.id,
             assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
@@ -1456,6 +1523,7 @@ export function issueThreadInteractionService(db: Db) {
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
+      options: { governedAcceptance?: GovernedConfirmationAcceptance | null } = {},
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
@@ -1472,6 +1540,7 @@ export function issueThreadInteractionService(db: Db) {
             current,
             input: data,
             actor,
+            governedAcceptance: options.governedAcceptance,
           });
           return {
             interaction: accepted.interaction,

@@ -81,6 +81,7 @@ import {
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -6549,6 +6550,16 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  async function usesBuiltInSystemAttribution(companyId: string, agentId: string | null | undefined) {
+    if (!agentId) return false;
+    const agent = await db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+      .then((rows) => rows[0] ?? null);
+    return Boolean(readBuiltInAgentMarker(agent?.metadata));
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7260,6 +7271,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function resolveResponsibleUserIdForRunSeed(input: {
     companyId: string;
+    agentId?: string | null;
     contextSnapshot: Record<string, unknown>;
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null;
     routineEnvContext: Awaited<ReturnType<typeof getRoutineEnvForExecutionIssue>>;
@@ -7273,6 +7285,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedUserId = input.requestedByActorType === "user"
       ? readNonEmptyString(input.requestedByActorId)
       : null;
+    if (await usesBuiltInSystemAttribution(input.companyId, input.agentId)) {
+      const routineRunSource = readNonEmptyString(parseObject(input.contextSnapshot.routineRun).source);
+      if (requestedUserId && (isManualUserRun(input) || routineRunSource === "manual")) {
+        return requestedUserId;
+      }
+      if (routineRunSource === "manual" && input.existingRunResponsibleUserId) {
+        return input.existingRunResponsibleUserId;
+      }
+      return null;
+    }
     if (contextResponsibleUserId) return contextResponsibleUserId;
     if (input.existingRunResponsibleUserId) return input.existingRunResponsibleUserId;
     if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
@@ -7293,6 +7315,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
       companyId: input.run.companyId,
+      agentId: input.run.agentId,
       contextSnapshot: input.contextSnapshot,
       issueContext: input.issueContext,
       routineEnvContext: input.routineEnvContext,
@@ -7300,7 +7323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       source: input.run.invocationSource as WakeupOptions["source"],
       triggerDetail: input.run.triggerDetail as WakeupOptions["triggerDetail"],
     });
-    if (!responsibleUserId) {
+    if (!responsibleUserId && !await usesBuiltInSystemAttribution(input.run.companyId, input.run.agentId)) {
       throw new HttpError(422, "Unable to resolve responsible user for heartbeat run dispatch", {
         code: "responsible_user_unresolved",
         runId: input.run.id,
@@ -16428,6 +16451,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         const promotedResponsibleUserId = await resolveResponsibleUserIdForRunSeed({
           companyId: deferredAgent.companyId,
+          agentId: deferredAgent.id,
           contextSnapshot: promotedContextSnapshot,
           issueContext: issue,
           routineEnvContext: await getRoutineEnvForExecutionIssue(deferredAgent.companyId, issue),
@@ -16437,7 +16461,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           triggerDetail: promotedTriggerDetail,
           existingRunResponsibleUserId: run.responsibleUserId,
         });
-        if (!promotedResponsibleUserId) {
+        if (!promotedResponsibleUserId && !await usesBuiltInSystemAttribution(deferredAgent.companyId, deferredAgent.id)) {
           throw new HttpError(422, "Unable to resolve responsible user for promoted heartbeat run", {
             code: "responsible_user_unresolved",
             runId: run.id,
@@ -16729,6 +16753,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }, "normal_model");
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
+        agentId: recoveryAgent.id,
         contextSnapshot: recoveryContextSnapshot,
         issueContext: issue,
         routineEnvContext: await getRoutineEnvForExecutionIssue(issue.companyId, issue),
@@ -16738,7 +16763,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail: "system",
         existingRunResponsibleUserId: run.responsibleUserId,
       });
-      if (!responsibleUserId) {
+      if (!responsibleUserId && !await usesBuiltInSystemAttribution(issue.companyId, recoveryAgent.id)) {
         throw new HttpError(422, "Unable to resolve responsible user for recovery heartbeat run", {
           code: "responsible_user_unresolved",
           runId: run.id,
@@ -17020,13 +17045,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
-    let queuedResponsibleUserIdPromise: Promise<string> | null = null;
+    let queuedResponsibleUserIdPromise: Promise<string | null> | null = null;
     const resolveQueuedResponsibleUserId = () => {
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
         const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(agent.companyId, queuedIssueContext);
         const queuedResponsibleUserId = await resolveResponsibleUserIdForRunSeed({
           companyId: agent.companyId,
+          agentId: agent.id,
           contextSnapshot: enrichedContextSnapshot,
           issueContext: queuedIssueContext,
           routineEnvContext: queuedRoutineEnvContext,
@@ -17035,7 +17061,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source,
           triggerDetail,
         });
-        if (!queuedResponsibleUserId) {
+        if (!queuedResponsibleUserId && !await usesBuiltInSystemAttribution(agent.companyId, agent.id)) {
           throw new HttpError(422, "Unable to resolve responsible user for heartbeat run dispatch", {
             code: "responsible_user_unresolved",
             agentId,

@@ -729,6 +729,80 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.contextSnapshot).not.toHaveProperty("toolAction");
   });
 
+  it("lets the final agent-only approver accept a previous-run confirmation", async () => {
+    const reviewStageId = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    const approvalStageId = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      executionPolicy: {
+        mode: "auto",
+        commentRequired: true,
+        stages: [
+          { id: reviewStageId, type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: CREATED_AGENT_ID }] },
+          { id: approvalStageId, type: "approval", approvalsNeeded: 1, participants: [{ type: "agent", agentId: ASSIGNEE_AGENT_ID }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        currentStageIndex: 1,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: ASSIGNEE_AGENT_ID },
+        returnAssignee: { type: "agent", agentId: CREATED_AGENT_ID },
+        reviewRequest: null,
+        completedStageIds: [reviewStageId],
+        lastDecisionId: null,
+        lastDecisionOutcome: "approved",
+        monitor: null,
+      },
+    }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-agent-governed",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      sourceRunId: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+      createdByAgentId: CREATED_AGENT_ID,
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-agent-governed",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: { version: 1, prompt: "Apply?" },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+      continuationIssue: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", assigneeAgentId: CREATED_AGENT_ID, status: "todo" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-agent-governed/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-agent-governed",
+      {},
+      expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, userId: null }),
+      expect.objectContaining({
+        governedAcceptance: expect.objectContaining({
+          executionState: expect.objectContaining({ status: "completed" }),
+          decision: expect.objectContaining({ stageId: approvalStageId, stageType: "approval", outcome: "approved" }),
+        }),
+      }),
+    );
+  });
+
   it("executes an accepted tool-action confirmation through the gateway callback", async () => {
     const approveToolActionRequest = vi.fn().mockResolvedValue({
       status: "executed",

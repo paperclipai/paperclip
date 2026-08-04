@@ -27,6 +27,8 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   taskKey?: string | null;
+  payload?: Record<string, unknown> | null;
+  contextSnapshot?: Record<string, unknown> | null;
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -37,6 +39,7 @@ export function queueIssueAssignmentWakeup(input: {
       triggerDetail: "system",
       reason: input.reason,
       payload: {
+        ...(input.payload ?? {}),
         issueId: input.issue.id,
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
@@ -44,6 +47,7 @@ export function queueIssueAssignmentWakeup(input: {
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: {
+        ...(input.contextSnapshot ?? {}),
         issueId: input.issue.id,
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),

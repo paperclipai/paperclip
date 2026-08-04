@@ -61,12 +61,13 @@ This routine is **paused by default** and spends no tokens until an operator ena
    - `explicit` — only agents named in the run inputs.
    Cap the set at `{{maxTargetAgents}}`. Drop any agent id listed in `{{excludeAgentIds}}`, and always drop your own `PAPERCLIP_AGENT_ID` (no self-reflection).
 2. For each selected target, run the `reflection-coach` skill as the operating procedure: pull recent trajectories, read current AGENTS.md and assigned skills, cluster evidence-backed patterns, and draft the smallest durable change.
-3. Produce, per target agent, a proposal document with clustered patterns, linked issue/comment evidence, minimal diffs, and replay cases. Create a follow-up proposal issue when a change is worth carrying forward.
+3. Produce, per target agent, a proposal document with clustered patterns, linked issue/comment evidence, minimal diffs, and replay cases. Complete this proposal-only routine without waiting for a human participant. When a change is worth carrying forward, create a separate agent-owned follow-up issue under the company's agent-only review/approval policy.
 
 ## Hard limits for this routine
 
 - Proposal-only. This routine must not edit any agent's live AGENTS.md, skill assignments, or tool descriptions directly.
-- Any actual instruction/skill/tool-description change requires a displayed diff and an **accepted** `request_confirmation` task interaction, applied only in a separate follow-up run.
+- Any actual instruction/skill/tool-description change requires a displayed diff, a separate agent-owned follow-up task, and an **accepted** `request_confirmation` task interaction, applied only in a later run.
+- Never add a user participant or human decision gate. Agent reviewers and approvers may accept or reject the follow-up under the configured execution policy.
 - Mutation confirmations must bind the exact resource key they will apply, using `agent:<agentId>:instructions`, `agent:<agentId>:profile`, `skill:<skillId>`, `skill-slug:<slug>`, `skill-import:<source>`, or `skills:scan-projects`.
 - Keep every read company-scoped. Do not cross company boundaries.
 - Every proposed rule needs linked issue/comment evidence or it is dropped. No scoring without trajectories.
