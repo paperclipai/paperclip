@@ -43,15 +43,24 @@ export async function ensureLocalPathGitWorkspaceInitialized(
   if (!normalized) return { outcome: "failed", error: "no cwd provided" };
   const resolved = path.resolve(normalized);
 
-  if (await hasGitMetadata(resolved)) {
-    return { outcome: "already_initialized" };
+  const alreadyInitialized = await hasGitMetadata(resolved);
+
+  if (!alreadyInitialized) {
+    try {
+      await execFile("git", ["init"], { cwd: resolved });
+    } catch (err) {
+      return { outcome: "failed", error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
+  // Best-effort: a pre-existing repo owned by another OS user still needs safe.directory
+  // registration, so this must run regardless of whether `git init` just ran above. Registration
+  // failure should not block workspace creation -- heartbeat's own validation is the safety net.
   try {
-    await execFile("git", ["init"], { cwd: resolved });
     await execFile("git", ["config", "--global", "--add", "safe.directory", resolved]);
-    return { outcome: "initialized" };
-  } catch (err) {
-    return { outcome: "failed", error: err instanceof Error ? err.message : String(err) };
+  } catch {
+    // ignored
   }
+
+  return { outcome: alreadyInitialized ? "already_initialized" : "initialized" };
 }

@@ -76,6 +76,18 @@ describe("ensureLocalPathGitWorkspaceInitialized", () => {
     expect(email).toBe("paperclip@example.com");
   });
 
+  it("registers safe.directory for a pre-existing .git repo owned by another user", async () => {
+    await execFile("git", ["init"], { cwd: tempDir });
+
+    const result = await ensureLocalPathGitWorkspaceInitialized(tempDir);
+    expect(result).toEqual({ outcome: "already_initialized" });
+
+    const safeDirectories = await execFile("git", ["config", "--global", "--get-all", "safe.directory"]).then(
+      (out) => out.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+    );
+    expect(safeDirectories).toContain(path.resolve(tempDir));
+  });
+
   it("reports failure without throwing when no cwd is given", async () => {
     const result = await ensureLocalPathGitWorkspaceInitialized(null);
     expect(result.outcome).toBe("failed");
