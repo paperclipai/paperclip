@@ -1,6 +1,6 @@
 {
   "1": {"class_type": "UNETLoader",
-        "inputs": {"unet_name": "qwen_image_edit_2511_int8_convrot.safetensors", "weight_dtype": "default"}},
+        "inputs": {"unet_name": "qwen_image_edit_2511_fp8mixed.safetensors", "weight_dtype": "default"}},
   "2": {"class_type": "CLIPLoader",
         "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image"}},
   "3": {"class_type": "VAELoader",
