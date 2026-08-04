@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { AdapterQuotaContext, ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
 import {
   classifyCodexAuthRefreshFailure,
   type CodexAuthRefreshFailureClass,
@@ -597,7 +597,10 @@ export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailu
   return classifyCodexAuthRefreshFailure({ errorMessage: message });
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+// The `_ctx` execution target is accepted for the environment-aware quota
+// contract but not yet consumed. An absent context or a `null` executionTarget
+// keeps the host probe below. Remote-target probing lands in a later change.
+export async function getQuotaWindows(_ctx?: AdapterQuotaContext): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
   let rpcErrorFamily: CodexAuthRefreshFailureClass | null = null;
 

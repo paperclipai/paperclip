@@ -362,6 +362,20 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+/** Optional context for getQuotaWindows(). */
+export interface AdapterQuotaContext {
+  /**
+   * Optional execution target the adapter should probe for quota.
+   *
+   * If omitted (or `null`), the adapter probes the Paperclip host, the same as
+   * before this argument existed. A remote (SSH/sandbox) target tells the
+   * adapter to probe quota inside that environment so the result reflects what
+   * an agent run would see there. This context object mirrors the
+   * `AdapterEnvironmentTestContext` shape so later fields can extend it.
+   */
+  executionTarget?: AdapterExecutionTarget | null;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
 // ---------------------------------------------------------------------------
@@ -450,8 +464,11 @@ export interface ServerAdapterModule {
    * Optional: fetch live provider quota/rate-limit windows for this adapter.
    * Returns a ProviderQuotaResult so the server can aggregate across adapters
    * without knowing provider-specific credential paths or API shapes.
+   *
+   * The optional context carries an execution target. An absent context (or a
+   * `null` executionTarget) probes the Paperclip host.
    */
-  getQuotaWindows?: () => Promise<ProviderQuotaResult>;
+  getQuotaWindows?: (ctx?: AdapterQuotaContext) => Promise<ProviderQuotaResult>;
   /**
    * Optional: detect the currently configured model from local config files.
    * Returns the detected model/provider and the config source, or null if
