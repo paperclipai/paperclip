@@ -3661,7 +3661,7 @@ export function issueRoutes(
     // not contend with the assignee's content edits, and refusing it while the
     // target is in_progress would defeat the grant in its primary case.
     if (blockerEdge && isIssueBlockerEdgeGrantDecision(boundaryDecision)) {
-      return true;
+      return { admittedByBlockerEdgeGrant: true };
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -7897,7 +7897,17 @@ export function issueRoutes(
         priorRelationsForBlockerEdge.blockedBy.map((relation) => relation.id),
       )
       : null;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing, blockerEdgeScope))) return;
+    const mutationAllowed = await assertAgentIssueMutationAllowed(req, res, existing, blockerEdgeScope);
+    if (!mutationAllowed) return;
+    // A grant-admitted blocker write is authorized against the snapshot read
+    // above, outside the write transaction. Carry that snapshot down as a
+    // precondition so the whole-set replacement refuses rather than silently
+    // clobbering an edge that landed in between — the removal guard is only
+    // meaningful if the set it was computed against is still the set on the row.
+    const expectedCurrentBlockerIssueIds =
+      mutationAllowed !== true && mutationAllowed.admittedByBlockerEdgeGrant && priorRelationsForBlockerEdge
+        ? priorRelationsForBlockerEdge.blockedBy.map((relation) => relation.id)
+        : null;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -8286,6 +8296,7 @@ export function issueRoutes(
     const postCommitActivityPublications: ActivityPublication[] = [];
     const issueUpdateData = {
       ...updateFields,
+      ...(expectedCurrentBlockerIssueIds ? { expectedCurrentBlockerIssueIds } : {}),
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     };

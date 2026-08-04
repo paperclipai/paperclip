@@ -4664,28 +4664,59 @@ export function issueService(db: Db) {
     blockedByIssueIds: string[],
     actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: any = db,
+    // Optimistic-concurrency precondition. When supplied, the blocker set read
+    // by the caller's authorization check must still be the set on the row at
+    // write time. This write is a whole-set replacement, so without the check a
+    // caller authorized against a stale snapshot can delete an edge that landed
+    // in between — including one the caller was never allowed to remove.
+    expectedCurrentBlockerIssueIds?: string[] | null,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
     if (deduped.some((candidate) => candidate === issueId)) {
       throw unprocessable("Issue cannot be blocked by itself");
     }
 
-    if (deduped.length > 0) {
-      const lockedIssueIds = [issueId, ...deduped].sort();
+    if (deduped.length > 0 || expectedCurrentBlockerIssueIds) {
+      const lockedIssueIds = [...new Set([issueId, ...deduped])].sort();
       await dbOrTx.execute(
         sql`SELECT ${issues.id} FROM ${issues}
             WHERE ${and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds))}
             ORDER BY ${issues.id}
             FOR UPDATE`,
       );
-      const relatedIssues = await dbOrTx
-        .select({ id: issues.id })
-        .from(issues)
-        .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
-      if (relatedIssues.length !== deduped.length) {
-        throw unprocessable("Blocked-by issues must belong to the same company");
+      if (expectedCurrentBlockerIssueIds) {
+        // Read under the lock taken above, so this reflects the set the
+        // replacement below is about to overwrite.
+        const currentRows = await dbOrTx
+          .select({ blockerIssueId: issueRelations.issueId })
+          .from(issueRelations)
+          .where(and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.relatedIssueId, issueId),
+            eq(issueRelations.type, "blocks"),
+          ));
+        const observed: string[] = [
+          ...new Set(currentRows.map((row: { blockerIssueId: string }) => row.blockerIssueId)),
+        ].sort() as string[];
+        const expected = [...new Set(expectedCurrentBlockerIssueIds)].sort();
+        if (observed.length !== expected.length || observed.some((id: string, index: number) => id !== expected[index])) {
+          throw conflict("Blocked-by issues changed since this request was authorized", {
+            code: "blocked_by_precondition_failed",
+            issueId,
+          });
+        }
       }
-      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+
+      if (deduped.length > 0) {
+        const relatedIssues = await dbOrTx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
+        if (relatedIssues.length !== deduped.length) {
+          throw unprocessable("Blocked-by issues must belong to the same company");
+        }
+        await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
+      }
     }
 
     await dbOrTx
@@ -7099,6 +7130,7 @@ export function issueService(db: Db) {
       data: Partial<typeof issues.$inferInsert> & {
         labelIds?: string[];
         blockedByIssueIds?: string[];
+        expectedCurrentBlockerIssueIds?: string[] | null;
         actorAgentId?: string | null;
         actorUserId?: string | null;
       },
@@ -7117,6 +7149,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        expectedCurrentBlockerIssueIds,
         actorAgentId,
         actorUserId,
         ...issueData
@@ -7365,6 +7398,7 @@ export function issueService(db: Db) {
               userId: actorUserId ?? null,
             },
             tx,
+            expectedCurrentBlockerIssueIds ?? null,
           );
         }
         if (
