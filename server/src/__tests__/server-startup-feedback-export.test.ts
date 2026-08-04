@@ -29,6 +29,7 @@ const {
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
+  sweepConnectionHealthMock,
   routineServiceMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
@@ -91,6 +92,12 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const sweepConnectionHealthMock = vi.fn(async () => ({
+    checked: 0,
+    healthy: 0,
+    needsAttention: 0,
+    failed: 0,
+  }));
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -123,6 +130,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    sweepConnectionHealthMock,
   };
 });
 
@@ -279,12 +287,7 @@ vi.mock("../services/index.js", () => ({
   routineService: routineServiceFactoryMock,
   statusCardService: vi.fn(() => ({})),
   toolAccessService: vi.fn(() => ({
-    sweepConnectionHealth: vi.fn(async () => ({
-      checked: 0,
-      healthy: 0,
-      needsAttention: 0,
-      failed: 0,
-    })),
+    sweepConnectionHealth: sweepConnectionHealthMock,
   })),
 }));
 
@@ -434,6 +437,32 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("waits for bundled plugin startup before the initial tool health sweep", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let releasePlugins!: () => void;
+    const bundledPluginsStartup = new Promise<void>((resolve) => {
+      releasePlugins = resolve;
+    });
+    const app = Object.assign((_: unknown, __: unknown) => {}, {
+      locals: { bundledPluginsStartup },
+    });
+    createAppMock.mockResolvedValueOnce(app as never);
+
+    const started = startServer();
+    await vi.waitFor(() => expect(createAppMock).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sweepConnectionHealthMock).not.toHaveBeenCalled();
+
+    releasePlugins();
+    await started;
+    expect(sweepConnectionHealthMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {

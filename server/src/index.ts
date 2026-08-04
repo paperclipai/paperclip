@@ -759,6 +759,8 @@ export async function startServer(): Promise<StartedServer> {
     decisionServiceOptions,
     managedPluginAutoInstall,
   });
+  const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
+    .locals?.bundledPluginsStartup;
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
@@ -886,8 +888,6 @@ export async function startServer(): Promise<StartedServer> {
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
   try {
-    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
-      .locals?.bundledPluginsStartup;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       pluginsReady: bundledPluginsStartup,
       workerManager: pluginWorkerManager,
@@ -1074,6 +1074,7 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
     }
 
+    await bundledPluginsStartup;
     const toolHealthSweep = await tools.sweepConnectionHealth();
     if (toolHealthSweep.failed > 0) {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
