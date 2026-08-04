@@ -51,7 +51,7 @@ MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"
 
 # --- Lokales Rendern ---
-ALLOWED_MODELS = {"qwen", "qwen360", "openai"}
+ALLOWED_MODELS = {"qwen", "qwen360", "qwenedit", "openai"}
 DEFAULT_MODEL = "qwen"
 
 # Lokales Modell -> Workflow-Vorlage in workflows/<name>.api.json. Der Name
@@ -60,7 +60,14 @@ DEFAULT_MODEL = "qwen"
 LOCAL_WORKFLOWS = {
     "qwen": "qwen-image",
     "qwen360": "qwen-360",
+    "qwenedit": "qwen-edit",
 }
+
+# Modelle, die ein oder mehrere Quellbilder brauchen. Ohne Anhang ist der
+# Auftrag nicht ausfuehrbar -- das ist kein Standardfall, sondern ein Abbruch.
+EDIT_MODELS = {"qwenedit"}
+MAX_SOURCE_IMAGES = 3
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
 
 ALLOWED_FORMATS = {"1024x1024", "1024x1536", "1536x1024", "1344x768", "768x1344"}
 DEFAULT_FORMAT = "1024x1024"
@@ -85,7 +92,7 @@ JOB_TIMEOUT_SEC = 300       # gemessen auf dem Headless-Knoten: 14,1 s warm, 35 
 # Modelle, die laenger brauchen als der Standarddeckel. 360 laeuft mit 20
 # Schritten auf 2048x1024 (~11 s je Schritt gemessen) und wuerde von den 300 s
 # mitten im Lauf abgeraeumt und sinnlos neu eingereiht.
-MODEL_JOB_TIMEOUT_SEC = {"qwen360": 900}
+MODEL_JOB_TIMEOUT_SEC = {"qwen360": 900, "qwenedit": 600}
 
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
 

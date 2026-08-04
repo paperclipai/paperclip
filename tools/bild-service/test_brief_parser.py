@@ -145,3 +145,32 @@ def test_unknown_model_falls_back_to_default_with_default_format():
     b = parse_brief("prompt: x\nmodell: gibtsnicht")
     assert b["modell"] == "qwen"
     assert b["size"] == "1024x1024"
+
+
+def test_qwenedit_wird_angenommen():
+    b = parse_brief("prompt: entferne die Person\nmodell: qwenedit")
+    assert b["error"] is None
+    assert b["modell"] == "qwenedit"
+
+
+def test_qwenedit_ignoriert_format_und_meldet_es():
+    """Die Ausgabegroesse folgt dem Quellbild -- ein angegebenes format waere
+    eine stille Luege, deshalb wird es sichtbar verworfen."""
+    b = parse_brief("prompt: x\nmodell: qwenedit\nformat: 1536x1024")
+    assert b["format_ignored"] is True
+
+
+def test_ohne_format_kein_hinweis():
+    b = parse_brief("prompt: x\nmodell: qwenedit")
+    assert b["format_ignored"] is False
+
+
+def test_format_bei_normalem_modell_gilt_weiter():
+    b = parse_brief("prompt: x\nmodell: qwen\nformat: 1536x1024")
+    assert b["format_ignored"] is False
+    assert b["size"] == "1536x1024"
+
+
+def test_tippfehler_im_modell_faellt_weiter_auf_qwen():
+    b = parse_brief("prompt: x\nmodell: qwenedti")
+    assert b["modell"] == "qwen"
