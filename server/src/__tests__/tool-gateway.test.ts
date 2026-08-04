@@ -1331,7 +1331,7 @@ rl.on("line", (line) => {
         result: {
           data: {
             structuredContent: {
-              databaseUrl: null,
+              databaseUrl: "***REDACTED***",
               allowedToken: "***REDACTED***",
               extraConfig: null,
               nodeOptions: null,
