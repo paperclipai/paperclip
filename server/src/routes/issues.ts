@@ -8073,6 +8073,17 @@ export function issueRoutes(
       // cannot be retried once the issue has left `in_review`, which would
       // permanently strand the resume signal. This mirrors the issue-update
       // wake dispatch, and the issue lands durably in `todo`/`done` regardless.
+      //
+      // Reviewed and accepted as best-effort rather than transactional (PAP-16101):
+      // `enqueueWakeup` writes a durable `agent_wakeup_requests` row, so the wake
+      // is scheduler-driven the moment that insert lands, and the catch below only
+      // covers a transient insert failure. In that narrow window the issue is in
+      // `todo` *still assigned* — an active status the normal liveness sweep picks
+      // up — so the worst case is a delayed resume, not the invisible
+      // `in_review`-with-zero-paths zombie this contract exists to kill. Making
+      // only this path transactional would also diverge from every other route's
+      // post-commit dispatch. `wakeQueued` is returned so callers can see the
+      // difference.
       if (result.comment) {
         try {
           await issueReferencesSvc.syncComment(result.comment.id);
