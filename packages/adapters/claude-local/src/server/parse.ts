@@ -11,12 +11,33 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
-const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+// Subscription usage-window wording emitted by the Claude CLI. The CLI phrases
+// the same condition several ways depending on which window was hit — "You've
+// hit your session limit", "You've hit your weekly limit", "5-hour limit
+// reached" — so match the shared shape rather than enumerating one window at a
+// time (an unlisted window silently degrades to a generic transient retry).
+const CLAUDE_USAGE_LIMIT_WORDING = [
+  "you(?:'|’)ve\\s+hit\\s+your\\s+[^\\n.·]{0,40}?\\blimit\\b",
+  "(?:session|weekly|5[-\\s]?hour|seven[-\\s]?day)\\s+limit\\b",
+  "usage\\s+limit\\s+(?:reached|exceeded)",
+  "usage\\s+cap\\s+reached",
+  "claude\\s+usage\\s+limit\\s+reached",
+  "out\\s+of\\s+extra\\s+usage",
+  "extra\\s+usage\\b",
+  "servicequotaexceededexception",
+].join("|");
+const CLAUDE_PROVIDER_QUOTA_RE = new RegExp(`(?:${CLAUDE_USAGE_LIMIT_WORDING})`, "i");
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
-const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_EXTRA_USAGE_RESET_RE = new RegExp(
+  // The haystack includes raw stream-json lines, where the prose is embedded in a
+  // JSON string — so `"` and `,` terminate the hint just as `.` and a newline do.
+  `(?:${CLAUDE_USAGE_LIMIT_WORDING})[\\s\\S]{0,120}?\\bresets?\\s+(?:at\\s+)?([^\\n()]+?)(?:\\s*\\(([^)]+)\\))?(?:[.!,"]|\\n|$)`,
+  "i",
+);
+// A reset further out than this is almost certainly a misparse; fall back to the
+// caller's normal backoff rather than parking a run for months.
+const MAX_CLAUDE_RATE_LIMIT_RESET_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -445,6 +466,68 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
   return retryAt;
 }
 
+function epochSecondsToDate(value: unknown): Date | null {
+  const seconds =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+      ? Number.parseFloat(value)
+      : Number.NaN;
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export interface ClaudeRateLimitRejection {
+  resetsAt: Date | null;
+  rateLimitType: string | null;
+}
+
+/**
+ * Read the Claude CLI's structured usage-window rejection off the stream-json
+ * stdout:
+ *
+ *   {"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+ *     "resetsAt":1785866400,"rateLimitType":"seven_day",...}}
+ *
+ * This is the only authoritative reset time available. The human-facing prose
+ * ("You've hit your weekly limit · resets 7pm (Europe/London)") carries a wall
+ * clock with no date, so a multi-day window parses to *tonight* — which is why a
+ * weekly limit used to be retried every few minutes for days. `resetsAt` is
+ * epoch seconds and is exact.
+ *
+ * Only `status: "rejected"` counts: the CLI also emits `allowed` events during
+ * healthy runs.
+ */
+export function readClaudeRateLimitRejection(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+}): ClaudeRateLimitRejection | null {
+  let latest: ClaudeRateLimitRejection | null = null;
+
+  for (const source of [input.stdout ?? "", input.stderr ?? ""]) {
+    if (!source.includes("rate_limit_event")) continue;
+    for (const rawLine of source.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line.startsWith("{") || !line.includes("rate_limit_event")) continue;
+      const event = parseJson(line);
+      if (!event || asString(event.type, "") !== "rate_limit_event") continue;
+
+      const info = parseObject(event.rate_limit_info);
+      if (asString(info.status, "").trim().toLowerCase() !== "rejected") continue;
+
+      // Keep the last rejection in the stream: a run can be refused more than
+      // once and the newest event carries the freshest reset time.
+      latest = {
+        resetsAt: epochSecondsToDate(info.resetsAt ?? info.resets_at),
+        rateLimitType: asString(info.rateLimitType ?? info.rate_limit_type, "").trim() || null,
+      };
+    }
+  }
+
+  return latest;
+}
+
 export function extractClaudeRetryNotBefore(
   input: {
     parsed?: Record<string, unknown> | null;
@@ -454,6 +537,16 @@ export function extractClaudeRetryNotBefore(
   },
   now = new Date(),
 ): Date | null {
+  // Structured event first — it is the only source that survives a multi-day
+  // window (see readClaudeRateLimitRejection).
+  const structuredResetsAt = readClaudeRateLimitRejection(input)?.resetsAt ?? null;
+  if (structuredResetsAt) {
+    const deltaMs = structuredResetsAt.getTime() - now.getTime();
+    if (deltaMs > 0 && deltaMs <= MAX_CLAUDE_RATE_LIMIT_RESET_HORIZON_MS) {
+      return structuredResetsAt;
+    }
+  }
+
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
@@ -500,6 +593,11 @@ export function isClaudeProviderQuotaError(input: {
     stderr: input.stderr ?? "",
   });
   if (loginMeta.requiresLogin) return false;
+
+  // A structured rejection is unambiguous — the CLI told us the account-level
+  // window is refused. Trust it before falling back to prose matching, which
+  // cannot cover every wording the CLI may adopt.
+  if (readClaudeRateLimitRejection(input)) return true;
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;

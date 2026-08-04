@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -428,11 +429,13 @@ export async function testEnvironment(
           (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
           detail ||
           "";
-        const transient = isClaudeTransientUpstreamError({
-          parsed,
-          stdout: probe.stdout,
-          stderr: probe.stderr,
-        });
+        // A usage-limit refusal is a wait-and-retry condition for the operator
+        // exactly like an overload, so it belongs in the same warning bucket.
+        // isClaudeTransientUpstreamError deliberately yields to the quota
+        // classifier, so check both or quota reads as a hard probe failure.
+        const probeInput = { parsed, stdout: probe.stdout, stderr: probe.stderr };
+        const transient =
+          isClaudeTransientUpstreamError(probeInput) || isClaudeProviderQuotaError(probeInput);
         checks.push(
           transient
             ? {
