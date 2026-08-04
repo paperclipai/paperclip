@@ -26,6 +26,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
+  buildAcpxRunSummary,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -572,6 +573,7 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("streamed hello");
     expect(logs).toContainEqual({
       stream: "stdout",
       text: `${JSON.stringify({
@@ -581,6 +583,193 @@ describe("shared ACPX engine runtime behavior", () => {
         tag: "agent_message_chunk",
       })}\n`,
     });
+  });
+
+  it("summarizes only the final output segment after tools, excluding thought stream", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Let me get oriented and inspect the PRs…",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "hidden chain of thought",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (pending)",
+              title: "Bash",
+              status: "pending",
+              toolCallId: "tool-1",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (completed)",
+              title: "Bash",
+              status: "completed",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "text_delta",
+              text: "## Update\n\n- Checked PR status\n- Continue burn-in",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-summary-last-segment",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    // Must not include intermediate narration or thought stream.
+    expect(result.summary).toBe("## Update\n\n- Checked PR status\n- Continue burn-in");
+    expect(result.summary).not.toContain("Let me get oriented");
+    expect(result.summary).not.toContain("hidden chain of thought");
+  });
+
+  it("buildAcpxRunSummary prefers the last non-empty segment", () => {
+    expect(
+      buildAcpxRunSummary({
+        outputSegments: ["first plan", "second plan", "  final update  "],
+        fallback: "end_turn",
+      }),
+    ).toBe("final update");
+    expect(buildAcpxRunSummary({ outputSegments: ["", "  "], fallback: "end_turn" })).toBe("end_turn");
+  });
+
+  it("coalesces streamed tool-call argument updates that carry only the placeholder title", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            // Initial announcement with a real tool name.
+            yield {
+              type: "tool_call",
+              text: "Bash (pending)",
+              title: "Bash",
+              status: "pending",
+              toolCallId: "tool-1",
+              tag: "tool_call",
+            };
+            // Token-by-token argument streaming: unresolved placeholder title.
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "tool_call",
+              text: 'tool call (in_progress): {"command":"ls',
+              title: "tool call",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            // Resolved descriptive title arrives while still in progress.
+            yield {
+              type: "tool_call",
+              text: "Running: ls apps (in_progress)",
+              title: "Running: ls apps",
+              status: "in_progress",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            // Terminal update, placeholder title but real result content.
+            yield {
+              type: "tool_call",
+              text: "tool call (completed): apps\\npackage.json",
+              title: "tool call",
+              status: "completed",
+              toolCallId: "tool-1",
+              tag: "tool_call_update",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-tool-call-coalesce",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const toolCallEvents = logs
+      .map((entry) => {
+        try {
+          return JSON.parse(entry.text) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((parsed): parsed is Record<string, unknown> => parsed?.type === "acpx.tool_call");
+
+    // The two placeholder-title in-progress updates are dropped; the pending
+    // announcement, the resolved-title in-progress update, and the terminal
+    // completed update all survive.
+    expect(toolCallEvents).toHaveLength(3);
+    expect(toolCallEvents.map((event) => [event.name, event.status])).toEqual([
+      ["Bash", "pending"],
+      ["Running: ls apps", "in_progress"],
+      ["Bash", "completed"],
+    ]);
+    expect(
+      toolCallEvents.some(
+        (event) => event.status === "in_progress" && event.name === "tool call",
+      ),
+    ).toBe(false);
   });
 
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {

@@ -9,6 +9,7 @@ export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",
   codex_local: "codex",
   gemini_local: "gemini",
+  kimi_local: "kimi",
   custom_acp: "custom",
 } as const;
 

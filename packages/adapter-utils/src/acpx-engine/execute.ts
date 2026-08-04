@@ -567,6 +567,11 @@ async function resolveBuiltInAgentCommand(input: {
   if (agent === "gemini") {
     return { command: "gemini --acp", shellCommand: "gemini --acp" };
   }
+  if (agent === "kimi") {
+    // Kimi Code exposes its ACP server via the `kimi acp` subcommand (stdio),
+    // rather than a flag (gemini) or a dedicated bin (claude/codex).
+    return { command: "kimi acp", shellCommand: "kimi acp" };
+  }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
   if (executionTargetIsRemote) {
@@ -2321,7 +2326,9 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
 // acpx substitutes a literal "tool call" title when an ACP tool_call_update
 // omits one, which would persist a generic name over the real one ("Terminal",
 // "Read", …) in the stored run log. Remember each call's real title so update
-// lines keep the name durably.
+// lines keep the name durably. Some ACP backends (Kimi) also stream partial
+// tool arguments as one in-progress update per token under this placeholder;
+// those updates are coalesced until a real title is available.
 const GENERIC_ACP_TOOL_TITLE = "tool call";
 
 async function emitRuntimeEvent(
@@ -2339,6 +2346,18 @@ async function emitRuntimeEvent(
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming: skip in-progress updates that
+    // still carry only the unresolved placeholder title. Backends that stream
+    // tool arguments (Kimi) otherwise emit tens of thousands of these per run,
+    // flooding the transcript and pinning the live activity indicator to a
+    // generic "tool call" instead of the real tool. The initial pending event,
+    // the resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Backends that do
+    // not stream in-progress updates (Claude, Gemini) are unaffected.
+    const isPlaceholderTitle = (event.title ?? "").trim() === GENERIC_ACP_TOOL_TITLE;
+    if (event.status === "in_progress" && isPlaceholderTitle) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     let name = event.title ?? "acp_tool";
@@ -2392,6 +2411,26 @@ async function emitRuntimeEvent(
       retryable: event.retryable,
     });
   }
+}
+
+/**
+ * Build the short run summary that Paperclip may auto-post as an issue comment
+ * when the agent leaves no comment of its own.
+ *
+ * Prefer the last non-empty *output* segment after a tool call. Intermediate
+ * "let me check…" narration between tools must not become a 50k-char dump.
+ * Thought-stream text is never included (callers must not push it into segments).
+ */
+export function buildAcpxRunSummary(input: {
+  outputSegments: string[];
+  fallback?: string | null;
+}): string {
+  for (let i = input.outputSegments.length - 1; i >= 0; i -= 1) {
+    const text = (input.outputSegments[i] ?? "").trim();
+    if (text) return text;
+  }
+  const fallback = (input.fallback ?? "").trim();
+  return fallback;
 }
 
 function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
@@ -3338,7 +3377,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let controller: AbortController | null = null;
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
-    const textParts: string[] = [];
+    // Output text only (never thought stream). Segment boundaries are tool starts
+    // so multi-step narration is not glued into one auto-comment dump.
+    const outputSegments: string[] = [];
+    let currentOutputChunk: string[] = [];
+    const flushOutputSegment = () => {
+      if (currentOutputChunk.length === 0) return;
+      outputSegments.push(currentOutputChunk.join(""));
+      currentOutputChunk = [];
+    };
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     try {
@@ -3367,13 +3414,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const toolTitles = new Map<string, string>();
       for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
+        if (event.type === "text_delta") {
+          // Thought stream stays in the live transcript via emitRuntimeEvent, but
+          // must not enter the run summary that Paperclip may auto-post as a comment.
+          if (event.stream !== "thought") {
+            currentOutputChunk.push(event.text);
+          }
+        } else if (event.type === "tool_call" && event.status === "pending") {
+          // New tool invocation ends the prior assistant narration segment.
+          flushOutputSegment();
+        }
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
         }
         await emitRuntimeEvent(ctx, event, toolTitles);
       }
+      flushOutputSegment();
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       // Read usage before the close/warm-handle paths below can discard state.
@@ -3495,7 +3552,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
             : {}),
         },
-        summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+        summary: buildAcpxRunSummary({
+          outputSegments,
+          fallback: terminalStopReason || terminal.status,
+        }),
         clearSession,
       };
     } catch (err) {
