@@ -14054,6 +14054,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await markQueuedRunDeferredByGate(run, runGateBlock, now);
         continue;
       }
+      // The reaper can observe a newly available global/adaptor slot before the
+      // periodic queue pump's next pass.  A row that was correctly deferred by
+      // that cap must be given one admission attempt before it is labelled
+      // orphaned; otherwise the reaper races the pump and manufactures a
+      // "no claim while idle" cancellation at the exact instant it can run.
+      const dispatched = await startNextQueuedRunForAgent(run.agentId, { maxClaims: 1 });
+      if (dispatched.length > 0) continue;
+
+      // Another admission path may have claimed or terminalized this candidate
+      // while the per-agent start lock was held. Reap only a row that remains
+      // queued after the dispatch attempt.
+      const current = await getRun(run.id);
+      if (!current || current.status !== "queued") continue;
       // If the agent has a RUNNING run, its queue is draining normally behind it.
       const running = await db
         .select({ id: heartbeatRuns.id })

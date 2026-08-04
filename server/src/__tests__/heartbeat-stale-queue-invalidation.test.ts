@@ -1210,6 +1210,43 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(issue?.status).toBe("todo");
   });
 
+  it("gives an aged queued run a fresh admission attempt before reaping it", async () => {
+    const now = new Date("2026-06-11T09:30:00.000Z");
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Previously capacity-deferred queued work",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_assigned" });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(now.getTime() - 20 * 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapStaleQueuedRuns({ staleMs: 15 * 60_000, now });
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const [run] = await db
+      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(result.reaped).toBe(0);
+    expect(run).toMatchObject({ status: "succeeded", error: null });
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
   it("does not reap stale queued runs while the agent is in an active provider quota cooldown", async () => {
     const now = new Date("2026-06-11T09:30:00.000Z");
     const { companyId, agentId } = await seedCompanyAndAgent();
