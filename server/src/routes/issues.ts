@@ -100,6 +100,10 @@ import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+// Imported directly rather than through the services barrel: it is a pure
+// lookup with no database dependency, and route tests that mock the barrel
+// wholesale should not have to stub it.
+import { creatorHandoffActivitySource } from "../services/issue-thread-interactions.js";
 import {
   accessService,
   agentService,
@@ -1889,6 +1893,51 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
   const now = args.at ?? new Date();
   const bucket = Math.floor(now.getTime() / REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS);
   return `request_item_verdicts:${args.issueId}:${args.interactionId}:${bucket}`;
+}
+
+/**
+ * `issue.updated` activity source for the creator-agent handoff a resolved
+ * interaction can trigger. Keyed by kind so the audit trail names the resolution
+ * that moved the issue; `request_checkbox_confirmation` deliberately keeps the
+ * long-standing `request_confirmation_accept` source.
+ */
+async function logInteractionCreatorHandoff(db: Db, input: {
+  issue: {
+    id: string;
+    companyId: string;
+    identifier?: string | null;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
+  continuationIssue: { status: string; assigneeAgentId?: string | null; assigneeUserId?: string | null };
+  interaction: { id: string; kind: string; status: string };
+  actor: ReturnType<typeof getActorInfo>;
+}) {
+  await logActivity(db, {
+    companyId: input.issue.companyId,
+    actorType: input.actor.actorType,
+    actorId: input.actor.actorId,
+    agentId: input.actor.agentId,
+    runId: input.actor.runId,
+    agentApiKeyId: input.actor.agentApiKeyId,
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: input.issue.id,
+    details: {
+      identifier: input.issue.identifier ?? null,
+      status: input.continuationIssue.status,
+      assigneeAgentId: input.continuationIssue.assigneeAgentId ?? null,
+      assigneeUserId: input.continuationIssue.assigneeUserId ?? null,
+      source: creatorHandoffActivitySource(input.interaction.kind, input.interaction.status),
+      interactionId: input.interaction.id,
+      _previous: {
+        status: input.issue.status,
+        assigneeAgentId: input.issue.assigneeAgentId ?? null,
+        assigneeUserId: input.issue.assigneeUserId ?? null,
+      },
+    },
+  });
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -9537,30 +9586,7 @@ export function issueRoutes(
       });
 
       if (continuationIssue) {
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.updated",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            status: continuationIssue.status,
-            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
-            assigneeUserId: continuationIssue.assigneeUserId ?? null,
-            source: "request_confirmation_accept",
-            interactionId: interaction.id,
-            _previous: {
-              status: issue.status,
-              assigneeAgentId: issue.assigneeAgentId ?? null,
-              assigneeUserId: issue.assigneeUserId ?? null,
-            },
-          },
-        });
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
       }
 
       for (const createdIssue of createdIssues) {
@@ -9609,10 +9635,15 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const { interaction, continuationIssue } = await issueThreadInteractionService(db).rejectInteraction(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9639,9 +9670,16 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
-        issue,
+        // A decline hands a user-assigned issue back to the asking agent too — it
+        // has to revise the proposal — so the wake targets the post-handoff
+        // assignee rather than the stale pre-resolution row.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.reject",
@@ -9663,10 +9701,15 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const { interaction, continuationIssue } = await issueThreadInteractionService(db).answerQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9689,9 +9732,16 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
-        issue,
+        // Answering hands a user-assigned issue back to the asking agent, so the
+        // wake has to target the post-handoff assignee rather than the stale
+        // pre-resolution row.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.respond",
@@ -9829,10 +9879,15 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const { interaction, continuationIssue } = await issueThreadInteractionService(db).cancelQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9855,9 +9910,15 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
-        issue,
+        // Cancelling the questions still ends the agent's wait, so the wake has to
+        // follow the issue to the agent it was just handed back to.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.cancel",
