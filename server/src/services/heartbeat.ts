@@ -12384,7 +12384,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .select({ status: companies.status })
         .from(companies)
         .where(eq(companies.id, run.companyId))
-        .for("update")
+        .for("share")
         .then((rows) => rows[0] ?? null);
       if (company?.status !== "active") return null;
 
@@ -17106,7 +17106,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .select({ status: companies.status })
         .from(companies)
         .where(eq(companies.id, agent.companyId))
-        .for("update")
+        .for("share")
         .then((rows) => rows[0] ?? null);
       if (lockedCompany?.status === "active") return true;
       if (opts.requestedByActorType === "user") {
