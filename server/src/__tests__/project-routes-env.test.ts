@@ -21,6 +21,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({ cancelRun: vi.fn() }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ vi.mock("../telemetry.js", () => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   environmentService: () => mockEnvironmentService,
+  heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
@@ -50,6 +52,7 @@ vi.mock("../services/secrets.js", () => ({
 
 vi.mock("../services/workspace-runtime.js", () => ({
   startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForExecutionWorkspace: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
@@ -66,6 +69,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     environmentService: () => mockEnvironmentService,
+    heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
@@ -82,6 +86,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/workspace-runtime.js", () => ({
     startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
 }
