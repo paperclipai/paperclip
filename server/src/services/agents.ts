@@ -709,21 +709,68 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
-          status: "terminated",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
+      await db.transaction(async (tx) => {
+        const now = new Date();
+        const manager = existing.reportsTo
+          ? await tx
+            .select({ id: agents.id, status: agents.status })
+            .from(agents)
+            .where(and(eq(agents.id, existing.reportsTo), eq(agents.companyId, existing.companyId)))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        const replacementAssigneeId = manager && manager.status !== "terminated" ? manager.id : null;
+        const releasableIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.assigneeAgentId, id),
+              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+            ),
+          );
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({
+            status: "terminated",
+            pauseReason: null,
+            pausedAt: null,
+            errorReason: null,
+            updatedAt: now,
+          })
+          .where(eq(agents.id, id));
+        await tx
+          .update(agents)
+          .set({ reportsTo: replacementAssigneeId, updatedAt: now })
+          .where(eq(agents.reportsTo, id));
+        await tx
+          .update(issues)
+          .set({ assigneeAgentId: replacementAssigneeId, updatedAt: now })
+          .where(
+            and(
+              eq(issues.assigneeAgentId, id),
+              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+            ),
+          );
+        if (releasableIssues.length > 0) {
+          await tx.insert(issueComments).values(
+            releasableIssues.map((issue) => ({
+              companyId: existing.companyId,
+              issueId: issue.id,
+              authorType: "system" as const,
+              body: replacementAssigneeId
+                ? "System: assignment released because the prior agent was terminated; reassigned to its manager."
+                : "System: assignment released because the prior agent was terminated; moved to the unassigned queue.",
+              createdAt: now,
+              updatedAt: now,
+            })),
+          );
+        }
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: now })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
