@@ -13,11 +13,13 @@ const NOW = new Date("2026-07-12T18:14:00.000Z");
 function runSample(input: {
   id: string;
   status?: string;
+  errorCode?: string;
   finishedSecondsAgo: number;
 }) {
   return {
     id: input.id,
     status: input.status ?? "succeeded",
+    errorCode: input.errorCode ?? null,
     finishedAt: new Date(NOW.getTime() - input.finishedSecondsAgo * 1000),
   };
 }
@@ -178,6 +180,127 @@ describe("evaluateIssueRewakeThrottle", () => {
       ],
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: true,
+    });
+    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  // The dequeue-time staleness filter is what cancels these wakes,
+  // so if its verdicts broke the streak the throttle could never damp the loop
+  // it is supposed to damp.
+  it("counts dequeue-time staleness verdicts as no-progress", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({
+          id: "r2",
+          status: "cancelled",
+          errorCode: "issue_continuation_waiting_on_review",
+          finishedSecondsAgo: 13,
+        }),
+        runSample({
+          id: "r1",
+          status: "cancelled",
+          errorCode: "issue_continuation_waiting_on_review",
+          finishedSecondsAgo: 26,
+        }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(2);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
+    }
+  });
+
+  it("escalates a staleness-verdict spin loop to the cooldown ceiling", () => {
+    // Replays the observed 13s-median inter-arrival storm: a full sample of
+    // staleness cancels must reach the 30-minute cap, not stay at 13 seconds.
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: Array.from({ length: 8 }, (_unused, index) =>
+        runSample({
+          id: `stale-${index}`,
+          status: "cancelled",
+          errorCode: "issue_continuation_waiting_on_review",
+          finishedSecondsAgo: 13 * (index + 1),
+        }),
+      ),
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(8);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_MAX_COOLDOWN_MS);
+    }
+  });
+
+  it("counts every staleness verdict code, and mixes them with no-progress successes", () => {
+    for (const errorCode of [
+      "issue_not_found",
+      "issue_assignee_changed",
+      "issue_terminal_status",
+      "issue_not_in_progress",
+      "issue_execution_lock_changed",
+      "issue_review_participant_changed",
+      "issue_continuation_waiting_on_review",
+    ]) {
+      const decision = evaluateIssueRewakeThrottle({
+        now: NOW,
+        recentTerminalRuns: [
+          runSample({ id: "r2", status: "cancelled", errorCode, finishedSecondsAgo: 10 }),
+          runSample({ id: "r1", finishedSecondsAgo: 40 }),
+        ],
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: false,
+      });
+      expect(decision.blocked, errorCode).toBe(true);
+      expect(decision.noProgressStreak).toBe(2);
+    }
+  });
+
+  it("still recovers immediately after a crash-shaped cancel", () => {
+    for (const errorCode of ["process_lost", "provider_quota_exhausted", null]) {
+      const decision = evaluateIssueRewakeThrottle({
+        now: NOW,
+        recentTerminalRuns: [
+          runSample({
+            id: "r3",
+            status: "cancelled",
+            ...(errorCode === null ? {} : { errorCode }),
+            finishedSecondsAgo: 10,
+          }),
+          runSample({
+            id: "r2",
+            status: "cancelled",
+            errorCode: "issue_continuation_waiting_on_review",
+            finishedSecondsAgo: 40,
+          }),
+          runSample({ id: "r1", finishedSecondsAgo: 70 }),
+        ],
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: false,
+      });
+      expect(decision, String(errorCode)).toEqual({ blocked: false, noProgressStreak: 0 });
+    }
+  });
+
+  it("does not count a staleness verdict that never recorded a finish time", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        {
+          id: "r2",
+          status: "cancelled",
+          errorCode: "issue_terminal_status",
+          finishedAt: null,
+        },
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
   });

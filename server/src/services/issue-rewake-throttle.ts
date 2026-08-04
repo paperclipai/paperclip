@@ -95,6 +95,33 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "issue.blockers_resolved_wake_emitted",
 ];
 
+/**
+ * Error codes emitted by the dequeue-time staleness filter
+ * (`evaluateQueuedRunStaleness`). Each is a deterministic "this wake was
+ * invalid" verdict reached *before* the adapter session starts: the run is
+ * cancelled with no process, no tokens, and no issue-visible effect, and
+ * re-waking produces the identical verdict until some external state changes.
+ *
+ * These cancels therefore count as no-progress for the streak. Without that,
+ * the throttle is structurally blind to its own mitigation's output: every
+ * throttled-shaped wake is cancelled here, the cancel breaks the streak, the
+ * streak resets to zero, and the next wake passes — a spin loop bounded only
+ * by how fast the producer re-enqueues (measured: 358 wakes in 76
+ * minutes, 13s median inter-arrival, on `issue_continuation_waiting_on_review`).
+ *
+ * Crash-shaped cancels (`process_lost`, interrupts, failures) stay outside
+ * this set: their follow-up is recovery, which must not be delayed.
+ */
+export const STALE_WAKE_VERDICT_ERROR_CODES: ReadonlySet<string> = new Set([
+  "issue_not_found",
+  "issue_assignee_changed",
+  "issue_terminal_status",
+  "issue_not_in_progress",
+  "issue_execution_lock_changed",
+  "issue_review_participant_changed",
+  "issue_continuation_waiting_on_review",
+]);
+
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;
@@ -118,6 +145,15 @@ export interface RecentIssueRunSample {
   id: string;
   status: string;
   finishedAt: Date | null;
+  errorCode: string | null;
+}
+
+/**
+ * A run cancelled by the dequeue-time staleness filter: no session was ever
+ * spawned, and the same wake would be judged stale again.
+ */
+export function isStaleWakeVerdictRun(run: RecentIssueRunSample): boolean {
+  return run.status === "cancelled" && STALE_WAKE_VERDICT_ERROR_CODES.has(run.errorCode ?? "");
 }
 
 export interface IssueRewakeThrottleInput {
@@ -154,8 +190,15 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
 
   let noProgressStreak = 0;
   for (const run of runs) {
-    // A failed/cancelled/interrupted run breaks the streak: its follow-up is
-    // recovery, not a redundant re-poll, and must not be delayed.
+    // A staleness verdict is the dequeue filter saying "this wake was invalid"
+    // before any session started. Repeating it changes nothing, so it counts
+    // as no-progress rather than breaking the streak.
+    if (isStaleWakeVerdictRun(run) && run.finishedAt) {
+      noProgressStreak += 1;
+      continue;
+    }
+    // A failed/crash-cancelled/interrupted run breaks the streak: its follow-up
+    // is recovery, not a redundant re-poll, and must not be delayed.
     if (run.status !== "succeeded" || !run.finishedAt) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;
