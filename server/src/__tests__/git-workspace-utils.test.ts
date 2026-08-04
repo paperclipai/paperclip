@@ -88,6 +88,19 @@ describe("ensureLocalPathGitWorkspaceInitialized", () => {
     expect(safeDirectories).toContain(path.resolve(tempDir));
   });
 
+  it("surfaces a safeDirectoryWarning instead of silently succeeding when safe.directory registration fails", async () => {
+    // Point GIT_CONFIG_GLOBAL at a file inside a directory that does not exist, so
+    // `git config --global --add` cannot create/lock the config file.
+    process.env.GIT_CONFIG_GLOBAL = path.join(gitConfigDir, "does-not-exist", "nested.gitconfig");
+
+    const result = await ensureLocalPathGitWorkspaceInitialized(tempDir);
+    expect(result.outcome).toBe("initialized");
+    expect(await hasGitMetadata(tempDir)).toBe(true);
+    if (result.outcome !== "failed") {
+      expect(result.safeDirectoryWarning).toBeTruthy();
+    }
+  });
+
   it("reports failure without throwing when no cwd is given", async () => {
     const result = await ensureLocalPathGitWorkspaceInitialized(null);
     expect(result.outcome).toBe("failed");

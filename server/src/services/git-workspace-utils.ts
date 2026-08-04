@@ -22,8 +22,8 @@ export async function hasGitMetadata(cwd: string | null | undefined): Promise<bo
 }
 
 export type EnsureLocalPathGitWorkspaceResult =
-  | { outcome: "already_initialized" }
-  | { outcome: "initialized" }
+  | { outcome: "already_initialized"; safeDirectoryWarning?: string }
+  | { outcome: "initialized"; safeDirectoryWarning?: string }
   | { outcome: "failed"; error: string };
 
 /**
@@ -55,12 +55,14 @@ export async function ensureLocalPathGitWorkspaceInitialized(
 
   // Best-effort: a pre-existing repo owned by another OS user still needs safe.directory
   // registration, so this must run regardless of whether `git init` just ran above. Registration
-  // failure should not block workspace creation -- heartbeat's own validation is the safety net.
+  // failure should not block workspace creation -- heartbeat's own validation is the safety net --
+  // but it must still be surfaced to the caller so it can be logged instead of silently discarded.
+  let safeDirectoryWarning: string | undefined;
   try {
     await execFile("git", ["config", "--global", "--add", "safe.directory", resolved]);
-  } catch {
-    // ignored
+  } catch (err) {
+    safeDirectoryWarning = err instanceof Error ? err.message : String(err);
   }
 
-  return { outcome: alreadyInitialized ? "already_initialized" : "initialized" };
+  return { outcome: alreadyInitialized ? "already_initialized" : "initialized", safeDirectoryWarning };
 }
