@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.12.0",
-    "hono": "^4.0.0",
+    "hono": "^4.13.0",
     "pg": "^8.11.0"
   },
   "devDependencies": {
@@ -19,6 +19,6 @@
     "@types/pg": "^8.11.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.10"
   }
 }
