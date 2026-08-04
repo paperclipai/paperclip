@@ -88,7 +88,10 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
 
 export function companyService(
   db: Db,
-  options: { removeManagedFiles?: (companyId: string) => Promise<void> } = {},
+  options: {
+    removeManagedFiles?: (companyId: string) => Promise<void>;
+    cancelRun?: (runId: string, reason: string) => Promise<unknown>;
+  } = {},
 ) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
@@ -97,12 +100,16 @@ export function companyService(
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-  async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
+  async function applyCompanyStopCascadeInTx(
+    tx: CompanyTx,
+    id: string,
+    input: { pauseReason: string; wakeupCancellationReason: string },
+  ) {
     const pausedAgentRows = await tx
       .update(agents)
       .set({
         status: "paused",
-        pauseReason: "company_archived",
+        pauseReason: input.pauseReason,
         pausedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -125,7 +132,7 @@ export function companyService(
       .update(agentWakeupRequests)
       .set({
         status: "cancelled",
-        error: "Cancelled because the company was archived",
+        error: input.wakeupCancellationReason,
         finishedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -369,7 +376,12 @@ export function companyService(
           agentsRestored = restoredRows.length;
         }
 
-        const archiveCascade = willArchive ? await applyArchiveCascadeInTx(tx, id) : null;
+        const archiveCascade = willArchive
+          ? await applyCompanyStopCascadeInTx(tx, id, {
+              pauseReason: "company_archived",
+              wakeupCancellationReason: "Cancelled because the company was archived",
+            })
+          : null;
 
         if (logoAssetId === null) {
           await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
@@ -445,7 +457,12 @@ export function companyService(
             .where(eq(companies.id, id));
         }
 
-        const cascade = wasAlreadyArchived ? null : await applyArchiveCascadeInTx(tx, id);
+        const cascade = wasAlreadyArchived
+          ? null
+          : await applyCompanyStopCascadeInTx(tx, id, {
+              pauseReason: "company_archived",
+              wakeupCancellationReason: "Cancelled because the company was archived",
+            });
 
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
@@ -467,6 +484,21 @@ export function companyService(
     },
 
     remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+      if (removeOptions.deleteFiles) {
+        const cascade = await db.transaction((tx) =>
+          applyCompanyStopCascadeInTx(tx, id, {
+            pauseReason: "company_deleted",
+            wakeupCancellationReason: "Cancelled because the company was deleted",
+          }),
+        );
+        for (const runId of cascade.activeRunIds) {
+          await (options.cancelRun ?? heartbeat.cancelRun)(
+            runId,
+            "Cancelled because the company was deleted",
+          );
+        }
+      }
+
       const company = await db.transaction(async (tx) => {
         // Delete from child tables in dependency order
         const companyRunIds = await tx

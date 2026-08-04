@@ -1319,7 +1319,16 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     query: z.object({ deleteFiles: z.enum(["true", "false", "1", "0"]).optional() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  responses: {
+    200: r.ok(
+      z.object({
+        ok: z.literal(true),
+        fileCleanup: z.enum(["not_requested", "succeeded", "failed"]),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({
