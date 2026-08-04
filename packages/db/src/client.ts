@@ -45,8 +45,44 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+export interface CreateDbOptions {
+  max?: number;
+  idleTimeoutSeconds?: number;
+  connectTimeoutSeconds?: number;
+  maxLifetimeSeconds?: number;
+  statementTimeoutMs?: number;
+  idleInTransactionSessionTimeoutMs?: number;
+}
+
+export function createDb(url: string, options: CreateDbOptions = {}) {
+  const {
+    max = 10,
+    idleTimeoutSeconds = 20,
+    connectTimeoutSeconds = 30,
+    maxLifetimeSeconds = 60 * 30,
+    statementTimeoutMs = 60_000,
+    idleInTransactionSessionTimeoutMs = 30_000,
+  } = options;
+
+  const connectionOptions: string[] = [];
+  if (statementTimeoutMs > 0) {
+    connectionOptions.push(`-c statement_timeout=${statementTimeoutMs}`);
+  }
+  if (idleInTransactionSessionTimeoutMs > 0) {
+    connectionOptions.push(`-c idle_in_transaction_session_timeout=${idleInTransactionSessionTimeoutMs}`);
+  }
+
+  const sql = postgres(url, {
+    max,
+    idle_timeout: idleTimeoutSeconds,
+    connect_timeout: connectTimeoutSeconds,
+    max_lifetime: maxLifetimeSeconds,
+    onnotice: () => {},
+    connection:
+      connectionOptions.length > 0
+        ? { options: connectionOptions.join(" ") }
+        : undefined,
+  });
   return drizzlePg(sql, { schema });
 }
 
