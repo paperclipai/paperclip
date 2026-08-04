@@ -24,6 +24,21 @@ interface StatusIconProps {
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
   if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
 
+  // Nothing is holding this row. Say so, and say which of the two shapes it is,
+  // because the remedy differs: a satisfied chain needs someone to move the row
+  // back to To do, an edgeless one needs the missing blocker recorded (or the
+  // status corrected). Both used to render as "Blocked · 0 blockers need
+  // attention" — a count of zero, spelled as though work were outstanding.
+  if (blockerAttention.reason === "no_live_blocker") {
+    const satisfied = blockerAttention.satisfiedBlockerCount ?? 0;
+    if (satisfied > 0) {
+      return satisfied === 1
+        ? "Blocked · its blocker is resolved — nothing is holding this task"
+        : `Blocked · all ${satisfied} blockers are resolved — nothing is holding this task`;
+    }
+    return "Blocked · no blockers recorded — nothing is holding this task";
+  }
+
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
@@ -73,13 +88,17 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  *
  * A "covered" blocked task (waiting on active work) maps to the `in_queue`
  * glyph — the blocked shape recoloured blue — while the full blocked reason
- * still rides on the accessible label.
+ * still rides on the accessible label. A blocked task with no live blocker
+ * (every blocker resolved, or none recorded) maps to `blocked_unheld`: nothing
+ * is actually holding it, and rendering it identically to a held row is how a
+ * ready task reads as "someone else is still working on this".
  */
 export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
+  const isUnheldBlocked = status === "blocked" && blockerAttention?.reason === "no_live_blocker";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
-  const glyphStatus = isCoveredBlocked ? "in_queue" : status;
+  const glyphStatus = isCoveredBlocked ? "in_queue" : isUnheldBlocked ? "blocked_unheld" : status;
 
   const glyph = (
     <StatusGlyph

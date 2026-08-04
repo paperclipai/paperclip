@@ -393,6 +393,11 @@ export function IssueBlockedNotice({
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
 
   const isStalled = blockerAttention?.state === "stalled";
+  // A `blocked` row with no unresolved blocker is not held by anything. Say
+  // which shape it is: a chain that finished (nobody moved the row on) reads
+  // differently from a row driven to `blocked` with no edge at all.
+  const satisfiedBlockerCount =
+    blockerAttention?.reason === "no_live_blocker" ? blockerAttention.satisfiedBlockerCount ?? 0 : 0;
   const parkedBlockers = (() => {
     const seen = new Set<string>();
     const collected: IssueRelationIssueSummary[] = [];
@@ -583,7 +588,9 @@ export function IssueBlockedNotice({
                     : reopenSuppressed
                       ? <>A message won&rsquo;t restart this task yet — it stays blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} done, then it reopens automatically. Comments still notify {responsibleName} for questions or triage in the meantime.</>
                       : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still notify the assignee for questions or triage.</>
-                  : <>Work on this task is blocked until someone moves it back to To do. Comments still notify the assignee for questions or triage.</>}
+                  : satisfiedBlockerCount > 0
+                    ? <>Every task this one was blocked by is now resolved{satisfiedBlockerCount === 1 ? "" : ` (${satisfiedBlockerCount} of them)`}, so nothing is holding it — it is waiting only for someone to move it back to To do. Comments still notify the assignee for questions or triage.</>
+                    : <>Work on this task is blocked until someone moves it back to To do. No blocker is recorded against it. Comments still notify the assignee for questions or triage.</>}
               </p>
               {reopenSuppressed && reopenSuppressedLeafId ? (
                 <p

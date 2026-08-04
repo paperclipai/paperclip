@@ -267,7 +267,8 @@ export const taskStatusVarDefault = "--status-task-backlog";
  * {@link StatusGlyph} colour. Separate from {@link taskStatusVar} (the chip base
  * hue) because a bare glyph next to text needs a stronger hue to clear WCAG 3:1;
  * see the `--status-task-icon-*` block in `index.css`. `in_queue` is the blocked
- * shape recoloured blue, so it maps to its own var.
+ * shape recoloured blue and `blocked_unheld` is a distinct shape in amber, so
+ * both map to their own vars.
  */
 export const taskStatusIconVar: Record<string, string> = {
   backlog: "--status-task-icon-backlog",
@@ -278,6 +279,7 @@ export const taskStatusIconVar: Record<string, string> = {
   blocked: "--status-task-icon-blocked",
   cancelled: "--status-task-icon-cancelled",
   in_queue: "--status-task-icon-in_queue",
+  blocked_unheld: "--status-task-icon-blocked_unheld",
 };
 export const taskStatusIconVarDefault = "--status-task-icon-backlog";
 

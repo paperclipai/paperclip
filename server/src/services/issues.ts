@@ -2046,6 +2046,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
+    satisfiedBlockerCount: input.satisfiedBlockerCount ?? 0,
     pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
@@ -2403,6 +2404,77 @@ async function listIssueBlockerAttentionMap(
   }
   if (frontier.length > 0) truncated = true;
 
+  // Resolved blockers, counted for the roots only — the one thing that tells a
+  // blocker chain that finished apart from a row that never had a blocker
+  // recorded, and the two need different remedies. The walk above cannot supply
+  // it from either side: `edgesByIssueId` keeps only *unresolved* explicit
+  // edges, and the child query drops terminal children outright. Both are
+  // counted here, so a blocked parent whose only blocker was a child that has
+  // since finished does not report "no blocker recorded".
+  //
+  // The asymmetry on `cancelled` is deliberate and mirrors the walk: a
+  // cancelled *explicit* blocker still holds its dependent (readiness treats it
+  // as unresolved until an operator changes the relation), so such a root never
+  // reaches the no-live-blocker branch at all; a cancelled *child* is dropped
+  // by the walk, so it is counted as satisfied.
+  //
+  // The workspace-finalize barrier below is asymmetric for the same reason.
+  // `pendingFinalizeBlockerIssueIds` is derived from
+  // `listIssueDependencyReadinessMap`, which reads `blocks` relations only, so
+  // it never names a bare child — and correctly: no gate anywhere holds a
+  // parent for a child's finalize, so a `done` child whose workspace is still
+  // finalizing is genuinely satisfied as far as scheduling is concerned.
+  // Withholding "satisfied" from it would make this counter assert a hold that
+  // does not exist, which is the defect this counter exists to remove. Pinned
+  // by "applies the workspace-finalize barrier to an explicit blocker but not
+  // to a bare child" in issue-blocker-attention.test.ts.
+  const satisfiedBlockerCountByRootId = new Map<string, number>();
+  for (const chunk of chunkList(roots.map((root) => root.id), ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const [resolvedExplicitRows, terminalChildRows]: [
+      Array<{ issueId: string | null; blockerIssueId: string }>,
+      Array<{ issueId: string | null; blockerIssueId: string }>,
+    ] = await Promise.all([
+      dbOrTx
+        .select({ issueId: issueRelations.relatedIssueId, blockerIssueId: issues.id })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, chunk),
+            eq(issues.companyId, companyId),
+            eq(issues.status, "done"),
+          ),
+        ),
+      dbOrTx
+        .select({ issueId: issues.parentId, blockerIssueId: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, chunk),
+            inArray(issues.status, BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES),
+          ),
+        ),
+    ]);
+    const satisfiedIdsByRootId = new Map<string, Set<string>>();
+    for (const row of [...resolvedExplicitRows, ...terminalChildRows]) {
+      if (!row.issueId) continue;
+      // A `done` blocker whose workspace has not finalized still holds its
+      // dependent, so it is not satisfied.
+      if (pendingFinalizeBlockerIssueIds.has(row.blockerIssueId)) continue;
+      // A set, not a counter: one issue can be both an explicit blocker and a
+      // child of the same root, and must count once.
+      const satisfied = satisfiedIdsByRootId.get(row.issueId) ?? new Set<string>();
+      satisfied.add(row.blockerIssueId);
+      satisfiedIdsByRootId.set(row.issueId, satisfied);
+    }
+    for (const [rootId, satisfied] of satisfiedIdsByRootId) {
+      satisfiedBlockerCountByRootId.set(rootId, satisfied.size);
+    }
+  }
+
   const nodeIds = [...nodesById.keys()];
   const activeIssueIds = new Set<string>();
   const agentIds = new Set<string>();
@@ -2681,14 +2753,22 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
+    const satisfiedBlockerCount = satisfiedBlockerCountByRootId.get(root.id) ?? 0;
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
     });
     if (topLevelEdges.length === 0) {
+      // Nothing is holding this row: every blocker edge is resolved, or it never
+      // had one. Both used to report `attention_required` with all counts at
+      // zero, which rendered as a plain "Blocked" — indistinguishable from a row
+      // a live dependency is genuinely holding, and failing toward "someone else
+      // is still working on this", the reading that stops nobody from
+      // proceeding. `satisfiedBlockerCount` separates the two cases for callers.
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
-        reason: "attention_required",
+        reason: "no_live_blocker",
+        satisfiedBlockerCount,
         terminalBlockerIssueId: root.id,
       }));
       continue;
@@ -2737,6 +2817,7 @@ async function listIssueBlockerAttentionMap(
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
+      satisfiedBlockerCount,
       pendingFinalizeBlockerIssueIds: topLevelEdges
         .map((edge) => edge.blockerIssueId)
         .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),

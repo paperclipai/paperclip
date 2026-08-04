@@ -458,6 +458,47 @@ describe("IssueBlockedNotice", () => {
     expect(node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]')).toBeNull();
   });
 
+  it("says a finished blocker chain is finished, and names an edgeless row as having none", () => {
+    const satisfied = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "no_live_blocker",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          satisfiedBlockerCount: 3,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(satisfied.textContent).toContain("Every task this one was blocked by is now resolved (3 of them)");
+
+    const edgeless = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "no_live_blocker",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          satisfiedBlockerCount: 0,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(edgeless.textContent).toContain("No blocker is recorded against it.");
+    expect(edgeless.textContent).not.toContain("is now resolved");
+  });
+
   it("shows external now-running blockers beneath the label on a separate line", () => {
     const node = render(
       <IssueBlockedNotice
