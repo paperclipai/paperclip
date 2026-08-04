@@ -91,6 +91,7 @@ export function companyService(
   options: {
     removeManagedFiles?: (companyId: string) => Promise<void>;
     cancelRun?: (runId: string, reason: string) => Promise<unknown>;
+    waitForRunExecutionDrain?: (runId: string) => Promise<void>;
   } = {},
 ) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -496,6 +497,7 @@ export function companyService(
             runId,
             "Cancelled because the company was deleted",
           );
+          await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
         }
       }
 
