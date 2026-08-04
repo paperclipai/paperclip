@@ -23,6 +23,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
+import { RateCardEquivalent } from "../components/RateCardEquivalent";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -746,7 +747,10 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="font-medium">
+                                  {formatCents(row.costCents)}
+                                  <RateCardEquivalent cents={row.subscriptionRateCardCents} className="ml-1 text-xs" />
+                                </div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -765,7 +769,13 @@ export function Costs() {
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
-                                  const sharePct = row.costCents > 0 ? Math.round((modelRow.costCents / row.costCents) * 100) : 0;
+                                  // A subscription-only agent has costCents 0 on every model row, which would
+                                  // render the whole breakdown as 0%. Fall back to the rate-card basis so the
+                                  // split still shows where the tokens actually went.
+                                  const useCash = row.costCents > 0;
+                                  const shareBasis = useCash ? row.costCents : row.rateCardCents;
+                                  const shareValue = useCash ? modelRow.costCents : modelRow.rateCardCents;
+                                  const sharePct = shareBasis > 0 ? Math.round((shareValue / shareBasis) * 100) : 0;
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
@@ -784,6 +794,9 @@ export function Costs() {
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
                                           {formatCents(modelRow.costCents)}
+                                          {useCash ? null : (
+                                            <RateCardEquivalent cents={modelRow.rateCardCents} className="ml-1" />
+                                          )}
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
