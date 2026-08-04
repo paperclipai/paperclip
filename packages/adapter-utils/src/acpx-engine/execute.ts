@@ -137,6 +137,11 @@ type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
 
 type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
+  // Return the current-run parent-context token. It is the `task.run` token
+  // during startup and after the turn, and the `agent.turn` token during the
+  // turn. A detached exec reads this getter to parent to the live run span. The
+  // real `createAcpRuntime` ignores this optional field.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 };
 
 type AcpxProcessIdentitySink = {
@@ -3110,6 +3115,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // startup span. `runRootSpan.end` runs exactly once, in the `finally` below,
     // on every return and on a throw.
     const runRootSpan = openRunRootSpan(tracing, now, ctx.runId);
+    // Hold the current-run parent-context token for the whole run. It starts as
+    // the `task.run` token, switches to the `agent.turn` token during the turn,
+    // and switches back to the `task.run` token after the turn. It is never
+    // `undefined` while the run is live. The holder is a run-scoped local, so two
+    // concurrent runs in one host process keep separate tokens. A detached exec
+    // reads it through `getRuntimeParentContext` to parent to the live span.
+    let currentRunParentContext: StartupSpanContext | undefined = runRootSpan.parentContext;
+    const getRuntimeParentContext = (): StartupSpanContext | undefined => currentRunParentContext;
     // `runFailed` marks the run root span status at end time. It stays `true`
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
@@ -3240,6 +3253,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             startedAt: meta.startedAt,
           });
         },
+        getRuntimeParentContext,
       };
       // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
       // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
@@ -3505,6 +3519,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // parenting, and the `finally` below ends the span once on every path. The
       // span is declared before the `try` so the `finally` can reach it.
       const turnSpan = openTurnSpan(tracing, now, runRootSpan.parentContext);
+      // Switch the current-run holder to the `agent.turn` token for the turn, so
+      // a detached exec during the turn parents to `agent.turn`. The turn
+      // `finally` resets the holder to the `task.run` token.
+      currentRunParentContext = turnSpan.parentContext;
       try {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
@@ -3713,6 +3731,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // `runFailed` is `false` only on a completed, non-timed-out turn, so the
         // span status is correct for success, error, and timeout.
         turnSpan.end(runFailed);
+        // Reset the current-run holder to the `task.run` token after the turn.
+        // The run stays live here, so the holder is never `undefined`. A detached
+        // exec after the turn parents to `task.run`.
+        currentRunParentContext = runRootSpan.parentContext;
       }
     } finally {
       // End the run root span exactly once, on every return and on a throw.

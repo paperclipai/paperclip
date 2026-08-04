@@ -3445,6 +3445,81 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(spans.some((span) => span.name === "agent.turn")).toBe(false);
   });
 
+  it("test_run_parent_getter_tracks_task_run_then_turn", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Sample `getRuntimeParentContext` at three points of the run: at runtime
+    // construction (startup), inside `startTurn` (turn), and after the executor
+    // resolves (post-turn). The run publishes the current-run parent token
+    // through `runtimeOptions.getRuntimeParentContext`, so a fake runtime reads
+    // it to prove the holder tracks `task.run`, then `agent.turn`, then
+    // `task.run` again.
+    let startupToken: unknown;
+    let turnToken: unknown;
+    let capturedGetter: (() => unknown) | undefined;
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        const opts = options as unknown as { getRuntimeParentContext?: () => unknown };
+        // Keep the getter for the post-turn sample after the run resolves.
+        capturedGetter = opts.getRuntimeParentContext;
+        // Startup phase: the holder is the `task.run` token here.
+        startupToken = opts.getRuntimeParentContext?.();
+        const runtime = buildRuntime();
+        return {
+          ...runtime,
+          startTurn: (input: Record<string, unknown>) => {
+            // Turn phase: the holder is the `agent.turn` token here.
+            turnToken = opts.getRuntimeParentContext?.();
+            return (runtime.startTurn as (input: unknown) => unknown)(input);
+          },
+        } as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-getter",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      startupTraceContext: traceContext,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+
+    // Post-turn phase: the holder is the `task.run` token again.
+    const postToken = capturedGetter?.();
+
+    const taskRunSpan = spans.find((span) => span.name === "task.run");
+    expect(taskRunSpan).toBeTruthy();
+    const agentTurnSpan = spans.find((span) => span.name === "agent.turn");
+    expect(agentTurnSpan).toBeTruthy();
+
+    // The recorder builds a parent-context token as `{ span }`. So the getter
+    // returns the `task.run` token during startup, the `agent.turn` token during
+    // the turn, and the `task.run` token after the turn.
+    expect(startupToken).toEqual({ span: taskRunSpan });
+    expect(turnToken).toEqual({ span: agentTurnSpan });
+    expect(postToken).toEqual({ span: taskRunSpan });
+  });
+
   it("test_root_region_exec_parents_to_sandbox_startup", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
