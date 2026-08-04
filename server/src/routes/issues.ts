@@ -170,7 +170,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, type AuthorizationDecision } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -203,6 +203,9 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const ISSUE_AUTHORIZATION_BOUNDARY_ERROR = "Issue is outside this actor's authorization boundary";
+const ISSUE_AUTHORIZATION_BOUNDARY_HINT =
+  "Do not retry. Route instead: create a child issue assigned to the owner, comment on your own issue naming the ask, or open an issue-thread interaction for board escalation.";
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -3465,8 +3468,16 @@ export function issueRoutes(
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    sendIssueAuthorizationBoundaryDenied(res, decision);
     return false;
+  }
+
+  function sendIssueAuthorizationBoundaryDenied(res: Response, decision: AuthorizationDecision) {
+    res.status(403).json({
+      error: ISSUE_AUTHORIZATION_BOUNDARY_ERROR,
+      reason: decision.reason,
+      hint: ISSUE_AUTHORIZATION_BOUNDARY_HINT,
+    });
   }
 
   async function assertAgentIssueCommentAllowed(
@@ -3505,7 +3516,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      sendIssueAuthorizationBoundaryDenied(res, boundaryDecision);
       return false;
     }
     return boundaryDecision;
@@ -3598,7 +3609,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      sendIssueAuthorizationBoundaryDenied(res, boundaryDecision);
       return false;
     }
     if (issue.assigneeAgentId === null) {
