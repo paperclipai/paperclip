@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@hono/node-server": "^1.12.0",
+    "@hono/node-server": "^2.1.0",
     "hono": "^4.13.0",
     "pg": "^8.11.0"
   },
