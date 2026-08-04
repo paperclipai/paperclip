@@ -70,6 +70,9 @@ function zuText(html) {
 }
 
 function signiere(json, leseDatei) {
+  if (!json || typeof json !== 'object') {
+    return { __signaturFehler: 'kein json-Objekt: ' + String(json) };
+  }
   try {
     if (json.signatur === 'none') return json;
 
@@ -98,10 +101,13 @@ function signiere(json, leseDatei) {
     // Content-ID. Bei 0 zu beginnen wuerde die erste echte Anlage
     // ueberschreiben.
     const anhaenge = Array.isArray(json.attachments) ? json.attachments : [];
-    const index = anhaenge.length;
     const mitCid = sig.replace(
-      /<img([^>]*?)(?<=[\s"'])src="data:(image\/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>/,
+      /<img([^>]*?)(?<=[\s"'])src="data:(image\/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>/g,
       (_m, vor, mime, daten, nach) => {
+        // Index je Treffer neu aus der aktuellen Laenge, wie Pythons
+        // `idx = ab_index + len(anhaenge)` innerhalb von zu_cid.repl —
+        // sonst bekaeme bei mehreren Bildern jeder Treffer denselben cid.
+        const index = anhaenge.length;
         anhaenge.push({
           filename: `logo-${index}.${mime.split('/')[1]}`,
           content: daten,

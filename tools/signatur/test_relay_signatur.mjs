@@ -87,7 +87,31 @@ test('KRITISCH: Logo landet hinter bestehenden Anhaengen', () => {
   assert.equal(j.attachments[0].filename, 'a.xlsx');
   assert.equal(j.attachments[1].filename, 'b.pdf');
   assert.equal(j.attachments[2].cid, 'attachment_2');
+  // Absichern gegen vertauschte Capture-Gruppen (mime <-> daten): mimeType
+  // muss der kurze MIME-Typ sein, filename daraus abgeleitet, content die
+  // (lange) Base64-Nutzlast.
+  assert.equal(j.attachments[2].mimeType, 'image/png');
+  assert.equal(j.attachments[2].filename, 'logo-2.png');
+  assert.ok(/^[A-Za-z0-9+/=]+$/.test(j.attachments[2].content));
+  assert.ok(j.attachments[2].content.length > 100);
   assert.ok(j.html.includes('src="cid:attachment_2"'));
+  assert.ok(!j.html.includes('data:image/png;base64,'));
+});
+
+test('zwei eingebettete Bilder bekommen getrennte, fortlaufende cids', () => {
+  // Synthetisch: an einen echten Baustein wird ein zweites <img> gehaengt,
+  // um /g und die Pro-Treffer-Indexberechnung zu belegen.
+  const liesZweiBilder = (p) => lies(p) + '<img src="data:image/png;base64,BBBB">';
+  const j = signiere(basis(), liesZweiBilder);
+  assert.equal(j.attachments.length, 2);
+  assert.equal(j.attachments[0].cid, 'attachment_0');
+  assert.equal(j.attachments[0].filename, 'logo-0.png');
+  assert.equal(j.attachments[1].cid, 'attachment_1');
+  assert.equal(j.attachments[1].filename, 'logo-1.png');
+  assert.equal(j.attachments[1].content, 'BBBB');
+  assert.notEqual(j.attachments[0].content, j.attachments[1].content);
+  assert.ok(j.html.includes('src="cid:attachment_0"'));
+  assert.ok(j.html.includes('src="cid:attachment_1"'));
   assert.ok(!j.html.includes('data:image/png;base64,'));
 });
 
@@ -109,4 +133,14 @@ test('office bekommt Lunas Bezeichnung', () => {
   const j = signiere(basis({ from: 'office@whitestag.ai' }), lies);
   assert.ok(j.html.includes('i.A. Luna'));
   assert.ok(j.html.includes('KI-Assistentin'));
+});
+
+test('signiere(null, ...) wirft nicht und traegt einen Fehler', () => {
+  const j = signiere(null, lies);
+  assert.ok(j.__signaturFehler);
+});
+
+test('signiere(undefined, ...) wirft nicht und traegt einen Fehler', () => {
+  const j = signiere(undefined, lies);
+  assert.ok(j.__signaturFehler);
 });
