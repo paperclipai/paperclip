@@ -120,6 +120,14 @@ export interface RecentIssueRunSample {
   finishedAt: Date | null;
 }
 
+/**
+ * Terminal statuses whose runs can count toward a no-progress streak. A run
+ * that failed or timed out without touching the issue is as uninformative as a
+ * no-op success, so it extends the streak; only `cancelled` is excluded,
+ * because an operator stopping a run is an explicit signal to try again now.
+ */
+const STREAK_ELIGIBLE_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out"]);
+
 export interface IssueRewakeThrottleInput {
   now: Date;
   /** Terminal runs for the same (agent, issue), newest finish first. */
@@ -154,9 +162,16 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
 
   let noProgressStreak = 0;
   for (const run of runs) {
-    // A failed/cancelled/interrupted run breaks the streak: its follow-up is
-    // recovery, not a redundant re-poll, and must not be delayed.
-    if (run.status !== "succeeded" || !run.finishedAt) break;
+    if (!run.finishedAt) break;
+    // What breaks the streak is progress on the issue, not the run's exit
+    // status. A run that worked and then died has a real follow-up — recovery —
+    // and must not be delayed. A run that died having touched nothing leaves
+    // exactly the state the previous wake already saw, so re-waking it
+    // immediately is the same redundant re-poll a no-op success would be, and
+    // repeating it at full speed is how a provider outage turns into a wake
+    // storm. Cancellation is an explicit operator decision, so its follow-up is
+    // deliberate and always allowed through.
+    if (!STREAK_ELIGIBLE_RUN_STATUSES.has(run.status)) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;
   }

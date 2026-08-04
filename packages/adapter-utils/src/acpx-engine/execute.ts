@@ -30,6 +30,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import { classifyProviderQuota } from "@paperclipai/adapter-utils/provider-quota";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -2548,7 +2549,8 @@ function describeErrorDiagnostics(err: unknown): {
 function classifyError(
   err: unknown,
   phase?: AcpxExecutionPhase,
-): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
+  now = new Date(),
+): Pick<AdapterExecutionResult, "errorCode" | "errorMeta" | "errorFamily" | "retryNotBefore"> {
   const message = err instanceof Error ? err.message : String(err);
   const diagnostics = describeErrorDiagnostics(err);
   const { acpCode, errorName, causeMessage, retryable, stackPreview } = diagnostics;
@@ -2566,6 +2568,19 @@ function classifyError(
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },
+    };
+  }
+  // A quota refusal is a provider verdict, not an engine fault: label it so
+  // recovery waits for the stated reset instead of escalating the issue and
+  // burning the remaining window on instant retries. Checked after `authLike`
+  // so the broader auth match keeps priority, as before.
+  const providerQuota = classifyProviderQuota(message, now);
+  if (providerQuota) {
+    return {
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore: providerQuota.retryNotBefore?.toISOString() ?? null,
+      errorMeta: { category: "provider_quota", ...baseMeta },
     };
   }
   const phaseCode = (() => {
@@ -2629,7 +2644,10 @@ async function emitAcpxFailure(input: {
   // adapter execution timeout message instead of the raw underlying error.
   messageOverride?: string;
 }): Promise<{
-  classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
+  classified: Pick<
+    AdapterExecutionResult,
+    "errorCode" | "errorMeta" | "errorFamily" | "retryNotBefore"
+  >;
   message: string;
   childStderrTail: string | null;
 }> {
@@ -3460,6 +3478,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
         : resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+      // A turn that ends because the provider refused on quota is not an engine
+      // failure. Labelling it `provider_quota` is what arms the wait-recovery
+      // monitor and the bounded deferred retry server-side; without the label
+      // recovery takes the default branch — one instant retry, then escalation
+      // — and the instant retries eat the rest of the quota window.
+      const providerQuota =
+        terminal.status === "failed" && !timedOut
+          ? classifyProviderQuota(
+              [errorMessage, terminalStopReason].filter(Boolean).join("\n"),
+              new Date(now()),
+            )
+          : null;
       await emitAcpxLog(ctx, {
         type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
         summary: terminal.status,
@@ -3473,7 +3503,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        errorCode: providerQuota
+          ? "provider_quota"
+          : terminal.status === "failed"
+            ? "acpx_turn_failed"
+            : timedOut
+              ? "acpx_timeout"
+              : null,
+        ...(providerQuota
+          ? {
+              errorFamily: "provider_quota" as const,
+              retryNotBefore: providerQuota.retryNotBefore?.toISOString() ?? null,
+            }
+          : {}),
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -3534,6 +3576,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
+        // A timeout owns its own contract; otherwise carry the quota verdict
+        // (and its reset instant) through to the server's recovery routing.
+        ...(timedOut
+          ? {}
+          : {
+              ...(classified.errorFamily ? { errorFamily: classified.errorFamily } : {}),
+              ...(classified.retryNotBefore
+                ? { retryNotBefore: classified.retryNotBefore }
+                : {}),
+            }),
         ...billingFields,
         ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,

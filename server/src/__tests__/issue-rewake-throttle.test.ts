@@ -156,11 +156,55 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
   });
 
-  it("does not delay recovery after a failed run", () => {
+  it("does not delay recovery after a failed run that made progress", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [
         runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10 }),
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(["r2"]),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+
+  it("keeps the streak across failed runs that made no progress", () => {
+    // A provider refusal kills runs in seconds without touching the issue. Each
+    // one used to reset the streak, so the cooldown never engaged and the
+    // instant re-wakes kept burning the quota window.
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r3", status: "failed", finishedSecondsAgo: 5 }),
+        runSample({ id: "r2", status: "failed", finishedSecondsAgo: 30 }),
+        runSample({ id: "r1", status: "failed", finishedSecondsAgo: 60 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.noProgressStreak).toBe(3);
+    expect(decision.blocked).toBe(true);
+  });
+
+  it("counts a timed-out run with no progress toward the streak", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", status: "timed_out", finishedSecondsAgo: 10 }),
+        runSample({ id: "r1", finishedSecondsAgo: 40 }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.noProgressStreak).toBe(2);
+  });
+
+  it("lets an operator cancellation through without delay", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", status: "cancelled", finishedSecondsAgo: 10 }),
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),

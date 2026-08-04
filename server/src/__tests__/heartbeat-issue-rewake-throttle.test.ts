@@ -263,15 +263,67 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(commentWake).not.toBeNull();
   });
 
-  it("does not throttle the wake that follows a failed run", async () => {
+  it("does not throttle the wake that follows a failed run that made progress", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    const recoveryRunId = await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "failed",
+      finishedSecondsAgo: 10,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: recoveryRunId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date(Date.now() - 11_000),
+    });
+
+    // The run worked on the issue and then died: its follow-up is recovery from
+    // a known new state, not a re-poll of the state the last wake already saw.
+    const recoveryWake = await assignmentWake(agentId, issueId);
+    expect(recoveryWake).not.toBeNull();
+  });
+
+  it("keeps the streak across a failed run that touched nothing", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
 
-    const recoveryWake = await assignmentWake(agentId, issueId);
-    expect(recoveryWake).not.toBeNull();
+    // A provider refusal kills the run in seconds without touching the issue,
+    // so the next wake would see exactly the state the previous one saw. Left
+    // out of the streak, those instant failures re-wake at full speed and eat
+    // the rest of the quota window.
+    const throttledWake = await assignmentWake(agentId, issueId);
+    expect(throttledWake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.reason).toBe("issue_rewake_throttled");
+    const heartbeatSkip = (skipped?.payload as Record<string, unknown> | null)?.heartbeatSkip as
+      | Record<string, unknown>
+      | undefined;
+    expect(heartbeatSkip?.noProgressStreak).toBe(3);
+  });
+
+  it("does not throttle the wake that follows an operator cancellation", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, status: "cancelled", finishedSecondsAgo: 10 });
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).not.toBeNull();
   });
 
   it("does not throttle when a recent run produced issue-visible progress", async () => {
