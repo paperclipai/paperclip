@@ -293,19 +293,40 @@ schickt der Dienst von sich aus eine Mail an ws@whitestag.ai.
 
 ---
 
-## 9. Zwei Dinge, die beim Schreiben dieser Anleitung auffielen
+## 9. Was beim Schreiben dieser Anleitung aufgefallen ist
 
-Kein Teil deiner Anleitung, aber du solltest es wissen:
+### Behoben am 04.08.: fünf Agenten delegierten ins Leere
 
-1. **Der Adobe-Agent delegiert ins Leere.** Seine Instruktionen sagen: „KI-Bild
-   und KI-Video laufen ausschließlich über *Bild & Video*" — **diesen Agenten
-   gibt es in Paperclip nicht** (27 Agenten, keiner heißt so). Legt Adobe
-   einen Subtask dorthin, bleibt der für immer liegen. Der Block nennt
-   außerdem Modelle, die es hier nie gab (FLUX, Wan, Hunyuan). Sollte auf den
-   `bild`-Label-Weg umgeschrieben werden.
-2. **Der Lektor kennt 360° nicht.** 26 von 27 Agenten haben den qwen360-Block
-   in ihren Live-Instruktionen, der Lektor nur den alten Bild-Block. Für
-   seine Aufgabe unkritisch, aber beim nächsten Generator-Lauf mitziehen.
+Der Agent **„Bild & Video"** (`f4bf1c83-…`) ist seit einiger Zeit
+`terminated` — fünf Rollen wiesen ihm aber weiterhin die KI-Bild- und
+KI-Video-Erzeugung zu: **Adobe, Creative Director, CTO, CMO, CPO**. Ein
+Subtask an einen beendeten Agenten wird nie geweckt und bleibt für immer
+offen. Zusätzlich nannten diese Texte Modelle, die es hier nie gab
+(FLUX schnell/dev/2, Wan 2.2, HunyuanVideo).
+
+Korrigiert in den Rollen-Quellen (`~/.paperclip/scripts/agents-instructions/roles/`)
+und über den Generator ausgerollt: alle fünf zeigen jetzt auf den
+`bild`-Label-Weg mit den tatsächlichen Modellen (`qwen`, `qwen360`,
+`openai`), halten fest, dass KI-Video derzeit nicht bestellbar ist, und
+warnen ausdrücklich vor dem toten Agenten. Der beendete Agent ist außerdem
+aus `agents-manifest.json` entfernt, damit der Generator nicht länger für
+ihn schreibt.
+
+### Offen: drei verwaiste Instruktions-Ordner
+
+Unter `~/.paperclip/instances/default/companies/9cebf3cf…/agents/` liegen
+**30 Ordner für 27 aktive Agenten**. Drei gehören zu gelöschten Agenten
+(u. a. ein „Lektor", der mit dem heutigen „Lektorat" nichts zu tun hat) und
+enthalten veraltete Instruktionen — unter anderem den Bild-Block ohne 360°.
+Sie werden nicht ausgeliefert und richten keinen Schaden an, führen bei
+`grep` über den Ordner aber zu falschen Schlüssen. Aufräumen lohnt.
+
+### Offen: ein Agent hängt nicht am Generator
+
+Der **n8n-Betriebsingenieur** (`dfa8d0e2-…`) ist live, steht aber nicht im
+Manifest. Seine `AGENTS.md` ist handgepflegt und bekommt deshalb keinen der
+gemeinsamen Blöcke — auch nicht „Bild/Grafik bestellen". Für seine Aufgabe
+(n8n-Recovery) unkritisch, aber gut zu wissen, bevor jemand sich wundert.
 
 ---
 
