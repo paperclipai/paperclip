@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, or, agents, companies, createDb, issueComments, issues } from "../packages/db/src/index.js";
+import { isAgentStatusAssignableToWork } from "../packages/shared/src/agent-eligibility.js";
 import { loadConfig } from "../server/src/config.js";
 
 const OPEN_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
@@ -55,7 +56,7 @@ async function main() {
           .where(and(eq(agents.id, candidate.managerId), eq(agents.companyId, company.id)))
           .then((rows) => rows[0] ?? null)
         : null;
-      const assigneeAgentId = manager && manager.status !== "terminated" ? manager.id : null;
+      const assigneeAgentId = manager && isAgentStatusAssignableToWork(manager.status) ? manager.id : null;
       if (assigneeAgentId) releasedToManager += 1;
       else releasedToQueue += 1;
 

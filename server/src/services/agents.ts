@@ -19,6 +19,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
+  isAgentStatusAssignableToWork,
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
@@ -718,7 +719,7 @@ export function agentService(db: Db) {
             .where(and(eq(agents.id, existing.reportsTo), eq(agents.companyId, existing.companyId)))
             .then((rows) => rows[0] ?? null)
           : null;
-        const replacementAssigneeId = manager && manager.status !== "terminated" ? manager.id : null;
+        const replacementAssigneeId = manager && isAgentStatusAssignableToWork(manager.status) ? manager.id : null;
         const releasableIssues = await tx
           .select({ id: issues.id })
           .from(issues)
