@@ -324,6 +324,13 @@ const ALLOWED_RUN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
   "paperclip.task.run.wall_ms",
 ]);
 
+// The closed attribute allowlist for the agent turn span. It carries only its
+// own wall time, so no command, path, id, prompt, or error text can ride the
+// `agent.turn` span.
+const ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
+  "paperclip.agent.turn.wall_ms",
+]);
+
 describe("shared ACPX engine runtime behavior", () => {
   it("persists ACP agent process identity before prompting and reuses it for the next warm heartbeat", async () => {
     const root = await makeTempRoot();
@@ -3252,11 +3259,18 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(startupSpan!.parent).toBe(runRootSpan);
     expect(startupSpan!.ended).toBe(true);
 
+    // The agent turn span is a sibling of the bring-up span: it parents to the
+    // run root span, not to the bring-up span.
+    const turnSpan = spans.find((span) => span.name === "agent.turn");
+    expect(turnSpan).toBeTruthy();
+    expect(turnSpan!.parent).toBe(runRootSpan);
+    expect(turnSpan!.ended).toBe(true);
+
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
     // Each boundary span parents to the sandbox bring-up span, not to the run
-    // root.
+    // root or the turn span.
     const childNames = spans
-      .filter((span) => span !== runRootSpan && span !== startupSpan)
+      .filter((span) => span !== runRootSpan && span !== startupSpan && span !== turnSpan)
       .map((span) => span.name)
       .sort();
     expect(childNames).toEqual(
@@ -3273,7 +3287,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     // Every boundary span parents to the sandbox bring-up span and ends.
     for (const span of spans) {
-      if (span === runRootSpan || span === startupSpan) continue;
+      if (span === runRootSpan || span === startupSpan || span === turnSpan) continue;
       expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }
@@ -3371,6 +3385,64 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(result.exitCode).toBe(0);
     expect(spans.some((span) => span.name === "task.run")).toBe(false);
     expect(spans).toHaveLength(0);
+  });
+
+  it("test_agent_turn_span_parents_to_task_run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Run the executor turn path with a fake remote-sandbox tracer. The engine
+    // opens one `agent.turn` span around the turn as a child of `task.run` and
+    // ends it once at the turn return.
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const runSpan = spans.find((span) => span.name === "task.run");
+    expect(runSpan).toBeTruthy();
+    // Exactly one `agent.turn` span opens for a remote-sandbox run.
+    const turnSpans = spans.filter((span) => span.name === "agent.turn");
+    expect(turnSpans).toHaveLength(1);
+    const turnSpan = turnSpans[0]!;
+    // The `agent.turn` `startSpan` call receives the `task.run` parent context
+    // as its third argument. The recorder builds the token as `{ span }`, so the
+    // turn span parents to `task.run`.
+    expect(turnSpan.parentContextArg).toEqual({ span: runSpan });
+    expect(turnSpan.parent).toBe(runSpan);
+    // It ends exactly once. A clean turn sets no error status.
+    expect(turnSpan.ended).toBe(true);
+    expect(turnSpan.endCalls).toBe(1);
+    expect(turnSpan.status).toBeNull();
+  });
+
+  it("test_agent_turn_span_is_noop_for_local_target", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // A local run has no sandbox, so the turn span stays a no-op even when a
+    // trace context is injected. No real `agent.turn` span opens.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", startupTraceContext: traceContext },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans.some((span) => span.name === "agent.turn")).toBe(false);
   });
 
   it("test_root_region_exec_parents_to_sandbox_startup", async () => {
@@ -3620,12 +3692,14 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     expect(spans.length).toBeGreaterThan(0);
     for (const span of spans) {
-      // The run root span uses its own closed allowlist; every other span uses
-      // the sandbox startup allowlist.
+      // The run root span and the agent turn span each use their own closed
+      // allowlist; every other span uses the sandbox startup allowlist.
       const allowed =
         span.name === "task.run"
           ? ALLOWED_RUN_SPAN_ATTRIBUTE_KEYS
-          : ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS;
+          : span.name === "agent.turn"
+            ? ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS
+            : ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS;
       for (const [key, value] of Object.entries(span.attributes)) {
         expect(
           allowed.has(key),

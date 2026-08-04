@@ -2929,10 +2929,19 @@ function openStartupRootSpan(
  * low-cardinality constant, never derived from run or user data. */
 const RUN_ROOT_SPAN_NAME = "task.run";
 
+/** The stable name of the one span for the agent turn. It is a fixed
+ * low-cardinality constant, never derived from run or user data. The turn span
+ * is a child of the run root span. */
+const TURN_SPAN_NAME = "agent.turn";
+
 /** The attribute prefix for the run root span. It groups the run-level span
  * attributes under one namespace, the same shape as the sandbox startup
  * prefix. */
 const RUN_ROOT_SPAN_ATTR_PREFIX = "paperclip.task.run.";
+
+/** The attribute prefix for the agent turn span. It groups the turn-level span
+ * attributes under one namespace, the same shape as the run root prefix. */
+const TURN_SPAN_ATTR_PREFIX = "paperclip.agent.turn.";
 
 /** Map a run id to a non-reversible 12-hex hash for a span attribute. The raw
  * run id never rides a span; only this hash does. This mirrors the id-hash rule
@@ -2994,6 +3003,63 @@ function openRunRootSpan(
         span.end();
       } catch {
         // Observability must not change run control flow.
+      }
+    },
+  };
+}
+
+/**
+ * Open the one span for the agent turn and return its parent-context token plus
+ * a guarded `end`. The span parents to the run root span through
+ * `runParentContext`, so `agent.turn` becomes a child of `task.run`. The
+ * executor holds the returned `parentContext` for later exec parenting. The
+ * `end` closure runs at most once and swallows every tracer error, so
+ * observability never changes turn control flow. With no injected trace context
+ * the tracer is a no-op and the span is a no-op.
+ *
+ * The span carries only its own wall time. It never carries the prompt, the
+ * command, or any user text, so no raw run text rides the span. This follows the
+ * same allowlist rule as `openStartupRootSpan`.
+ */
+function openTurnSpan(
+  tracing: StartupTraceContext,
+  nowMs: () => number,
+  // The run root span parent context. `agent.turn` opens as a child of it, so
+  // the turn parents to `task.run`. It is an opaque token here.
+  runParentContext: StartupSpanContext,
+): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(TURN_SPAN_NAME, undefined, runParentContext);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  const startedAtMs = nowMs();
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // The wall time is a plain duration. No raw run text rides the span.
+        span.setAttribute(`${TURN_SPAN_ATTR_PREFIX}wall_ms`, nowMs() - startedAtMs);
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change turn control flow.
       }
     },
   };
@@ -3434,6 +3500,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const textParts: string[] = [];
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      // Open the agent turn span as a child of the run root span. It wraps the
+      // whole turn: the executor holds `turnSpan.parentContext` for later exec
+      // parenting, and the `finally` below ends the span once on every path. The
+      // span is declared before the `try` so the `finally` can reach it.
+      const turnSpan = openTurnSpan(tracing, now, runRootSpan.parentContext);
       try {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
@@ -3637,6 +3708,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           resultJson: { phase: "turn" },
           summary: message,
         };
+      } finally {
+        // End the agent turn span exactly once, on every return and on a throw.
+        // `runFailed` is `false` only on a completed, non-timed-out turn, so the
+        // span status is correct for success, error, and timeout.
+        turnSpan.end(runFailed);
       }
     } finally {
       // End the run root span exactly once, on every return and on a throw.
