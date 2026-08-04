@@ -325,4 +325,28 @@ describeEmbeddedPostgres("agent service clearError", () => {
     expect(openIssue?.assigneeAgentId).toBeNull();
     expect(comments[0]).toMatchObject({ authorType: "system", body: `System: assignment released from source agent ${terminatedAgentId}; reason: agent was terminated; moved to the unassigned queue.` });
   });
+
+  it("moves work to the unassigned queue when the manager has an invalid reporting chain", async () => {
+    const companyId = randomUUID();
+    const terminatedAncestorId = randomUUID();
+    const invalidManagerId = randomUUID();
+    const terminatedAgentId = randomUUID();
+    const directReportId = randomUUID();
+    const openIssueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values([
+      { id: terminatedAncestorId, companyId, name: "Terminated ancestor", role: "manager", status: "terminated", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: invalidManagerId, companyId, name: "Invalid manager", role: "manager", reportsTo: terminatedAncestorId, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: terminatedAgentId, companyId, name: "Leaving", role: "engineer", reportsTo: invalidManagerId, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: directReportId, companyId, name: "Report", role: "engineer", reportsTo: terminatedAgentId, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(issues).values({ id: openIssueId, companyId, title: "Open work", status: "in_progress", priority: "high", assigneeAgentId: terminatedAgentId });
+
+    await agentService(db).terminate(terminatedAgentId);
+
+    const [openIssue] = await db.select().from(issues).where(eq(issues.id, openIssueId));
+    const [directReport] = await db.select().from(agents).where(eq(agents.id, directReportId));
+    expect(openIssue?.assigneeAgentId).toBeNull();
+    expect(directReport?.reportsTo).toBeNull();
+  });
 });

@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, or, agents, companies, createDb, issueComments, issues } from "../packages/db/src/index.js";
-import { isAgentStatusAssignableToWork } from "../packages/shared/src/agent-eligibility.js";
+import { isAgentAssignableToWork } from "../packages/shared/src/agent-eligibility.js";
 import { loadConfig } from "../server/src/config.js";
 
 const OPEN_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
@@ -25,6 +25,13 @@ async function main() {
   let releasedToQueue = 0;
 
   for (const company of companyRows) {
+    const companyAgents = await db.select({
+      id: agents.id,
+      companyId: agents.companyId,
+      name: agents.name,
+      status: agents.status,
+      reportsTo: agents.reportsTo,
+    }).from(agents).where(eq(agents.companyId, company.id));
     const candidates = await db.select({
       issueId: issues.id,
       assigneeAgentId: issues.assigneeAgentId,
@@ -40,18 +47,25 @@ async function main() {
     beforeCount += candidates.length;
     for (const candidate of candidates) {
       const manager = candidate.managerId
-        ? await db.select({ id: agents.id, status: agents.status }).from(agents)
-          .where(and(eq(agents.id, candidate.managerId), eq(agents.companyId, company.id)))
-          .then((rows) => rows[0] ?? null)
+        ? companyAgents.find((agent) => agent.id === candidate.managerId) ?? null
         : null;
-      const assigneeAgentId = manager && isAgentStatusAssignableToWork(manager.status) ? manager.id : null;
-      if (assigneeAgentId) releasedToManager += 1;
-      else releasedToQueue += 1;
-      if (dryRun) continue;
+      const assigneeAgentId = manager && isAgentAssignableToWork({ agent: manager, agents: companyAgents }) ? manager.id : null;
+      if (dryRun) {
+        if (assigneeAgentId) releasedToManager += 1;
+        else releasedToQueue += 1;
+        continue;
+      }
 
       await db.transaction(async (tx) => {
-        await tx.update(issues).set({ assigneeAgentId, updatedAt: new Date() })
-          .where(and(eq(issues.id, candidate.issueId), eq(issues.companyId, company.id)));
+        const released = await tx.update(issues).set({ assigneeAgentId, updatedAt: new Date() })
+          .where(and(
+            eq(issues.id, candidate.issueId),
+            eq(issues.companyId, company.id),
+            eq(issues.assigneeAgentId, candidate.assigneeAgentId!),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+          ))
+          .returning({ id: issues.id });
+        if (released.length === 0) return;
         await tx.insert(issueComments).values({
           companyId: company.id,
           issueId: candidate.issueId,
@@ -60,6 +74,8 @@ async function main() {
             ? `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; reassigned to its manager.`
             : `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; moved to the unassigned queue.`,
         });
+        if (assigneeAgentId) releasedToManager += 1;
+        else releasedToQueue += 1;
       });
     }
   }

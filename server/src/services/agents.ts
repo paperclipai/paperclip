@@ -19,7 +19,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
-  isAgentStatusAssignableToWork,
+  isAgentAssignableToWork,
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
@@ -713,19 +713,23 @@ export function agentService(db: Db) {
 
       await db.transaction(async (tx) => {
         const now = new Date();
+        const companyAgents = await tx.select().from(agents).where(eq(agents.companyId, existing.companyId));
+        const eligibilityAgents = companyAgents.map(toEligibilityAgent);
         const manager = existing.reportsTo
-          ? await tx
-            .select({ id: agents.id, status: agents.status })
-            .from(agents)
-            .where(and(eq(agents.id, existing.reportsTo), eq(agents.companyId, existing.companyId)))
-            .then((rows) => rows[0] ?? null)
+          ? companyAgents.find((candidate) => candidate.id === existing.reportsTo) ?? null
           : null;
-        const replacementAssigneeId = manager && isAgentStatusAssignableToWork(manager.status) ? manager.id : null;
+        const replacementAssigneeId = manager && isAgentAssignableToWork({
+          agent: toEligibilityAgent(manager),
+          agents: eligibilityAgents,
+        })
+          ? manager.id
+          : null;
         const releasableIssues = await tx
           .select({ id: issues.id })
           .from(issues)
           .where(and(
             eq(issues.assigneeAgentId, id),
+            eq(issues.companyId, existing.companyId),
             inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
           ));
 
@@ -742,12 +746,13 @@ export function agentService(db: Db) {
         await tx
           .update(agents)
           .set({ reportsTo: replacementAssigneeId, updatedAt: now })
-          .where(eq(agents.reportsTo, id));
+          .where(and(eq(agents.reportsTo, id), eq(agents.companyId, existing.companyId)));
         await tx
           .update(issues)
           .set({ assigneeAgentId: replacementAssigneeId, updatedAt: now })
           .where(and(
             eq(issues.assigneeAgentId, id),
+            eq(issues.companyId, existing.companyId),
             inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
           ));
         if (releasableIssues.length > 0) {
