@@ -17,6 +17,7 @@ def test_absenderblock_maskiert_html():
     assert "<b>" not in block
     assert "A&lt;b&gt;B" in block
     assert "R&amp;D" in block
+    assert "x&lt;y" in block
 
 
 def test_komponiere_ersetzt_den_platzhalter():
@@ -66,6 +67,21 @@ def test_zu_cid_ohne_bild_bleibt_unveraendert():
     html, anhaenge = signatur.zu_cid("<p>kein Bild</p>")
     assert html == "<p>kein Bild</p>"
     assert anhaenge == []
+
+
+def test_zu_cid_ignoriert_data_src_falsch_positiv():
+    """Sichert: data-src wird nicht mit src verwechselt."""
+    html = '<img src="tiny.gif" data-src="data:image/png;base64,AAAA">'
+    result_html, anhaenge = signatur.zu_cid(html)
+    # data-src endet zwar auf 'src', ist aber nicht das src-Attribut
+    # Sollte nicht erkannt und nicht in Anhänge konvertiert werden
+    assert result_html == html
+    assert anhaenge == []
+    # Normales src= wird trotzdem erkannt
+    normal_html = '<img src="data:image/png;base64,AAAA">'
+    result_normal, anhaenge_normal = signatur.zu_cid(normal_html)
+    assert 'src="cid:attachment_0"' in result_normal
+    assert len(anhaenge_normal) == 1
 
 
 def test_vorgabe_bereich_ist_ai():

@@ -24,7 +24,7 @@ VORGABE_BEREICH = "ai"
 PLATZHALTER = "{{ABSENDERBLOCK}}"
 
 _IMG_DATA_RE = re.compile(
-    r'<img([^>]*?)src="data:(image/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>'
+    r'<img([^>]*?)(?<=[\s"\'])src="data:(image/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>'
 )
 
 
