@@ -9,6 +9,29 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const blockerIssueId = "88888888-8888-4888-8888-888888888888";
+const existingBlockerIssueId = "99999999-9999-4999-8999-999999999999";
+
+// Mirrors the shape the real authorization service produces for a blocker-edge
+// mutation: `issue:mutate` is denied as usual unless the caller proved the body
+// was narrowed to blockedByIssueIds and set the scope flag.
+async function blockerEdgeAwareDecide(input: { action: string; scope?: Record<string, unknown> | null }) {
+  const blockerEdge = input.action === "issue:mutate" && input.scope?.blockerEdgeOnly === true;
+  if (blockerEdge) {
+    return {
+      allowed: true,
+      action: input.action,
+      reason: "allow_issue_blocker_edge_grant",
+      explanation: "Allowed by a blocker-edge grant over issues the actor owns.",
+    };
+  }
+  return {
+    allowed: input.action === "issue:read",
+    action: input.action,
+    reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+    explanation: input.action === "issue:read" ? "Allowed by test read grant." : "Missing permission.",
+  };
+}
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -800,6 +823,83 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a peer agent a blockedByIssueIds-only PATCH under a blocker-edge grant", async () => {
+    mockAccessService.decide.mockImplementation(blockerEdgeAwareDecide);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({
+        blockerEdgeOnly: true,
+        addedBlockerIssueIds: [blockerIssueId],
+        blockerEdgeRemovesExisting: false,
+      }),
+    }));
+  });
+
+  // Item 4 — the load-bearing guard. A body carrying anything besides
+  // blockedByIssueIds must never reach the authorization layer with the
+  // widened scope, or the ordering verb becomes a way to smuggle a content
+  // edit onto another agent's row.
+  it("withholds the blocker-edge grant when the PATCH body carries any other field", async () => {
+    mockAccessService.decide.mockImplementation(blockerEdgeAwareDecide);
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId], title: "smuggled content edit" });
+
+    // The widened scope is never set, so `issue:mutate` is decided on the
+    // ordinary boundary and refused there — before the ownership branch.
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+      scope: expect.objectContaining({ blockerEdgeOnly: true }),
+    }));
+  });
+
+  it("flags a blocker-edge PATCH that drops an existing blocker", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: existingBlockerIssueId }],
+      blocks: [],
+    });
+    mockAccessService.decide.mockImplementation(blockerEdgeAwareDecide);
+
+    await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId] });
+
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({
+        blockerEdgeOnly: true,
+        addedBlockerIssueIds: [blockerIssueId],
+        blockerEdgeRemovesExisting: true,
+      }),
+    }));
+  });
+
+  it("still refuses a blocker-edge PATCH the authorization layer denies", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by test read grant." : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

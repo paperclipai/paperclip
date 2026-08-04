@@ -75,6 +75,7 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    createdByAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
   } = {},
@@ -90,6 +91,7 @@ async function createIssue(
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      createdByAgentId: input.createdByAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
     })
@@ -1265,6 +1267,219 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: true,
       reason: "allow_issue_mention_grant",
     });
+  });
+
+  // The boundary that withholds the mention grant from `issue:mutate` exists at
+  // two independent sites: the low-trust boundary (phrased in the negative) and
+  // the ordinary boundary. A blocker-edge mutation has to clear both, so each is
+  // covered here with its own no-scope negative control.
+  it("admits a low-trust mentioned agent to a blocker-edge issue:mutate, and withholds it without the scope", async () => {
+    const company = await createCompany(db, "BlockerEdgeLowTrust");
+    const allowedProject = await createProject(db, company.id, "BlockerEdgeLowTrustAllowed");
+    const targetProject = await createProject(db, company.id, "BlockerEdgeLowTrustTarget");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Low-trust blocker-edge target",
+      projectId: targetProject.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    const blocker = await createIssue(db, company.id, {
+      title: "Low-trust blocker",
+      projectId: targetProject.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${mentionedAgent.id}) please state the ordering on this issue.`,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: assigneeAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+      scope: { blockerEdgeOnly: true, addedBlockerIssueIds: [blocker.id], blockerEdgeRemovesExisting: false },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_issue_mention_grant" });
+
+    // Negative control: same actor, same mention, no blocker-edge scope.
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("admits a standard-trust mentioned agent to a blocker-edge issue:mutate on another agent's issue", async () => {
+    const company = await createCompany(db, "BlockerEdgeStandard");
+    const project = await createProject(db, company.id, "BlockerEdgeStandardProject");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const mentionedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Standard-trust blocker-edge target",
+      projectId: project.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    const blocker = await createIssue(db, company.id, { title: "Standard blocker", projectId: project.id });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@Engineer](agent://${mentionedAgent.id}) please state the ordering on this issue.`,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: assigneeAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+      scope: { blockerEdgeOnly: true, addedBlockerIssueIds: [blocker.id], blockerEdgeRemovesExisting: false },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_issue_mention_grant" });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("admits a blocker-edge issue:mutate on the strength of owning every added blocker", async () => {
+    const company = await createCompany(db, "BlockerEdgeOwnership");
+    const project = await createProject(db, company.id, "BlockerEdgeOwnershipProject");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const orderingAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Ownership blocker-edge target",
+      projectId: project.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    // No mention anywhere on the target issue — ownership of the blocker is the
+    // only basis under test.
+    const ownedByCreation = await createIssue(db, company.id, {
+      title: "Blocker the actor created",
+      projectId: project.id,
+      createdByAgentId: orderingAgent.id,
+    });
+    const ownedByAssignment = await createIssue(db, company.id, {
+      title: "Blocker the actor is assigned",
+      projectId: project.id,
+      assigneeAgentId: orderingAgent.id,
+    });
+    const unowned = await createIssue(db, company.id, {
+      title: "Blocker owned by someone else",
+      projectId: project.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: orderingAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: assigneeAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+      scope: {
+        blockerEdgeOnly: true,
+        addedBlockerIssueIds: [ownedByCreation.id, ownedByAssignment.id],
+        blockerEdgeRemovesExisting: false,
+      },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_issue_blocker_edge_grant" });
+
+    // One unowned blocker in the set denies the whole write — the check is
+    // "every added blocker", not "any".
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+      scope: {
+        blockerEdgeOnly: true,
+        addedBlockerIssueIds: [ownedByCreation.id, unowned.id],
+        blockerEdgeRemovesExisting: false,
+      },
+    })).resolves.toMatchObject({ allowed: false });
+
+    // Dropping an existing blocker is not an ordering the actor owns.
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+      scope: {
+        blockerEdgeOnly: true,
+        addedBlockerIssueIds: [ownedByCreation.id],
+        blockerEdgeRemovesExisting: true,
+      },
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("does not let the blocker-edge scope widen a non-blocker issue:mutate", async () => {
+    const company = await createCompany(db, "BlockerEdgeNoSmuggle");
+    const project = await createProject(db, company.id, "BlockerEdgeNoSmuggleProject");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const orderingAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "No-smuggle target",
+      projectId: project.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+
+    // An empty added set has nothing to establish ownership over, so the
+    // ownership basis cannot fire and the mention basis is absent.
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: orderingAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: assigneeAgent.id,
+        status: issue.status,
+      },
+      scope: { blockerEdgeOnly: true, addedBlockerIssueIds: [], blockerEdgeRemovesExisting: false },
+    })).resolves.toMatchObject({ allowed: false });
   });
 
   it("does not grant mention-scoped issue access from self-authored or unauthorized-author comments", async () => {
