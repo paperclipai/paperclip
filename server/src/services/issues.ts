@@ -2306,8 +2306,6 @@ async function listIssueBlockerAttentionMap(
   let frontier = roots.map((root) => root.id);
   let truncated = false;
   const pendingFinalizeBlockerIssueIds = new Set<string>();
-  /** issue id → resolved `blocks` edges pointing at it (see the loop below). */
-  const satisfiedBlockerIdsByIssueId = new Map<string, Set<string>>();
   for (let depth = 0; frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
     const nextFrontier = new Set<string>();
 
@@ -2369,21 +2367,9 @@ async function listIssueBlockerAttentionMap(
         childRowsPromise,
       ]);
 
-      const isUnresolvedBlockerRow = (row: IssueBlockerAttentionQueryRow) =>
-        row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId);
-      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(isUnresolvedBlockerRow);
-      // `edgesByIssueId` deliberately keeps only unresolved edges, so a resolved
-      // blocker leaves no trace there. Count them here instead: it is the only
-      // thing that tells a chain that finished apart from a row that never had
-      // a blocker recorded, and the two need different remedies.
-      for (const row of explicitBlockerRows) {
-        if (row.issueId === null || isUnresolvedBlockerRow(row)) continue;
-        const satisfied = satisfiedBlockerIdsByIssueId.get(row.issueId) ?? new Set<string>();
-        // A set, not a counter: an issue can be re-queried at a later BFS depth
-        // (or through a cycle), and a counter would double-count it there.
-        satisfied.add(row.blockerIssueId);
-        satisfiedBlockerIdsByIssueId.set(row.issueId, satisfied);
-      }
+      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
+        (row) => row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
+      );
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
@@ -2417,6 +2403,66 @@ async function listIssueBlockerAttentionMap(
     frontier = [...nextFrontier];
   }
   if (frontier.length > 0) truncated = true;
+
+  // Resolved blockers, counted for the roots only — the one thing that tells a
+  // blocker chain that finished apart from a row that never had a blocker
+  // recorded, and the two need different remedies. The walk above cannot supply
+  // it from either side: `edgesByIssueId` keeps only *unresolved* explicit
+  // edges, and the child query drops terminal children outright. Both are
+  // counted here, so a blocked parent whose only blocker was a child that has
+  // since finished does not report "no blocker recorded".
+  //
+  // The asymmetry on `cancelled` is deliberate and mirrors the walk: a
+  // cancelled *explicit* blocker still holds its dependent (readiness treats it
+  // as unresolved until an operator changes the relation), so such a root never
+  // reaches the no-live-blocker branch at all; a cancelled *child* is dropped
+  // by the walk, so it is counted as satisfied.
+  const satisfiedBlockerCountByRootId = new Map<string, number>();
+  for (const chunk of chunkList(roots.map((root) => root.id), ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const [resolvedExplicitRows, terminalChildRows]: [
+      Array<{ issueId: string | null; blockerIssueId: string }>,
+      Array<{ issueId: string | null; blockerIssueId: string }>,
+    ] = await Promise.all([
+      dbOrTx
+        .select({ issueId: issueRelations.relatedIssueId, blockerIssueId: issues.id })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, chunk),
+            eq(issues.companyId, companyId),
+            eq(issues.status, "done"),
+          ),
+        ),
+      dbOrTx
+        .select({ issueId: issues.parentId, blockerIssueId: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, chunk),
+            inArray(issues.status, BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES),
+          ),
+        ),
+    ]);
+    const satisfiedIdsByRootId = new Map<string, Set<string>>();
+    for (const row of [...resolvedExplicitRows, ...terminalChildRows]) {
+      if (!row.issueId) continue;
+      // A `done` blocker whose workspace has not finalized still holds its
+      // dependent, so it is not satisfied.
+      if (pendingFinalizeBlockerIssueIds.has(row.blockerIssueId)) continue;
+      // A set, not a counter: one issue can be both an explicit blocker and a
+      // child of the same root, and must count once.
+      const satisfied = satisfiedIdsByRootId.get(row.issueId) ?? new Set<string>();
+      satisfied.add(row.blockerIssueId);
+      satisfiedIdsByRootId.set(row.issueId, satisfied);
+    }
+    for (const [rootId, satisfied] of satisfiedIdsByRootId) {
+      satisfiedBlockerCountByRootId.set(rootId, satisfied.size);
+    }
+  }
 
   const nodeIds = [...nodesById.keys()];
   const activeIssueIds = new Set<string>();
@@ -2696,7 +2742,7 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const satisfiedBlockerCount = satisfiedBlockerIdsByIssueId.get(root.id)?.size ?? 0;
+    const satisfiedBlockerCount = satisfiedBlockerCountByRootId.get(root.id) ?? 0;
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);

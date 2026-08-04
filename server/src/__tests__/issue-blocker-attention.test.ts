@@ -218,6 +218,47 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("counts a completed child as a satisfied blocker, not as a missing one", async () => {
+    // The walk treats an active child as an implicit blocker and drops it once
+    // it is terminal, so a parent whose only blocker was a child that finished
+    // has no edge left anywhere. Counting only explicit `blocks` rows would
+    // report it as edgeless and send the reader off to record a blocker, when
+    // the real remedy is to move the row on.
+    const { companyId } = await createCompany("PBK");
+    const parentId = await insertIssue({ companyId, identifier: "PBK-1", title: "Parent", status: "blocked" });
+    await insertIssue({ companyId, identifier: "PBK-2", title: "Done child", status: "done", parentId });
+    await insertIssue({ companyId, identifier: "PBK-3", title: "Cancelled child", status: "cancelled", parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "no_live_blocker",
+      unresolvedBlockerCount: 0,
+      satisfiedBlockerCount: 2,
+    });
+  });
+
+  it("counts an issue that is both a child and an explicit blocker of the same root once", async () => {
+    const { companyId } = await createCompany("PBD");
+    const parentId = await insertIssue({ companyId, identifier: "PBD-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBD-2",
+      title: "Done child that is also an explicit blocker",
+      status: "done",
+      parentId,
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      reason: "no_live_blocker",
+      satisfiedBlockerCount: 1,
+    });
+  });
+
   it("counts satisfied blockers alongside the ones still holding a partially-resolved chain", async () => {
     const { companyId } = await createCompany("PBP");
     const rootId = await insertIssue({ companyId, identifier: "PBP-1", title: "Root", status: "blocked" });
