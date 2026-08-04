@@ -88,6 +88,7 @@ import {
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
+  runWithRuntimeParent,
   setSandboxRootSpanAttributes,
   type SandboxRootSpanContext,
   type StartupSpan,
@@ -3094,7 +3095,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let prepared: AcpxPreparedRuntime;
       try {
-        prepared = await buildRuntime({ ctx, engine, deps, spanParent });
+        // Publish the `sandbox.startup` context to the runtime-parent store for
+        // the whole bring-up. A startup-body exec that runs outside a measured
+        // step reads this token and parents its span to `sandbox.startup`, not to
+        // a detached root. A measured step nests its own `activeStepContextStorage`
+        // run inside this wrap and overrides the store, so an in-step exec still
+        // parents to its step span. On a local or SSH target
+        // `spanParent.parentContext` is a no-op token, so the wrap is inert.
+        prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
+          buildRuntime({ ctx, engine, deps, spanParent }),
+        );
       } catch (err) {
         rootSpan.end(true);
         throw err;

@@ -35,7 +35,7 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
-import { SANDBOX_STARTUP_SPAN_ATTRS } from "./startup-timing.js";
+import { getActiveStepContext, SANDBOX_STARTUP_SPAN_ATTRS } from "./startup-timing.js";
 
 
 const tempRoots: string[] = [];
@@ -276,6 +276,19 @@ function createRecordingStartupTrace() {
     },
   } satisfies AdapterExecutionContext["startupTraceContext"];
   return { traceContext, spans };
+}
+
+// Mirror the production host-to-sandbox exec seam for one execution. The real
+// seam reads the runtime-parent store with `getActiveStepContext()` and opens a
+// `sandbox.exec` span whose third `startSpan` argument is the stored
+// parent-context token. This test copy issues that same span through the
+// injected recorder, so a test asserts which context a startup-body exec parents
+// to at the point the run issues it. The recorder pushes the span into `spans`.
+function issueSandboxExecFromStore(
+  tracing: NonNullable<AdapterExecutionContext["startupTraceContext"]>,
+): void {
+  const activeStep = getActiveStepContext();
+  tracing.tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
 }
 
 // The closed span-attribute allowlist for a sandbox-start span. A test asserts
@@ -3358,6 +3371,105 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(result.exitCode).toBe(0);
     expect(spans.some((span) => span.name === "task.run")).toBe(false);
     expect(spans).toHaveLength(0);
+  });
+
+  it("test_root_region_exec_parents_to_sandbox_startup", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Issue one exec from the root region of the bring-up. `getServers()` runs
+    // once inside the bring-up, after the `sandbox.startup` span opens and
+    // outside every measured step, so it stands in for a startup-body exec that
+    // runs at the root region. The run publishes the `sandbox.startup` context to
+    // the runtime-parent store for the whole bring-up, so the exec reads that
+    // token here.
+    const runtimeMcp = {
+      getServers: () => {
+        issueSandboxExecFromStore(traceContext);
+        return [];
+      },
+    };
+
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        startupTraceContext: traceContext,
+        runtimeMcp: runtimeMcp as never,
+      },
+    );
+
+    const startupSpan = spans.find((span) => span.name === "sandbox.startup");
+    expect(startupSpan).toBeTruthy();
+    const execSpan = spans.find((span) => span.name === "sandbox.exec");
+    expect(execSpan).toBeTruthy();
+    // The root-region exec parents to `sandbox.startup`, not to a detached root.
+    // The third `startSpan` argument is the exact `sandbox.startup` child context
+    // that `contextWithSpan` built, so the exec span is a child of the bring-up.
+    expect(execSpan!.parentContextArg).toEqual({ span: startupSpan });
+    expect(execSpan!.parent).toBe(startupSpan);
+  });
+
+  it("test_in_step_exec_still_parents_to_step_after_root_wrap", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Issue one exec from inside the `stage.sync` step body, under the same root
+    // wrap. `prepareRemoteManagedHome` runs inside the measured `stage.sync`
+    // step, so the step overrides the runtime-parent store with its own context
+    // there. The in-step exec must read the step context, not the root context.
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        startupTraceContext: traceContext,
+        prepareRemoteManagedHome: async (input) => {
+          issueSandboxExecFromStore(traceContext);
+          const stagedRuntime = await input.stage([]);
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    const stepSpan = spans.find((span) => span.name === "stage.sync");
+    expect(stepSpan).toBeTruthy();
+    const startupSpan = spans.find((span) => span.name === "sandbox.startup");
+    expect(startupSpan).toBeTruthy();
+    const execSpan = spans.find((span) => span.name === "sandbox.exec");
+    expect(execSpan).toBeTruthy();
+    // The in-step exec still parents to its step span. `measureStartupStep`
+    // overrides the store inside the wrap, so the step context wins over the
+    // root context for an exec that runs inside the step.
+    expect(execSpan!.parentContextArg).toEqual({ span: stepSpan });
+    expect(execSpan!.parent).toBe(stepSpan);
+    // The in-step exec does not parent to `sandbox.startup`.
+    expect(execSpan!.parent).not.toBe(startupSpan);
   });
 
   it("records root wall / work / diff times and the bounded context on the root span", async () => {
