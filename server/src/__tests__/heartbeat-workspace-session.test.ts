@@ -287,6 +287,48 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("does not require a persisted execution workspace for a projectless issue carrying a stale resolvedWorkspace.workspaceId", async () => {
+    // RENA-54683: resolveAnchorWorkspaceForRun's task_session branch used to propagate
+    // workspaceId from an earlier, project-bound session even when no project resolves for the
+    // current run. executionWorkspacesSvc.create() is unconditionally skipped without a project,
+    // so requiring persistence here was unsatisfiable by construction and killed every such run
+    // with missing_persisted_execution_workspace. A stale workspaceId with no backing project
+    // must not raise the workspace expectation.
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          issue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            projectId: null,
+            projectWorkspaceId: null,
+          },
+          resolvedWorkspace: buildResolvedWorkspace({
+            source: "task_session",
+            projectId: null,
+            workspaceId: "workspace-from-stale-session",
+          }),
+          executionWorkspace: {
+            baseCwd: "/tmp/task-session-cwd",
+            source: "task_session",
+            projectId: null,
+            workspaceId: "workspace-from-stale-session",
+            repoUrl: null,
+            repoRef: null,
+            strategy: "project_primary",
+            cwd: "/tmp/task-session-cwd",
+            branchName: null,
+            worktreePath: null,
+            warnings: [],
+            created: false,
+            baseRefSha: null,
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a workspace-linked issue when no effective adapter cwd was resolved", async () => {
     const input = buildWorkspaceValidationInput();
 
@@ -439,6 +481,49 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
       "missing_git_metadata",
       "has no .git metadata",
     );
+  });
+
+  it("does not require a persisted execution workspace for a stale workspaceId inherited from an earlier, project-bound session when no project backs the current run", async () => {
+    // Regression for RENA-54683: resolveAnchorWorkspaceForRun's task_session branch used to
+    // propagate previousSessionParams.workspaceId verbatim even when the current run resolved no
+    // project. That stale id made workspaceExpectation true here even though
+    // executionWorkspacesSvc.create() is skipped whenever no project backs the run, so
+    // persistedExecutionWorkspace could never be non-null — an unconditional false positive.
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          issue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            projectId: null,
+            projectWorkspaceId: null,
+          },
+          resolvedWorkspace: buildResolvedWorkspace({
+            source: "task_session",
+            projectId: null,
+            // Stale id from an earlier, project-bound session of the same issue.
+            workspaceId: "workspace-1",
+            cwd: "/tmp/task-session-cwd",
+          }),
+          executionWorkspace: {
+            baseCwd: "/tmp/task-session-cwd",
+            source: "task_session",
+            projectId: null,
+            workspaceId: "workspace-1",
+            repoUrl: null,
+            repoRef: null,
+            strategy: "project_primary",
+            cwd: "/tmp/task-session-cwd",
+            branchName: null,
+            worktreePath: null,
+            warnings: [],
+            created: false,
+            baseRefSha: null,
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
