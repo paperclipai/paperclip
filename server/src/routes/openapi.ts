@@ -2527,7 +2527,10 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Delete a project",
-  request: { params: z.object({ id: z.string() }) },
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ deleteFiles: z.enum(["true", "false", "1", "0"]).optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
