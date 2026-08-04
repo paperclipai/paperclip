@@ -12527,6 +12527,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function formatStaleQueuedRunReapError(ageMin: number, resultJson: unknown) {
+    const throttle = parseObject(parseObject(resultJson).runGateThrottle);
+    const kind = readNonEmptyString(throttle.kind);
+    const reason = readNonEmptyString(throttle.reason);
+    const lastGateObservation = kind
+      ? `; last observed run gate: ${kind}${reason ? ` (${reason})` : ""}`
+      : "";
+    return `Reaped stale queued run: queued ${ageMin}m after a fresh admission attempt did not claim it${lastGateObservation}`;
+  }
+
   function readActiveProviderQuotaRetryNotBefore(
     run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> | null | undefined,
     now: Date = new Date(),
@@ -14111,9 +14121,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1);
         if (issue[0]?.status === "in_progress") continue;
       }
+      // LAST-LOOK GATE RE-CHECK before cancelling.
+      //
+      // Between the first gate check and this point we have awaited several
+      // queries plus a full admission attempt. The instance can saturate inside
+      // that window — and a run held by a capacity cap is *correctly deferred*,
+      // exactly like outside_activity_window or a quota cooldown. Cancelling it
+      // destroys queued work for a condition that resolves itself.
+      //
+      // This also fixes the message. The old text asserted a cause it never
+      // measured ("no claim while the agent was idle"), inferred purely from the
+      // agent row. An agent is idle while the *instance* is saturated, so that
+      // string sent two separate RCAs (TSMC-18787 and TSMC-19481) chasing a
+      // claim-path bug that did not exist. Never state a cause the reaper did
+      // not observe.
+      const lateGateBlock = await runGate.getRunGateBlock({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        adapterType,
+        agentRuntimeConfig: parsedRuntimeConfig,
+        isManualOverride: run.triggerDetail === "manual",
+        now,
+      });
+      if (lateGateBlock) {
+        await markQueuedRunDeferredByGate(run, lateGateBlock, now);
+        continue;
+      }
       const ageMin = Math.round((now.getTime() - new Date(run.createdAt).getTime()) / 60000);
       try {
-        await cancelRunInternal(run.id, `Reaped stale queued run: queued ${ageMin}m with no claim while the agent was idle`);
+        await cancelRunInternal(run.id, formatStaleQueuedRunReapError(ageMin, current.resultJson));
         reaped.push(run.id);
         await logActivity(db, {
           companyId: run.companyId,

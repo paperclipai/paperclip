@@ -1210,6 +1210,98 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(issue?.status).toBe("todo");
   });
 
+  it("does not reap stale queued runs that are deferred by an adapter concurrency cap", async () => {
+    const now = new Date("2026-06-11T09:30:00.000Z");
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Capacity-deferred queued issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    // Saturate the codex_local adapter cap with runs belonging to OTHER agents.
+    // These need real agent rows: heartbeat_runs.agent_id is a foreign key, and
+    // inventing ids here fails the insert before the reaper is ever exercised.
+    const saturatingAgentIds = Array.from({ length: 3 }, () => randomUUID());
+    await db.insert(agents).values(saturatingAgentIds.map((id, index) => ({
+      id,
+      companyId,
+      name: `CapacityHog${index}`,
+      role: "engineer",
+      status: "active" as const,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    })));
+    await db.insert(heartbeatRuns).values(saturatingAgentIds.map((id) => ({
+      id: randomUUID(),
+      companyId,
+      agentId: id,
+      invocationSource: "automation" as const,
+      triggerDetail: "system",
+      status: "running" as const,
+      contextSnapshot: {},
+    })));
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(now.getTime() - 20 * 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapStaleQueuedRuns({ staleMs: 15 * 60_000, now });
+
+    expect(result).toMatchObject({ reaped: 0, runIds: [] });
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    // A capacity block carries no known nextChangeAt, so the deferral records an
+    // escalating short backoff (RUN_GATE_CONCURRENCY_BACKOFF_MS) rather than
+    // null: the run must be retried promptly once a slot frees, not parked
+    // indefinitely. Asserting the backoff is the point of this case -- the run
+    // is deferred and re-armed, never cancelled.
+    expect(run).toMatchObject({
+      status: "queued",
+      errorCode: null,
+      resultJson: {
+        runGateThrottle: {
+          kind: "adapter_concurrency_limit",
+          attempt: 1,
+          // first entry of RUN_GATE_CONCURRENCY_BACKOFF_MS (5s); the constant is
+          // closure-local to the service, so it is not imported just for this.
+          retryNotBefore: new Date(now.getTime() + 5_000).toISOString(),
+        },
+      },
+    });
+    expect(wakeup?.status).toBe("queued");
+    expect(issue?.status).toBe("todo");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("gives an aged queued run a fresh admission attempt before reaping it", async () => {
     const now = new Date("2026-06-11T09:30:00.000Z");
     const { companyId, agentId } = await seedCompanyAndAgent();
