@@ -92,4 +92,50 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toBeNull();
   });
+
+  // Regression: a claude_local run refused by the account-level weekly window
+  // reported "You've hit your weekly limit · resets 7pm (Europe/London)". That
+  // matched neither the quota wording nor the "try again at" reset clock, so it
+  // fell through to the ordinary bounded transient backoff and was replayed
+  // every few minutes for the whole length of the window.
+  it("classifies the Claude weekly-limit wording and its 'resets' clock", () => {
+    const now = new Date("2026-08-04T11:15:16.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your weekly limit · resets 7pm (Europe/London)",
+      resultJson: null,
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-04T18:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("classifies the Claude 5-hour-limit wording", () => {
+    const now = new Date("2026-08-04T11:15:16.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your 5-hour limit · resets 3pm (UTC)",
+      resultJson: null,
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-04T15:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("prefers the adapter's persisted retryNotBefore over the wall-clock prose", () => {
+    // The adapter reads the exact epoch off the CLI's structured
+    // rate_limit_event; a multi-day window cannot be recovered from prose.
+    const now = new Date("2026-08-02T07:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "You've hit your weekly limit · resets 7pm (Europe/London)",
+      resultJson: { retryNotBefore: "2026-08-04T18:00:00.000Z" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-04T18:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
 });

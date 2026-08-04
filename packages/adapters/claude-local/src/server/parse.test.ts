@@ -11,7 +11,20 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  readClaudeRateLimitRejection,
 } from "./parse.js";
+
+// A stream-json run refused by the account-level seven-day usage window. The CLI
+// reports the refusal three ways in one stream — the structured rate_limit_event,
+// the synthetic assistant message, and the result event — and this fixture keeps
+// all three so the classifier is exercised against the shape it really sees.
+// `resetsAt` 1785866400 is 2026-08-04T18:00:00Z, i.e. 7pm Europe/London.
+const WEEKLY_LIMIT_STDOUT = [
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1785866400,"rateLimitType":"seven_day","overageStatus":"allowed","isUsingOverage":false},"uuid":"a1","session_id":"s1"}',
+  '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1785866400,"rateLimitType":"seven_day","overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false},"uuid":"a2","session_id":"s1"}',
+  '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You\'ve hit your weekly limit · resets 7pm (Europe/London)"}]},"session_id":"s1","error":"rate_limit","is_api_error_message":true}',
+  '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"You\'ve hit your weekly limit · resets 7pm (Europe/London)","total_cost_usd":0,"session_id":"s1"}',
+].join("\n");
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required", () => {
@@ -365,6 +378,79 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("prefers the structured rate_limit_event reset over the wall-clock prose", () => {
+    const now = new Date("2026-08-04T11:15:16.000Z");
+    expect(
+      extractClaudeRetryNotBefore({ stdout: WEEKLY_LIMIT_STDOUT }, now)?.toISOString(),
+    ).toBe("2026-08-04T18:00:00.000Z");
+  });
+
+  it("falls back to the prose reset when the structured reset is already past", () => {
+    // A stale resetsAt must not park the retry in the past; the prose clock
+    // rolls forward to the next occurrence instead.
+    const now = new Date("2026-08-05T11:15:16.000Z");
+    expect(
+      extractClaudeRetryNotBefore({ stdout: WEEKLY_LIMIT_STDOUT }, now)?.toISOString(),
+    ).toBe("2026-08-05T18:00:00.000Z");
+  });
+});
+
+describe("readClaudeRateLimitRejection", () => {
+  it("reads the rejected account window and its exact reset epoch", () => {
+    expect(readClaudeRateLimitRejection({ stdout: WEEKLY_LIMIT_STDOUT })).toEqual({
+      resetsAt: new Date("2026-08-04T18:00:00.000Z"),
+      rateLimitType: "seven_day",
+    });
+  });
+
+  it("ignores allowed rate-limit events emitted during healthy runs", () => {
+    const stdout =
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1785866400,"rateLimitType":"seven_day"},"uuid":"a1"}';
+    expect(readClaudeRateLimitRejection({ stdout })).toBeNull();
+  });
+
+  it("returns null when the stream carries no rate-limit event", () => {
+    expect(readClaudeRateLimitRejection({ stdout: '{"type":"result","subtype":"success"}' })).toBeNull();
+  });
+});
+
+describe("claude subscription window classification (weekly-limit regression)", () => {
+  // Regression: "You've hit your weekly limit" matched neither the quota nor the
+  // reset wording, so the run was tagged claude_transient_upstream with no
+  // retryNotBefore and replayed on the short bounded backoff for the entire
+  // length of the window — every replay refused, every one costing a run.
+  const errorMessage = "You've hit your weekly limit · resets 7pm (Europe/London)";
+
+  it("classifies the weekly-limit wording as provider quota, not transient upstream", () => {
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+  });
+
+  it("classifies the 5-hour-limit wording as provider quota", () => {
+    expect(
+      isClaudeProviderQuotaError({ errorMessage: "You've hit your 5-hour limit · resets 3pm (Europe/London)" }),
+    ).toBe(true);
+  });
+
+  it("extracts the reset time from the weekly-limit prose alone", () => {
+    const now = new Date("2026-08-04T11:15:16.000Z");
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-08-04T18:00:00.000Z",
+    );
+  });
+
+  it("classifies the real refused stream as quota even though it also looks like a 429", () => {
+    // The raw stream contains `"error":"rate_limit"` and `api_error_status: 429`,
+    // which is what previously won the classification race.
+    expect(isClaudeProviderQuotaError({ stdout: WEEKLY_LIMIT_STDOUT })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ stdout: WEEKLY_LIMIT_STDOUT })).toBe(false);
+  });
+
+  it("still treats a plain overload as transient rather than quota", () => {
+    expect(isClaudeProviderQuotaError({ stderr: "HTTP 529: overloaded_error" })).toBe(false);
+    expect(isClaudeTransientUpstreamError({ stderr: "HTTP 529: overloaded_error" })).toBe(true);
   });
 });
 

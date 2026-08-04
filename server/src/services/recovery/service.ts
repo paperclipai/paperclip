@@ -381,8 +381,13 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+// Defence in depth for runs whose adapter did not tag `errorFamily`. Covers the
+// Claude CLI's per-window phrasings ("You've hit your weekly limit", "5-hour
+// limit") as well as the generic quota wording; without them a standing
+// account-level limit reads as an ordinary transient failure and gets retried on
+// the short bounded backoff for as long as the window lasts.
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your [^\n.·]{0,40}?\blimit\b|(?:session|weekly|5[-\s]?hour|seven[-\s]?day) limit\b|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -391,9 +396,15 @@ export type AdapterFailureRecoveryClassification =
   | { kind: "configuration_incomplete" }
   | null;
 
+// The Claude CLI says "resets 7pm (Europe/London)" where the API says "try again
+// at ...". Both are wall-clock hints with no date, so a multi-day window resolves
+// to the next occurrence of that clock time rather than the true reset — still
+// far better than the 1h default backoff, and self-correcting because the next
+// attempt re-reads a fresh reset. Exact reset times come from the adapter's
+// persisted retryNotBefore (structured rate_limit_event), checked before this.
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
-    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
+    /(?:try again at|\bresets?\b(?:\s+at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );
   if (!match) return null;
 
