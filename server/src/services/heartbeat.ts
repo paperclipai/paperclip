@@ -18098,7 +18098,7 @@ export function heartbeatService(
         .select({ status: companies.status })
         .from(companies)
         .where(eq(companies.id, run.companyId))
-        .for("update");
+        .for("share");
       return company?.status === "active";
     }
   }
@@ -26858,7 +26858,7 @@ export function heartbeatService(
         .select({ status: companies.status })
         .from(companies)
         .where(eq(companies.id, agent.companyId))
-        .for("update")
+        .for("share")
         .then((rows) => rows[0] ?? null);
       if (lockedCompany?.status === "active") return true;
       if (opts.requestedByActorType === "user") {
