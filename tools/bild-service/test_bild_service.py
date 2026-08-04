@@ -456,3 +456,87 @@ def test_job_timeout_is_longer_for_360():
     assert bild_service._job_timeout("qwen360") == 900
     assert bild_service._job_timeout("qwen") == 300
     assert bild_service._job_timeout(None) == 300
+
+
+# --- render_edit: Bild-zu-Bild ueber qwenedit ------------------------------
+
+EDIT_BRIEF = {"error": None, "prompt": "entferne die Person", "modell": "qwenedit",
+              "size": "1024x1024", "width": 1024, "height": 1024,
+              "openai_size": "1024x1024", "quality": "medium",
+              "background": "opaque", "seed": 42, "format_ignored": False}
+
+
+def _att(id_, created, ctype="image/png", size=1000):
+    return {"id": id_, "createdAt": created, "contentType": ctype,
+            "byteSize": size, "originalFilename": id_ + ".png"}
+
+
+def test_edit_laedt_bilder_hoch_und_merkt_sie_sich(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda iid: [_att("zwei", "2026-08-04T11:00:00.000Z"),
+                                     _att("eins", "2026-08-04T10:00:00.000Z")])
+    monkeypatch.setattr(bild_service.api, "fetch_attachment", lambda aid: b"BILD")
+    hochgeladen = []
+
+    def fake_upload(name, content):
+        hochgeladen.append(name)
+        return "knoten-" + name
+
+    monkeypatch.setattr(comfy_client, "upload_image", fake_upload)
+    monkeypatch.setattr(comfy_client, "submit", lambda wf: "prompt-9")
+
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+
+    # aeltester Anhang zuerst -- das ist 'Bild 1'
+    assert hochgeladen == ["eins.png", "zwei.png"]
+    job = job_state.get("issue-1")
+    assert job["prompt_id"] == "prompt-9"
+    assert job["sources"] == ["knoten-eins.png", "knoten-zwei.png"]
+    assert job["modell"] == "qwenedit"
+
+
+def test_edit_ohne_anhang_bricht_ab(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(bild_service.api, "list_attachments", lambda iid: [])
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+    assert api.status["issue-1"] == "cancelled"
+    assert "Bildanhang" in api.comments[0][1]
+    assert job_state.get("issue-1") is None
+
+
+def test_edit_mit_vier_anhaengen_bricht_ab(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda iid: [_att(str(n), "2026-08-04T0%d:00:00.000Z" % n)
+                                     for n in range(1, 5)])
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+    assert api.status["issue-1"] == "cancelled"
+
+
+def test_edit_meldet_ignoriertes_format(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda iid: [_att("a", "2026-08-04T10:00:00.000Z")])
+    monkeypatch.setattr(bild_service.api, "fetch_attachment", lambda aid: b"BILD")
+    monkeypatch.setattr(comfy_client, "upload_image", lambda n, c: n)
+    monkeypatch.setattr(comfy_client, "submit", lambda wf: "prompt-9")
+    brief = dict(EDIT_BRIEF, format_ignored=True)
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    assert any("format" in c[1].lower() for c in api.comments)
+
+
+def test_process_new_issue_leitet_qwenedit_um(monkeypatch, tmp_path):
+    setup(monkeypatch, tmp_path)
+    gerufen = []
+    monkeypatch.setattr(bild_service, "render_edit",
+                        lambda *a, **k: gerufen.append("edit"))
+    monkeypatch.setattr(bild_service, "render_local",
+                        lambda *a, **k: gerufen.append("local"))
+    issue = {"id": "issue-1", "description": "prompt: x\nmodell: qwenedit"}
+    bild_service.process_new_issue(COMPANY, issue, now=1000.0)
+    assert gerufen == ["edit"]

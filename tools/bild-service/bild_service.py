@@ -12,19 +12,22 @@ import config
 import cost_state
 import job_state
 import paperclip_api as api
+import sources as src
 import workflow_template as wt
 from brief_parser import parse_brief
 from openai_image import generate_png
 
 FORMAT_HINT = ("Format:\n"
                "prompt: <Beschreibung>\n"
-               "modell: qwen | qwen360 | openai\n"
-               "format: 1024x1024   (bei qwen360: 2048x1024)\n"
+               "modell: qwen | qwen360 | qwenedit | openai\n"
+               "format: 1024x1024   (bei qwen360: 2048x1024; bei qwenedit: entfällt)\n"
                "seed: 42\n"
                "\n"
                "modell: qwen360 erzeugt ein 360-Grad-Panorama in "
                "equirektangularer Projektion (2:1). Das Auslösewort steht "
-               "bereits in der Vorlage — der Prompt beschreibt nur die Szene.")
+               "bereits in der Vorlage — der Prompt beschreibt nur die Szene.\n"
+               "modell: qwenedit bearbeitet ein bis drei Bilder, die als "
+               "Anhang am Issue hängen; im Prompt heißen sie Bild 1, Bild 2, Bild 3.")
 
 
 def _workflow_name(modell):
@@ -85,6 +88,62 @@ def render_local(company, issue, brief, now):
     cost_state.record_local(_today())
 
 
+def upload_sources(issue_id):
+    """Quellbilder des Issues auf den Knoten legen.
+
+    -> (names, error). names sind die vom Knoten vergebenen Dateinamen in der
+    Reihenfolge 'Bild 1..3'. Bei error ist nichts abzuschicken.
+    """
+    bilder, fehler = src.pick_source_images(api.list_attachments(issue_id))
+    if fehler:
+        return [], fehler
+    namen = []
+    for att in bilder:
+        daten = api.fetch_attachment(att["id"])
+        namen.append(comfy_client.upload_image(
+            att.get("originalFilename") or (att["id"] + ".png"), daten))
+    return namen, None
+
+
+def render_edit(company, issue, brief, now):
+    iid = issue["id"]
+    if len(job_state.all()) >= config.MAX_INFLIGHT_JOBS:
+        if not job_state.has_queue_notice(iid):
+            api.add_comment(iid, "⏳ Warteschlange voll (max. %d gleichzeitige lokale Renders). "
+                                 "Auftrag wird gerendert, sobald ein Platz frei wird."
+                                 % config.MAX_INFLIGHT_JOBS)
+            job_state.mark_queue_notice(iid)
+        return
+    if cost_state.remaining_local_today(_today()) <= 0:
+        api.add_comment(iid, "⚠️ Tageslimit (%d lokale Bilder) erreicht. "
+                             "Morgen erneut versuchen." % config.DAILY_LOCAL_LIMIT)
+        api.patch_status(iid, "cancelled")
+        return
+    if brief["format_ignored"]:
+        api.add_comment(iid, "ℹ️ Das angegebene 'format' wird bei modell: qwenedit "
+                             "ignoriert — die Ausgabegröße folgt dem ersten Quellbild.")
+    try:
+        namen, fehler = upload_sources(iid)
+    except comfy_client.ComfyError:
+        return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
+    if fehler:
+        api.add_comment(iid, "⚠️ Bild nicht erzeugt: %s" % fehler)
+        api.patch_status(iid, "cancelled")
+        return
+    seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
+    workflow = wt.set_images(
+        wt.fill(wt.load_raw(_workflow_name(brief["modell"])), brief["prompt"], seed),
+        namen)
+    try:
+        prompt_id = comfy_client.submit(workflow)
+    except comfy_client.ComfyError:
+        return
+    job_state.add(iid, prompt_id, company["id"], now, seed=seed,
+                  modell=brief["modell"], sources=namen)
+    job_state.clear_queue_notice(iid)
+    cost_state.record_local(_today())
+
+
 def render_openai(company, issue, brief):
     iid = issue["id"]
     if cost_state.remaining_today(_today()) <= 0:
@@ -130,6 +189,8 @@ def process_new_issue(company, issue, now):
         return
     if brief["modell"] == "openai":
         render_openai(company, issue, brief)
+    elif brief["modell"] in config.EDIT_MODELS:
+        render_edit(company, issue, brief, now)
     else:
         render_local(company, issue, brief, now)
 
@@ -181,8 +242,13 @@ def collect_one(issue_id, job, now):
             api.upload_attachment(job["company_id"], issue_id,
                                   "bild-%s.png" % issue_id[:8], png)
             job_state.mark_uploaded(issue_id)
-        label = ("Qwen-Image 2512 + 360-LoRA, equirektangular"
-                 if job.get("modell") == "qwen360" else "Qwen-Image 2512")
+        modell = job.get("modell")
+        if modell == "qwen360":
+            label = "Qwen-Image 2512 + 360-LoRA, equirektangular"
+        elif modell == "qwenedit":
+            label = "Qwen-Image-Edit 2511, %d Quellbild(er)" % len(job.get("sources") or [])
+        else:
+            label = "Qwen-Image 2512"
         api.add_comment(issue_id,
                         "✅ Bild erzeugt (%s, lokal).\n"
                         "Seed: %s\nDauer: %.0f s"

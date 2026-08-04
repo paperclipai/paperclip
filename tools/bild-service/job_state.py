@@ -27,15 +27,19 @@ def get(issue_id):
     return all().get(issue_id)
 
 
-def add(issue_id, prompt_id, company_id, now, seed=None, modell=None):
+def add(issue_id, prompt_id, company_id, now, seed=None, modell=None, sources=None):
     # 'modell' wird mitgeschrieben, weil der Einsammler den Auftrag sonst
     # nicht mehr zuordnen kann: Timeout und Wiederholversuch haengen am
     # Modell, der Brief kann bis dahin aber schon veraendert worden sein.
+    # 'sources' sind die auf dem Knoten liegenden Quellbilder. Sie MUESSEN
+    # hier stehen: der Dienst haengt sein eigenes Ergebnis an dasselbe Issue,
+    # ein Wiederholversuch wuerde die Anhangsliste sonst erneut lesen und ab
+    # dem zweiten Versuch das eigene Ergebnis weiterbearbeiten.
     st = _load()
     jobs = st.setdefault(JOBS_KEY, {})
     jobs[issue_id] = {"prompt_id": prompt_id, "company_id": company_id,
                       "submitted_at": now, "attempts": 1, "seed": seed,
-                      "modell": modell}
+                      "modell": modell, "sources": list(sources or [])}
     _save(st)
 
 

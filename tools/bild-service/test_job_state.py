@@ -137,3 +137,15 @@ def test_unreachable_counter_survives_a_genuine_process_restart():
     # Aufraeumen: globalen Modulzustand fuer nachfolgende Tests nicht verwirren
     job_state.STATE_FILE = path
     job_state.reset_unreachable()
+
+
+def test_add_merkt_sich_die_quellbilder(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    job_state.add("i1", "p1", "c1", now=1.0, sources=["a.png", "b.png"])
+    assert job_state.get("i1")["sources"] == ["a.png", "b.png"]
+
+
+def test_add_ohne_quellbilder_bleibt_leer(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    job_state.add("i1", "p1", "c1", now=1.0)
+    assert job_state.get("i1")["sources"] == []
