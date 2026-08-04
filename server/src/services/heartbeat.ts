@@ -10356,33 +10356,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
+    const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
 
-    // Same thundering-herd guard as reapOrphanedRuns (RENA-54107): a graceful
-    // shutdown/redeploy drains every "running" run at once, so a large batch here
-    // gets staggered retries instead of all requeuing the moment the new instance
-    // starts up. Batch size is scoped per agent (RENA-54203) so one overloaded
-    // agent's runs don't cause unrelated agents' small batches to be staggered too.
-    const drainCountByAgentId = new Map<string, number>();
-    for (const { run } of activeRuns) {
-      drainCountByAgentId.set(run.agentId, (drainCountByAgentId.get(run.agentId) ?? 0) + 1);
-    }
-    const restartBatchShutdownAgentIds = new Set(
-      [...drainCountByAgentId.entries()]
-        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
-        .map(([agentId]) => agentId),
-    );
-    if (restartBatchShutdownAgentIds.size > 0) {
-      logger.warn(
-        {
-          drainedRunCount: activeRuns.length,
-          restartBatchAgentCount: restartBatchShutdownAgentIds.size,
-          threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
-          staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
-        },
-        "restart-batch shutdown drain detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
-      );
-    }
-
+    // Pass 1: terminate processes and conditionally mark each "running" row
+    // interrupted. A run can be finalized concurrently (e.g. it completes on
+    // its own) between the initial query above and this per-row update, in
+    // which case setRunStatusIfRunning is a no-op and the run is skipped. The
+    // restart-batch stagger decision (pass 2, below) is therefore built from
+    // the runs actually interrupted here, not the raw query result -- an
+    // agent whose batch only crosses the threshold because of runs that were
+    // never actually interrupted must not have its real (smaller) retry
+    // batch staggered (RENA-54203 review fix).
+    const interruptedEntries: Array<{
+      run: (typeof activeRuns)[number]["run"];
+      agent: (typeof activeRuns)[number]["agent"];
+      interrupted: typeof heartbeatRuns.$inferSelect;
+    }> = [];
     for (const { run, agent } of activeRuns) {
       const running = runningProcesses.get(run.id);
       try {
@@ -10402,7 +10391,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runningProcesses.delete(run.id);
       }
 
-      const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
       const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
@@ -10430,6 +10418,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: interrupted.error ?? undefined,
       });
 
+      interruptedEntries.push({ run, agent, interrupted });
+    }
+
+    // Same thundering-herd guard as reapOrphanedRuns (RENA-54107): a graceful
+    // shutdown/redeploy drains every "running" run at once, so a large batch here
+    // gets staggered retries instead of all requeuing the moment the new instance
+    // starts up. Batch size is scoped per agent (RENA-54203) so one overloaded
+    // agent's runs don't cause unrelated agents' small batches to be staggered too.
+    const drainCountByAgentId = new Map<string, number>();
+    for (const { run } of interruptedEntries) {
+      drainCountByAgentId.set(run.agentId, (drainCountByAgentId.get(run.agentId) ?? 0) + 1);
+    }
+    const restartBatchShutdownAgentIds = new Set(
+      [...drainCountByAgentId.entries()]
+        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
+        .map(([agentId]) => agentId),
+    );
+    if (restartBatchShutdownAgentIds.size > 0) {
+      logger.warn(
+        {
+          drainedRunCount: interruptedEntries.length,
+          restartBatchAgentCount: restartBatchShutdownAgentIds.size,
+          threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+          staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+        },
+        "restart-batch shutdown drain detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
+      );
+    }
+
+    // Pass 2: now that the actual interrupted batch per agent is known, enqueue
+    // retries with the correct stagger decision.
+    for (const { run, agent, interrupted } of interruptedEntries) {
       const retry = await enqueueProcessLossRetry(
         interrupted,
         agent,
