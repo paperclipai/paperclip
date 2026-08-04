@@ -22,6 +22,105 @@ The alpha surface includes:
 - Paperclip-derived distillation maintains `wiki/projects/<slug>/standup.md` as the executive current-state view for each represented project, alongside durable `wiki/projects/<slug>/index.md` knowledge pages
 - wiki page writes with plugin path validation, atomic local-folder writes, metadata/revision rows, backlink extraction, and optional stale-hash protection
 - wiki tools for search/read/write/propose patch/source/log/index/backlinks workflows
+- agent-free Notion <-> Wiki sync job (`notion-wiki-sync`) on `*/15 * * * *`
+- agent-free Notion Strategy Poll job (`notion-strategy-poll`) on `0 * * * *`
+
+## Notion <-> Wiki Sync
+
+The plugin declares a native scheduled job, `notion-wiki-sync`, that runs in the
+plugin worker every 15 minutes. It does not create or wake an agent.
+
+Configuration:
+
+- Notion token: `notionToken` plugin config, `NOTION_TOKEN`, or
+  `~/.paperclip/instances/default/secrets/notion-token.txt`.
+- Default Notion create parent: `notionTasksDatabaseId` plugin config,
+  `NOTION_TASKS_DATABASE_ID`, or
+  `~/.paperclip/instances/default/secrets/notion-tasks-database-id.txt`.
+- Wiki target defaults to `wikiId=default`, `spaceSlug=default`; override with
+  `notionSyncWikiId` and `notionSyncSpaceSlug`.
+- `notionSyncCompanyIds` must contain the explicit company ids this scheduled job
+  may process. An empty or missing list skips the run; the plugin never falls back
+  to instance-wide company discovery.
+- Set `notionSyncEnabled=false` to disable the job without removing it.
+
+Data shape and behavior:
+
+- Source API: Notion API v1, `Notion-Version: 2022-06-28`.
+- Scope: all pages returned by Notion `/search` with `object=page`, i.e. all
+  pages visible to the integration token. Empty search results are logged as a
+  gap, not filled with placeholders.
+- Notion -> Wiki writes pages under `wiki/notion/<title>-<pageid>.md`.
+- Wiki frontmatter includes `source: notion`, `notion_page_id`,
+  `notion_last_edited_time`, `notion_content_hash`, `notion_sync: true`, and
+  `notion_url` when available.
+- Wiki -> Notion writeback is opt-in: wiki pages must have
+  `notion_sync: true`. Pages with `notion_page_id` replace that Notion page's
+  child blocks. Pages without `notion_page_id` create a new Notion page under
+  the configured Tasks database when that database id is available.
+- Cursors are persisted in `notion_sync_cursors` with Notion last edit time,
+  Notion content hash, wiki content hash, origin, and last sync time.
+- Each run inserts one `wiki_operations` row with `operation_type=notion-sync`,
+  status, counts, warnings, affected pages, and the plugin job run id.
+- Conflict policy: Notion is authority for Notion-origin pages; Wiki is authority
+  for Wiki-origin pages. Conflicts are appended to `wiki/log.md` and recorded in
+  operation warnings; they are not silently overwritten.
+- Notion 429/5xx responses retry with exponential backoff inside the run. Partial
+  page failures do not abort the whole cycle.
+
+Manual verification can run the same code path with the plugin action
+`run-notion-sync`. Deploy still requires the board/operator to upgrade the
+installed plugin package so the host loads the rebuilt `dist/manifest.js` and
+`dist/worker.js`.
+
+## Notion Strategy Poll
+
+The plugin declares a native scheduled job, `notion-strategy-poll`, that runs in
+the plugin worker hourly (`0 * * * *`). It is agent-free: empty polls create zero
+Paperclip issues and do not create routine execution issues.
+
+Configuration:
+
+- Source API: Notion API v1 at `https://api.notion.com`,
+  `Notion-Version: 2022-06-28`.
+- Notion token: `notionStrategyPollToken`, `notionToken`, `NOTION_TOKEN`, or
+  `~/.paperclip/instances/default/secrets/notion-token.txt`.
+- Tasks database id: `notionStrategyPollTasksDatabaseId`,
+  `notionTasksDatabaseId`, `NOTION_TASKS_DATABASE_ID`, or
+  `~/.paperclip/instances/default/secrets/notion-tasks-database-id.txt`.
+  Pilars Tasks DB: `26a3a489-a9ca-81a5-90a5-db6e196213ce`.
+- Target CRO: `notionStrategyPollCroAgentId`, `PAPERCLIP_CRO_AGENT_ID`, or the
+  Pilars CRO id `fb0272a1-0b64-42c6-bebf-835c6ea22903`.
+- `notionStrategyPollCompanyIds` contains the explicit company ids this poll may
+  process. When omitted it inherits `notionSyncCompanyIds`; when both are empty,
+  the poll skips without attempting instance-wide company discovery.
+- Set `notionStrategyPollEnabled=false` to disable the job without removing it.
+
+Data shape and behavior:
+
+- Queries the Tasks database via `POST /v1/databases/{databaseId}/query`, sorted
+  by `last_edited_time` ascending, with a strict `last_edited_time after`
+  watermark after the first successful processed delta.
+- Reads each Notion page as `{ id, url, archived, last_edited_time, properties }`.
+  The poller uses title from `Task name`, `Name`, or the first title property;
+  status from `Status` (`status` or `select`); tags from `Tags.multi_select`.
+- Strategy detection is intentionally the legacy Notion poller heuristic: skip
+  Done/Cancelled/Canceled/Archived and archived pages; require at least one tag;
+  then match when title contains `стратег`/`strategy` or tags include
+  `Research` plus `BTC` or `Metrics`.
+- Idempotency is persisted in `notion_strategy_poll_cursors`, keyed by the full
+  normalized Notion page id plus exact `last_edited_time`. No 8-character page id
+  prefixes are used.
+- On a genuine new or changed strategy delta, the worker creates exactly one
+  Paperclip issue assigned to CRO. Issue creation uses the plugin host bridge
+  `ctx.issues.create` under the manifest `issues.create` capability, not an
+  out-of-band cron or agent run.
+- Each poll writes one `wiki_operations` row with
+  `operation_type=notion-strategy-poll`, status, counts, warnings, emitted issue
+  identifiers, and the plugin job run id.
+- Notion 429/5xx responses retry with exponential backoff inside the run. Auth,
+  schema, and API failures are recorded as operation warnings and do not create
+  placeholder/proxy issues.
 
 ## Phase 5 Security Gate
 

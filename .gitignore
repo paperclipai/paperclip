@@ -69,3 +69,6 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Notion-wiki-sync plugin runtime output (not source)
+/wiki/

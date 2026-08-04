@@ -15,6 +15,8 @@ export const WIKI_PROJECT_KEY = "llm-wiki";
 export const CURSOR_WINDOW_ROUTINE_KEY = "cursor-window-processing";
 export const NIGHTLY_LINT_ROUTINE_KEY = "nightly-wiki-lint";
 export const INDEX_REFRESH_ROUTINE_KEY = "index-refresh";
+export const NOTION_SYNC_JOB_KEY = "notion-wiki-sync";
+export const NOTION_STRATEGY_POLL_JOB_KEY = "notion-strategy-poll";
 export const DEFAULT_MAX_SOURCE_BYTES = 250000;
 export const DEFAULT_MAX_PAPERCLIP_ISSUE_SOURCE_CHARS = 12000;
 export const DEFAULT_MAX_PAPERCLIP_CURSOR_WINDOW_CHARS = 60000;
@@ -88,6 +90,8 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["automation", "ui"],
   capabilities: [
     "events.subscribe",
+    "jobs.schedule",
+    "http.outbound",
     "api.routes.register",
     "database.namespace.migrate",
     "database.namespace.read",
@@ -126,6 +130,20 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui"
   },
+  jobs: [
+    {
+      jobKey: NOTION_SYNC_JOB_KEY,
+      displayName: "Notion Wiki Sync",
+      description: "Agent-free Notion <-> LLM Wiki sync. Enumerates all Notion pages visible to the configured integration token, syncs changed Notion pages into wiki/notion/, and writes opted-in wiki changes back to Notion.",
+      schedule: "*/15 * * * *"
+    },
+    {
+      jobKey: NOTION_STRATEGY_POLL_JOB_KEY,
+      displayName: "Notion Strategy Poll",
+      description: "Agent-free Notion Tasks DB poll. Routes genuine new or changed strategy deltas to CRO and suppresses empty polls by construction.",
+      schedule: "0 * * * *"
+    }
+  ],
   database: {
     namespaceSlug: "llm_wiki",
     migrationsDir: "migrations",
