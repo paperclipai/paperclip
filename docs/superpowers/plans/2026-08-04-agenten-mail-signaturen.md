@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - **Python-Zielversion ist 3.9.6** (`/usr/bin/python3`) — der Sekretärin-Watcher läuft per LaunchAgent genau damit. Keine `X | None`-Syntax; in jeder neuen Datei `from __future__ import annotations` als erste Anweisung.
-- **Arbeitsverzeichnis für allen neuen Code:** `~/.paperclip/scripts/signatur/`. Nicht unter SynologyDrive ablegen — launchd kann das nicht lesen.
+- **Quelle ist das Repo, nicht der Live-Pfad.** Aller neue Code wird unter `tools/signatur/` in diesem Repo geschrieben und committet. Der Live-Pfad `~/.paperclip/scripts/signatur/` entsteht ausschliesslich durch `tools/signatur/deploy.sh` — nie von Hand editieren. Das ist die Hauskonvention (siehe `tools/bild-service/deploy.sh`) und der Grund dafür ist launchd: es kann SynologyDrive nicht lesen, deshalb muss zur Laufzeit eine Kopie unter `~/.paperclip` liegen.
+- **Ausnahme:** `~/.paperclip/scripts/agents-instructions/` (Aufgabe 6) liegt nicht im Repo. Dort ist `build-agents-md.py --backup` das Sicherungsnetz, nicht git.
 - **Quelle der Gestaltung** ist der Ordner `~/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/Signatures/`. Nur lesen, nie verändern.
 - **Der Signaturpfad darf den Mailversand nie blockieren.** Jeder Fehler beim Signieren führt dazu, dass die Mail **ohne** Signatur rausgeht plus eine Logzeile. Über denselben Relay laufen die Wächter-Alarme.
 - **Die sechs Bereichsschlüssel** lauten exakt: `ai`, `film`, `tv`, `academy`, `app`, `de`. **sorbART ist kein Bereich mehr** — siehe Aufgabe 3 und 6.
@@ -25,19 +26,24 @@
 
 ## Dateiübersicht
 
+Alle Pfade relativ zur Repo-Wurzel.
+
 | Datei | Verantwortung |
 |---|---|
-| `signatur/logos_bauen.py` | Einmal-Werkzeug: Originallogos → 250 px, farbreduziert |
-| `signatur/logos/<key>.png` | Erzeugte Logos (6 Stück) |
-| `signatur/bereiche.json` | Bereichsdaten — die einzige Stelle für Bereichszeile, Adresse, Domain |
-| `signatur/vorlage.html` | HTML-Gerüst einer Signatur mit Feld-Platzhaltern |
-| `signatur/signatur_build.py` | Generator: Bereichsdaten + Vorlage + Logo → `bereich-<key>.html` |
-| `signatur/bereich-<key>.html` | Erzeugt: fertige Signatur mit `{{ABSENDERBLOCK}}` |
-| `signatur/signatur.py` | Laufzeit-Bibliothek (Python): Absenderblock bilden, komponieren, Logo→CID |
-| `signatur/relay_signatur.js` | Dieselbe Laufzeitlogik für den n8n-Code-Node |
-| `signatur/patch_relay.py` | Einmal-Werkzeug: Relay-Workflow klonen, Node einhängen, publizieren |
-| `signatur/test_*.py`, `test_*.mjs` | Tests |
-| `sekretaerin-mail-watcher/luna_mail_render.py` | Geändert: nutzt `signatur.py`, SORBART entfällt |
+| `tools/signatur/logos_bauen.py` | Einmal-Werkzeug: Originallogos → 250 px, farbreduziert |
+| `tools/signatur/logos/<key>.png` | Erzeugte Logos (6 Stück) — **committet**, weil `Signatures/` nicht im Repo liegt |
+| `tools/signatur/bereiche.json` | Bereichsdaten — die einzige Stelle für Bereichszeile, Adresse, Domain |
+| `tools/signatur/vorlage.html` | HTML-Gerüst einer Signatur mit Feld-Platzhaltern |
+| `tools/signatur/signatur_build.py` | Generator: Bereichsdaten + Vorlage + Logo → `bereich-<key>.html` |
+| `tools/signatur/bereich-<key>.html` | Erzeugt, **nicht committet** (gitignored) — entsteht beim Deploy neu |
+| `tools/signatur/signatur.py` | Laufzeit-Bibliothek (Python): Absenderblock bilden, komponieren, Logo→CID |
+| `tools/signatur/relay_signatur.js` | Dieselbe Laufzeitlogik für den n8n-Code-Node |
+| `tools/signatur/patch_relay.py` | Einmal-Werkzeug: Relay-Workflow klonen, Node einhängen, publizieren |
+| `tools/signatur/deploy.sh` | Kopiert nach `~/.paperclip/scripts/signatur/` und erzeugt dort die Bausteine |
+| `tools/signatur/test_*.py`, `test_*.mjs` | Tests |
+| `tools/sekretaerin-mail-watcher/luna_mail_render.py` | Geändert: nutzt `signatur.py`, SORBART entfällt |
+| `tools/sekretaerin-mail-watcher/test_luna_mail_render.py` | **Ersetzt** — die vorhandene Fassung patcht `r.SIGDIR`, das entfällt |
+| `tools/sekretaerin-mail-watcher/SMTP-Relay-V17.export.json` | Erzeugt in Aufgabe 5, neben dem vorhandenen V16-Export |
 
 ---
 
@@ -46,9 +52,9 @@
 Die Originale sind 261×261 px und 105–139 KB. Das Herunterrechnen allein bringt wenig — der Hebel ist die Farbreduktion per pngquant. Gemessen: 24–38 KB bei erhaltener Qualität.
 
 **Files:**
-- Create: `~/.paperclip/scripts/signatur/logos_bauen.py`
-- Create: `~/.paperclip/scripts/signatur/logos/` (Ausgabe, 6 PNG)
-- Test: `~/.paperclip/scripts/signatur/test_logos.py`
+- Create: `tools/signatur/logos_bauen.py`
+- Create: `tools/signatur/logos/` (Ausgabe, 6 PNG)
+- Test: `tools/signatur/test_logos.py`
 
 **Interfaces:**
 - Consumes: nichts
@@ -57,8 +63,8 @@ Die Originale sind 261×261 px und 105–139 KB. Das Herunterrechnen allein brin
 - [ ] **Schritt 1: Verzeichnis anlegen**
 
 ```bash
-mkdir -p ~/.paperclip/scripts/signatur/logos
-cd ~/.paperclip/scripts/signatur
+mkdir -p tools/signatur/logos
+cd tools/signatur
 ```
 
 - [ ] **Schritt 2: Den fehlschlagenden Test schreiben**
@@ -106,7 +112,7 @@ def test_logos_haben_transparenz():
 
 - [ ] **Schritt 3: Test laufen lassen, Fehlschlag bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && /usr/bin/python3 -m pytest test_logos.py -v`
+Ausführen: `cd tools/signatur && /usr/bin/python3 -m pytest test_logos.py -v`
 Erwartet: `test_alle_sechs_logos_vorhanden` schlägt fehl, weil alle sechs Dateien fehlen.
 
 - [ ] **Schritt 4: Das Werkzeug schreiben**
@@ -188,7 +194,7 @@ if __name__ == "__main__":
 
 - [ ] **Schritt 5: Werkzeug ausführen**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && /usr/bin/python3 logos_bauen.py`
+Ausführen: `cd tools/signatur && /usr/bin/python3 logos_bauen.py`
 Erwartet: sechs Zeilen, jede unter 60000 Bytes.
 
 - [ ] **Schritt 6: Tests laufen lassen, grün bestätigen**
@@ -198,17 +204,20 @@ Erwartet: 4 passed.
 
 - [ ] **Schritt 7: Sichtprüfung**
 
-Ausführen: `open ~/.paperclip/scripts/signatur/logos/`
+Ausführen: `open tools/signatur/logos/`
 Erwartet: Bei allen sechs ist das Geweih des Hirschs sauber und der Partikelverlauf frei von sichtbaren Farbstufen. Wenn nicht, `--quality=80-95` in `logos_bauen.py` setzen und Schritt 5–7 wiederholen.
 
 - [ ] **Schritt 8: Committen**
 
 ```bash
-cd ~/.paperclip/scripts/signatur
-git init -q 2>/dev/null || true
-git add logos_bauen.py test_logos.py logos/
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/logos_bauen.py tools/signatur/test_logos.py tools/signatur/logos/
 git commit -m "feat(signatur): Logos der sechs Bereiche aufbereitet"
 ```
+
+Die Logos werden committet, obwohl sie abgeleitet sind: Der Quellordner
+`Signatures/` liegt nicht im Repo, ohne sie liesse sich der Stand nicht
+reproduzieren.
 
 ---
 
@@ -217,10 +226,10 @@ git commit -m "feat(signatur): Logos der sechs Bereiche aufbereitet"
 Alle sechs Bereiche teilen Grußformel, Funktionsbezeichnung, Anschrift, Rufnummern und Disclaimer. In den Bereichsdaten steht deshalb nur, was sich tatsächlich unterscheidet: Bereichszeile, Mailadresse, Web-Adresse und Alternativtext des Logos.
 
 **Files:**
-- Create: `~/.paperclip/scripts/signatur/bereiche.json`
-- Create: `~/.paperclip/scripts/signatur/vorlage.html`
-- Create: `~/.paperclip/scripts/signatur/signatur_build.py`
-- Test: `~/.paperclip/scripts/signatur/test_signatur_build.py`
+- Create: `tools/signatur/bereiche.json`
+- Create: `tools/signatur/vorlage.html`
+- Create: `tools/signatur/signatur_build.py`
+- Test: `tools/signatur/test_signatur_build.py`
 
 **Interfaces:**
 - Consumes: `logos/<key>.png` aus Aufgabe 1
@@ -400,7 +409,7 @@ def test_main_schreibt_alle_sechs_dateien(tmp_path):
 
 - [ ] **Schritt 4: Test laufen lassen, Fehlschlag bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && /usr/bin/python3 -m pytest test_signatur_build.py -v`
+Ausführen: `cd tools/signatur && /usr/bin/python3 -m pytest test_signatur_build.py -v`
 Erwartet: Sammelfehler `ModuleNotFoundError: No module named 'signatur_build'`.
 
 - [ ] **Schritt 5: Den Generator schreiben**
@@ -507,7 +516,7 @@ Erwartet: sechs Zeilen. Jede Datei liegt zwischen etwa 35 und 70 KB (Logo als ba
 - [ ] **Schritt 8: Sichtprüfung im Browser**
 
 ```bash
-cd ~/.paperclip/scripts/signatur
+cd tools/signatur
 for k in ai film tv academy app de; do
   sed "s|{{ABSENDERBLOCK}}|<div style=\"font-size:13px;color:#222;\"><strong>i.A. CTO</strong> – KI-Agent</div>|" \
     "bereich-$k.html" > "/tmp/sigvorschau-$k.html"
@@ -517,11 +526,65 @@ open /tmp/sigvorschau-*.html
 
 Erwartet: Sechs Vorschauen, jede mit Grußformel, `i.A. CTO`, Walter, Logo, Kontaktblock und Disclaimer. Bei `academy`, `app` und `de` steht bewusst keine Bereichszeile über der Adresse.
 
-- [ ] **Schritt 9: Committen**
+- [ ] **Schritt 9: Deploy-Skript schreiben**
+
+Nach dem Muster von `tools/bild-service/deploy.sh`. Es kopiert die Quellen und
+lässt den Generator **am Zielort** laufen — so liegen die base64-aufgeblähten
+Bausteine nirgends doppelt herum.
+
+Datei `tools/signatur/deploy.sh`:
 
 ```bash
-git add bereiche.json vorlage.html signatur_build.py test_signatur_build.py bereich-*.html
-git commit -m "feat(signatur): Generator und sechs Bereichsbausteine"
+#!/usr/bin/env bash
+# Deploy der Signaturbausteine nach ~/.paperclip/scripts/signatur/.
+# macOS launchd kann CloudStorage/SynologyDrive nicht lesen -> Live-Kopie unter ~/.paperclip.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SRC="$REPO_ROOT/tools/signatur"
+DEST="$HOME/.paperclip/scripts/signatur"
+
+mkdir -p "$DEST/logos"
+
+cp "$SRC"/signatur.py "$SRC"/signatur_build.py "$SRC"/logos_bauen.py "$DEST/"
+cp "$SRC"/relay_signatur.js "$DEST/" 2>/dev/null || true
+cp "$SRC"/patch_relay.py "$DEST/" 2>/dev/null || true
+cp "$SRC"/bereiche.json "$SRC"/vorlage.html "$DEST/"
+cp "$SRC"/logos/*.png "$DEST/logos/"
+
+# Bausteine am Zielort erzeugen statt kopieren: sie sind abgeleitet und gross.
+( cd "$DEST" && /usr/bin/python3 signatur_build.py )
+
+echo "Deployt nach $DEST"
+```
+
+Ausführbar machen und laufen lassen:
+```bash
+chmod +x tools/signatur/deploy.sh
+tools/signatur/deploy.sh
+```
+Erwartet: sechs Bausteinzeilen und `Deployt nach /Users/.../signatur`.
+
+Die `2>/dev/null || true` bei `relay_signatur.js` und `patch_relay.py` sind
+Absicht: die Dateien entstehen erst in Aufgabe 4 und 5, das Deploy muss aber
+schon jetzt funktionieren.
+
+- [ ] **Schritt 10: Erzeugte Bausteine von der Versionierung ausnehmen**
+
+```bash
+printf 'tools/signatur/bereich-*.html\n' >> .gitignore
+git check-ignore -v tools/signatur/bereich-ai.html
+```
+Erwartet: eine Zeile, die die neue `.gitignore`-Regel nennt.
+
+- [ ] **Schritt 11: Committen**
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/bereiche.json tools/signatur/vorlage.html \
+        tools/signatur/signatur_build.py tools/signatur/test_signatur_build.py \
+        tools/signatur/deploy.sh .gitignore
+git commit -m "feat(signatur): Generator, Bereichsdaten und Deploy-Skript"
 ```
 
 ---
@@ -533,10 +596,10 @@ Luna bekommt das neue Logo, die Logik wandert in eine gemeinsame Bibliothek, und
 **Achtung — offener Vorgang:** In der Freigabe-Queue steht (Stand 04.08.) **ein** Eintrag mit `area: "SORBART"` auf `pending`. Wird SORBART aus `AREAS` entfernt, ohne den Eintrag vorher zu erledigen, scheitert dessen Versand bei der Freigabe. Schritt 1 klärt das.
 
 **Files:**
-- Create: `~/.paperclip/scripts/signatur/signatur.py`
-- Create: `~/.paperclip/scripts/signatur/test_signatur.py`
-- Modify: `~/.paperclip/scripts/sekretaerin-mail-watcher/luna_mail_render.py` (Kopf, `SIGDIR`, `AREAS`, `load_sig`, `_IMG_DATA_RE`, `_sig_with_cid`, Aufrufstelle in `render_customer_html`)
-- Create: `~/.paperclip/scripts/sekretaerin-mail-watcher/test_luna_mail_render.py`
+- Create: `tools/signatur/signatur.py`
+- Create: `tools/signatur/test_signatur.py`
+- Modify: `tools/sekretaerin-mail-watcher/luna_mail_render.py` (Kopf, `SIGDIR`, `AREAS`, `load_sig`, `_IMG_DATA_RE`, `_sig_with_cid`, Aufrufstelle in `render_customer_html`)
+- Replace: `tools/sekretaerin-mail-watcher/test_luna_mail_render.py` — **existiert bereits** (unittest-Stil, patcht `r.SIGDIR`) und wird vollständig ersetzt
 
 **Interfaces:**
 - Consumes: `bereich-<key>.html` aus Aufgabe 2
@@ -579,7 +642,7 @@ Erst weitermachen, wenn kein `SORBART`/`pending` mehr übrig ist.
 
 - [ ] **Schritt 2: Den fehlschlagenden Test für die Bibliothek schreiben**
 
-Datei `~/.paperclip/scripts/signatur/test_signatur.py`:
+Datei `tools/signatur/test_signatur.py`:
 
 ```python
 from __future__ import annotations
@@ -658,12 +721,12 @@ def test_vorgabe_bereich_ist_ai():
 
 - [ ] **Schritt 3: Test laufen lassen, Fehlschlag bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && /usr/bin/python3 -m pytest test_signatur.py -v`
+Ausführen: `cd tools/signatur && /usr/bin/python3 -m pytest test_signatur.py -v`
 Erwartet: `ModuleNotFoundError: No module named 'signatur'`.
 
 - [ ] **Schritt 4: Die Bibliothek schreiben**
 
-Datei `~/.paperclip/scripts/signatur/signatur.py`:
+Datei `tools/signatur/signatur.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -749,7 +812,7 @@ Erwartet: 10 passed.
 
 - [ ] **Schritt 6: Den fehlschlagenden Test für Luna schreiben**
 
-Datei `~/.paperclip/scripts/sekretaerin-mail-watcher/test_luna_mail_render.py`:
+Datei `tools/sekretaerin-mail-watcher/test_luna_mail_render.py` (bestehenden Inhalt vollständig ersetzen):
 
 ```python
 from __future__ import annotations
@@ -813,7 +876,7 @@ def test_signatur_kommt_nach_dem_antworttext():
 
 - [ ] **Schritt 7: Test laufen lassen, Fehlschlag bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/sekretaerin-mail-watcher && /usr/bin/python3 -m pytest test_luna_mail_render.py -v`
+Ausführen: `cd tools/sekretaerin-mail-watcher && /usr/bin/python3 -m pytest test_luna_mail_render.py -v`
 Erwartet: `test_nur_noch_ai_und_film` und `test_sorbart_wird_abgewiesen` schlagen fehl — SORBART ist noch in `AREAS`.
 
 - [ ] **Schritt 8: Luna auf die Bibliothek umstellen**
@@ -826,7 +889,7 @@ Neuer Kopf anstelle der bisherigen Zeilen 1–10 (`SIGDIR`/`AREAS`-Block):
 # luna_mail_render.py
 """Geteiltes Rendering: Antwort-Markdown -> Kunden-HTML inkl. Bereichs-Signatur.
 
-Die Signaturbausteine liegen seit 08/2026 unter ~/.paperclip/scripts/signatur/
+Die Signaturbausteine liegen seit 08/2026 im Geschwisterordner `signatur/`
 und werden mit den Agentenmails geteilt. Luna rendert weiterhin
 client-seitig, weil die fertige Fassung schon fuer die Telegram-Vorschau
 gebraucht wird — der Relay bekommt deshalb `signatur: "none"`.
@@ -839,7 +902,10 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/.paperclip/scripts/signatur"))
+# Geschwisterordner — trifft Repo (tools/signatur) und Live
+# (~/.paperclip/scripts/signatur) gleichermassen, ohne Sonderfall.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "signatur"))
 import signatur  # noqa: E402
 
 AREAS = {"AI": "ai", "FILM": "film"}
@@ -876,7 +942,7 @@ ersetzen durch
 
 - [ ] **Schritt 9: Tests laufen lassen, grün bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/sekretaerin-mail-watcher && /usr/bin/python3 -m pytest test_luna_mail_render.py -v`
+Ausführen: `cd tools/sekretaerin-mail-watcher && /usr/bin/python3 -m pytest test_luna_mail_render.py -v`
 Erwartet: 9 passed.
 
 - [ ] **Schritt 10: Prüfen, dass `--area SORBART` jetzt sauber abgewiesen wird**
@@ -889,9 +955,25 @@ AGENTBIN=~/.paperclip/instances/default/companies/9cebf3cf-efe8-4597-a400-f06488
 ```
 Erwartet: `--area {AI,FILM}` — SORBART ist nicht mehr wählbar.
 
-- [ ] **Schritt 11: Prüfen, dass der Watcher die Bibliothek findet**
+- [ ] **Schritt 11: Deployen und prüfen, dass der Watcher die Bibliothek findet**
 
-Der LaunchAgent startet `/usr/bin/python3 watcher.py` mit `WorkingDirectory` im Watcher-Ordner. Der `sys.path`-Eintrag ist absolut, greift also unabhängig davon.
+Erst jetzt geht die Änderung live. Beide Ordner deployen — `signatur/` wegen
+der Bausteine, `sekretaerin-mail-watcher/` wegen des geänderten Renderers:
+
+```bash
+tools/signatur/deploy.sh
+for f in tools/sekretaerin-mail-watcher/*.py; do
+  b=$(basename "$f"); case "$b" in test_*) continue;; esac
+  cp "$f" ~/.paperclip/scripts/sekretaerin-mail-watcher/"$b"
+done
+diff -q tools/sekretaerin-mail-watcher/luna_mail_render.py \
+        ~/.paperclip/scripts/sekretaerin-mail-watcher/luna_mail_render.py && echo "live == repo"
+```
+
+Der LaunchAgent startet `/usr/bin/python3 watcher.py` mit `WorkingDirectory` im
+Watcher-Ordner. Der `sys.path`-Eintrag ist relativ zur Moduldatei, greift also
+unabhängig vom Arbeitsverzeichnis — und findet live wie im Repo den
+Geschwisterordner `signatur/`.
 
 ```bash
 cd /tmp && /usr/bin/python3 -c "
@@ -907,7 +989,7 @@ Erwartet: `ok <zahl> 1 attachment_0`
 
 ```bash
 /usr/bin/python3 -c "
-import sys; sys.path.insert(0, '/Users/walterschoenenbroecher.de/.paperclip/scripts/signatur')
+import sys; sys.path.insert(0, 'tools/signatur')
 import signatur
 open('/tmp/luna-neu.html','w').write(
     signatur.komponiere('ai', signatur.absenderblock(
@@ -930,12 +1012,12 @@ Verschieben statt löschen, damit der Rollback ein `mv` zurück ist. Die `.bak-*
 - [ ] **Schritt 14: Committen**
 
 ```bash
-cd ~/.paperclip/scripts/signatur
-git add signatur.py test_signatur.py
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/signatur.py tools/signatur/test_signatur.py
 git commit -m "feat(signatur): Laufzeit-Bibliothek fuer Absenderblock und CID-Logo"
-cd ~/.paperclip/scripts/sekretaerin-mail-watcher
-git add luna_mail_render.py test_luna_mail_render.py 2>/dev/null || true
-git commit -m "feat(luna): geteilte Signaturbausteine, neues Logo, sorbART stillgelegt" 2>/dev/null || true
+git add tools/sekretaerin-mail-watcher/luna_mail_render.py \
+        tools/sekretaerin-mail-watcher/test_luna_mail_render.py
+git commit -m "feat(luna): geteilte Signaturbausteine, neues Logo, sorbART stillgelegt"
 ```
 
 ---
@@ -945,8 +1027,8 @@ git commit -m "feat(luna): geteilte Signaturbausteine, neues Logo, sorbART still
 Der Node läuft in n8n, also JavaScript. Die Logik ist dieselbe wie in `signatur.py`, deshalb wird sie hier gegen dieselben Fälle getestet.
 
 **Files:**
-- Create: `~/.paperclip/scripts/signatur/relay_signatur.js`
-- Test: `~/.paperclip/scripts/signatur/test_relay_signatur.mjs`
+- Create: `tools/signatur/relay_signatur.js`
+- Test: `tools/signatur/test_relay_signatur.mjs`
 
 **Interfaces:**
 - Consumes: `bereich-<key>.html` aus Aufgabe 2
@@ -1074,7 +1156,7 @@ test('office bekommt Lunas Bezeichnung', () => {
 
 - [ ] **Schritt 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && node --test test_relay_signatur.mjs`
+Ausführen: `cd tools/signatur && node --test test_relay_signatur.mjs`
 Erwartet: Fehler `Cannot find module .../relay_signatur.js`.
 
 - [ ] **Schritt 3: Die Logik schreiben**
@@ -1212,7 +1294,7 @@ Erwartet: `# pass 13`, `# fail 0`.
 Beide Implementierungen müssen dieselbe Signatur erzeugen. Ausführen:
 
 ```bash
-cd ~/.paperclip/scripts/signatur
+cd tools/signatur
 node -e "
 const {signiere} = require('./relay_signatur.js');
 const fs = require('fs');
@@ -1234,8 +1316,10 @@ Erwartet: `IDENTISCH`. Bei Abweichung die JS-Fassung angleichen — `signatur.py
 - [ ] **Schritt 6: Committen**
 
 ```bash
-git add relay_signatur.js test_relay_signatur.mjs
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/relay_signatur.js tools/signatur/test_relay_signatur.mjs
 git commit -m "feat(signatur): Signaturlogik fuer den Relay-Code-Node"
+tools/signatur/deploy.sh   # damit patch_relay.py in Aufgabe 5 die Datei live findet
 ```
 
 ---
@@ -1250,8 +1334,8 @@ Der heikelste Schritt. Der Relay ist der einzige Mailweg; ein Fehler hier legt a
 **Präzisierung gegenüber der Spec:** Dort steht „zwischen `Validate Request` und `Build Binary Attachments`". Diese beiden sind nicht direkt verbunden — dazwischen sitzt `Validation Error?`. Der neue Node kommt an Ausgang 1 von `Validation Error?`.
 
 **Files:**
-- Create: `~/.paperclip/scripts/signatur/patch_relay.py`
-- Modify: `~/.paperclip/scripts/sekretaerin-mail-watcher/approval_send.py` (Feld `signatur: "none"`)
+- Create: `tools/signatur/patch_relay.py`
+- Modify: `tools/sekretaerin-mail-watcher/approval_send.py` (Feld `signatur: "none"`)
 - Modify: n8n-Workflow (neue Version V17)
 
 **Interfaces:**
@@ -1276,7 +1360,7 @@ Erwartet: eine JSON-Datei deutlich über 10 KB.
 Ohne dieses Feld bekämen Lunas Mails zwei Signaturen. Zuerst prüfen:
 
 ```bash
-grep -n "signatur" ~/.paperclip/scripts/sekretaerin-mail-watcher/approval_send.py
+grep -n "signatur" tools/sekretaerin-mail-watcher/approval_send.py
 ```
 
 Fehlt es, in `approval_send.py` im Payload-Dictionary (dort, wo `"from": FROM, "to": entry["to"], …` steht) ergänzen:
@@ -1287,7 +1371,7 @@ Fehlt es, in `approval_send.py` im Payload-Dictionary (dort, wo `"from": FROM, "
 
 Verifizieren:
 ```bash
-grep -n '"signatur": "none"' ~/.paperclip/scripts/sekretaerin-mail-watcher/approval_send.py
+grep -n '"signatur": "none"' tools/sekretaerin-mail-watcher/approval_send.py
 ```
 Erwartet: genau ein Treffer.
 
@@ -1425,7 +1509,7 @@ if __name__ == "__main__":
 
 - [ ] **Schritt 4: Trockenlauf**
 
-Ausführen: `cd ~/.paperclip/scripts/signatur && /usr/bin/python3 patch_relay.py --dry-run`
+Ausführen: `cd tools/signatur && /usr/bin/python3 patch_relay.py --dry-run`
 Erwartet: `Nodes: 20 -> 21` und die drei Verdrahtungszeilen. Bricht die Zusicherung ab, hat sich der Workflow geändert — dann Verdrahtung neu ermitteln, bevor es weitergeht.
 
 - [ ] **Schritt 5: V17 anlegen**
@@ -1500,18 +1584,34 @@ Eine Mail durch die Freigabe-Queue schicken und prüfen, dass die Signatur **ein
 
 - [ ] **Schritt 11: Committen**
 
+Zuerst den neuen Workflow als Export ins Repo legen — neben dem vorhandenen
+`SMTP-Relay-V16.export.json`, damit der Stand nachvollziehbar bleibt:
+
 ```bash
-cd ~/.paperclip/scripts/signatur
-git add patch_relay.py backup/
-git commit -m "feat(relay): Signatur-Node als V17 eingehaengt"
-cd ~/.paperclip/scripts/sekretaerin-mail-watcher
-git add approval_send.py 2>/dev/null || true
-git commit -m "fix(luna): signatur=none, damit der Relay nicht doppelt signiert" 2>/dev/null || true
+sqlite3 ~/.n8n/database.sqlite \
+  "select json_object('name', name, 'nodes', json(nodes), 'connections', json(connections)) \
+   from workflow_entity where id='SMTPRelayV17Signat';" \
+  | /usr/bin/python3 -m json.tool \
+  > tools/sekretaerin-mail-watcher/SMTP-Relay-V17.export.json
+wc -c tools/sekretaerin-mail-watcher/SMTP-Relay-V17.export.json
 ```
+Erwartet: deutlich über 10 KB.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/patch_relay.py \
+        tools/sekretaerin-mail-watcher/approval_send.py \
+        tools/sekretaerin-mail-watcher/SMTP-Relay-V17.export.json
+git commit -m "feat(relay): Signatur-Node als V17 eingehaengt"
+```
+
+Die Sicherung unter `~/.paperclip/scripts/signatur/backup/` bleibt bewusst
+ausserhalb des Repos — sie ist ein Wegwerf-Artefakt des Umstellungstags, der
+Repo-Export ist der dauerhafte Nachweis.
 
 - [ ] **Schritt 12: Änderungs- und Rollbackweg dokumentieren**
 
-Datei `~/.paperclip/scripts/signatur/README.md`:
+Datei `tools/signatur/README.md`:
 
 ```markdown
 # Mail-Signaturen
@@ -1537,10 +1637,19 @@ Schritt 5 des Umsetzungsplans.
   Erst deaktivieren, dann aktivieren — sonst laeuft die alte activeVersionId weiter.
 - Luna: `~/Obsidian/WHITESTAG-Vault/Paperclip/Luna/signaturen/abgeloest-20260804/`
   zurueckschieben und `luna_mail_render.py` aus git zuruecksetzen.
+
+## Quelle und Live-Stand
+
+Quelle ist `tools/signatur/` im Paperclip-Repo. Der Live-Pfad
+`~/.paperclip/scripts/signatur/` entsteht nur durch `deploy.sh` — dort nie von
+Hand editieren. Die `bereich-*.html` sind abgeleitet und gitignored; `deploy.sh`
+erzeugt sie am Zielort neu.
 ```
 
 ```bash
-git add README.md && git commit -m "docs(signatur): Aenderungs- und Rollbackweg"
+cd "$(git rev-parse --show-toplevel)"
+git add tools/signatur/README.md
+git commit -m "docs(signatur): Aenderungs- und Rollbackweg"
 ```
 
 ---
@@ -1650,11 +1759,14 @@ Einen CTO-Lauf anstoßen, der eine Mail an Walter schickt. Erwartet: Signatur ko
 
 - [ ] **Schritt 9: Committen**
 
+`~/.paperclip/scripts/agents-instructions/` ist **kein** Repository — hier gibt
+es nichts zu committen. Das Sicherungsnetz ist das Backup aus Schritt 1. Zum
+Abschluss prüfen, dass es existiert und den Vor-Zustand enthält:
+
 ```bash
-cd ~/.paperclip/scripts/agents-instructions
-git add roles/*.role.md
-git commit -m "docs(rollen): Feld bereich dokumentiert, sorbART entfernt"
+ls -lt ~/.paperclip/scripts/agents-instructions/backups/ | head -3
 ```
+Erwartet: als neuestes das Backup von heute, angelegt in Schritt 1.
 
 ---
 
