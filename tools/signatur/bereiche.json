@@ -1,0 +1,44 @@
+{
+  "ai": {
+    "firma": "WHITESTAG – Artificial Intelligence",
+    "mail": "ws@whitestag.ai",
+    "web": "www.whitestag.ai",
+    "url": "https://www.whitestag.ai/",
+    "logo_alt": "WHITESTAG – Artificial Intelligence"
+  },
+  "film": {
+    "firma": "WHITESTAG – VR Filmproduktion",
+    "mail": "ws@whitestag.film",
+    "web": "www.whitestag.film",
+    "url": "https://www.whitestag.film/",
+    "logo_alt": "WHITESTAG – VR Filmproduktion"
+  },
+  "tv": {
+    "firma": "WHITESTAG – Television & Broadcast",
+    "mail": "ws@whitestag.tv",
+    "web": "www.whitestag.tv",
+    "url": "https://www.whitestag.tv/",
+    "logo_alt": "WHITESTAG.TV – Fernsehen & Broadcast"
+  },
+  "academy": {
+    "firma": "",
+    "mail": "ws@whitestag.academy",
+    "web": "www.whitestag.academy",
+    "url": "https://www.whitestag.academy/",
+    "logo_alt": "WHITESTAG.ACADEMY – KI verstehen. Vorsprung sichern."
+  },
+  "app": {
+    "firma": "",
+    "mail": "ws@whitestag.app",
+    "web": "www.whitestag.app",
+    "url": "https://www.whitestag.app/",
+    "logo_alt": "WHITESTAG.APP – Digitale Erlebniswelten"
+  },
+  "de": {
+    "firma": "",
+    "mail": "ws@whitestag.de",
+    "web": "www.whitestag.de",
+    "url": "https://www.whitestag.de/",
+    "logo_alt": "WHITESTAG.DE"
+  }
+}

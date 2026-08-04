@@ -61,3 +61,4 @@ tests/release-smoke/playwright-report/
 # Python-Bytecode (u.a. obsidian-tagger-Tests)
 __pycache__/
 *.pyc
+tools/signatur/bereich-*.html
