@@ -90,6 +90,7 @@ export function companyService(
   db: Db,
   options: {
     removeManagedFiles?: (companyId: string) => Promise<void>;
+    drainActiveRunExecutions?: () => Promise<void>;
     waitForRunExecutionDrain?: (runId: string) => Promise<void>;
   } = {},
 ) {
@@ -506,9 +507,12 @@ export function companyService(
 
     remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
       if (removeOptions.deleteFiles) {
-        const runIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
-        if (!runIds) return null;
-        for (const runId of runIds) {
+        const initialRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!initialRunIds) return null;
+        await (options.drainActiveRunExecutions ?? heartbeat.drainActiveRunExecutions)();
+        const stableRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
+        if (!stableRunIds) return null;
+        for (const runId of stableRunIds) {
           await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
         }
       }
