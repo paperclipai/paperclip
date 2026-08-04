@@ -12955,15 +12955,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return true;
     };
     const reapEligibleCount = activeRuns.filter(({ run, adapterType }) => isReapEligible(run, adapterType)).length;
+    // Mirrors the `shouldRetry` check further down (RENA-54203 review fix):
+    // isReapEligible alone over-counts, since not every reap-eligible run
+    // actually gets a process-loss retry (e.g. it already used its one retry,
+    // or isn't a locally-tracked/monitor-dispatch run). Sizing the batch off
+    // the reap count could stagger a handful of real retries just because a
+    // larger group of non-retried runs shared the sweep.
+    const isRetryEligible = (run: typeof heartbeatRuns.$inferSelect, adapterType: string) => {
+      if (!isReapEligible(run, adapterType)) return false;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const runContext = parseObject(run.contextSnapshot);
+      const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorNextCheckAt = monitorIssueId
+        ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
+        : undefined;
+      const monitorDispatchLostWithoutFutureWake =
+        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        monitorNextCheckAt !== undefined &&
+        (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
+      return (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
+    };
     // Batch size is scoped per agent (RENA-54203) so one overloaded agent's reap
     // batch doesn't cause unrelated agents' small batches to be staggered too.
-    const reapEligibleCountByAgentId = new Map<string, number>();
+    const retryEligibleCountByAgentId = new Map<string, number>();
     for (const { run, adapterType } of activeRuns) {
-      if (!isReapEligible(run, adapterType)) continue;
-      reapEligibleCountByAgentId.set(run.agentId, (reapEligibleCountByAgentId.get(run.agentId) ?? 0) + 1);
+      if (!isRetryEligible(run, adapterType)) continue;
+      retryEligibleCountByAgentId.set(run.agentId, (retryEligibleCountByAgentId.get(run.agentId) ?? 0) + 1);
     }
     const restartBatchReapAgentIds = new Set(
-      [...reapEligibleCountByAgentId.entries()]
+      [...retryEligibleCountByAgentId.entries()]
         .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
         .map(([agentId]) => agentId),
     );
