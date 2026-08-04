@@ -30,10 +30,13 @@ const ABSENDER = {
   'office@whitestag.ai':    { name: 'Luna', rolle: 'KI-Assistentin' },
 };
 
+// Spiegelt Pythons html.escape(s, quote=True) — inkl. Apostroph, damit
+// beide Implementierungen bei jedem Namen/jeder Rolle byte-identisch
+// bleiben, nicht nur fuer die heute hinterlegten ABSENDER-Werte.
 function maskiere(s) {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
 function hinweisFuer(eintrag) {
