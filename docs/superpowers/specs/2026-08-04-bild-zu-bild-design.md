@@ -25,16 +25,38 @@ Brief und ein Weg, das Quellbild auf den Knoten zu bekommen.
 > Auftrag scheiterte im `KSampler`.
 >
 > Für Qwen-Image-Edit **2511 gibt es kein reines `fp8_e4m3fn`** — nur `bf16`
-> (40,9 GB), `fp8mixed` (20,5 GB) und eben `int8_convrot`. Gewählt:
-> **`fp8mixed`**, gleiche Modellgeneration wie die Lightning-4steps-LoRA auf
-> dem Knoten und dasselbe fp8-Muster, mit dem der normale Bildpfad dort
-> seit Tagen läuft.
+> (40,9 GB), `fp8mixed` (20,5 GB) und eben `int8_convrot`.
 >
-> **Die Lektion, allgemeiner:** Eine Modelldatei auf der Platte ist kein
-> Beleg für Lauffähigkeit. Vor dem Planen eines Renderpfads gehört ein
-> Ein-Schritt-Sampler-Lauf gegen das Modell — die Quantisierung entscheidet,
-> ob Metal es überhaupt rechnen kann. Das ist die zweite Quantisierungsfalle
-> dieses Knotens; die erste (LoRA-Variante gegen Basismodell) steht in
+> **Erster Ersatzversuch `fp8mixed` — ebenfalls gescheitert, gleicher Fehler.**
+> „mixed" heißt hier nicht fp8 gemischt mit bf16, sondern fp8 **gemischt mit
+> int8**. Belegt am safetensors-Kopf:
+>
+> | Variante | Datentypen im Kopf | läuft auf Metal |
+> |---|---|---|
+> | `2511_int8_convrot` | int8-Gewichte | nein |
+> | `2511_fp8mixed` | 1679× F32, 1094× BF16, 839× F8_E4M3, **839× U8** | nein |
+> | `2511_bf16` | 1933× BF16, 1× F32 | **ja** |
+> | `2509_fp8_e4m3fn` | 1933× F8_E4M3 | ja, aber ältere Generation |
+>
+> Gewählt: **`bf16`** (40,9 GB). Die einzige 2511-Variante ohne Restunbekannte,
+> und die Lightning-4steps-LoRA auf dem Knoten ist ebenfalls 2511/bf16 — das
+> kanonische Paar. `2509 fp8` wäre halb so groß, brächte aber eine ältere
+> Generation *und* eine zweite, erst zu beschaffende LoRA ins Spiel.
+>
+> **Die Lektion, allgemeiner:** Eine Modelldatei auf der Platte ist kein Beleg
+> für Lauffähigkeit, und der Dateiname ist kein Beleg für das Format. Der
+> safetensors-Kopf ist es — und er kostet nichts:
+>
+> ```bash
+> # erste 8 Byte = Kopflaenge, danach der JSON-Kopf mit allen dtypes.
+> # Per Range-Request, ohne die 40-GB-Datei zu laden.
+> curl -sL -r 0-7 "$URL" | xxd            # Laenge n (u64 little endian)
+> curl -sL -r 8-$((8+n-1)) "$URL" | jq '[.[] | .dtype] | group_by(.) | map({(.[0]): length}) | add'
+> ```
+>
+> Taucht dort `U8` oder `I8` auf, scheitert der Lauf auf Apple Silicon an
+> `aten::_int_mm`. Das ist die zweite und dritte Quantisierungsfalle dieses
+> Knotens; die erste (LoRA-Variante gegen Basismodell) steht in
 > [`2026-08-03-360-panorama-und-video.md`](2026-08-03-360-panorama-und-video.md).
 
 ## Umfang
