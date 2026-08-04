@@ -494,7 +494,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     const started = await startServer();
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
       expect.arrayContaining(["http://127.0.0.1:3210", "http://192.168.1.50:3210"]),
