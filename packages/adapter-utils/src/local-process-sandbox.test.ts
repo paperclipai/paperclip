@@ -93,6 +93,11 @@ describe("local process sandbox", () => {
     expect(target.args).toContain("--tmpfs");
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
+    const usrBindIndex = target.args.findIndex((arg, index) => arg === "/usr" && target.args[index - 1] === "--ro-bind");
+    const binBindIndex = target.args.findIndex((arg, index) => arg === "/bin" && target.args[index - 1] === "--ro-bind");
+    expect(usrBindIndex).toBeGreaterThan(-1);
+    expect(binBindIndex).toBeGreaterThan(-1);
+    expect(usrBindIndex).toBeLessThan(binBindIndex);
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
