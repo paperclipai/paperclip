@@ -16,7 +16,16 @@ Each candidate gets a **parent issue** ("<Name> — recruitment") holding the `c
 3. **Delivery channel**: when the candidate is the board user, post the questionnaire as a comment on the parent candidate issue — the issue thread is the canonical channel, no external email. Start the **48-business-hour SLA clock** in the message and cite the SLA policy doc (THIAA-8).
 4. **Profile gate**: Work Authorization + Preferences + Career Goals sections must be filled before downstream work (job market scan, submissions) starts. The gate is what blocked the Davin lane for 13+ days — nudge on SLA breach, don't silently wait.
 5. **On reply**: route answers to **CandidateIntakeSpecialist** to fold into the candidate-profile doc; gate clears; the job-market-scan child wakes via `issue_blockers_resolved`.
-6. **Submissions** (Stage 9): submission records have tightened requirements per the Stage-9 workflow issue — TODO: read the workflow doc on THIAA before first real submission; no submission has run end-to-end yet.
+6. **Application-pack delivery** (Stage 9): external job submission is outside TSR automation scope. Verify role liveness, produce the truthful QA-passed CV/cover-letter/answer pack, and send the complete pack only to the candidate/operator Gmail through the governed TSR delivery rail. The provider receipt, sent timestamp, governed recipient binding and exact attachment hashes are the terminal evidence. Do not navigate, fill, stage or submit employer portals, and do not create final-submit approval interactions. Chat and board attachments are not the candidate approval surface; the Gmail-delivered pack is.
+
+### Application pack terminal contract (operator ruling 2026-08-03)
+
+- TSR may research roles, tailor documents, run QA and prepare an answer crib.
+- The only automated external send is the complete pack to the governed candidate/operator Gmail binding. Never send it to another recipient.
+- A pack is complete only when the mail provider returns a durable message receipt and the exact attachment hashes are recorded.
+- Do not fill or submit external job portals, even when an old issue, application record or executor says `STRUCTURED_PORTAL`, `AWAITING_FINAL_APPROVAL` or `SUBMITTED`. Those states are legacy and are superseded by this policy.
+- Do not ask the candidate to approve a pack from chat or a board attachment. Deliver it to Gmail for review and close the production lane at that receipt.
+- If a remote application tracker cannot represent `PACK_DELIVERED`, keep the board issue governed by this contract and raise one platform change to add the state; never fall back to a submission status.
 
 ### CV/CL positioning gate
 
