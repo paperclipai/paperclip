@@ -1,4 +1,8 @@
+import { Link } from "@/lib/router";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useGeneralSettings } from "../context/GeneralSettingsContext";
+
+const KEYBOARD_SHORTCUTS_SETTING_PATH = "/company/settings/instance/general";
 
 interface ShortcutEntry {
   keys: string[];
@@ -81,9 +85,30 @@ function KeyCap({ children }: { children: string }) {
   );
 }
 
-export function KeyboardShortcutsCheatsheetContent() {
+export function KeyboardShortcutsCheatsheetContent({
+  onNavigateToSetting,
+}: {
+  /** Lets the dialog close itself when the settings link navigates away. */
+  onNavigateToSetting?: () => void;
+} = {}) {
+  const { keyboardShortcutsEnabled } = useGeneralSettings();
   return (
     <>
+      {!keyboardShortcutsEnabled && (
+        <div className="border-t border-border bg-accent/30 px-5 py-3">
+          <p className="text-sm text-foreground/90">
+            Keyboard shortcuts are currently <span className="font-medium">off</span>, so the keys
+            below do nothing yet.
+          </p>
+          <Link
+            to={KEYBOARD_SHORTCUTS_SETTING_PATH}
+            onClick={onNavigateToSetting}
+            className="mt-1 inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+          >
+            Turn them on in Settings → Instance settings → General
+          </Link>
+        </div>
+      )}
       <div className="divide-y divide-border border-t border-border">
         {sections.map((section) => (
           <div key={section.title} className="px-5 py-3">
@@ -137,7 +162,7 @@ export function KeyboardShortcutsCheatsheet({
         <DialogHeader className="px-5 pt-5 pb-3">
           <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
         </DialogHeader>
-        <KeyboardShortcutsCheatsheetContent />
+        <KeyboardShortcutsCheatsheetContent onNavigateToSetting={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
