@@ -689,6 +689,55 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(revalidated.classification?.state).toBe("live");
   });
 
+  it("ignores the requesting run when revalidating a watchdog source mutation", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SELF-RUN", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+
+    const watchdogRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: watchdogRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { taskId: sourceId },
+    });
+    await db.update(issues).set({ executionRunId: watchdogRunId }).where(eq(issues.id, sourceId));
+
+    // Without the run id, the source's own execution run makes the subtree look live.
+    const unrevalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+    expect(unrevalidated.allowed).toBe(false);
+    expect(unrevalidated.classification?.state).toBe("live");
+
+    // When revalidation excludes the requesting run, the same state is stopped
+    // and the mutation is allowed, so a watchdog can set a monitor after checkout.
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+      runId: watchdogRunId,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
+    expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
+  });
+
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);
