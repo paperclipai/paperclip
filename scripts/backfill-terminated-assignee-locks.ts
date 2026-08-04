@@ -35,7 +35,6 @@ async function main() {
     const candidates = await db.select({
       issueId: issues.id,
       assigneeAgentId: issues.assigneeAgentId,
-      assigneeStatus: agents.status,
       managerId: agents.reportsTo,
     }).from(issues).leftJoin(agents, eq(issues.assigneeAgentId, agents.id)).where(and(
       eq(issues.companyId, company.id),
@@ -57,7 +56,29 @@ async function main() {
       }
 
       await db.transaction(async (tx) => {
-        const released = await tx.update(issues).set({ assigneeAgentId, updatedAt: new Date() })
+        // Re-read the lifecycle graph inside the transaction. A long-running
+        // backfill must not assign work to a manager that was terminated or
+        // made ineligible after the initial candidate scan.
+        const currentAgents = await tx.select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          status: agents.status,
+          reportsTo: agents.reportsTo,
+        }).from(agents).where(eq(agents.companyId, company.id));
+        const source = currentAgents.find((agent) => agent.id === candidate.assigneeAgentId) ?? null;
+        if (source && source.status !== "terminated") return;
+        const releaseReason = source ? "agent was terminated" : "source agent is missing";
+        const currentManager = source?.reportsTo
+          ? currentAgents.find((agent) => agent.id === source.reportsTo) ?? null
+          : null;
+        const currentAssigneeAgentId = currentManager && isAgentAssignableToWork({
+          agent: currentManager,
+          agents: currentAgents,
+        })
+          ? currentManager.id
+          : null;
+        const released = await tx.update(issues).set({ assigneeAgentId: currentAssigneeAgentId, updatedAt: new Date() })
           .where(and(
             eq(issues.id, candidate.issueId),
             eq(issues.companyId, company.id),
@@ -70,11 +91,11 @@ async function main() {
           companyId: company.id,
           issueId: candidate.issueId,
           authorType: "system",
-          body: assigneeAgentId
-            ? `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; reassigned to its manager.`
-            : `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; moved to the unassigned queue.`,
+          body: currentAssigneeAgentId
+            ? `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${releaseReason}; reassigned to its manager.`
+            : `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${releaseReason}; moved to the unassigned queue.`,
         });
-        if (assigneeAgentId) releasedToManager += 1;
+        if (currentAssigneeAgentId) releasedToManager += 1;
         else releasedToQueue += 1;
       });
     }
