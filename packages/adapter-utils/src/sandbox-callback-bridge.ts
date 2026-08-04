@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runWithoutActiveStep } from "./acpx-engine/startup-timing.js";
+import {
+  runWithoutActiveStep,
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "./acpx-engine/startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -620,6 +624,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
     body?: string;
   }>;
   maxBodyBytes?: number | null;
+  // Return the current-run parent-context token. The worker reads it per request
+  // and runs the request work under it, so the request `sandbox.exec` span
+  // parents to the live run span (`agent.turn` during the turn, `task.run`
+  // otherwise). When it is absent, the request work runs with an empty store,
+  // exactly like the earlier `runWithoutActiveStep` behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
@@ -767,7 +777,15 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
-            await processRequestFile(fileName);
+            // A request is run-time work, not startup work. Read the run parent
+            // context now and run the request under it, so the request
+            // `sandbox.exec` span parents to the live run span. Read the getter
+            // per request: the live parent switches to `agent.turn` during the
+            // turn and back to `task.run` after it. With no getter the store
+            // stays empty, exactly like the earlier unparented behavior.
+            await runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
+              processRequestFile(fileName),
+            );
           } finally {
             inFlight -= 1;
           }

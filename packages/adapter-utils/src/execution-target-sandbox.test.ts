@@ -23,6 +23,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
+import { getActiveStepContext } from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
@@ -243,6 +244,135 @@ describe("sandbox adapter execution targets", () => {
         (script) => script.includes("nohup") && /mkdir -p [^\n]*\/stdin[^\n]*\/events/.test(script),
       );
       expect(launchExecs.length).toBe(1);
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("test_process_session_poll_exec_parents_to_run_context", async () => {
+    // The poll timer runs run-time execs for the whole run. Its `sandbox.exec`
+    // span must parent to the live run span, not to the ended startup step. The
+    // bridge reads `getRuntimeParentContext` per tick and runs the poll under
+    // that token. This test drives the bridge with a getter that returns a known
+    // token, lets the first poll tick fire, and proves the poll exec reads that
+    // token from the active step store.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-parent-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const runParentToken = { marker: "process-session-run-parent" };
+    let bridgeStarted = false;
+    let pollStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        // Record the active step for the first exec that runs after the bridge
+        // start resolves. The setup execs run during the measured start; the
+        // poll timer fires later, under the run parent context.
+        if (bridgeStarted && pollStep === "unset") {
+          pollStep = getActiveStepContext();
+          resolvePoll();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-parent",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      getRuntimeParentContext: () => runParentToken,
+    });
+    expect(bridge).not.toBeNull();
+    bridgeStarted = true;
+
+    try {
+      await pollObserved;
+      // The poll exec ran under the run parent context, so its exec span parents
+      // to the run token, not to a detached root or an ended startup step.
+      expect(pollStep).not.toBe("unset");
+      expect(pollStep).not.toBeNull();
+      expect((pollStep as { parentContext?: unknown }).parentContext).toBe(runParentToken);
+      expect((pollStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("test_process_session_poll_exec_stays_unparented_without_getter", async () => {
+    // With no `getRuntimeParentContext`, the poll tick runs with an empty active
+    // step store, exactly like the earlier `runWithoutActiveStep` behavior. So a
+    // poll `sandbox.exec` span opens unparented with no stale startup flag.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-nogetter-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    let bridgeStarted = false;
+    let pollStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        if (bridgeStarted && pollStep === "unset") {
+          pollStep = getActiveStepContext();
+          resolvePoll();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-nogetter",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+    bridgeStarted = true;
+
+    try {
+      await pollObserved;
+      expect(pollStep).toBeNull();
     } finally {
       await bridge?.stop();
     }
