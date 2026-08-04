@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { agentWakeupRequests, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -764,13 +764,41 @@ export function agentRoutes(
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
+    idempotencyKey: string,
   ) {
+    const skippedRequest = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          eq(agentWakeupRequests.status, "skipped"),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const reason = skippedRequest?.reason ?? "wakeup_skipped";
+    const message = reason === "wakeup_skipped" ? "Wakeup was skipped." : `Wakeup was skipped: ${reason}.`;
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
+    if (reason !== "wakeup_skipped") {
+      return {
+        status: "skipped" as const,
+        reason,
+        message,
+        issueId,
+        executionRunId: null,
+        executionAgentId: null,
+        executionAgentName: null,
+      };
+    }
     if (!issueId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason,
+        message,
         issueId: null,
         executionRunId: null,
         executionAgentId: null,
@@ -790,8 +818,8 @@ export function agentRoutes(
     if (!issue?.executionRunId) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason,
+        message,
         issueId,
         executionRunId: null,
         executionAgentId: null,
@@ -803,8 +831,8 @@ export function agentRoutes(
     if (!executionRun || (executionRun.status !== "queued" && executionRun.status !== "running")) {
       return {
         status: "skipped" as const,
-        reason: "wakeup_skipped",
-        message: "Wakeup was skipped.",
+        reason,
+        message,
         issueId,
         executionRunId: issue.executionRunId,
         executionAgentId: null,
@@ -3332,7 +3360,7 @@ export function agentRoutes(
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
-    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) => unknown | Promise<unknown>;
+    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, idempotencyKey: string) => unknown | Promise<unknown>;
   };
   const handleWakeupRoute = async (
     req: Request,
@@ -3362,12 +3390,13 @@ export function agentRoutes(
       return;
     }
 
+    const idempotencyKey = req.body.idempotencyKey ?? randomUUID();
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
       payload: req.body.payload ?? null,
-      idempotencyKey: req.body.idempotencyKey ?? null,
+      idempotencyKey,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
@@ -3378,7 +3407,7 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent));
+      res.status(202).json(await opts.skippedResponse(agent, idempotencyKey));
       return;
     }
 
@@ -3401,7 +3430,7 @@ export function agentRoutes(
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     await handleWakeupRoute(req, res, {
       source: req.body.source,
-      skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
+      skippedResponse: (agent, idempotencyKey) => buildSkippedWakeupResponse(agent, req.body.payload ?? null, idempotencyKey),
     });
   });
 

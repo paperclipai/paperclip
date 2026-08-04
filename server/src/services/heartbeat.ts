@@ -13320,7 +13320,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
-
     const company = await db
       .select({ status: companies.status })
       .from(companies)
@@ -13329,12 +13328,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (!company || company.status !== "active") {
       const companyStatus = company?.status ?? "missing";
-      if (opts.requestedByActorType === "user") {
-        throw conflict("Company is not active", { status: companyStatus });
-      }
       await writeSkippedRequest("company.inactive", {
         error: `Wake suppressed because company status is ${companyStatus}`,
       });
+      if (opts.requestedByActorType === "user") {
+        throw conflict("Company is not active", { status: companyStatus });
+      }
       return null;
     }
 
@@ -13434,17 +13433,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (userId): QueuedResponsibleUserAttempt => ({ ok: true, userId }),
         (error): QueuedResponsibleUserAttempt => ({ ok: false, error }),
       );
-    const requireQueuedResponsibleUserId = (attempt: QueuedResponsibleUserAttempt): string => {
-      if (!attempt.ok) throw attempt.error;
-      return attempt.userId;
-    };
-
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
     });
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
+      await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason });
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
@@ -13453,11 +13447,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      if (opts.requestedByActorType !== "user") {
-        await writeSkippedRequest("agent.not_invokable", {
-          error: invokability.message,
-        });
-      }
+      await writeSkippedRequest("agent.not_invokable", {
+        error: invokability.message,
+      });
       throw conflict(invokability.message, {
         status: agent.status,
         reason: invokability.reason,
@@ -14009,6 +14001,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        if (!queuedResponsibleUserIdAttempt.ok) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "responsible_user_unresolved",
+            payload,
+            status: "skipped",
+            error: queuedResponsibleUserIdAttempt.error instanceof Error
+              ? queuedResponsibleUserIdAttempt.error.message
+              : String(queuedResponsibleUserIdAttempt.error),
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUserIdAttempt.error };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -14034,7 +14046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             invocationSource: source,
             triggerDetail,
             status: "queued",
-            responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
+            responsibleUserId: queuedResponsibleUserIdAttempt.userId,
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
@@ -14058,6 +14070,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      if (outcome.kind === "responsible_user_unresolved") throw outcome.error;
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
@@ -14191,6 +14204,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "skipped" as const };
       }
 
+      if (!queuedResponsibleUserIdAttempt.ok) {
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: "responsible_user_unresolved",
+          payload,
+          status: "skipped",
+          error: queuedResponsibleUserIdAttempt.error instanceof Error
+            ? queuedResponsibleUserIdAttempt.error.message
+            : String(queuedResponsibleUserIdAttempt.error),
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          finishedAt: new Date(),
+        });
+        return { kind: "responsible_user_unresolved" as const, error: queuedResponsibleUserIdAttempt.error };
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -14216,7 +14249,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
+          responsibleUserId: queuedResponsibleUserIdAttempt.userId,
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
@@ -14236,6 +14269,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { kind: "queued" as const, run: newRun };
     });
 
+    if (queueOutcome.kind === "responsible_user_unresolved") throw queueOutcome.error;
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 

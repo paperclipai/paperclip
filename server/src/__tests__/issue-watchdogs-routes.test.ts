@@ -51,11 +51,14 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(issueRelations);
     await db.delete(issueWatchdogs);
     await db.delete(issues);
+    // Deleted last: assignment routes fire-and-forget a wakeup whose failure
+    // handler durably writes here, so it can still land after the route
+    // response returns but before this cleanup runs.
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);

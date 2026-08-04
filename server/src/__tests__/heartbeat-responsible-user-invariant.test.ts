@@ -266,6 +266,17 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(0);
+
+    // A resolution failure must leave a durable record — otherwise the wake
+    // vanishes with no trace once the enclosing transaction rolls back.
+    const skipped = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.status).toBe("skipped");
+    expect(skipped[0]?.reason).toBe("responsible_user_unresolved");
+    expect(skipped[0]?.error).toBeTruthy();
   });
 
   it("fails dispatch before creating a run when no responsible user can be resolved", async () => {
@@ -302,5 +313,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(0);
+
+    const skipped = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.status).toBe("skipped");
+    expect(skipped[0]?.reason).toBe("responsible_user_unresolved");
+    expect(skipped[0]?.error).toBeTruthy();
   });
 });
