@@ -64,6 +64,34 @@ def list_issues(company_id, status, label_id, limit=100):
 def get_issue(issue_id):
     return _request("GET", f"/api/issues/{issue_id}")
 
+def list_attachments(issue_id):
+    return _request("GET", "/api/issues/%s/attachments" % issue_id)
+
+
+def fetch_attachment(attachment_id):
+    """Rohe Bytes eines Anhangs.
+
+    Geht bewusst NICHT durch _request(): das dortige json.loads() wuerde ein
+    PNG als kaputtes JSON abweisen.
+    """
+    url = PAPERCLIP_BASE + "/api/attachments/%s/content" % attachment_id
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + _token()})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise AuthError("Paperclip %s — Board-Token abgelaufen." % e.code)
+        raise PaperclipError("Paperclip GET Anhang %s: HTTP %s: %s"
+                             % (attachment_id, e.code,
+                                e.read().decode(errors="replace")[:300]))
+    except urllib.error.URLError as e:
+        raise PaperclipError("Paperclip GET Anhang %s: nicht erreichbar: %s"
+                             % (attachment_id, e))
+    except OSError as e:
+        raise PaperclipError("Paperclip GET Anhang %s: OS-Fehler: %s"
+                             % (attachment_id, e))
+
 def patch_status(issue_id, status):
     return _request("PATCH", f"/api/issues/{issue_id}", json_body={"status": status})
 

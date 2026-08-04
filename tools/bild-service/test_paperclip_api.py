@@ -137,3 +137,53 @@ def test_mail_alarm_tolerates_missing_secrets_file():
         assert True
     finally:
         paperclip_api.MAIL_SECRET_ENV = original_secret_env
+
+
+def test_list_attachments_ruft_den_richtigen_pfad(monkeypatch):
+    _patch_token(monkeypatch)
+    gesehen = {}
+
+    def fake_urlopen(req, *a, **k):
+        gesehen["url"] = req.full_url
+        return _FakeResp(json.dumps([{"id": "att-1"}]).encode())
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", fake_urlopen)
+    res = paperclip_api.list_attachments("issue-9")
+    assert res == [{"id": "att-1"}]
+    assert gesehen["url"].endswith("/api/issues/issue-9/attachments")
+
+
+def test_fetch_attachment_liefert_rohe_bytes(monkeypatch):
+    """Darf NICHT durch json.loads laufen -- das wuerde ein PNG zerreissen."""
+    _patch_token(monkeypatch)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+
+    def fake_urlopen(req, *a, **k):
+        return _FakeResp(png)
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", fake_urlopen)
+    assert paperclip_api.fetch_attachment("att-1") == png
+
+
+def test_fetch_attachment_401_ist_autherror(monkeypatch):
+    _patch_token(monkeypatch)
+
+    def raise_http(*a, **k):
+        raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {},
+                                     io.BytesIO(b""))
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_http)
+    with pytest.raises(paperclip_api.AuthError):
+        paperclip_api.fetch_attachment("att-1")
+
+
+def test_fetch_attachment_500_ist_paperclip_error(monkeypatch):
+    _patch_token(monkeypatch)
+
+    def raise_http(*a, **k):
+        raise urllib.error.HTTPError("http://x", 500, "Server Error", {},
+                                     io.BytesIO(b"kaputt"))
+
+    monkeypatch.setattr(paperclip_api.urllib.request, "urlopen", raise_http)
+    with pytest.raises(paperclip_api.PaperclipError):
+        paperclip_api.fetch_attachment("att-1")
