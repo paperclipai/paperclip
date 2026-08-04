@@ -1,0 +1,12 @@
+{
+  "name": "ssi-enrichment-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Runtime dependencies for the SSI enrichment tools",
+  "scripts": {
+    "test": "node --test test_ssi_explore.js"
+  },
+  "dependencies": {
+    "playwright": "1.59.1"
+  }
+}
