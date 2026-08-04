@@ -24,7 +24,8 @@ The bootstrap script:
 
 1. verifies that the platform is supported;
 2. ensures Node.js 20 or newer is available;
-3. delegates installation to `paperclipai install`;
+3. delegates installation to `paperclipai install` (defaults to the canary
+   channel until managed install ships in a stable release);
 4. starts interactive onboarding when stdin and stdout are terminals.
 
 The script prints and confirms any command that requires elevated privileges.
@@ -45,12 +46,14 @@ curl -fsSL https://paperclip.ing/install.sh | bash -s -- --no-prompt --no-onboar
 paperclipai onboard --yes
 ```
 
-If the vanity installer endpoint is unavailable, fetch the same
+If the vanity installer endpoint is unavailable or behind `master` (for example
+macOS `bad substitution` from bash-4-only `${value,,}`), fetch the
 release-controlled source from GitHub raw content:
 
 ```sh
 raw_base=https://raw.githubusercontent.com/paperclipai/paperclip
-curl -fsSL "$raw_base/master/scripts/install.sh" | bash
+curl -fsSL "$raw_base/master/scripts/install.sh" -o install.sh
+bash install.sh
 ```
 
 For audits or incident response, pin the raw URL to a release tag or commit SHA
