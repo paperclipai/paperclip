@@ -22,7 +22,10 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
-const mockHeartbeatService = vi.hoisted(() => ({ cancelRun: vi.fn() }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelRun: vi.fn(),
+  waitForRunExecutionDrain: vi.fn(),
+}));
 const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
