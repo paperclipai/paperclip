@@ -357,7 +357,7 @@ export function boardChatRoutes(
       // Persist the board's reply under the "board-concierge" sentinel so the
       // UI renders it as an assistant bubble (see BoardChat `isUser` check).
       const cleanedResponse = stripActionSignals(fullResponse);
-      if (cleanedResponse) {
+      if (cleanedResponse && cleanedResponse.trim()) {
         try {
           await issueSvc.addComment(resolvedIssueId, cleanedResponse, {
             userId: "board-concierge",
