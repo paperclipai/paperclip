@@ -10,6 +10,7 @@ import type {
   TaskChatDiff,
   TaskChatItem,
   TaskChatToolItem,
+  TaskChatTurnChildItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
 import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
@@ -24,6 +25,38 @@ const TERMINAL_STATUSES = new Set([
 
 export function isTerminalRunStatus(status: string | undefined | null): boolean {
   return status != null && TERMINAL_STATUSES.has(status);
+}
+
+/**
+ * The live parent row's nesting rule (PAP-354, narrowed by PAP-361): only tool
+ * calls and usage readouts nest inside the expandable live turn. Messages
+ * never nest — an interstitial update streams on the parent row's own line
+ * (TaskChatStatusItem.selfTalk) and vanishes when it completes, and the run's
+ * final reply lands as its posted comment bubble. Thinking never nests either:
+ * its live signal is the pill's "Thinking…" state, and the text stays in the
+ * run log / classic transcript. Markers, statuses and interaction cards stay
+ * in the thread outside.
+ */
+export function isNestableLiveChild(item: TaskChatItem): item is TaskChatTurnChildItem {
+  return item.kind === "tool" || item.kind === "usage";
+}
+
+/**
+ * Flatten markdown-ish interstitial text to one plain line for the live parent
+ * row. Stream-safe: markers are stripped without requiring pairs.
+ */
+export function flattenSelfTalk(text: string): string {
+  return text
+    .replace(/```[a-z]*\n?/gi, " ")
+    .replace(/`/g, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, "$1")
+    .replace(/\*+/g, "")
+    .replace(/__/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" {
@@ -177,6 +210,7 @@ export function transcriptToTaskChatItems(
           const it = items[messageIndex];
           if (it.kind === "message") it.text += entry.text;
         } else {
+          const atMs = Date.parse(entry.ts);
           items.push({
             id: `${runId}:msg:${i}`,
             kind: "message",
@@ -184,6 +218,10 @@ export function transcriptToTaskChatItems(
             authorName: agentName,
             text: entry.text,
             streaming: running,
+            // Everything the agent says inside a run turn is self-talk until it
+            // lands as the posted comment — live and history tag it alike.
+            interstitial: true,
+            atMs: Number.isFinite(atMs) ? atMs : undefined,
           });
           messageIndex = items.length - 1;
           thinkingIndex = -1;
@@ -278,7 +316,30 @@ export function transcriptToTaskChatItems(
     }
   }
 
+  // Only the message still open at the transcript tail is streaming; earlier
+  // self-talk is finished and nests as a settled row even mid-run.
+  if (running) {
+    for (const [idx, it] of items.entries()) {
+      if (it.kind === "message" && idx !== messageIndex) it.streaming = false;
+    }
+  }
+
   return items;
+}
+
+/**
+ * A settled run's nested children (PAP-361): exactly the tool rows (plus usage
+ * readouts) in transcript order, under the "✓ Worked ·" summary — parity with
+ * the summary's tool count. Messages are excluded: the final reply already
+ * landed as the run's posted comment bubble, and interstitial updates are
+ * ephemeral (they take the live line while streaming, then vanish). Thinking
+ * is excluded too — the run log / classic transcript remain its archive.
+ */
+export function settledRunChildren(parsed: readonly TaskChatItem[]): TaskChatTurnChildItem[] {
+  return parsed.filter(
+    (it): it is TaskChatTurnChildItem =>
+      it.kind !== "turn" && it.kind !== "message" && it.kind !== "thinking",
+  );
 }
 
 function formatDurationLabel(ms: number): string | undefined {
@@ -295,6 +356,15 @@ function formatTokensLabel(tokens: number): string | undefined {
   if (!Number.isFinite(tokens) || tokens <= 0) return undefined;
   const label = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
   return `${label} tokens`;
+}
+
+/** First→last ts span of a transcript, or undefined when unknowable. */
+function transcriptSpanMs(entries: readonly TranscriptEntry[]): number | undefined {
+  if (entries.length < 2) return undefined;
+  const first = Date.parse(entries[0].ts);
+  const last = Date.parse(entries[entries.length - 1].ts);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return undefined;
+  return Math.max(0, last - first);
 }
 
 /**
@@ -322,12 +392,7 @@ export function buildTurnSummary(
       tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
     }
   }
-  let durationMs = opts.durationMs;
-  if (durationMs == null && entries.length >= 2) {
-    const first = Date.parse(entries[0].ts);
-    const last = Date.parse(entries[entries.length - 1].ts);
-    if (Number.isFinite(first) && Number.isFinite(last)) durationMs = last - first;
-  }
+  const durationMs = opts.durationMs ?? transcriptSpanMs(entries);
   return {
     durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
     toolCount: toolIds.size,
@@ -338,15 +403,207 @@ export function buildTurnSummary(
   };
 }
 
+/** One settled run's raw summary inputs, kept so back-to-back runs can coalesce (PAP-362). */
+export interface TurnSummaryPart {
+  entries: readonly TranscriptEntry[];
+  durationMs?: number;
+  failed?: boolean;
+}
+
+/**
+ * Summary for a turn coalesced from several back-to-back runs (PAP-362).
+ * Tool/diff/token counts re-derive from the concatenated transcripts; duration
+ * is the SUM of the per-run durations (each with its own ts-span fallback) —
+ * never the wall span across the idle gap between runs.
+ */
+export function buildMergedTurnSummary(
+  parts: readonly TurnSummaryPart[],
+): TaskChatTurnItem["summary"] {
+  const all: TranscriptEntry[] = [];
+  let durationMs: number | undefined;
+  let failed = false;
+  for (const part of parts) {
+    all.push(...part.entries);
+    if (part.failed) failed = true;
+    const d = part.durationMs ?? transcriptSpanMs(part.entries);
+    if (d != null && Number.isFinite(d)) durationMs = (durationMs ?? 0) + Math.max(0, d);
+  }
+  // durationMs: 0 suppresses the concatenated-span fallback (which would count
+  // the gap between runs); the summed label is applied over it below.
+  const counts = buildTurnSummary(all, { durationMs: 0, failed });
+  return {
+    ...counts,
+    durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+  };
+}
+
+/** One chronological backbone entry (comment / interaction / marker). */
+export interface ThreadBackboneEntry {
+  /** Chronological sort key in ms (backbone is already sorted by it). */
+  ms: number;
+  /** Stable entry id — the anchor key settled turns attach after. */
+  id: string;
+  item: TaskChatItem;
+}
+
+/**
+ * Assemble the thread body (PAP-367): backbone entries in order, each followed
+ * by the settled turns anchored to it (run → reply-comment linkage), with
+ * comment-less settled turns — stopped runs, or a reply not yet fetched —
+ * interleaved chronologically at their run's start time instead of
+ * bottom-appended under the newest message. Ties go after the backbone entry
+ * (trigger comment first); turns with no known start (startMs = Infinity) keep
+ * the tail slot. `unanchored` must be sorted ascending by startMs.
+ */
+export function assembleThreadItems(
+  entries: readonly ThreadBackboneEntry[],
+  turnsByAnchor: ReadonlyMap<string, readonly TaskChatTurnItem[]>,
+  unanchored: readonly { turn: TaskChatTurnItem; startMs: number }[],
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  let next = 0;
+  for (const entry of entries) {
+    while (next < unanchored.length && unanchored[next].startMs < entry.ms) {
+      out.push(unanchored[next++].turn);
+    }
+    out.push(entry.item);
+    const following = turnsByAnchor.get(entry.id);
+    if (following) out.push(...following);
+  }
+  while (next < unanchored.length) out.push(unanchored[next++].turn);
+  return out;
+}
+
+/** Stable id of the description-as-first-bubble item (PAP-375). */
+export const ISSUE_BRIEF_ITEM_ID = "issue-brief";
+
+/**
+ * Prepend the issue-brief placeholder (PAP-375) to the fully assembled thread.
+ * Running AFTER assembleThreadItems/coalesce/attach makes the ordering
+ * guarantee structural rather than data-dependent: even an unanchored settled
+ * turn whose startMs predates every backbone entry (F15) lands below the
+ * description bubble.
+ */
+export function prependIssueBrief(items: TaskChatItem[], hasBrief: boolean): TaskChatItem[] {
+  if (!hasBrief) return items;
+  return [{ id: ISSUE_BRIEF_ITEM_ID, kind: "brief" }, ...items];
+}
+
+/** Per-turn identity + raw summary inputs for coalescing (keyed by turn item id). */
+export interface SettledTurnMergeMeta {
+  /** Stable agent identity (agentId); empty/unknown turns never merge. */
+  agentKey: string;
+  /** Display name, used to keep another agent's bubble from bridging a merge. */
+  agentName?: string;
+  parts: TurnSummaryPart[];
+}
+
+/**
+ * Final assembly pass (PAP-362): merge runs of settled turns from the SAME
+ * agent that arrive back-to-back — two runs replying consecutively — into one
+ * "Worked" row. The agent's own reply bubbles do not break the run (the merged
+ * row lands below the last bubble, in the last run's slot); a human/system
+ * message, an interaction, a marker, or the live in-flight turn does. Child
+ * items concatenate in order, the summary re-derives via buildMergedTurnSummary,
+ * the merged turn keeps the FIRST run's id (stable across re-renders), and
+ * animateFold survives if any merged run was seen live.
+ */
+export function coalesceSettledTurns(
+  items: readonly TaskChatItem[],
+  metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  // Overlay for merged turns' accumulated parts (metaById stays untouched).
+  const mergedMeta = new Map<string, SettledTurnMergeMeta>();
+  const metaFor = (id: string) => mergedMeta.get(id) ?? metaById.get(id);
+  let heldIdx = -1; // index in `out` of the last mergeable settled turn
+  for (const item of items) {
+    if (item.kind === "turn" && item.settled) {
+      const meta = metaFor(item.id);
+      const held = heldIdx >= 0 ? (out[heldIdx] as TaskChatTurnItem) : null;
+      const heldMeta = held ? metaFor(held.id) : undefined;
+      if (held && meta && heldMeta && meta.agentKey && meta.agentKey === heldMeta.agentKey) {
+        out.splice(heldIdx, 1);
+        const parts = [...heldMeta.parts, ...meta.parts];
+        out.push({
+          ...held,
+          items: [...held.items, ...item.items],
+          animateFold: held.animateFold || item.animateFold || undefined,
+          summary: buildMergedTurnSummary(parts),
+        });
+        mergedMeta.set(held.id, { ...heldMeta, parts });
+      } else {
+        out.push(item);
+      }
+      heldIdx = meta?.agentKey ? out.length - 1 : -1;
+      continue;
+    }
+    out.push(item);
+    if (item.kind === "message" && item.author === "agent") {
+      // The same agent's reply bubble sits between its runs — keep merging
+      // across it. A different agent's bubble ends the run of turns.
+      const heldMeta = heldIdx >= 0 ? metaFor((out[heldIdx] as TaskChatTurnItem).id) : undefined;
+      if (heldMeta?.agentName && item.authorName && item.authorName !== heldMeta.agentName) {
+        heldIdx = -1;
+      }
+    } else {
+      heldIdx = -1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Final assembly pass (round 9, after coalesceSettledTurns): a settled turn
+ * that directly follows its own agent's reply bubble folds INTO that bubble as
+ * `attachedTurn` — the "Worked · …" summary renders appended to the bubble's
+ * always-visible timestamp line instead of as a standalone row. The turn must
+ * belong to the same agent as the bubble (metaById identity); turns without
+ * meta, or preceded by anything other than that agent's non-interstitial
+ * bubble, keep the standalone-row fallback.
+ */
+export function attachSettledTurns(
+  items: readonly TaskChatItem[],
+  metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  for (const item of items) {
+    const prev = out[out.length - 1];
+    if (
+      item.kind === "turn" &&
+      item.settled &&
+      prev?.kind === "message" &&
+      prev.author === "agent" &&
+      !prev.interstitial &&
+      !prev.streaming &&
+      prev.attachedTurn == null
+    ) {
+      const meta = metaById.get(item.id);
+      const sameAgent =
+        meta != null && (meta.agentName == null || prev.authorName == null || meta.agentName === prev.authorName);
+      if (sameAgent) {
+        out[out.length - 1] = { ...prev, attachedTurn: item };
+        continue;
+      }
+    }
+    out.push(item);
+  }
+  return out;
+}
+
 /**
  * Human-readable label for the live status pill from the tail of a transcript.
  * A tail tool_call yields the taxonomy verb ("Searching", "Running a command")
  * with tool + target as detail; `toolName` lets the pill show the family icon.
+ * A tail assistant message yields "Responding" plus `selfTalk` — the flattened
+ * text of the interstitial update streamed so far, which takes over the parent
+ * row's line while it streams (PAP-361).
  */
 export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
   label: string;
   detail?: string;
   toolName?: string;
+  selfTalk?: string;
 } {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -382,7 +639,29 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
       };
     }
     if (entry.kind === "tool_result") break;
-    if (entry.kind === "assistant") return { label: "Responding" };
+    if (entry.kind === "assistant") {
+      // Accumulate the trailing message's deltas (the same coalescing run the
+      // parser groups into one item: broken by tool/thinking/diff, not by
+      // status-only entries like stdout).
+      const parts: string[] = [];
+      for (let j = i; j >= 0; j--) {
+        const prev = entries[j];
+        if (prev.kind === "assistant") {
+          if (prev.text) parts.unshift(prev.text);
+          continue;
+        }
+        if (
+          prev.kind === "tool_call" ||
+          prev.kind === "tool_result" ||
+          prev.kind === "thinking" ||
+          prev.kind === "diff"
+        ) {
+          break;
+        }
+      }
+      const selfTalk = flattenSelfTalk(parts.join(""));
+      return { label: "Responding", selfTalk: selfTalk || undefined };
+    }
     if (entry.kind === "thinking") return { label: "Thinking" };
   }
   return { label: "Running" };

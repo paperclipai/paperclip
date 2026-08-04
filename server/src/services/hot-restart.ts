@@ -89,6 +89,8 @@ export type HotRestartIntent = {
   previousServerStartedAt?: string | null;
   previousServerVersion: string | null;
   drainRequired: boolean;
+  drainReason?: "requested" | "active_acp_run" | null;
+  drainRunIds?: string[];
   requestedByRunId: string | null;
   preflightActiveRunIds: string[];
   shutdownSnapshot?: {
@@ -145,6 +147,7 @@ export type HotRestartReport = {
   requestedAt: string;
   completedAt: string;
   drainRequired: boolean;
+  drainReason: "requested" | "active_acp_run" | null;
   previousServerPid: number;
   newServerPid: number;
   previousServerVersion: string | null;
@@ -996,6 +999,10 @@ export async function appendServerLifecycleEvent(input: {
   });
 }
 
+function asDrainReason(value: unknown) {
+  return value === "requested" || value === "active_acp_run" ? value : null;
+}
+
 function asDateString(value: unknown): string | null {
   const candidate = asString(value);
   if (!candidate) return null;
@@ -1367,6 +1374,8 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
+    drainReason: asDrainReason(value.drainReason),
+    drainRunIds: asStringArray(value.drainRunIds),
     requestedByRunId: asString(value.requestedByRunId),
     preflightActiveRunIds: asStringArray(value.preflightActiveRunIds),
   };
@@ -1434,6 +1443,7 @@ export async function writeHotRestartIntent(input: {
   previousServerStartedAt?: string | null;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
+  drainReason?: "requested" | "active_acp_run" | null;
   requestedByRunId?: string | null;
   preflightActiveRunIds?: string[];
   requestedAt?: Date;
@@ -1457,6 +1467,7 @@ export async function writeHotRestartIntent(input: {
     previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
+    drainReason: input.drainReason ?? (input.drainRequired ? "requested" : null),
     requestedByRunId: input.requestedByRunId ?? null,
     preflightActiveRunIds: asStringArray(input.preflightActiveRunIds),
   };
@@ -1482,11 +1493,20 @@ export async function writeHotRestartShutdownSnapshot(input: {
   intent: HotRestartIntent;
   signal: "SIGINT" | "SIGTERM" | "SIGBREAK";
   activeRuns: HotRestartIntentRun[];
+  drainReason?: "active_acp_run";
+  drainRunIds?: string[];
   capturedAt?: Date;
   homeDir?: string;
 }) {
   const updated: HotRestartIntent = {
     ...input.intent,
+    ...(input.drainReason
+      ? {
+        drainRequired: true,
+        drainReason: input.drainReason,
+        drainRunIds: asStringArray(input.drainRunIds),
+      }
+      : {}),
     shutdownSnapshot: {
       capturedAt: (input.capturedAt ?? new Date()).toISOString(),
       signal: input.signal,
@@ -1535,6 +1555,7 @@ export async function readHotRestartReport(homeDir?: string): Promise<HotRestart
       requestedAt,
       completedAt,
       drainRequired: asBoolean(value.drainRequired),
+      drainReason: asDrainReason(value.drainReason),
       previousServerPid,
       newServerPid,
       previousServerVersion: asString(value.previousServerVersion),

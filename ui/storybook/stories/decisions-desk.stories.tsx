@@ -137,14 +137,22 @@ function approval(id: string, title: string, whyNow: string, overrides: Partial<
 }
 
 function feed(items: AttentionItem[]): AttentionFeed {
-  const decideNowCount = items.filter(
-    (it) => it.decideBy === "today" && !it.shelf,
+  // New-today (surfaced today) or overdue decide-by — the sidebar badge load.
+  const startOfToday = Date.UTC(
+    new Date(NOW).getUTCFullYear(),
+    new Date(NOW).getUTCMonth(),
+    new Date(NOW).getUTCDate(),
+  );
+  const deskBadgeCount = items.filter(
+    (it) =>
+      !it.shelf &&
+      (it.decideBy === "today" || new Date(it.createdAt).getTime() >= startOfToday),
   ).length;
   return {
     companyId,
     generatedAt: iso(NOW),
     totalCount: items.length,
-    decideNowCount,
+    deskBadgeCount,
     nextCursor: null,
     countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
     items,
@@ -258,6 +266,7 @@ const DESK_ITEMS: AttentionItem[] = [
     decideBy: "this_week",
     decideByAttribution: attribution("Prioritizer"),
     queues: [PRS_QUEUE_REF],
+    createdAt: iso(NOW - 3 * HOUR),
     activityAt: iso(NOW - 5 * HOUR),
   }),
   item(
@@ -268,6 +277,7 @@ const DESK_ITEMS: AttentionItem[] = [
     "In-review issue is waiting on a human reviewer.",
     {
       decideBy: "whenever",
+      createdAt: iso(NOW - 2 * HOUR),
       activityAt: iso(NOW - 26 * HOUR),
       project: { id: "proj-beta", name: "Beta", urlKey: "beta", color: "#0f766e", icon: "rocket" },
     },
@@ -278,12 +288,13 @@ const DESK_ITEMS: AttentionItem[] = [
     "low",
     "Company budget crossed 85%",
     "Budget crossed the 85% threshold.",
-    { relatedIssue: null, inlineResolvable: false, activityAt: iso(NOW - 2 * DAY) },
+    { relatedIssue: null, inlineResolvable: false, createdAt: iso(NOW - 2 * DAY), activityAt: iso(NOW - 2 * DAY) },
   ),
 ];
 
-// The desk when nothing is due today — every item is deferred ("whenever"), so
-// the "Decide now" shelf is empty and the desk shows the "today is clear" note.
+// The desk when nothing has a due decide-by — every item is deferred
+// ("whenever"), so there is no "Decide now" shelf and no "can wait" claim; the
+// desk is purely the arrival groups "New today" / "Earlier".
 const CLEAR_TODAY_ITEMS: AttentionItem[] = DESK_ITEMS.filter((it) => it.decideBy !== "today").map((it) => ({
   ...it,
   decideBy: "whenever",
@@ -363,8 +374,10 @@ function PrimeDeskFixtures({
       );
     }
     if (queueItems) {
+      // The queue feed key carries the resolved activity bounds (null/null for
+      // the default "all" range), matching the page's real query key.
       queryClient.setQueryData(
-        [...queryKeys.attention(companyId), "queue", "prs"],
+        [...queryKeys.attention(companyId), "queue", "prs", null, null],
         feed(queueItems),
       );
     }
@@ -382,9 +395,10 @@ export default meta;
 type Story = StoryObj;
 
 /**
- * Screen 1 — today's desk. Queue rail + date chips on top, then the desk split
- * into "Decide now" (due today) and "Can wait", with decide-by + provenance
- * ("set by Prioritizer") on the cards.
+ * Screen 1 — today's desk. Queue rail + date chips on top, then a "Decide now"
+ * shelf (only because some items have an explicit due decide-by) followed by the
+ * arrival groups "New today" / "Earlier", with decide-by + provenance ("set by
+ * Prioritizer") on the cards.
  */
 export const TodaysDesk: Story = {
   render: () => (
@@ -396,7 +410,11 @@ export const TodaysDesk: Story = {
   ),
 };
 
-/** Screen 1 variant — the desk when today is clear (nothing due today). */
+/**
+ * Screen 1 variant — no item has an explicit decide-by deadline, so there is no
+ * "Decide now" shelf and no "can wait" claim; the desk is purely the arrival
+ * groups "New today" / "Earlier".
+ */
 export const DeskClearToday: Story = {
   render: () => (
     <PrimeDeskFixtures items={CLEAR_TODAY_ITEMS}>
@@ -419,21 +437,40 @@ export const AgingShelf: Story = {
 };
 
 /**
- * Screen 2 — a queue page. Homogeneous list where each source-native decision
- * resolves per item (approve/reject on the card, plus Exclude-with-reason);
- * the queue rail (active chip) and the seed-rules card with its enable/disable
- * toggle sit above. Bulk accept/reject was pulled until a cross-domain
- * exact-set transaction can preserve side effects atomically (see PAP-16032
- * follow-up); screen 2 ships per-item-only for now.
+ * Screen 2 — a queue page. The queue carries the same toolbar as
+ * the desk (filter / group / sort / training), the date-range chips, the arrival
+ * timeline groupings ("Decide now" / "New today" / "Earlier") and the aging
+ * shelf, above the seed-rules card (with its rewritten copy) and the per-item
+ * Exclude-with-reason affordance. Each source-native decision still resolves per
+ * item (approve/reject on the card).
  */
 export const QueuePage: Story = {
   render: () => (
     <PrimeDeskFixtures
       queueItems={[
-        approval("q-pr-1", "Merge PR #10664: decisions desk data layer", "CI green; ready to merge.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-2", "Merge PR #10651: prioritized attention feed", "Second review approved.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-3", "Merge PR #10636: quieter workspace-ready", "Reviewed and passing.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-4", "Merge PR #10623: inbox sort pinning", "Awaiting a merge decision.", { queues: [PRS_QUEUE_REF] }),
+        approval("q-pr-1", "Merge PR #10664: decisions desk data layer", "CI green; ready to merge.", {
+          queues: [PRS_QUEUE_REF],
+          decideBy: "today",
+          decideByAttribution: attribution("Prioritizer"),
+          expiresAt: iso(NOW + 5 * HOUR),
+        }),
+        approval("q-pr-2", "Merge PR #10651: prioritized attention feed", "Second review approved.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 2 * HOUR),
+        }),
+        approval("q-pr-3", "Merge PR #10636: quieter workspace-ready", "Reviewed and passing.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 4 * DAY),
+        }),
+        approval("q-pr-4", "Merge PR #10623: inbox sort pinning", "Awaiting a merge decision.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 5 * DAY),
+        }),
+        approval("q-pr-5", "Merge PR #9744: legacy exporter cleanup", "No activity in over a month.", {
+          queues: [PRS_QUEUE_REF],
+          shelf: true,
+          activityAt: iso(NOW - 44 * DAY),
+        }),
       ]}
     >
       <div className="p-6">

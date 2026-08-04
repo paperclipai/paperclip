@@ -52,7 +52,9 @@ import type {
   WorkerToHostMethods,
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
+import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { logger } from "../middleware/logger.js";
+import { traceparentFromContextToken } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -260,6 +262,10 @@ interface PendingRequest {
 interface ActiveInvocation {
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
+  // The host-minted W3C `traceparent` for the active startup span, or undefined
+  // when no startup span is active. The span host handler reads it to mint the
+  // parentage, so a worker never supplies the parent itself.
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,11 +627,20 @@ export function createPluginWorkerHandle(
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
+    // Mint a W3C `traceparent` from the active startup span, so the worker's
+    // provider span can parent to it. The host keeps the value on its own record
+    // (below) and never trusts the worker to supply the parent. Outside a
+    // measured startup step there is no active span, so this is undefined.
+    const activeStep = getActiveStepContext();
+    const traceparent = activeStep
+      ? traceparentFromContextToken(activeStep.parentContext)
+      : undefined;
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
+      ...(traceparent ? { traceparent } : {}),
     };
-    const entry: ActiveInvocation = { scope };
+    const entry: ActiveInvocation = { scope, traceparent };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -703,7 +718,7 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope };
+    return { invocationScope: entry.scope, traceparent: entry.traceparent };
   }
 
   /**

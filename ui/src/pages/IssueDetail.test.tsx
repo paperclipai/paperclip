@@ -282,6 +282,13 @@ vi.mock("../components/IssueChatThread", () => ({
   },
 }));
 
+// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
+// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+vi.mock("../components/TaskChatThread", () => ({
+  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
+}));
+
 vi.mock("../components/IssueDocumentsSection", () => ({
   IssueDocumentsSection: () => <div>Documents</div>,
 }));

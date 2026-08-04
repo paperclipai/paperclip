@@ -33,8 +33,10 @@ import plugin, {
   setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
   __getDaytonaWritableDirsForTest,
+  __setDaytonaPluginContextForTest,
   buildBwrapCommand,
 } from "./plugin.js";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 
 function createMockSandbox(overrides: {
@@ -1157,6 +1159,41 @@ describe("Daytona sandbox provider plugin", () => {
     }
   });
 
+  it("sets metadata.cacheHit false on a client.get miss and true on a warm-handle hit", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockResolvedValue({
+      exitCode: 0,
+      result: "ok",
+      artifacts: { stdout: "ok" },
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const execParams = {
+      driverKey: "daytona" as const,
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      timeoutMs: 1000,
+    };
+
+    // First execute: the handle cache is empty, so the lookup calls `client.get`
+    // and reports a miss.
+    const first = await plugin.definition.onEnvironmentExecute?.(execParams);
+    expect(first!.metadata).toMatchObject({ cacheHit: false });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    // Second execute: the warm handle cache serves the handle, so the lookup
+    // makes no `client.get` round trip and reports a hit.
+    const second = await plugin.definition.onEnvironmentExecute?.(execParams);
+    expect(second!.metadata).toMatchObject({ cacheHit: true });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
   it("stages stdin in the sandbox filesystem when execution needs redirected input", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
@@ -1196,7 +1233,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("wraps the command when the lease reports bwrap available and uid/gid known", async () => {
+  it("wraps the command when the lease reports bwrap available and username known", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
@@ -1211,8 +1248,7 @@ describe("Daytona sandbox provider plugin", () => {
         metadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           bwrapAvailable: true,
-          sandboxUid: 1000,
-          sandboxGid: 1000,
+          sandboxUsername: "daytona",
         },
       },
       command: "printf",
@@ -1221,14 +1257,14 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    // The wrapper runs `sudo -n bwrap`, re-enters the sandbox user through the
-    // user namespace, and binds the workspace directory read-write.
+    // The wrapper runs `sudo -n bwrap`, drops to the sandbox user via su, and
+    // binds the workspace directory read-write.
     expect(command.startsWith("sudo -n bwrap")).toBe(true);
-    expect(command).toContain("--unshare-user --uid 1000 --gid 1000");
+    expect(command).toContain("su -s /bin/sh 'daytona'");
     expect(command).toContain(
       "--bind-try '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace'",
     );
-    // The login-shell script still rides inside the wrapper through `sh -c`.
+    // The login-shell script still rides inside the wrapper through `su -c`.
     expect(command).toContain("/etc/profile");
   });
 
@@ -1274,7 +1310,7 @@ describe("Daytona sandbox provider plugin", () => {
       ...scopeParams,
       lease: {
         providerLeaseId: "sandbox-123",
-        metadata: { remoteCwd, bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+        metadata: { remoteCwd, bwrapAvailable: true, sandboxUsername: "daytona" },
       },
       command: "printf",
       args: ["hello"],
@@ -1332,7 +1368,7 @@ describe("Daytona sandbox provider plugin", () => {
       ...scopeParams,
       lease: {
         providerLeaseId: "sandbox-123",
-        metadata: { remoteCwd, bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+        metadata: { remoteCwd, bwrapAvailable: true, sandboxUsername: "daytona" },
       },
       command: "printf",
       args: ["hello"],
@@ -1363,8 +1399,7 @@ describe("Daytona sandbox provider plugin", () => {
         metadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           bwrapAvailable: true,
-          sandboxUid: 1000,
-          sandboxGid: 1000,
+          sandboxUsername: "daytona",
         },
       },
       command: "cat",
@@ -1381,7 +1416,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(command).toContain(`--ro-bind '${stdinPath}' '${stdinPath}'`);
   });
 
-  it("runs the plain command when bwrap is unavailable or uid/gid is unknown", async () => {
+  it("runs the plain command when bwrap is unavailable or username is unknown", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
@@ -1397,8 +1432,7 @@ describe("Daytona sandbox provider plugin", () => {
         metadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           bwrapAvailable: false,
-          sandboxUid: 1000,
-          sandboxGid: 1000,
+          sandboxUsername: "daytona",
         },
       },
       command: "printf",
@@ -1407,8 +1441,9 @@ describe("Daytona sandbox provider plugin", () => {
     });
     expect((sandbox.process.executeCommand.mock.calls[0] as [string])[0]).not.toContain("bwrap");
 
-    // Case 2: bwrap is available but the uid/gid is unknown. A wrap without a
-    // uid/gid would run as root, so the seam keeps the plain command.
+    // Case 2: bwrap is available but the username is unknown. A wrap without a
+    // username would run as root inside bwrap and give the agent's files root
+    // ownership, so the seam keeps the plain command.
     sandbox.process.executeCommand.mockClear();
     await plugin.definition.onEnvironmentExecute?.({
       driverKey: "daytona",
@@ -1420,8 +1455,7 @@ describe("Daytona sandbox provider plugin", () => {
         metadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           bwrapAvailable: true,
-          sandboxUid: null,
-          sandboxGid: null,
+          sandboxUsername: null,
         },
       },
       command: "printf",
@@ -2632,6 +2666,117 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
+  // A recording tracer that captures every provider span the file sync opens.
+  // It satisfies the structural plugin tracer contract.
+  function createRecordingPluginTracer() {
+    const spans: Array<{
+      name: string;
+      attributes: Record<string, unknown>;
+      status: { code: number; message?: string } | null;
+      ended: boolean;
+    }> = [];
+    const tracer = {
+      startSpan(name: string, options?: { attributes?: Record<string, string | number | boolean> }) {
+        const span = {
+          name,
+          attributes: { ...(options?.attributes ?? {}) } as Record<string, unknown>,
+          status: null as { code: number; message?: string } | null,
+          ended: false,
+          setAttribute(key: string, value: unknown) {
+            span.attributes[key] = value;
+          },
+          setStatus(status: { code: number; message?: string }) {
+            span.status = status;
+          },
+          end() {
+            span.ended = true;
+          },
+        };
+        spans.push(span);
+        return span;
+      },
+    };
+    return { tracer, spans };
+  }
+
+  it("opens a transfer span with the guard round-trip count around the bulk file upload", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-1",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.ended).toBe(true);
+    // The two serial guard round trips before the transfer: mkdir + confinement.
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    expect(transfer!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+    expect(typeof transfer!.attributes["paperclip.sandbox.startup.transfer.wall_ms"]).toBe("number");
+    // A bulk file upload builds no host tarball, so it opens no pack span.
+    expect(spans.find((span) => span.name === "pack")).toBeUndefined();
+  });
+
+  it("opens a pack span and a transfer span around a directory mapping sync", async () => {
+    const hostDir = await makeHostDir();
+    const sourceDir = path.join(hostDir, "assets");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-dir",
+            files: [
+              { sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/.paperclip-runtime/assets`, kind: "directory" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    const pack = spans.find((span) => span.name === "pack");
+    expect(pack).toBeDefined();
+    expect(pack!.ended).toBe(true);
+    expect(typeof pack!.attributes["paperclip.sandbox.startup.pack.wall_ms"]).toBe("number");
+
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+  });
+
   it("syncIn tars a directory mapping host-side honoring excludes and the followSymlinks flag, then extracts it in-sandbox via a single quoted tar command", async () => {
     const hostDir = await makeHostDir();
     const sourceDir = path.join(hostDir, "assets");
@@ -3601,20 +3746,23 @@ describe("daytona manifest memory config", () => {
 });
 
 describe("buildBwrapCommand advisory wrapper builder", () => {
-  it("emits user-namespace, ro-bind root, fresh dev/proc/tmp, writable binds, new-session, and sh -c", () => {
+  it("uses su to drop to sandbox user without --unshare-user", () => {
     const command = buildBwrapCommand(
       "echo hi",
       ["/home/daytona/paperclip-workspace"],
       null,
-      { uid: 1000, gid: 1000 },
+      "daytona",
     );
 
     expect(command).toBe(
-      "sudo -n bwrap --unshare-user --uid 1000 --gid 1000 "
+      "sudo -n bwrap "
       + "--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp "
       + "--bind-try '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace' "
-      + "--new-session -- sh -c 'echo hi'",
+      + "--new-session -- su -s /bin/sh 'daytona' -c 'echo hi'",
     );
+    expect(command).not.toContain("--unshare-user");
+    expect(command).not.toContain("--uid");
+    expect(command).not.toContain("--gid");
   });
 
   it("re-binds the stdin path after tmpfs /tmp", () => {
@@ -3622,15 +3770,15 @@ describe("buildBwrapCommand advisory wrapper builder", () => {
       "run-cmd",
       ["/work"],
       "/tmp/stdin.bin",
-      { uid: 1000, gid: 1000 },
+      "daytona",
     );
 
     expect(command).toBe(
-      "sudo -n bwrap --unshare-user --uid 1000 --gid 1000 "
+      "sudo -n bwrap "
       + "--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp "
       + "--bind-try '/work' '/work' "
       + "--ro-bind '/tmp/stdin.bin' '/tmp/stdin.bin' "
-      + "--new-session -- sh -c 'run-cmd'",
+      + "--new-session -- su -s /bin/sh 'daytona' -c 'run-cmd'",
     );
     // The stdin re-bind must come after the tmpfs, so the tmpfs does not hide it.
     expect(command.indexOf("--ro-bind '/tmp/stdin.bin'")).toBeGreaterThan(command.indexOf("--tmpfs /tmp"));
@@ -3641,16 +3789,16 @@ describe("buildBwrapCommand advisory wrapper builder", () => {
       "echo 'hello'",
       ["/data/o'brien"],
       null,
-      { uid: 1000, gid: 1000 },
+      "daytona",
     );
 
     // shellQuote rewrites each embedded single quote as the `'"'"'` token.
     expect(command).toContain(`'"'"'`);
     expect(command).toContain(`--bind-try '/data/o'"'"'brien' '/data/o'"'"'brien'`);
-    expect(command).toContain(`-- sh -c 'echo '"'"'hello'"'"''`);
+    expect(command).toContain(`-c 'echo '"'"'hello'"'"''`);
   });
 
-  it("omits the stdin re-bind when no stdin path is given and omits user-namespace flags when no uid/gid is given", () => {
+  it("falls back to sh -c when no username is given", () => {
     const command = buildBwrapCommand("plain", ["/w"], null, null);
 
     expect(command).toBe(
@@ -3660,8 +3808,7 @@ describe("buildBwrapCommand advisory wrapper builder", () => {
       + "--new-session -- sh -c 'plain'",
     );
     expect(command).not.toContain("--unshare-user");
-    expect(command).not.toContain("--uid");
-    expect(command).not.toContain("--gid");
+    expect(command).not.toContain("su -s");
   });
 
   it("binds each writable directory with --bind-try so a stale or deleted path does not abort bwrap", () => {
@@ -3674,7 +3821,7 @@ describe("buildBwrapCommand advisory wrapper builder", () => {
       "echo hi",
       ["/home/daytona/paperclip-workspace", "/home/daytona/data"],
       null,
-      { uid: 1000, gid: 1000 },
+      "daytona",
     );
 
     expect(command).toContain(
@@ -3689,13 +3836,11 @@ describe("buildBwrapCommand advisory wrapper builder", () => {
 
 describe("advisory bwrap capability probe at lease time", () => {
   // Route each probed command to a deterministic result so the hook exercises
-  // the real end-to-end path: shell detect, bwrap capability, and uid/gid read.
+  // the real end-to-end path: shell detect, bwrap capability, and username read.
   function bwrapExecMock(opts: {
     bwrapExit?: number;
-    uid?: string;
-    gid?: string;
-    uidExit?: number;
-    gidExit?: number;
+    username?: string;
+    usernameExit?: number;
     sentinelToken?: string;
   } = {}) {
     return async (command: string) => {
@@ -3709,13 +3854,9 @@ describe("advisory bwrap capability probe at lease time", () => {
       if (command.startsWith("sudo -n bwrap")) {
         return { exitCode: opts.bwrapExit ?? 0, result: "", artifacts: { stdout: "" } };
       }
-      if (command === "id -u") {
-        const uid = opts.uid ?? "1000";
-        return { exitCode: opts.uidExit ?? 0, result: uid, artifacts: { stdout: uid } };
-      }
-      if (command === "id -g") {
-        const gid = opts.gid ?? "1000";
-        return { exitCode: opts.gidExit ?? 0, result: gid, artifacts: { stdout: gid } };
+      if (command === "id -un") {
+        const username = opts.username ?? "daytona";
+        return { exitCode: opts.usernameExit ?? 0, result: username, artifacts: { stdout: username } };
       }
       return { exitCode: 0, result: "", artifacts: { stdout: "" } };
     };
@@ -3732,10 +3873,10 @@ describe("advisory bwrap capability probe at lease time", () => {
     config: { image: "node:20", timeoutMs: 300000, reuseLease: true },
   };
 
-  it("records bwrap available and reads uid/gid when the probe exits zero", async () => {
+  it("records bwrap available and reads username when the probe exits zero", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1001" }));
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, username: "daytona" }));
     mockCreate.mockResolvedValue(sandbox);
 
     const lease = await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
@@ -3743,8 +3884,7 @@ describe("advisory bwrap capability probe at lease time", () => {
     expect(lease).toMatchObject({
       metadata: {
         bwrapAvailable: true,
-        sandboxUid: 1000,
-        sandboxGid: 1001,
+        sandboxUsername: "daytona",
       },
     });
   });
@@ -3752,14 +3892,14 @@ describe("advisory bwrap capability probe at lease time", () => {
   it("bounds the probe timeout well under the hook deadline so the hook returns fallback metadata", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, username: "daytona" }));
     mockCreate.mockResolvedValue(sandbox);
 
     // The hook deadline is 300 s; the probe must cap far below it.
     await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
 
     const probeCalls = sandbox.process.executeCommand.mock.calls.filter(
-      ([command]: [string]) => command === "id -u" || command === "id -g" || command.startsWith("sudo -n bwrap"),
+      ([command]: [string]) => command === "id -un" || command.startsWith("sudo -n bwrap"),
     );
     expect(probeCalls.length).toBeGreaterThan(0);
     for (const call of probeCalls) {
@@ -3771,7 +3911,7 @@ describe("advisory bwrap capability probe at lease time", () => {
   it("records bwrap unavailable when the capability probe exits non-zero", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 1, uid: "1000", gid: "1000" }));
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 1, username: "daytona" }));
     mockCreate.mockResolvedValue(sandbox);
 
     const lease = await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
@@ -3789,15 +3929,14 @@ describe("advisory bwrap capability probe at lease time", () => {
 
     expect(lease?.metadata).toMatchObject({
       bwrapAvailable: false,
-      sandboxUid: null,
-      sandboxGid: null,
+      sandboxUsername: null,
     });
   });
 
   it("runs the probe on the environment probe hook", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, username: "daytona" }));
     mockCreate.mockResolvedValue(sandbox);
 
     const result = await plugin.definition.onEnvironmentProbe?.({
@@ -3809,14 +3948,14 @@ describe("advisory bwrap capability probe at lease time", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      metadata: { bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+      metadata: { bwrapAvailable: true, sandboxUsername: "daytona" },
     });
   });
 
   it("runs the probe on the resume-lease hook", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "stopped" });
-    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, username: "daytona" }));
     mockGet.mockResolvedValue(sandbox);
 
     const lease = await plugin.definition.onEnvironmentResumeLease?.({
@@ -3836,7 +3975,7 @@ describe("advisory bwrap capability probe at lease time", () => {
 
     expect(lease).toMatchObject({
       providerLeaseId: "sandbox-reuse",
-      metadata: { bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+      metadata: { bwrapAvailable: true, sandboxUsername: "daytona" },
     });
   });
 });

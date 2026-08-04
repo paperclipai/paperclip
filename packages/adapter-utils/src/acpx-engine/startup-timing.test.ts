@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterRuntimeEvent } from "../types.js";
 import type { StartupSpan, StartupTracer } from "./startup-timing.js";
-import { measureStartupStep, normalizeProviderFamily } from "./startup-timing.js";
+import {
+  clampSpanLabel,
+  emitSkippedStartupStep,
+  getActiveStepContext,
+  measureStartupStep,
+  normalizeProviderFamily,
+  runWithoutActiveStep,
+  SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+  setSandboxRootSpanAttributes,
+} from "./startup-timing.js";
+
+const A = SANDBOX_STARTUP_SPAN_ATTRS;
 
 /**
  * A recording span for the mock tracer. It captures the attribute set, the
@@ -71,60 +83,9 @@ describe("measureStartupStep", () => {
     expect(events[0]!.message).toBe("startup step: stage.sync (150ms)");
   });
 
-  it("includes the roundTrips delta in the payload when a round-trip reader is supplied", async () => {
+  it("emits only the high-level fields (step, durationMs, outcome) on the payload", async () => {
     let t = 0;
     const now = () => t;
-    // Cumulative host→sandbox exec counter; the step performs 3 execs.
-    let execCount = 5;
-    const events: AdapterRuntimeEvent[] = [];
-    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
-      events.push(event);
-    });
-
-    await measureStartupStep({ onEvent }, now, "stage.sync", async () => {
-      t = 90;
-      execCount += 3;
-      return "ok";
-    }, { roundTrips: () => execCount });
-
-    expect(events[0]!.payload).toMatchObject({
-      step: "stage.sync",
-      durationMs: 90,
-      roundTrips: 3,
-    });
-  });
-
-  it("reports roundTrips: 0 for a step that performs no execs (reader supplied)", async () => {
-    const now = () => 0;
-    const events: AdapterRuntimeEvent[] = [];
-    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
-      events.push(event);
-    });
-
-    await measureStartupStep({ onEvent }, now, "workspace.resolve", async () => "ok", {
-      roundTrips: () => 7,
-    });
-
-    expect(events[0]!.payload).toMatchObject({ step: "workspace.resolve", roundTrips: 0 });
-  });
-
-  it("omits roundTrips from the payload when no reader is supplied", async () => {
-    const now = () => 0;
-    const events: AdapterRuntimeEvent[] = [];
-    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
-      events.push(event);
-    });
-
-    await measureStartupStep({ onEvent }, now, "workspace.resolve", async () => "ok");
-
-    expect(events[0]!.payload).not.toHaveProperty("roundTrips");
-  });
-
-  it("accumulates provider exec/get durations and merges extra fields into the payload", async () => {
-    let t = 0;
-    const now = () => t;
-    let execMs = 100;
-    let getMs = 40;
     const events: AdapterRuntimeEvent[] = [];
     const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
       events.push(event);
@@ -132,23 +93,18 @@ describe("measureStartupStep", () => {
 
     await measureStartupStep({ onEvent }, now, "acp.handshake", async () => {
       t = 7000;
-      execMs += 600; // one provider executeCommand round-trip
-      getMs += 15; // one client.get re-fetch
       return "handle";
-    }, {
-      providerExecMs: () => execMs,
-      providerGetMs: () => getMs,
-      extra: () => ({ createRuntimeMs: 12, ensureSessionMs: 6988 }),
     });
 
-    expect(events[0]!.payload).toMatchObject({
-      step: "acp.handshake",
-      durationMs: 7000,
-      providerExecMs: 600,
-      providerGetMs: 15,
-      createRuntimeMs: 12,
-      ensureSessionMs: 6988,
-    });
+    // The detailed per-step round-trip and provider-duration numbers ride the
+    // OTel spans now, so the run-log payload keeps only the high-level fields.
+    const payload = events[0]!.payload as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["durationMs", "outcome", "step"]);
+    expect(payload).not.toHaveProperty("roundTrips");
+    expect(payload).not.toHaveProperty("providerExecMs");
+    expect(payload).not.toHaveProperty("providerGetMs");
+    expect(payload).not.toHaveProperty("createRuntimeMs");
+    expect(payload).not.toHaveProperty("ensureSessionMs");
   });
 
   it("returns the wrapped fn result unchanged", async () => {
@@ -247,7 +203,10 @@ describe("measureStartupStep", () => {
 
     expect(spans).toHaveLength(1);
     expect(spans[0]!.name).toBe("stage.sync");
-    expect(spans[0]!.attributes.step).toBe("stage.sync");
+    // The span name carries the step; no redundant `step` attribute rides it.
+    expect(spans[0]!.attributes).not.toHaveProperty("step");
+    // The step wall time rides the closed, type-suffixed attribute key.
+    expect(spans[0]!.attributes[A.stepWallMs]).toBe(0);
     expect(spans[0]!.endCount).toBe(1);
   });
 
@@ -268,62 +227,27 @@ describe("measureStartupStep", () => {
     expect(spans[0]!.status?.code).toBe(2);
   });
 
-  it("sets the same roundTrips / providerExecMs / providerGetMs deltas on the payload and the span", async () => {
-    let t = 0;
-    const now = () => t;
-    let execCount = 5;
-    let execMs = 100;
-    let getMs = 40;
+  it("carries only the allowlisted attributes on the step span, never the removed round-trip detail", async () => {
     const events: AdapterRuntimeEvent[] = [];
     const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
       events.push(event);
     });
     const { tracer, spans } = makeMockTracer();
 
-    await measureStartupStep({ onEvent }, now, "stage.sync", async () => {
-      t = 90;
-      execCount += 3;
-      execMs += 600;
-      getMs += 15;
-      return "ok";
-    }, {
+    await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
       tracer,
-      roundTrips: () => execCount,
-      providerExecMs: () => execMs,
-      providerGetMs: () => getMs,
+      provider: "daytona",
     });
 
-    const payload = events[0]!.payload as Record<string, unknown>;
-    expect(payload.roundTrips).toBe(3);
-    expect(payload.providerExecMs).toBe(600);
-    expect(payload.providerGetMs).toBe(15);
-    // The span carries the identical deltas — one build block feeds both.
-    expect(spans[0]!.attributes.roundTrips).toBe(3);
-    expect(spans[0]!.attributes.providerExecMs).toBe(600);
-    expect(spans[0]!.attributes.providerGetMs).toBe(15);
-  });
-
-  it("sets no span attribute (and no payload field) when a reader returns undefined", async () => {
-    const events: AdapterRuntimeEvent[] = [];
-    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
-      events.push(event);
-    });
-    const { tracer, spans } = makeMockTracer();
-
-    await measureStartupStep({ onEvent }, () => 0, "workspace.resolve", async () => "ok", {
-      tracer,
-      // A reader may return undefined when the counter is unavailable. The guard
-      // must omit the attribute rather than emit NaN or 0.
-      roundTrips: () => undefined as unknown as number,
-      providerExecMs: () => undefined as unknown as number,
-    });
-
-    expect(spans[0]!.attributes).not.toHaveProperty("roundTrips");
-    expect(spans[0]!.attributes).not.toHaveProperty("providerExecMs");
-    expect(Object.values(spans[0]!.attributes).some((v) => Number.isNaN(v))).toBe(false);
+    // The step span carries only the closed allowlist. The per-execution
+    // `sandbox.exec` spans carry the round-trip and provider-duration detail.
+    expect(Object.keys(spans[0]!.attributes).sort()).toEqual(
+      [A.provider, A.stepWallMs, A.outcome].sort(),
+    );
     const payload = events[0]!.payload as Record<string, unknown>;
     expect(payload).not.toHaveProperty("roundTrips");
     expect(payload).not.toHaveProperty("providerExecMs");
+    expect(payload).not.toHaveProperty("providerGetMs");
   });
 
   it("normalizes a plugin-backed provider key to plugin and keeps a built-in family as-is", async () => {
@@ -334,14 +258,14 @@ describe("measureStartupStep", () => {
       tracer: custom.tracer,
       provider: "acme-cloud-runner",
     });
-    expect(custom.spans[0]!.attributes.provider).toBe("plugin");
+    expect(custom.spans[0]!.attributes[A.provider]).toBe("plugin");
 
     const builtIn = makeMockTracer();
     await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
       tracer: builtIn.tracer,
       provider: "daytona",
     });
-    expect(builtIn.spans[0]!.attributes.provider).toBe("daytona");
+    expect(builtIn.spans[0]!.attributes[A.provider]).toBe("daytona");
   });
 
   it("normalizeProviderFamily maps every non-built-in key to plugin", () => {
@@ -360,25 +284,21 @@ describe("measureStartupStep", () => {
     await measureStartupStep({ onEvent }, () => 0, "acp.handshake", async () => "ok", {
       tracer,
       provider: "daytona",
-      roundTrips: () => 3,
-      providerExecMs: () => 600,
-      providerGetMs: () => 15,
-      // extra() carries caller-measured numbers into the EVENT payload only.
-      // It must never widen the span-attribute set.
-      extra: () => ({ createRuntimeMs: 12, ensureSessionMs: 6988 }),
     });
 
     expect(Object.keys(spans[0]!.attributes).sort()).toEqual(
-      ["provider", "providerExecMs", "providerGetMs", "roundTrips", "step"],
+      [A.provider, A.stepWallMs, A.outcome].sort(),
     );
-    // extra() keys stay off the span.
-    expect(spans[0]!.attributes).not.toHaveProperty("createRuntimeMs");
-    expect(spans[0]!.attributes).not.toHaveProperty("ensureSessionMs");
-    // No free-form identifier / command / path key leaks in. The pattern uses
-    // no `i` flag, so the camelCase `Id` matches `runId` / `userId` but not the
-    // "id" inside the allowlisted `provider`.
+    // Every key uses the closed prefix, so no free-form command / path / id key
+    // can ride the span.
     for (const key of Object.keys(spans[0]!.attributes)) {
-      expect(key).not.toMatch(/command|args|env|stdout|stderr|path|url|repo|ref|branch|Id|_id|error|message/);
+      expect(key.startsWith(SANDBOX_STARTUP_SPAN_ATTR_PREFIX)).toBe(true);
+    }
+    // No forbidden segment (command / arg / env / output / path / raw id) rides
+    // the span key set, even after the prefix.
+    for (const key of Object.keys(spans[0]!.attributes)) {
+      const suffix = key.slice(SANDBOX_STARTUP_SPAN_ATTR_PREFIX.length);
+      expect(suffix).not.toMatch(/command|args|env|stdout|stderr|path|url|repo|ref|branch|error|message/);
     }
   });
 
@@ -390,11 +310,309 @@ describe("measureStartupStep", () => {
 
     // No tracer supplied. The helper must still emit the event and return the
     // value without throwing.
-    const result = await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
-      roundTrips: () => 3,
-    });
+    const result = await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok");
 
     expect(result).toBe("ok");
     expect(events[0]!.payload).toMatchObject({ step: "stage.sync" });
+  });
+
+  it("sets a batch tag on the span from the batch option", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "bridge.paperclip", async () => "ok", {
+      tracer,
+      batch: "bridge",
+    });
+    expect(spans[0]!.attributes[A.batch]).toBe("bridge");
+  });
+
+  it("maps handshake sub-times to fixed span keys and skips a non-finite one", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "acp.handshake", async () => "ok", {
+      tracer,
+      spanWallTimes: () => ({ createRuntime: 12, ensureSession: 6988 }),
+    });
+    expect(spans[0]!.attributes[A.handshakeCreateRuntimeWallMs]).toBe(12);
+    expect(spans[0]!.attributes[A.handshakeEnsureSessionWallMs]).toBe(6988);
+
+    // A retry reports only its own ensure-session sub-time; the absent create-
+    // runtime value sets no attribute.
+    const retry = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "acp.handshake", async () => "ok", {
+      tracer: retry.tracer,
+      spanWallTimes: () => ({ ensureSession: 40 }),
+    });
+    expect(retry.spans[0]!.attributes[A.handshakeEnsureSessionWallMs]).toBe(40);
+    expect(retry.spans[0]!.attributes).not.toHaveProperty(A.handshakeCreateRuntimeWallMs);
+  });
+
+  it("sets outcome = ok on a settled step and outcome = failed on a throwing step", async () => {
+    const okEvents: AdapterRuntimeEvent[] = [];
+    const ok = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { okEvents.push(e); }) },
+      () => 0, "stage.sync", async () => "ok", { tracer: ok.tracer });
+    expect(ok.spans[0]!.attributes[A.outcome]).toBe("ok");
+    expect((okEvents[0]!.payload as Record<string, unknown>).outcome).toBe("ok");
+
+    const failEvents: AdapterRuntimeEvent[] = [];
+    const fail = makeMockTracer();
+    await expect(
+      measureStartupStep({ onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { failEvents.push(e); }) },
+        () => 0, "acp.handshake", async () => { throw new Error("boom"); }, { tracer: fail.tracer }),
+    ).rejects.toThrow("boom");
+    expect(fail.spans[0]!.attributes[A.outcome]).toBe("failed");
+    expect((failEvents[0]!.payload as Record<string, unknown>).outcome).toBe("failed");
+  });
+
+  it("sets each step-span attribute key with the closed prefix and a type suffix", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "stage.sync", async () => "ok", {
+      tracer,
+      provider: "daytona",
+    });
+
+    const keys = Object.keys(spans[0]!.attributes);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(key.startsWith(SANDBOX_STARTUP_SPAN_ATTR_PREFIX)).toBe(true);
+    }
+    // The step wall time uses its type suffix.
+    expect(keys).toContain(A.stepWallMs);
+    expect(A.stepWallMs.endsWith(".wall_ms")).toBe(true);
+  });
+});
+
+describe("setSandboxRootSpanAttributes", () => {
+  it("records wall / work / diff and bounds the context, hashing ids and image", () => {
+    const span = new MockSpan("sandbox.startup", undefined);
+    setSandboxRootSpanAttributes(span, { wallMs: 800, workMs: 1000 }, {
+      coldStart: true,
+      provider: "acme-custom-runner",
+      region: "us-east-1",
+      imageId: "registry.internal/team/secret-codename:sha-1234",
+      sandboxId: "sbx-secret-internal-id",
+      leaseId: "lease-secret-internal-id",
+    });
+
+    expect(span.attributes[A.rootWallMs]).toBe(800);
+    expect(span.attributes[A.rootWorkMs]).toBe(1000);
+    expect(span.attributes[A.rootDiffMs]).toBe(200);
+    expect(span.attributes[A.coldStart]).toBe(true);
+    // Provider clamps to the bounded family; region stays a known value.
+    expect(span.attributes[A.provider]).toBe("plugin");
+    expect(span.attributes[A.region]).toBe("us-east-1");
+    // The image id and both ids ride only as non-reversible hashes.
+    for (const key of [A.imageId, A.sandboxId, A.leaseId]) {
+      expect(String(span.attributes[key])).toMatch(/^[0-9a-f]{12}$/);
+    }
+    for (const value of Object.values(span.attributes).map(String)) {
+      expect(value).not.toContain("secret");
+      expect(value).not.toContain("codename");
+      expect(value).not.toContain("registry.internal");
+    }
+  });
+
+  it("maps an unknown region to `unknown` and omits every absent context value", () => {
+    const span = new MockSpan("sandbox.startup", undefined);
+    setSandboxRootSpanAttributes(span, { wallMs: 5, workMs: 5 }, { region: "moon-base-1" });
+    expect(span.attributes[A.region]).toBe("unknown");
+    expect(span.attributes).not.toHaveProperty(A.coldStart);
+    expect(span.attributes).not.toHaveProperty(A.provider);
+    expect(span.attributes).not.toHaveProperty(A.imageId);
+    expect(span.attributes).not.toHaveProperty(A.sandboxId);
+    expect(span.attributes).not.toHaveProperty(A.leaseId);
+  });
+});
+
+describe("emitSkippedStartupStep", () => {
+  it("emits a span and event with outcome = skipped and a zero wall time", async () => {
+    const { tracer, spans } = makeMockTracer();
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await emitSkippedStartupStep({ onEvent }, "acp.handshake", { tracer });
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.name).toBe("acp.handshake");
+    expect(spans[0]!.attributes[A.stepWallMs]).toBe(0);
+    expect(spans[0]!.attributes[A.outcome]).toBe("skipped");
+    expect(spans[0]!.endCount).toBe(1);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({
+      step: "acp.handshake",
+      durationMs: 0,
+      outcome: "skipped",
+    });
+  });
+
+  it("emits the event with no injected tracer and does not throw", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    await emitSkippedStartupStep(
+      { onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { events.push(e); }) },
+      "acp.handshake",
+    );
+    expect(events[0]!.payload).toMatchObject({ step: "acp.handshake", outcome: "skipped" });
+  });
+});
+
+describe("getActiveStepContext", () => {
+  it("returns null when no measured step runs", () => {
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("exposes the active step context to inner code while fn runs, then clears it", async () => {
+    const { tracer, spans } = makeMockTracer();
+    let seen: ReturnType<typeof getActiveStepContext> = null;
+
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "stage.sync", async () => {
+      // Inner code reads the active step context through the getter.
+      seen = getActiveStepContext();
+      return "ok";
+    }, {
+      tracer,
+      // The server builds a child-context token whose active span is the step
+      // span. Model it as `{ span }`, the same shape the recording tracer reads.
+      contextWithSpan: (span) => ({ span }),
+    });
+
+    expect(seen).not.toBeNull();
+    // The published span is the one open step span.
+    expect(seen!.span).toBe(spans[0]);
+    // The parent token points at the step span, so an inner exec span parents
+    // to it.
+    expect(seen!.parentContext).toEqual({ span: spans[0] });
+    // A regular step is on the critical path by default.
+    expect(seen!.criticalPath).toBe(true);
+    // The context clears once the step body settles.
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("carries criticalPath = false when the step opts out (parallel steps)", async () => {
+    let seen: ReturnType<typeof getActiveStepContext> = null;
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "bridge.paperclip", async () => {
+      seen = getActiveStepContext();
+    }, { criticalPath: false });
+    expect(seen!.criticalPath).toBe(false);
+  });
+
+  it("keeps the ended step store in a timer scheduled inside the step body", async () => {
+    // Node snapshots the active store on each async resource at creation time.
+    // A timer scheduled inside a measured step body keeps that step store, even
+    // after the step span ends. A later run-time exec then reads the ended step
+    // and parents its `sandbox.exec` span to a dead startup step. This test locks
+    // that leak, so the fix and its guard test stay honest.
+    let storeInTimer: ReturnType<typeof getActiveStepContext> = null;
+    let fireTimer!: () => void;
+    const timerRan = new Promise<void>((resolve) => {
+      fireTimer = resolve;
+    });
+
+    await measureStartupStep(
+      { onEvent: vi.fn(async () => {}) },
+      () => 0,
+      "bridge.process-session",
+      async () => {
+        setTimeout(() => {
+          storeInTimer = getActiveStepContext();
+          fireTimer();
+        }, 0);
+        return "started";
+      },
+      { criticalPath: false },
+    );
+
+    // The step span already ended, so the main line reads no active step.
+    expect(getActiveStepContext()).toBeNull();
+
+    await timerRan;
+
+    // Yet the timer callback still reads the ended step context. This is the
+    // store leak the bridge boundary fix removes.
+    expect(storeInTimer).not.toBeNull();
+    expect(storeInTimer!.criticalPath).toBe(false);
+  });
+
+  it("clears the active step for a continuation wrapped in runWithoutActiveStep", async () => {
+    // The bridge boundary wraps its long-lived poll timer in `runWithoutActiveStep`.
+    // A timer scheduled inside that empty store scope reads no active step, so a
+    // later run-time exec opens an unparented span instead of one under the ended
+    // startup step.
+    let storeInTimer: ReturnType<typeof getActiveStepContext> = null;
+    let sawTimer = false;
+    let fireTimer!: () => void;
+    const timerRan = new Promise<void>((resolve) => {
+      fireTimer = resolve;
+    });
+
+    await measureStartupStep(
+      { onEvent: vi.fn(async () => {}) },
+      () => 0,
+      "bridge.process-session",
+      async () => {
+        runWithoutActiveStep(() => {
+          setTimeout(() => {
+            storeInTimer = getActiveStepContext();
+            sawTimer = true;
+            fireTimer();
+          }, 0);
+        });
+        return "started";
+      },
+      { criticalPath: false },
+    );
+
+    await timerRan;
+
+    expect(sawTimer).toBe(true);
+    expect(storeInTimer).toBeNull();
+  });
+
+  it("returns the work result and restores the previous active step", async () => {
+    // Outside any measured step the previous store is empty, so the helper both
+    // returns the work value and leaves the store empty afterward.
+    const value = runWithoutActiveStep(() => "value");
+    expect(value).toBe("value");
+    expect(getActiveStepContext()).toBeNull();
+  });
+});
+
+describe("clampSpanLabel", () => {
+  it("returns a known command label unchanged and maps an unknown command to `other`", () => {
+    expect(clampSpanLabel("command", "sh")).toBe("sh");
+    expect(clampSpanLabel("command", "git")).toBe("git");
+    // A full command line, a path, or a secret-like argument is not a known
+    // basename, so it maps to the bounded fallback and never leaks.
+    expect(clampSpanLabel("command", "bash -lc 'rm -rf /secret/path'")).toBe("other");
+    expect(clampSpanLabel("command", "/usr/local/bin/node")).toBe("other");
+    expect(clampSpanLabel("command", undefined)).toBe("other");
+  });
+
+  it("returns a known region unchanged and maps an unknown region to `unknown`", () => {
+    expect(clampSpanLabel("region", "us-east-1")).toBe("us-east-1");
+    expect(clampSpanLabel("region", "moon-base-1")).toBe("unknown");
+    expect(clampSpanLabel("region", undefined)).toBe("unknown");
+  });
+
+  it("hashes an id or image label to a non-reversible short digest and never returns the raw value", () => {
+    const raw = "lease-super-secret-internal-codename";
+    for (const label of ["image_id", "sandbox_id", "lease_id"]) {
+      const clamped = clampSpanLabel(label, raw);
+      expect(clamped).toBeTruthy();
+      expect(clamped).not.toBe(raw);
+      expect(clamped).not.toContain("secret");
+      expect(clamped).not.toContain("codename");
+      // A stable 12-hex-character digest prefix.
+      expect(clamped).toMatch(/^[0-9a-f]{12}$/);
+    }
+    // A missing id yields no attribute (fail open — never a raw value).
+    expect(clampSpanLabel("sandbox_id", undefined)).toBeUndefined();
+    expect(clampSpanLabel("sandbox_id", "")).toBeUndefined();
+  });
+
+  it("drops an unknown label name so the caller sets no attribute for it", () => {
+    expect(clampSpanLabel("nonsense", "anything")).toBeUndefined();
+    expect(clampSpanLabel("stdout", "secret output")).toBeUndefined();
   });
 });

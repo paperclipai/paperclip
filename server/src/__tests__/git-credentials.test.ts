@@ -272,6 +272,15 @@ describe("describeGitAuthFailure", () => {
       used: null,
     })).toBeNull();
   });
+
+  it("stays silent for non-auth failures even when a credential was used", () => {
+    // A credential present during an unrelated failure (network outage, target-path
+    // collision) must not be blamed for it.
+    expect(describeGitAuthFailure({
+      error: "fatal: destination path '/x/y' already exists and is not an empty directory.",
+      used: { source: "company_secret", secretName: "GH_TOKEN" },
+    })).toBeNull();
+  });
 });
 
 describe("DEFAULT_GITHUB_TOKEN_SECRET_NAMES", () => {

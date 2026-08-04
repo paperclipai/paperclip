@@ -136,7 +136,12 @@ at least one identity source. Supported-platform process probes fail explicitly
 instead of silently treating a live PID as either the original owner or a
 recycled process when identity cannot be established.
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, then waits for in-process heartbeat executions to reach their normal result boundary before transferring the database. A replacement never treats PID liveness alone as adoption: that cannot reconstruct streams, exit listeners, or result promises. If an abnormal replacement still finds a live unobservable child, it stops the child and suppresses automatic retry to avoid duplicate side effects. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+Use `--drain-required` only when the deploy intentionally requires terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for queue claims and in-process heartbeat executions to reach their durable result boundary, and then snapshots any remaining running rows before transferring the database. A replacement never treats PID liveness alone as adoption: that cannot reconstruct streams, exit listeners, or result promises. If an abnormal replacement still finds a live unobservable child, it stops the child and suppresses automatic retry to avoid duplicate side effects. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eager
+`SIGINT`/`SIGTERM` cleanup hooks. Paperclip owns signal ordering so the heartbeat
+snapshot and any required drain complete while the database is still available;
+the coordinated shutdown path transfers or stops embedded PostgreSQL afterward.
 
 The request command records the preflight set of running heartbeat IDs and writes
 an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
@@ -201,6 +206,13 @@ jq -e --arg run "$RUN_ID" \
 An alive child appears in `adoptedRunIds`; a child that completed during the
 restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
 `lostRunIds` entry remains a failed deploy and must not be waived.
+
+For a recovery from a version that can stop embedded PostgreSQL before writing
+its shutdown snapshot, use `--drain-required` once to cross the broken boundary.
+After the fixed server is live, perform another ordinary hot restart. Require
+`lostRunIds` to be empty and every preflight run to appear in either
+`adoptedRunIds` or `finalizedWhileDownRunIds`; an ACP-backed original should be
+finalized and have a queued retry rather than be adopted.
 
 Tailscale/private-auth dev mode:
 

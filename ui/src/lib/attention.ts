@@ -14,15 +14,23 @@ export type AttentionListOptions = AttentionFeedQuery;
 
 /**
  * Source kinds the queue can fully resolve in-row. Everything else deep-links
- * to its native surface — reviews are *never* inline (converged PAP-12628),
- * and the remaining state-derived sources (recovery, failures, budget) expose
- * verbs too rich to safely inline here, so they open their surface.
+ * to its native surface — the state-derived sources (recovery, failures,
+ * budget) expose verbs too rich to safely inline here, so they open their
+ * surface.
+ *
+ * `review` is inline *only when stalled* (PAP-16080 §4.4): a stalled review has
+ * no interaction/approval/monitor to open, so the three review verbs
+ * (approve / request changes / send back) actuate in-row — the server flips
+ * `inlineResolvable` on for exactly those rows (`isInlineResolvable` still ANDs
+ * that flag). A *covered* review keeps deep-linking, since its real action
+ * lives on the issue (the pending card, a monitor, a live run).
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
   "decision",
   "issue_thread_interaction",
   "join_request",
+  "review",
 ]);
 
 export function isInlineResolvable(item: AttentionItem): boolean {
@@ -255,23 +263,29 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * The sidebar intentionally reflects only items whose decide-by deadline is
- * due now. The count is computed before pagination, so badge polling can fetch
- * a small first page without losing the company-wide urgency signal.
+ * The sidebar badge: distinct items that either surfaced today or carry an
+ * explicit decide-by deadline that is due today/past. The server computes this
+ * before pagination (`deskBadgeCount`), so badge polling can fetch a small
+ * first page without losing the company-wide signal.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
-  return feed?.decideNowCount ?? 0;
+  return feed?.deskBadgeCount ?? 0;
 }
 
 // ---------------------------------------------------------------------------
-// Decide-by / today's desk (PAP-16032 §4.3)
+// Today's desk
 //
-// The desk splits items into "Decide now" and "Can wait" and orders them by a
-// per-item `decideBy` field. The server owns the authoritative ranking
-// (`sort=decide`) and the badge's `decideNowCount`; these client helpers mirror
-// that logic *exactly* (same UTC day/week boundaries) so the on-page split and
-// the badge never disagree. Keep in lockstep with
-// `server/src/services/attention.ts` (`decideOrder`/`isDecideNow`).
+// The default ungrouped desk reflects *what came up*, not a judgement about
+// what "can wait". It builds up to three shelves in order:
+//   • "Decide now" — only when an item has an explicit decide-by deadline that
+//     is due today/past. No deadline set anywhere → no shelf, no claim.
+//   • "New today"   — decisions that surfaced today (arrival grouping).
+//   • "Earlier"     — everything else, older arrivals.
+// The server owns the authoritative decide-by ranking (`sort=decide`) and the
+// badge (`deskBadgeCount`); these client helpers mirror that logic *exactly*
+// (same UTC day boundaries) so the on-page split and the badge never disagree.
+// Keep in lockstep with `server/src/services/attention.ts`
+// (`decideOrder`/`isDecideNow`/`isNewToday`).
 // ---------------------------------------------------------------------------
 
 const MS_PER_DAY_DECIDE = 24 * 60 * 60 * 1_000;
@@ -304,24 +318,67 @@ export function attentionDecideOrder(item: AttentionItem, now: number): [number,
   return [2, Number.MAX_SAFE_INTEGER];
 }
 
-/** Due today or overdue — the "Decide now" shelf, and what the badge counts. */
+/** Due today or overdue — the "Decide now" shelf. Only fires when `decideBy` is set. */
 export function attentionIsDecideNow(item: AttentionItem, now: number): boolean {
   const [bucket, deadline] = attentionDecideOrder(item, now);
   return bucket === 0 && deadline <= endOfUtcDay(now);
 }
 
-/** Split the desk into its two shelves, preserving input order within each. */
-export function partitionDecideNow(
-  items: AttentionItem[],
-  now: number,
-): { decideNow: AttentionItem[]; canWait: AttentionItem[] } {
-  const decideNow: AttentionItem[] = [];
-  const canWait: AttentionItem[] = [];
-  for (const item of items) {
-    if (attentionIsDecideNow(item, now)) decideNow.push(item);
-    else canWait.push(item);
-  }
-  return { decideNow, canWait };
+/** Surfaced today (arrival) — the "New today" desk group. Uses UTC day, matching the badge. */
+export function attentionIsNewToday(item: AttentionItem, now: number): boolean {
+  const ts = new Date(item.createdAt).getTime();
+  return Number.isFinite(ts) && ts >= startOfUtcDay(now);
+}
+
+/** A rendered desk shelf: shares the shape of {@link AttentionGroup}. */
+export interface DeskShelf {
+  key: string;
+  label: string;
+  items: AttentionItem[];
+}
+
+/**
+ * Build the default (ungrouped) desk layout — the arrival-based grouping that
+ * replaced the "Decide now" / "Can wait" split:
+ *
+ *   • "Decide now" — items with an explicit decide-by deadline due today/past,
+ *     ordered by deadline. Omitted entirely when nothing has a due deadline, so
+ *     the desk never leads with a shelf built on unset metadata.
+ *   • "New today"  — remaining items that surfaced today, newest arrival first.
+ *   • "Earlier"    — remaining older arrivals, newest arrival first.
+ *
+ * A decide-now item is only ever on the "Decide now" shelf, so the three shelves
+ * are disjoint and their sizes sum to `items.length`.
+ */
+export function buildDeskShelves(items: AttentionItem[], now: number): DeskShelf[] {
+  const decideNow = items
+    .filter((item) => attentionIsDecideNow(item, now))
+    .sort((a, b) => {
+      const [, aDeadline] = attentionDecideOrder(a, now);
+      const [, bDeadline] = attentionDecideOrder(b, now);
+      if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+      return a.rank - b.rank;
+    });
+  const rest = items
+    .filter((item) => !attentionIsDecideNow(item, now))
+    .sort((a, b) => {
+      const diff = attentionArrivalTimestamp(b) - attentionArrivalTimestamp(a);
+      if (diff !== 0) return diff;
+      return a.rank - b.rank;
+    });
+  const newToday = rest.filter((item) => attentionIsNewToday(item, now));
+  const earlier = rest.filter((item) => !attentionIsNewToday(item, now));
+
+  const shelves: DeskShelf[] = [];
+  if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
+  if (newToday.length > 0) shelves.push({ key: "desk:new-today", label: "New today", items: newToday });
+  if (earlier.length > 0) shelves.push({ key: "desk:earlier", label: "Earlier", items: earlier });
+  return shelves;
+}
+
+function attentionArrivalTimestamp(item: AttentionItem): number {
+  const ts = new Date(item.createdAt).getTime();
+  return Number.isFinite(ts) ? ts : 0;
 }
 
 // ---------------------------------------------------------------------------

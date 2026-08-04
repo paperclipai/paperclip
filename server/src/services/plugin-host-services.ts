@@ -78,6 +78,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
+import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import {
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -489,6 +495,124 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
  */
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
+
+// ---------------------------------------------------------------------------
+// Provider span trust boundary (the `span.record` host handler)
+// ---------------------------------------------------------------------------
+//
+// The plugin worker runs in a separate process, so the host treats every field
+// of a worker-sent span as untrusted input. The host re-clamps the span name
+// and every attribute here, before it records the span. A worker-side or
+// plugin-side helper is not sufficient; this is the single boundary.
+
+const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
+
+/** The closed set of provider span names a plugin may emit. */
+const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set(["pack", "transfer"]);
+
+/** Clamp the span name to a closed, namespaced set. A known name maps to
+ * `sandbox.provider.<name>`; any other value maps to `sandbox.provider.other`,
+ * so a span name never carries free-form data. */
+function clampProviderSpanName(raw: unknown): string {
+  const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
+  return `sandbox.provider.${name}`;
+}
+
+/** The closed allowlist of attribute keys a provider span may carry. The host
+ * drops every other key, so a command, an argument, a path, an id, a standard
+ * output, a standard error, or an `extra` field can never ride a provider span. */
+const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.provider,
+  SPAN_ATTRS.outcome,
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+]);
+
+/** The subset of allowed keys that carry a finite number. */
+const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+]);
+
+/** The closed value set for the `outcome` attribute. */
+const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "failed"]);
+
+/**
+ * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
+ * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
+ * bound `outcome` to its closed set, and keep a numeric attribute only when it
+ * is a finite number. The result holds only bounded, low-cardinality values.
+ */
+export function clampProviderSpanAttributes(
+  raw: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> {
+  const clamped: Record<string, string | number | boolean> = {};
+  if (!raw) return clamped;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.provider) {
+      clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
+      continue;
+    }
+    if (key === SPAN_ATTRS.outcome) {
+      if (typeof value === "string" && KNOWN_SPAN_OUTCOMES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
+      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      continue;
+    }
+  }
+  return clamped;
+}
+
+/**
+ * Parse and validate a W3C `traceparent`. Return the parts, or `null` when the
+ * value is absent or malformed. The host mints the value, but this is the trust
+ * boundary, so it validates before use. It never logs the value.
+ */
+export function parseTraceparent(raw: string | undefined | null): ParsedTraceparent | null {
+  if (typeof raw !== "string") return null;
+  const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(raw);
+  if (!match) return null;
+  const [, version, traceId, spanId, flags] = match;
+  if (version === "ff") return null; // the W3C spec forbids version 0xff
+  if (traceId === "0".repeat(32)) return null; // an all-zero trace id is invalid
+  if (spanId === "0".repeat(16)) return null; // an all-zero span id is invalid
+  return { traceId, spanId, traceFlags: parseInt(flags, 16) };
+}
+
+/** Keep only the numeric status code. A status message could carry free-form
+ * text, so the host drops it — never a standard-stream text on a span. */
+function clampSpanStatus(
+  status: { code?: unknown; message?: unknown } | undefined,
+): { code: number } | undefined {
+  if (!status || typeof status.code !== "number" || !Number.isFinite(status.code)) return undefined;
+  return { code: status.code };
+}
+
+/**
+ * Record a worker-sent provider span through the real tracer. This is the host
+ * trust boundary: it validates the host-minted `traceparent`, re-clamps the span
+ * name and every attribute, mints the parentage host-side, and drops a status
+ * message. It rejects a span with a missing or malformed `traceparent`. It never
+ * throws — observability must not change control flow.
+ */
+export function recordWorkerProviderSpan(
+  params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown; message?: unknown } },
+  context: WorkerHostCallContext | undefined,
+): void {
+  const parent = parseTraceparent(context?.traceparent);
+  if (!parent) return; // reject a missing or malformed traceparent
+  recordProviderPluginSpan({
+    name: clampProviderSpanName(params.name),
+    parent,
+    attributes: clampProviderSpanAttributes(params.attributes),
+    ...(clampSpanStatus(params.status) ? { status: clampSpanStatus(params.status) } : {}),
+  });
+}
 
 export function buildHostServices(
   db: Db,
@@ -1482,6 +1606,17 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered log flush failed:", err);
           });
         }
+      },
+    },
+
+    tracer: {
+      async record(params, context) {
+        // The host trust boundary: validate the host-minted `traceparent`,
+        // re-clamp the span name and every attribute, mint the parentage
+        // host-side, and record the span through the real tracer. The capability
+        // gate in `createHostClientHandlers` already rejected an ungranted
+        // plugin before this runs.
+        recordWorkerProviderSpan(params, context);
       },
     },
 

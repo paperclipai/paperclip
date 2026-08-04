@@ -140,6 +140,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       status: "running",
       invocationSource: "assignment",
       responsibleUserId,
+      contextSnapshot: { issueId },
     });
     await db.insert(issues).values({
       id: issueId,

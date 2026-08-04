@@ -1392,6 +1392,46 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           notifyHost("log", { level: "debug", message, meta });
         },
       },
+
+      tracer: {
+        startSpan(
+          name: string,
+          options?: { attributes?: Record<string, string | number | boolean> },
+        ) {
+          // Read the active host trace context from the per-call invocation
+          // channel. A `traceparent` means a host span is active, so this span
+          // may record. No `traceparent` means tracing is off: the span is a
+          // no-op, so a lifecycle hook can always wrap work in a span.
+          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          const attributes: Record<string, string | number | boolean> = {
+            ...(options?.attributes ?? {}),
+          };
+          let status: { code: number; message?: string } | undefined;
+          let ended = false;
+          return {
+            setAttribute(key: string, value: string | number | boolean): void {
+              attributes[key] = value;
+            },
+            setStatus(next: { code: number; message?: string }): void {
+              status = next;
+            },
+            end(): void {
+              if (ended) return;
+              ended = true;
+              if (!hasTraceContext) return;
+              // Send the finished span to the host once. The host re-clamps the
+              // name and the attributes, mints the parentage from its own
+              // invocation record, and records the span through the real tracer.
+              // Fire-and-forget: a span must never block or fail plugin work.
+              void callHost("span.record", {
+                name,
+                attributes,
+                ...(status ? { status } : {}),
+              }).catch(() => undefined);
+            },
+          };
+        },
+      },
     };
   }
 

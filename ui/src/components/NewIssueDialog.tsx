@@ -2242,7 +2242,7 @@ export function NewIssueDialog() {
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
+              Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.
             </span>
           </div>
         ) : null}
@@ -2259,16 +2259,11 @@ export function NewIssueDialog() {
             Discard Draft
           </Button>
           <div className="flex items-center gap-3">
-            <div className="min-h-5 text-right">
-              {createIssue.isPending ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
-                </span>
-              ) : createIssue.isError ? (
+            {createIssue.isError ? (
+              <div className="min-h-5 text-right">
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem) disabled:opacity-100"

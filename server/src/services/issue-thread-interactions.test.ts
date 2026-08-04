@@ -85,6 +85,41 @@ describe("issueThreadInteractionService", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    ["ask_user_questions", undefined, {}, "board_or_agents", "board_or_agents"],
+    ["suggest_tasks", undefined, {}, "board_only", "board_only"],
+    ["request_confirmation", "board_or_agents", {}, "board_or_agents", "board_or_agents"],
+    ["request_checkbox_confirmation", undefined, { request_checkbox_confirmation: { defaultPolicy: "board_or_agents" } }, "board_or_agents", "board_or_agents"],
+    ["request_item_verdicts", "board_or_agents", { request_item_verdicts: { cap: "board_only" } }, "board_or_agents", "board_only"],
+  ] as const)(
+    "resolves %s requested/default/cap policy snapshots",
+    async (kind, requested, governance, expectedRequested, expectedEffective) => {
+      const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+      expect(resolveInteractionPolicy({
+        kind,
+        requested,
+        governance,
+        hasToolAction: false,
+      })).toEqual({
+        requestedResolverPolicy: expectedRequested,
+        effectiveResolverPolicy: expectedEffective,
+      });
+    },
+  );
+
+  it("always clamps tool-action confirmations to board-only", async () => {
+    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveInteractionPolicy({
+      kind: "request_confirmation",
+      requested: "board_or_agents",
+      governance: { request_confirmation: { defaultPolicy: "board_or_agents", cap: "board_or_agents" } },
+      hasToolAction: true,
+    })).toEqual({
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_only",
+    });
+  });
+
   it("create reuses an existing interaction for the same idempotency key", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
 
@@ -95,6 +130,8 @@ describe("issueThreadInteractionService", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
       idempotencyKey: "run-1:suggest",
       sourceCommentId: null,
       sourceRunId: "22222222-2222-4222-8222-222222222222",

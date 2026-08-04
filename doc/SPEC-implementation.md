@@ -531,8 +531,9 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 - Bearer API key mapped to one agent and company
 - Agent key scope:
   - read org/task/company context for own company
-  - read/write own assigned tasks and comments
-  - create tasks/comments for delegation
+  - read company-visible tasks and comments
+  - comment on and update visible tasks under the shared write rule
+  - create child tasks and assign visible work for delegation under the same rule
   - report heartbeat status
   - report cost events
 - Agent cannot:
@@ -556,6 +557,40 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
 | Manage another user's inbox state | yes | scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
+
+### 9.3.1 Shared default-open issue writes
+
+For standard-trust agents, issue comments, issue field/status updates, child
+creation under a parent, and assignment share one authorization rule: the
+target issue must be visible to the agent and the responsible user represented
+by the run must also be authorized. In V1, issue visibility defaults to the
+whole company, so these writes are company-wide by default.
+
+The shared rule does not widen low-trust, `skill_test`, or `task_bridge` key
+scopes. It also does not replace run-lifecycle controls: checkout ownership,
+active-run conflicts, status-transition validation, interaction ownership,
+budget gates, and pause gates remain independently enforced. Comment access is
+structurally downstream of issue read access (`issue:comment` is a subset of
+`issue:read`).
+
+Cross-issue writes are contained per heartbeat run. An agent-authored comment
+may wake the target assignee, including an explicit `resume: true` comment on a
+`done` or `cancelled` issue, but the wake remains agent-class and is subject to
+the normal agent rewake throttle; comment presentation cannot give it human
+wake privileges. Agent issue comments and updates require a persisted heartbeat
+run bound to the authenticated agent and company; missing, invalid, or mismatched
+run context fails closed before mutation. A run may attempt at most 20 cross-issue comments or issue
+updates across the shared counter. The server records each attempt with its
+source issue, target issue, run, count, and rollout mode, and fails closed with
+the cap in the error once enforcement is active. Assignee self-comments do not
+wake the assignee, and a non-assignee comment cannot mint a mention grant.
+
+Agent-authored issue comments persist the responsible user derived from the
+authenticated actor; clients cannot choose that attribution. Each comment also
+records the write-policy reason, and spoof attempts fail with an audited 422.
+Every issue PATCH emits an `issue.updated` activity receipt containing the
+actor, responsible user, run, authorization reason, and field-level before/after
+changes so both agent and board edits are visible in the issue activity stream.
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 

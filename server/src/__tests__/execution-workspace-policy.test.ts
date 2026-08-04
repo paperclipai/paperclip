@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  issueExecutionWorkspaceSettingsSchema,
+  projectExecutionWorkspacePolicySchema,
+} from "@paperclipai/shared";
+import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -10,6 +14,7 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
@@ -38,6 +43,42 @@ describe("execution workspace policy helpers", () => {
         legacyUseProjectWorkspace: false,
       }),
     ).toBe("isolated_workspace");
+  });
+
+  it("resolves shared-workspace concurrency from issue override, project policy, then auto", () => {
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: { sharedWorkspaceConcurrency: "allow" },
+      }),
+    ).toBe("allow");
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: null,
+      }),
+    ).toBe("serialize");
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: false, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: null,
+      }),
+    ).toBe("auto");
+    expect(resolveSharedWorkspaceConcurrency({ projectPolicy: null, issueSettings: null })).toBe("auto");
+  });
+
+  it("validates the shared-workspace concurrency enum on project and issue settings", () => {
+    expect(projectExecutionWorkspacePolicySchema.parse({
+      enabled: true,
+      sharedWorkspaceConcurrency: "auto",
+    }).sharedWorkspaceConcurrency).toBe("auto");
+    expect(issueExecutionWorkspaceSettingsSchema.parse({
+      sharedWorkspaceConcurrency: "allow",
+    }).sharedWorkspaceConcurrency).toBe("allow");
+    expect(projectExecutionWorkspacePolicySchema.safeParse({
+      enabled: true,
+      sharedWorkspaceConcurrency: "parallel",
+    }).success).toBe(false);
   });
 
   it("centralizes unrunnable isolated worktree detection", () => {
@@ -256,6 +297,7 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseProjectExecutionWorkspacePolicy({
         enabled: true,
+        sharedWorkspaceConcurrency: "serialize",
         defaultMode: "isolated",
         workspaceStrategy: {
           type: "git_worktree",
@@ -267,6 +309,7 @@ describe("execution workspace policy helpers", () => {
       }),
     ).toEqual({
       enabled: true,
+      sharedWorkspaceConcurrency: "serialize",
       defaultMode: "isolated_workspace",
       workspaceStrategy: {
         type: "git_worktree",
@@ -299,6 +342,7 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseIssueExecutionWorkspaceSettings({
         mode: "isolated_workspace",
+        sharedWorkspaceConcurrency: "allow",
         networkEgress: {
           allowFqdns: ["github.com", "pypi.org"],
           allowCidrs: ["203.0.113.0/24"],
@@ -306,6 +350,7 @@ describe("execution workspace policy helpers", () => {
       }),
     ).toEqual({
       mode: "isolated_workspace",
+      sharedWorkspaceConcurrency: "allow",
       networkEgress: {
         allowFqdns: ["github.com", "pypi.org"],
         allowCidrs: ["203.0.113.0/24"],

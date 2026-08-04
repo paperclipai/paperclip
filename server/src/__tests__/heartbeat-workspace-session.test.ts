@@ -30,7 +30,6 @@ import {
   resolveExecutionWorkspaceReuseProvisioningPolicy,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
-  issueTextImpliesPrDeliverable,
   isWorkspaceSyncConflictFailure,
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
@@ -972,58 +971,7 @@ describe("assertPushCapabilityCheckoutValid", () => {
   });
 });
 
-describe("issueTextImpliesPrDeliverable", () => {
-  it("matches verb-anchored PR deliverables", () => {
-    expect(issueTextImpliesPrDeliverable("Review and open PR for the CI shard split")).toBe(true);
-    expect(issueTextImpliesPrDeliverable("Push the branch and open a pull request")).toBe(true);
-    expect(issueTextImpliesPrDeliverable("Each run: make the change and open a draft PR")).toBe(true);
-    expect(issueTextImpliesPrDeliverable("push feature work to origin when done")).toBe(true);
-  });
-
-  it("ignores passing mentions and unrelated text", () => {
-    expect(issueTextImpliesPrDeliverable("The PR merged yesterday; investigate the regression")).toBe(false);
-    expect(issueTextImpliesPrDeliverable("PR feedback addressed")).toBe(false);
-    expect(issueTextImpliesPrDeliverable("Update the pricing page copy")).toBe(false);
-    expect(issueTextImpliesPrDeliverable("a proper approach to pushing back on scope")).toBe(false);
-    expect(issueTextImpliesPrDeliverable(null)).toBe(false);
-    expect(issueTextImpliesPrDeliverable("")).toBe(false);
-  });
-
-  it("ignores non-git uses of push", () => {
-    expect(issueTextImpliesPrDeliverable("push back on the upstream dependency change")).toBe(false);
-    expect(issueTextImpliesPrDeliverable("push back the branch cut date")).toBe(false);
-    expect(issueTextImpliesPrDeliverable("push notifications for mobile")).toBe(false);
-    // Git shapes still match.
-    expect(issueTextImpliesPrDeliverable("pushing the release branch")).toBe(true);
-    expect(issueTextImpliesPrDeliverable("push feature work to origin when done")).toBe(true);
-  });
-});
-
 describe("requiresPushCapabilityPreflight", () => {
-  it("enables the guard when the issue text states the PR deliverable", () => {
-    expect(requiresPushCapabilityPreflight({
-      adapterType: "codex_local",
-      issueId: "issue-1",
-      explicitRunScopedSkillKeys: [],
-      issueText: "Push ci/shard-split and open PR",
-    })).toBe(true);
-
-    expect(requiresPushCapabilityPreflight({
-      adapterType: "codex_local",
-      issueId: "issue-1",
-      explicitRunScopedSkillKeys: [],
-      issueText: "Investigate why the PR checks were slow",
-    })).toBe(false);
-
-    // Without an issue there is nothing to preflight.
-    expect(requiresPushCapabilityPreflight({
-      adapterType: "codex_local",
-      issueId: null,
-      explicitRunScopedSkillKeys: [],
-      issueText: "open a PR",
-    })).toBe(false);
-  });
-
   it("only enables the guard when the issue explicitly mentions the GitHub PR workflow skill", () => {
     expect(requiresPushCapabilityPreflight({
       adapterType: "codex_local",

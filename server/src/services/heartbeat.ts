@@ -193,6 +193,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -228,6 +229,14 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
+import {
+  buildIssueReviewPathLostIdempotencyKey,
+  decideIssueReviewPathRecovery,
+  ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+  isReviewPathRecoveryIdempotencyConflict,
+  REVIEW_PATH_RECOVERY_INSTRUCTION,
+  reviewPathConsumedRefFromRun,
+} from "./recovery/review-path-recovery.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -693,7 +702,6 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
-
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   | "resolveAdapterConfigForRuntime"
@@ -737,44 +745,14 @@ function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
   });
 }
 
-/**
- * Conservative, verb-anchored patterns for an issue whose deliverable is a
- * pushed branch or opened pull request. Verb anchoring keeps passing mentions
- * ("the PR merged yesterday") from triggering the credential preflight.
- */
-const PR_DELIVERABLE_TEXT_PATTERNS = [
-  /\bopen(?:s|ed|ing)?\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
-  /\b(?:create|creates|created|creating|raise|raises|raised|raising|submit|submits|submitted|submitting)\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
-  // "push back" (an objection or a date) is never a git push, and bare
-  // proximity to words like "upstream" over-matches ("push back on the
-  // upstream dependency change"); require the git object shape instead.
-  /\bpush(?:es|ed|ing)?\b(?!\s+back\b)[^.\n]{0,40}\bbranch(?:es)?\b/i,
-  /\bpush(?:es|ed|ing)?\s+(?:[^.\n]{0,30}\s)?to\s+(?:origin|remote|upstream|github)\b/i,
-];
-
-export function issueTextImpliesPrDeliverable(text: string | null | undefined): boolean {
-  if (!text) return false;
-  return PR_DELIVERABLE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
-}
-
 export function requiresPushCapabilityPreflight(input: {
   adapterType: string;
   issueId: string | null | undefined;
   explicitRunScopedSkillKeys: string[];
-  /**
-   * Issue title + description. Routine-created issues and agent-to-agent
-   * handoffs rarely mention the GitHub PR workflow skill explicitly, yet
-   * state the PR deliverable in plain text — without this, the credential
-   * gap only surfaces after the implementation and review work is done.
-   */
-  issueText?: string | null;
 }) {
   return Boolean(input.issueId)
     && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)
-    && (
-      hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys)
-      || issueTextImpliesPrDeliverable(input.issueText)
-    );
+    && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
 }
 
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
@@ -1499,6 +1477,14 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
+/**
+ * In-flight managed-checkout materializations keyed by target cwd. Two issues on the same
+ * project can wake within seconds of each other; without this, both runs raced the same
+ * clone target — the loser saw "destination path already exists" and its failure cleanup
+ * deleted the winner's in-progress clone, so both runs failed every round.
+ */
+const managedCheckoutMaterializations = new Map<string, Promise<{ cwd: string; warning: string | null }>>();
+
 export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
@@ -1511,6 +1497,22 @@ export async function ensureManagedProjectWorkspace(input: {
     projectId: input.projectId,
     repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
   });
+  const inFlight = managedCheckoutMaterializations.get(cwd);
+  if (inFlight) return inFlight;
+  const attempt = materializeManagedProjectWorkspace(cwd, input).finally(() => {
+    managedCheckoutMaterializations.delete(cwd);
+  });
+  managedCheckoutMaterializations.set(cwd, attempt);
+  return attempt;
+}
+
+async function materializeManagedProjectWorkspace(
+  cwd: string,
+  input: {
+    repoUrl: string | null;
+    resolveGitAuth?: GitRemoteAuthProvider | null;
+  },
+): Promise<{ cwd: string; warning: string | null }> {
   await fs.mkdir(path.dirname(cwd), { recursive: true });
   const stats = await fs.stat(cwd).catch(() => null);
 
@@ -1521,11 +1523,12 @@ export async function ensureManagedProjectWorkspace(input: {
     return { cwd, warning: null };
   }
 
-  const gitDirExists = await fs
-    .stat(path.resolve(cwd, ".git"))
-    .then((entry) => entry.isDirectory())
-    .catch(() => false);
-  if (gitDirExists) {
+  const hasAdoptableGitDir = () =>
+    fs
+      .stat(path.resolve(cwd, ".git"))
+      .then((entry) => entry.isDirectory())
+      .catch(() => false);
+  if (await hasAdoptableGitDir()) {
     return { cwd, warning: null };
   }
 
@@ -1540,9 +1543,14 @@ export async function ensureManagedProjectWorkspace(input: {
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
+  // Clone into a temp sibling, then move into place atomically. The shared target directory
+  // is never created in a partial state and never removed on failure, so a concurrent
+  // materialization (another process, or a run racing this one) can neither adopt a broken
+  // checkout nor lose its own completed one.
   const auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
+  const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
   try {
-    await execFile("git", [...(auth?.configArgs ?? []), "clone", input.repoUrl, cwd], {
+    await execFile("git", [...(auth?.configArgs ?? []), "clone", input.repoUrl, cloneTmpDir], {
       env: {
         // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
         // credential-helper token env if it came first. GIT_TERMINAL_PROMPT=0 fails a
@@ -1554,12 +1562,8 @@ export async function ensureManagedProjectWorkspace(input: {
       },
       timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
     });
-    return { cwd, warning: null };
   } catch (error) {
-    // The clone only ever starts from a missing or just-emptied directory, so removing it on
-    // failure cannot destroy operator data — but leaving it would poison the next run: a
-    // timeout-killed clone leaves a partial .git that the gitDirExists probe above adopts.
-    await fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rm(cloneTmpDir, { recursive: true, force: true }).catch(() => undefined);
     const reason = error instanceof Error ? error.message : String(error);
     const authNote = describeGitAuthFailure({
       error: reason,
@@ -1569,6 +1573,20 @@ export async function ensureManagedProjectWorkspace(input: {
       `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
     ));
   }
+
+  try {
+    await fs.rename(cloneTmpDir, cwd);
+  } catch (renameError) {
+    await fs.rm(cloneTmpDir, { recursive: true, force: true }).catch(() => undefined);
+    // The target appearing between the emptiness check and the rename means another
+    // materialization won the race; adopt its checkout instead of failing the run.
+    if (await hasAdoptableGitDir()) {
+      return { cwd, warning: null };
+    }
+    const reason = renameError instanceof Error ? renameError.message : String(renameError);
+    throw new Error(`Failed to move managed checkout into place at "${cwd}": ${reason}`);
+  }
+  return { cwd, warning: null };
 }
 
 /**
@@ -7543,6 +7561,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
+    const reviewPathLost = input.claimed.status === "in_review"
+      && (await issuesSvc
+        .listReviewAttention(input.claimed.companyId, [input.claimed])
+        .then((attention) => attention.get(input.claimed.id)?.state === "stalled"));
+    const reviewPathContext = reviewPathLost
+      ? {
+          reviewPathLost: true,
+          reviewPathConsumedRef:
+            `monitor:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
+          reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+        }
+      : null;
     const details = monitorRecoveryDetails({
       claimed: input.claimed,
       scheduledAtIso: input.scheduledAtIso,
@@ -7653,6 +7683,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
+        ...(reviewPathContext ?? {}),
       }, "status_only"),
       requestedByActorType: input.actorType,
       requestedByActorId: input.actorId,
@@ -7666,6 +7697,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
+        ...(reviewPathContext ?? {}),
       }, "status_only"),
     });
 
@@ -9382,6 +9414,93 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  async function handleIssueReviewPathDisposition(run: typeof heartbeatRuns.$inferSelect) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId) ?? readNonEmptyString(contextSnapshot.taskId);
+    if (!issueId) return;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.status !== "in_review" || !issue.assigneeAgentId) return;
+
+    const reviewAttention = await issuesSvc
+      .listReviewAttention(issue.companyId, [issue])
+      .then((map) => map.get(issue.id) ?? { state: "none" as const, paths: [], reason: null });
+    if (reviewAttention.state !== "stalled") return;
+
+    const consumedPathRef = reviewPathConsumedRefFromRun({
+      runId: run.id,
+      issueId: issue.id,
+      contextSnapshot,
+    });
+    const idempotencyKey = buildIssueReviewPathLostIdempotencyKey({
+      issueId: issue.id,
+      consumedPathRef,
+    });
+    const existingWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        notInArray(agentWakeupRequests.status, ["skipped"]),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const decision = decideIssueReviewPathRecovery({
+      issueId: issue.id,
+      sourceRunId: run.id,
+      assigneeAgentId: issue.assigneeAgentId,
+      contextSnapshot,
+      reviewAttention,
+      existingWake: Boolean(existingWake),
+    });
+    if (decision.kind !== "enqueue") return;
+
+    const recoveryRun = await enqueueWakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+      idempotencyKey: decision.idempotencyKey,
+      payload: decision.payload,
+      contextSnapshot: decision.contextSnapshot,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    }).catch((error: unknown) => {
+      if (isReviewPathRecoveryIdempotencyConflict(error)) return null;
+      throw error;
+    });
+    if (!recoveryRun) return;
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: issue.assigneeAgentId,
+      runId: run.id,
+      action: "issue.review_path_recovery_queued",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        sourceRunId: run.id,
+        recoveryRunId: recoveryRun.id,
+        consumedPathRef,
+        recoveryAttempt: 1,
+        maxRecoveryAttempts: 1,
+      },
+    });
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -9984,6 +10103,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function isServerStdioBoundHotRestartRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+    adapterConfig: unknown;
+  }) {
+    const context = parseObject(input.run.contextSnapshot);
+    if (context.processTopology === "server_stdio" || context.executionEngine === "acp") {
+      return true;
+    }
+    if (context.processTopology === "detached" || context.executionEngine === "cli") {
+      return false;
+    }
+    if (!["claude_local", "codex_local", "gemini_local"].includes(input.adapterType)) {
+      return false;
+    }
+    return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
+  }
+
   async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM" | "SIGBREAK", now = new Date()) {
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
@@ -10007,6 +10144,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         run: heartbeatRuns,
         adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -10016,6 +10154,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...intent,
       previousServerVersion: intent.previousServerVersion ?? serverVersion,
     };
+
+    const serverStdioRuns = activeRuns.filter(isServerStdioBoundHotRestartRun);
+    if (serverStdioRuns.length > 0) {
+      const activeServerStdioRunIds = serverStdioRuns.map(({ run }) => run.id);
+      await writeHotRestartShutdownSnapshot({
+        intent: intentWithVersion,
+        signal,
+        activeRuns: snapshotRuns,
+        drainReason: "active_acp_run",
+        drainRunIds: activeServerStdioRunIds,
+        capturedAt: now,
+      });
+
+      logger.warn(
+        {
+          signal,
+          previousServerPid: intent.previousServerPid,
+          activeRunIds: snapshotRuns.map((run) => run.runId),
+          activeServerStdioRunIds,
+          drainReason: "active_acp_run",
+        },
+        "server-stdio agent run prevents hot-restart adoption; using graceful drain and retry",
+      );
+
+      return {
+        mode: "acp_drain_required" as const,
+        skipDrain: false as const,
+        activeRunIds: snapshotRuns.map((run) => run.runId),
+        activeAcpRunIds: activeServerStdioRunIds,
+        drainRunIds: activeServerStdioRunIds,
+        drainReason: "active_acp_run" as const,
+      };
+    }
 
     const preparedIntent = await writeHotRestartShutdownSnapshot({
       intent: intentWithVersion,
@@ -10099,12 +10270,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (!intent.shutdownSnapshot) {
-      logger.warn(
+      const log = intent.drainRequired ? logger.info.bind(logger) : logger.warn.bind(logger);
+      log(
         {
           previousServerPid: intent.previousServerPid,
           preflightActiveRunIds: intent.preflightActiveRunIds,
+          drainReason: intent.drainReason ?? null,
         },
-        "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
+        intent.drainRequired
+          ? "drain-required restart intent has no adoption snapshot"
+          : "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
       );
     }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
@@ -10195,7 +10370,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      if (intent.drainRequired) {
+      const hasSelectiveAcpDrain = intent.drainReason === "active_acp_run"
+        && (intent.drainRunIds?.length ?? 0) > 0;
+      if (hasSelectiveAcpDrain && intent.drainRunIds?.includes(candidate.runId)) {
+        // A selective ACP drain is expected to persist a terminal row before
+        // the new server starts. If the process was terminated but that write
+        // failed, surface the run as lost instead of hiding it as an expected
+        // drain skip.
+        classify(candidate, "lost", "selective_drain_not_finalized", patch);
+        continue;
+      }
+      if (
+        intent.drainRequired
+        && !hasSelectiveAcpDrain
+      ) {
         classify(candidate, "skipped", "drain_required", patch);
         continue;
       }
@@ -10277,6 +10465,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedAt: intent.requestedAt,
       completedAt: now.toISOString(),
       drainRequired: intent.drainRequired,
+      drainReason: intent.drainReason ?? (intent.drainRequired ? "requested" : null),
       previousServerPid: intent.previousServerPid,
       newServerPid: process.pid,
       previousServerVersion: intent.previousServerVersion,
@@ -10311,7 +10500,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM" | "SIGBREAK", now = new Date()) {
+  async function drainRunningRunsForShutdown(
+    signal: "SIGINT" | "SIGTERM" | "SIGBREAK",
+    now = new Date(),
+    runIds: readonly string[] | null = null,
+  ) {
+    const selectedRunIds = runIds ? [...new Set(runIds)] : null;
+    if (selectedRunIds?.length === 0) {
+      return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
+    }
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -10319,7 +10516,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(eq(heartbeatRuns.status, "running"));
+      .where(
+        selectedRunIds
+          ? and(
+            eq(heartbeatRuns.status, "running"),
+            inArray(heartbeatRuns.id, selectedRunIds),
+          )
+          : eq(heartbeatRuns.status, "running"),
+      );
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
@@ -13485,8 +13689,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueContext.id), isNull(issues.responsibleUserId)));
       issueContext = { ...issueContext, responsibleUserId };
     }
+    const parsedProjectExecutionWorkspacePolicy = parseProjectExecutionWorkspacePolicy(
+      projectContext?.executionWorkspacePolicy,
+    );
     const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
-      parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
+      parsedProjectExecutionWorkspacePolicy,
       isolatedWorkspacesEnabled,
     );
     const trustPreset = resolveCoreTrustPreset({
@@ -13681,41 +13888,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
-    // Serialize shared-workspace execution: two runs mutating the same project
-    // working tree concurrently corrupt each other's uncommitted state, so a
-    // run whose issue targets a busy shared workspace is deferred (rescheduled
-    // retry) instead of dispatched, and keeps deferring until the workspace
-    // frees — an adapter never dispatches alongside a live holder. Deadlock
-    // safety comes from the holder query itself: a holder silent past
-    // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS stops counting (recovery's
-    // silent-run escalation is already reaping it), so a zombie can only delay
-    // work, never park it forever. This covers non-assignee runs (comment and
-    // review wakes) too — their deferral records that the run never executed
-    // under assignee-ship, so the retry promotion gate does not cancel it as a
-    // reassignment.
-    if (issueRef?.projectWorkspaceId && effectiveExecutionWorkspaceMode === "shared_workspace") {
-      const workspaceHolder = await findSharedWorkspaceHolder({
-        companyId: agent.companyId,
-        projectWorkspaceId: issueRef.projectWorkspaceId,
-        excludeIssueId: issueRef.id,
-        excludeRunId: run.id,
-        honorIsolatedWorkspaceModes: isolatedWorkspacesEnabled,
-      });
-      if (workspaceHolder) {
-        throw new WorkspaceBusyDeferral({
-          holder: workspaceHolder,
-          projectWorkspaceId: issueRef.projectWorkspaceId,
-          deferralAttempt:
-            run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
-              ? (run.scheduledRetryAttempt ?? 0)
-              : 0,
-          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
-        });
-      }
-    }
-    const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
+    const executionPolicy = { executionMode: resolvedInstanceSettings.general.executionMode };
+    const executionForcedToKubernetes = isExecutionForcedToKubernetes(executionPolicy);
     let selectedEnvironmentId = environmentResolution.environmentId;
-    if (isExecutionForcedToKubernetes(executionPolicy)) {
+    if (executionForcedToKubernetes) {
       let kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
       if (!kubernetesEnvironment) {
         // Lazy recovery for companies created after the startup bootstrap ran
@@ -13779,6 +13955,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
     }
+    const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment
+      : selectedEnvironmentId
+        ? await environmentsSvc.getById(selectedEnvironmentId)
+        : null;
+    const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+    });
+    // A live holder is always consulted for shared workspaces. Depending on policy and the final
+    // execution target it either remains the existing deferral gate or becomes dispatch context.
+    // Holder staleness and the workspace_busy retry ladder are intentionally unchanged for every
+    // path that serializes.
+    if (issueRef?.projectWorkspaceId && effectiveExecutionWorkspaceMode === "shared_workspace") {
+      const workspaceHolder = await findSharedWorkspaceHolder({
+        companyId: agent.companyId,
+        projectWorkspaceId: issueRef.projectWorkspaceId,
+        excludeIssueId: issueRef.id,
+        excludeRunId: run.id,
+        honorIsolatedWorkspaceModes: isolatedWorkspacesEnabled,
+      });
+      if (workspaceHolder) {
+        const environmentDriver = selectedEnvironmentForConfig?.driver ?? null;
+        const shouldSerialize = sharedWorkspaceConcurrency === "serialize"
+          || (
+            sharedWorkspaceConcurrency === "auto"
+            && (
+              executionForcedToKubernetes
+              || (environmentDriver !== "local" && environmentDriver !== "ssh")
+            )
+          );
+        if (shouldSerialize) {
+          throw new WorkspaceBusyDeferral({
+            holder: workspaceHolder,
+            projectWorkspaceId: issueRef.projectWorkspaceId,
+            deferralAttempt:
+              run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+                ? (run.scheduledRetryAttempt ?? 0)
+                : 0,
+            wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+          });
+        }
+
+        const holderIssueLabel = workspaceHolder.issueIdentifier ?? workspaceHolder.issueId;
+        const concurrentWorkspaceNote =
+          `shared workspace is concurrently held by run ${workspaceHolder.runId} (issue ${holderIssueLabel}); `
+          + "expect concurrent mutations, coordinate via commits";
+        const appendConcurrentWorkspaceNote = (value: unknown) => {
+          const existing = typeof value === "string" ? value.trimEnd() : "";
+          return existing ? `${existing}\n${concurrentWorkspaceNote}` : concurrentWorkspaceNote;
+        };
+        context.paperclipTaskMarkdown = appendConcurrentWorkspaceNote(context.paperclipTaskMarkdown);
+        if (typeof context.paperclipTaskMarkdownCompact === "string") {
+          context.paperclipTaskMarkdownCompact = appendConcurrentWorkspaceNote(
+            context.paperclipTaskMarkdownCompact,
+          );
+        }
+        logger.info(
+          {
+            event: "shared_workspace_concurrent_dispatch",
+            runId: run.id,
+            issueId: issueRef.id,
+            projectWorkspaceId: issueRef.projectWorkspaceId,
+            holderRunId: workspaceHolder.runId,
+            holderIssueId: workspaceHolder.issueId,
+            sharedWorkspaceConcurrency,
+            environmentDriver,
+            executionForcedToKubernetes,
+          },
+          "Dispatching alongside a live shared-workspace holder",
+        );
+      }
+    }
     const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
       agentConfig: config,
       projectPolicy: projectExecutionWorkspacePolicy,
@@ -13824,11 +14073,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
-      ? localEnvironment
-      : selectedEnvironmentId
-        ? await environmentsSvc.getById(selectedEnvironmentId)
-        : null;
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
@@ -13838,7 +14082,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       adapterType: agent.adapterType,
       issueId,
       explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
-      issueText: issueRef ? `${issueRef.title ?? ""}\n${issueRef.description ?? ""}` : null,
     });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
@@ -15627,6 +15870,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
+        await handleIssueReviewPathDisposition(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
@@ -15799,6 +16043,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        await handleIssueReviewPathDisposition(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -15935,6 +16180,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               logger.error(
                 { err: releaseError, runId },
                 "failed to release issue execution after heartbeat setup failure",
+              );
+            });
+            await handleIssueReviewPathDisposition(livenessRun).catch((reviewPathError) => {
+              logger.error(
+                { err: reviewPathError, runId },
+                "failed to evaluate review-path disposition after heartbeat setup failure",
               );
             });
           }
@@ -17725,6 +17976,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           isThrottleCandidateIssueRewake({
             reason,
             wakeCommentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
             forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
             hasExplicitResume: Boolean(explicitResumeSession),
           })
@@ -17775,6 +18027,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     eq(activityLog.entityId, issue.id),
                     gt(activityLog.createdAt, lastRunFinishedAt),
                     inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                    wakeCommentId && opts.requestedByActorType === "agent"
+                      ? ne(activityLog.actorType, "agent")
+                      : undefined,
                   ),
                 )
                 .limit(1)
@@ -17788,6 +18043,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   .map((row) => row.runId)
                   .filter((runId): runId is string => Boolean(runId)),
               ),
+              // For an agent comment wake, the query excludes agent-authored
+              // activity while preserving genuinely new user/system input.
+              // Presentation/author metadata therefore cannot smuggle human
+              // wake privilege, nor can it mask an actual human response.
               hasNewIssueInputSinceLastRun: newInputRows.length > 0,
             });
 

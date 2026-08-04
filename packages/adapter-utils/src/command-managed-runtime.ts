@@ -25,25 +25,6 @@ export interface CommandManagedRuntimeRunner {
    * and let the caller choose a chunked upload path when progress is requested.
    */
   supportsSingleStreamStdinProgress?: boolean;
-  /**
-   * Cumulative count of host→sandbox `execute` round-trips this runner has
-   * performed (Open Q1). Present only on runners that instrument the single
-   * exec seam (the sandbox runner); the per-step delta is emitted as
-   * `run.startup.step` `payload.roundTrips`. A `() => number` reader, never the
-   * runner itself, is threaded into `measureStartupStep` so the timing helper
-   * stays runner-agnostic.
-   */
-  execCount?(): number;
-  /**
-   * Cumulative provider-reported wall-time (ms) for the `executeCommand` REST
-   * call ({@link providerExecMs}) vs the `client.get` sandbox re-fetch that
-   * precedes it ({@link providerGetMs}), accumulated across every `execute`
-   * round-trip (Open Q1, finer attribution). Present only when the provider
-   * surfaces these durations on its result metadata; the per-step deltas are
-   * emitted as `payload.providerExecMs` / `payload.providerGetMs`.
-   */
-  providerExecMs?(): number;
-  providerGetMs?(): number;
   execute(input: {
     command: string;
     args?: string[];
@@ -354,8 +335,7 @@ export function createCommandManagedRuntimeClient(input: {
   // replace untar for directories, direct `writeFile` for single files), then run
   // the operation's ordered `postUploadCommands` fail-fast. Byte-for-byte
   // behavior-equivalent to the caller-inlined tar path it will replace. All exec
-  // rides the shared `execute` seam so `execCount`/`providerExecMs` still
-  // attribute (Open Q1).
+  // rides the shared `execute` seam.
   const fallbackSyncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
     const resultOperations: SandboxSyncResult["operations"] = [];
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));

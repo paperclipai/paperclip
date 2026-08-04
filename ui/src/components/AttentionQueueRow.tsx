@@ -48,6 +48,7 @@ import {
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
+import { StalledReviewActions } from "./StalledReviewActions";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -295,6 +296,24 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             >
               <GraduationCap className="h-3 w-3 fill-primary/25" />
               Trained ✓
+            </button>
+          )}
+          {/* Visible train affordance for untrained rows. Trained
+              rows already carry the "Trained ✓" badge above; both surfaces also
+              keep the overflow "Train this decision" entry. Sits in the same slot
+              as the badge so a row's training state reads from one place. */}
+          {trainable && !trained && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-sm border border-border bg-background px-1.5 py-px text-(length:--text-nano) font-medium text-muted-foreground hover:border-primary/40 hover:text-primary"
+              onClick={(event) => {
+                event.stopPropagation();
+                onTrain?.(item);
+              }}
+              data-testid="attention-train-inline"
+            >
+              <GraduationCap className="h-3 w-3" />
+              Train
             </button>
           )}
         </div>
@@ -814,6 +833,18 @@ function InlineResolver({
 
   if (item.sourceKind === "join_request") {
     return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
+  }
+
+  if (item.sourceKind === "review") {
+    // Inline only for stalled reviews (server sets inlineResolvable then); the
+    // subject IS the issue, so its id is the decision target.
+    return (
+      <StalledReviewActions
+        issueId={item.subject.id}
+        companyId={companyId}
+        footerSlot={toggle}
+      />
+    );
   }
 
   return null;

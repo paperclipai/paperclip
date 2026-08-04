@@ -132,9 +132,9 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
     },
     onSuccess: (_result, agent) => {
       invalidate();
-      pushToast({ title: `Routed to ${agent.name}`, tone: "success" });
+      pushToast({ title: `Asked ${agent.name} for a recommendation`, tone: "success" });
     },
-    onError: onError("route to agent"),
+    onError: onError("ask that agent for a recommendation"),
   });
 
   const pending = setDecideBy.isPending || setSnooze.isPending || addToQueue.isPending || removeFromQueue.isPending;
@@ -261,10 +261,10 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
           </DropdownMenu>
         )}
 
-        <RouteToAgentPicker
+        <AskAgentPicker
           agents={agents ?? []}
           disabled={routeToAgent.isPending || !relatedIssueId}
-          disabledReason={!relatedIssueId ? "No linked task to route from" : undefined}
+          disabledReason={!relatedIssueId ? "No linked task to ask about" : undefined}
           onRoute={(agent) => routeToAgent.mutate(agent)}
         />
         {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
@@ -418,7 +418,13 @@ function DropdownMenuSeparatorLike() {
   return <div className="my-1 h-px bg-border" />;
 }
 
-function RouteToAgentPicker({
+/**
+ * "Ask agent for recommendation" — posts a mention-comment on the linked task
+ * asking the agent to prepare a recommendation and re-surface the decision. It
+ * does not reassign the task, so the label says exactly what it does
+ * (Previously labeled "Route to agent".)
+ */
+function AskAgentPicker({
   agents,
   disabled,
   disabledReason,
@@ -442,7 +448,7 @@ function RouteToAgentPicker({
           title={disabledReason}
         >
           <UserPlus className="h-3.5 w-3.5" />
-          Route to agent
+          Ask agent for recommendation
           <ChevronDown className="h-3 w-3" />
         </Button>
       </DropdownMenuTrigger>

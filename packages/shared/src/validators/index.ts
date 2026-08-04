@@ -59,6 +59,7 @@ export {
 
 export {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
   type CreateCompany,
@@ -406,6 +407,7 @@ export {
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
   updateIssueSchema,
+  stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
@@ -464,6 +466,7 @@ export {
   type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,
   type UpdateIssue,
+  type StalledReviewDecision,
   type IssueExecutionWorkspaceSettings,
   type IssueRecoveryActionReadModel,
   type ResolveIssueRecoveryAction,

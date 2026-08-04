@@ -786,7 +786,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     });
   });
 
-  it("allows only standard checked-out runs to comment one hop upward", async () => {
+  it("preserves direct-parent reporting while default-opening visible standard-trust writes", async () => {
     const fixture = await seedLowTrustFixture(db);
     const standardApp = createApp(db, standardReportActor(fixture));
     const lowTrustApp = createApp(db, agentActor(fixture));
@@ -810,24 +810,30 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .send({ body: "Contained report must not cross" });
     expect(lowTrustParentComment.status, JSON.stringify(lowTrustParentComment.body)).toBe(403);
 
-    const forbiddenStandardWrites = [
+    const defaultOpenComments = [
       request(standardApp)
         .post(`/api/issues/${fixture.issues.reviewGrandparent.id}/comments`)
-        .send({ body: "No grandparent report" }),
+        .send({ body: "Visible grandparent context" }),
       request(standardApp)
         .post(`/api/issues/${fixture.issues.sameBoundaryChild.id}/comments`)
-        .send({ body: "No sibling report" }),
-      request(standardApp)
-        .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
-        .send({ status: "blocked" }),
-      request(standardApp)
-        .put(`/api/issues/${fixture.issues.reviewRoot.id}/documents/upward-write`)
-        .send({ format: "markdown", body: "No upward document write" }),
+        .send({ body: "Visible sibling context" }),
     ];
-    for (const forbiddenWrite of forbiddenStandardWrites) {
-      const response = await forbiddenWrite;
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
+    for (const defaultOpenComment of defaultOpenComments) {
+      const response = await defaultOpenComment;
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
     }
+
+    const checkedOutPeerUpdate = await request(standardApp)
+      .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
+      .send({ status: "blocked" });
+    expect(checkedOutPeerUpdate.status, JSON.stringify(checkedOutPeerUpdate.body)).toBe(409);
+    expect(checkedOutPeerUpdate.body.error).toBe("Issue is checked out by another agent");
+
+    const documentWrite = await request(standardApp)
+      .put(`/api/issues/${fixture.issues.reviewRoot.id}/documents/upward-write`)
+      .send({ format: "markdown", body: "No upward document write" });
+    expect(documentWrite.status, JSON.stringify(documentWrite.body)).toBe(409);
+    expect(documentWrite.body.error).toBe("Issue is checked out by another agent");
 
     for (const closedParent of [
       { assigneeAgentId: null, intent: { reopen: true } },

@@ -11,7 +11,38 @@ import { TaskChatPlanView } from "@/components/task-chat/TaskChatPlanView";
 import { TweakPanel } from "@/components/task-chat/TweakPanel";
 import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
 
-/** Progressively reveal any streaming message/thinking text at `speed`. */
+/** Replay ticks of selfTalk gap between scripted interstitial updates (~0.7s at 1×). */
+const SELF_TALK_GAP_TICKS = 30;
+
+/** A fixture's scripted interstitial updates: blank-line-separated segments. */
+function selfTalkSegments(script: string): string[] {
+  return script
+    .split(/\n{2,}/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The selfTalk visible at replay tick `tick`: each segment streams one char
+ * per tick as its own update, with a gap (selfTalk undefined — the real
+ * adapter clears it between assistant messages) before the next; after the
+ * last segment ends, selfTalk stays undefined so the pill's hold-until-
+ * superseded behavior (PAP-368) is visible in the lab.
+ */
+function selfTalkAtTick(segments: string[], tick: number): string | undefined {
+  let t = tick;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (t <= seg.length) return seg.slice(0, t) || undefined;
+    t -= seg.length;
+    if (i === segments.length - 1) return undefined;
+    if (t <= SELF_TALK_GAP_TICKS) return undefined;
+    t -= SELF_TALK_GAP_TICKS;
+  }
+  return undefined;
+}
+
+/** Progressively reveal any streaming message / live-line interstitial text at `speed`. */
 function useStreamingReplay(
   baseItems: TaskChatItem[],
   speed: number,
@@ -19,15 +50,23 @@ function useStreamingReplay(
 ): TaskChatItem[] {
   const [chars, setChars] = useState<number>(Number.MAX_SAFE_INTEGER);
   const streamingIndex = baseItems.findIndex(
-    (i) => (i.kind === "message" && i.streaming) || (i.kind === "thinking" && i.streaming),
+    (i) =>
+      (i.kind === "message" && i.streaming) ||
+      (i.kind === "turn" && !i.settled && i.liveStatus?.selfTalk != null),
   );
+  const streamingItem = baseItems[streamingIndex];
+  const isInterstitial = streamingItem?.kind === "turn";
   const fullText = useMemo(() => {
     const it = baseItems[streamingIndex];
     if (!it) return "";
     if (it.kind === "message") return it.text;
-    if (it.kind === "thinking") return it.lines.join("\n");
+    if (it.kind === "turn") return it.liveStatus?.selfTalk ?? "";
     return "";
   }, [baseItems, streamingIndex]);
+  const segments = useMemo(
+    () => (isInterstitial ? selfTalkSegments(fullText) : []),
+    [isInterstitial, fullText],
+  );
 
   useEffect(() => {
     if (streamingIndex < 0) {
@@ -36,14 +75,21 @@ function useStreamingReplay(
     }
     setChars(0);
     let n = 0;
+    // One extra tick past the last segment lands on the trailing undefined
+    // (message ended) state.
+    const stopAt = isInterstitial
+      ? segments.reduce((a, s) => a + s.length, 0) +
+        SELF_TALK_GAP_TICKS * Math.max(0, segments.length - 1) +
+        1
+      : fullText.length;
     const baseIntervalMs = 24;
     const interval = window.setInterval(() => {
       n += 1;
       setChars(n);
-      if (n >= fullText.length) window.clearInterval(interval);
+      if (n >= stopAt) window.clearInterval(interval);
     }, Math.max(4, baseIntervalMs / speed));
     return () => window.clearInterval(interval);
-  }, [streamingIndex, fullText, speed, playToken]);
+  }, [streamingIndex, fullText, isInterstitial, segments, speed, playToken]);
 
   if (streamingIndex < 0) return baseItems;
   return baseItems.map((it, idx) => {
@@ -51,7 +97,12 @@ function useStreamingReplay(
     const shown = fullText.slice(0, chars);
     const done = chars >= fullText.length;
     if (it.kind === "message") return { ...it, text: shown, streaming: !done };
-    if (it.kind === "thinking") return { ...it, lines: shown.split("\n"), streaming: !done };
+    // Parent-row interstitial (PAP-361/368): reveal the scripted updates
+    // segment by segment; the pill holds each finished one until the next
+    // swaps in.
+    if (it.kind === "turn" && it.liveStatus) {
+      return { ...it, liveStatus: { ...it.liveStatus, selfTalk: selfTalkAtTick(segments, chars) } };
+    }
     return it;
   });
 }

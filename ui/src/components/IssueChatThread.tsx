@@ -108,6 +108,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -507,6 +508,13 @@ interface IssueChatThreadProps {
    * the legacy thread ignores it — its header stays in the page flow.
    */
   threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble
+   * (PAP-375). Only the redesigned TaskChatThread consumes it (flag:
+   * enableTaskChatRedesign); the legacy thread ignores it — its description
+   * stays in the page header via InlineEditor.
+   */
+  issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;

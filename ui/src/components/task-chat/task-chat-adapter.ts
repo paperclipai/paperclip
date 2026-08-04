@@ -34,7 +34,8 @@ function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
   return "system";
 }
 
-function formatTimestamp(value: unknown): string | undefined {
+/** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
+export function formatTaskChatTimestamp(value: unknown): string | undefined {
   if (!value) return undefined;
   const d = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(d.getTime())) return undefined;
@@ -71,7 +72,7 @@ export function commentsToTaskChatItems(
       author: kind,
       authorName,
       text: comment.body,
-      timestamp: formatTimestamp(comment.createdAt),
+      timestamp: formatTaskChatTimestamp(comment.createdAt),
       optimistic,
       agentIcon,
       modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,

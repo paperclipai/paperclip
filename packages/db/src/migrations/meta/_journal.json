@@ -1408,6 +1408,34 @@
       "when": 1785702264747,
       "tag": "0202_eminent_marvel_zombies",
       "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1785702264748,
+      "tag": "0203_interaction_resolver_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1785702264749,
+      "tag": "0204_interaction_addressee",
+      "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1785853648731,
+      "tag": "0205_narrow_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1785853648732,
+      "tag": "0206_review_path_recovery_idempotency_index",
+      "breakpoints": true
     }
   ]
 }

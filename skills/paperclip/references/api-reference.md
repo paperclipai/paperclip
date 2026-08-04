@@ -905,6 +905,12 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
+Resolver governance:
+
+- Create accepts optional `resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The response snapshots immutable `requestedResolverPolicy` and `effectiveResolverPolicy`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity; resolution records `resolvedByAgentId`/`resolvedByRunId`. The resolver cannot be the creator agent or source run, low-trust and watchdog-scoped actors are denied, and `payload.toolAction` confirmations stay board-only regardless of policy.
+
 Rules:
 
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.

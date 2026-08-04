@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import type { AdapterExecutionContext, AdapterRuntimeEvent } from "../types.js";
 
 /**
@@ -37,6 +39,184 @@ const PLUGIN_PROVIDER_FAMILY = "plugin";
 export function normalizeProviderFamily(key: string | undefined): string {
   if (key && BUILT_IN_PROVIDER_FAMILIES.has(key)) return key;
   return PLUGIN_PROVIDER_FAMILY;
+}
+
+/**
+ * The common prefix for every sandbox-startup span attribute. One prefix keeps
+ * the attribute namespace closed and easy to find in the telemetry backend.
+ */
+export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
+
+/**
+ * The closed attribute-name contract for every sandbox-startup span. This is
+ * the single source of truth for the harness span attributes. Each name uses
+ * the `paperclip.sandbox.startup.` prefix and a type suffix:
+ *
+ * - `*.wall_ms` — one wall-clock time in float milliseconds.
+ * - `*.count` — a count.
+ *
+ * The producer sets only these keys. It never sets a free-form key, so a
+ * command, a path, an argument, or an environment value can never ride a span.
+ */
+export const SANDBOX_STARTUP_SPAN_ATTRS = {
+  /** The low-cardinality provider family (through `normalizeProviderFamily`). */
+  provider: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider`,
+  /** The step or execution outcome: `ok`, `skipped`, or `failed`. */
+  outcome: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}outcome`,
+  /** The wall-clock time of one measured step. */
+  stepWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}step.wall_ms`,
+  /** The clamped `argv[0]` command label of one execution. */
+  execCommand: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.command`,
+  /** The numeric process exit code of one execution. */
+  execExitCode: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.exit_code`,
+  /** The host-measured wall time of one execution. */
+  execWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.wall_ms`,
+  /** The provider handle-fetch wait before one execution ran. */
+  execWaitBeforeMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.wait_before_ms`,
+  /** The in-sandbox run time of one execution. */
+  execSandboxMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.sandbox_ms`,
+  /** The transport time the host adds around one execution. */
+  execNetworkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.network_ms`,
+  /** Whether one execution sits on the startup critical path. */
+  execCriticalPath: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.critical_path`,
+  /** Whether the provider served the sandbox handle from its warm cache. */
+  execCacheHit: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.cache_hit`,
+  /** The root-span wall time of the whole bring-up. */
+  rootWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.wall_ms`,
+  /** The sum of the step wall times of the whole bring-up. */
+  rootWorkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.work_ms`,
+  /** The difference between the work sum and the wall time (overlap). */
+  rootDiffMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.diff_ms`,
+  /** Whether this bring-up is a cold start (no warm handle). */
+  coldStart: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}cold_start`,
+  /** The clamped region label (through `clampSpanLabel`). */
+  region: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}region`,
+  /** The hashed image-id label (through `clampSpanLabel`). */
+  imageId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}image_id`,
+  /** The hashed sandbox-id label (through `clampSpanLabel`). */
+  sandboxId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}sandbox_id`,
+  /** The hashed lease-id label (through `clampSpanLabel`). */
+  leaseId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}lease_id`,
+  /** The create-runtime sub-time of the `acp.handshake` step. */
+  handshakeCreateRuntimeWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}handshake.create_runtime.wall_ms`,
+  /** The ensure-session sub-time of the `acp.handshake` step. */
+  handshakeEnsureSessionWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}handshake.ensure_session.wall_ms`,
+  /** A shared low-cardinality tag that marks two steps as one parallel batch. */
+  batch: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}batch`,
+  /** The host-local wall time of the pack step (build the tarball). */
+  packWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}pack.wall_ms`,
+  /** The wall time of the transfer step (upload the files to the sandbox). */
+  transferWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.wall_ms`,
+  /** The number of serial guard round trips before one transfer. */
+  transferGuardCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.guard.count`,
+} as const;
+
+/** The closed value set for the `outcome` attribute. */
+export const SANDBOX_STARTUP_OUTCOME = {
+  ok: "ok",
+  skipped: "skipped",
+  failed: "failed",
+} as const;
+
+export type SandboxStartupOutcome =
+  (typeof SANDBOX_STARTUP_OUTCOME)[keyof typeof SANDBOX_STARTUP_OUTCOME];
+
+/**
+ * The known command labels. A raw `argv[0]` outside this set maps to `other`,
+ * so a full command line, a path, or an argument never rides a span. Keep this
+ * list closed and small; a new command that is safe to name adds one entry.
+ */
+const KNOWN_COMMAND_LABELS: ReadonlySet<string> = new Set([
+  "sh",
+  "bash",
+  "env",
+  "mkdir",
+  "rm",
+  "mv",
+  "cp",
+  "ln",
+  "cat",
+  "echo",
+  "printf",
+  "test",
+  "chmod",
+  "true",
+  "tar",
+  "git",
+  "node",
+  "npm",
+  "pnpm",
+  "sudo",
+  "bwrap",
+]);
+
+/**
+ * The known region labels. A raw region outside this set maps to `unknown`, so
+ * a free-form region string never widens the attribute cardinality. Keep this
+ * list closed; a new supported region adds one entry.
+ */
+const KNOWN_REGION_LABELS: ReadonlySet<string> = new Set([
+  "us-east-1",
+  "us-east-2",
+  "us-west-1",
+  "us-west-2",
+  "eu-west-1",
+  "eu-central-1",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-northeast-1",
+]);
+
+/** The fallback value for a raw command outside the known-command allowlist. */
+const OTHER_COMMAND_LABEL = "other";
+/** The fallback value for a raw region outside the known-region allowlist. */
+const UNKNOWN_REGION_LABEL = "unknown";
+
+/**
+ * Map a raw label value to a non-reversible short hash. An id or an image
+ * reference can hold an internal codename or a secret-like string, so the span
+ * carries a hash, never the raw value. The hash is a stable 12-hex-character
+ * prefix of the SHA-256 digest; it is not reversible and it is low-collision
+ * for correlation.
+ */
+function hashLabelValue(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+/**
+ * Bound a span label value to a closed, low-cardinality set. This is the one
+ * boundary function for every free-form label. It is a hard-coded per-label
+ * map, the same pattern as `normalizeProviderFamily`:
+ *
+ * - `command` — a known command basename maps to itself; any other value maps
+ *   to `other`, so a full command line, a path, or an argument never leaks.
+ * - `region` — a known region maps to itself; any other value maps to
+ *   `unknown`.
+ * - `image_id` / `sandbox_id` / `lease_id` — the raw value maps to a
+ *   non-reversible short hash, because it can hold an internal codename or a
+ *   secret-like string, and the telemetry backend may index it.
+ *
+ * An unknown label name returns `undefined`, so the caller drops it. A missing
+ * value for a hashed label returns `undefined` too (fail open — never a raw
+ * value, never an empty attribute).
+ */
+export function clampSpanLabel(name: string, value: string | undefined): string | undefined {
+  switch (name) {
+    case "command":
+      return value !== undefined && KNOWN_COMMAND_LABELS.has(value)
+        ? value
+        : OTHER_COMMAND_LABEL;
+    case "region":
+      return value !== undefined && KNOWN_REGION_LABELS.has(value)
+        ? value
+        : UNKNOWN_REGION_LABEL;
+    case "image_id":
+    case "sandbox_id":
+    case "lease_id":
+      return value && value.length > 0 ? hashLabelValue(value) : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -128,6 +308,63 @@ export const NOOP_STARTUP_TRACE_CONTEXT: StartupTraceContext = {
 };
 
 /**
+ * The active step context that `measureStartupStep` publishes while it runs the
+ * step body `fn`. Inner code (for example the host→sandbox exec seam) reads it
+ * through `getActiveStepContext()` to parent a child span to the step span.
+ *
+ * - `span` — the open step span. A child span may set its status or read it.
+ * - `parentContext` — a parent-context token whose active span is the step span.
+ *   A child span opened with this token parents to the step span. It is opaque
+ *   to `adapter-utils`; the server builds it through `contextWithSpan`.
+ * - `criticalPath` — whether the step sits on the startup critical path. Two
+ *   overlapping steps (the parallel bridges) set it `false`; every other step
+ *   is `true`.
+ */
+export interface ActiveStepContext {
+  readonly span: StartupSpan;
+  readonly parentContext: StartupSpanContext;
+  readonly criticalPath: boolean;
+}
+
+/**
+ * The one storage for the active step context. `measureStartupStep` runs the
+ * step body inside it; inner code reads it with `getActiveStepContext()`. It is
+ * a module-level singleton, so the value propagates across `await` boundaries
+ * and across package boundaries that share this module.
+ */
+const activeStepContextStorage = new AsyncLocalStorage<ActiveStepContext | undefined>();
+
+/**
+ * Return the active step context, or `null` when no measured step is running.
+ * Inner code parents a child span to the step span through
+ * `getActiveStepContext()?.parentContext`. A `null` result is a no-op: the
+ * caller opens no child span or opens an unparented span.
+ */
+export function getActiveStepContext(): ActiveStepContext | null {
+  return activeStepContextStorage.getStore() ?? null;
+}
+
+/**
+ * Run `work` with no active step context, then restore the previous store. A
+ * bridge boundary uses this to start its long-lived poll timer and socket
+ * handlers outside the measured step store.
+ *
+ * Node snapshots the active store on each async resource at creation time. So a
+ * timer or a handler scheduled inside a measured step body keeps that step store
+ * after the step span ends. A later run-time exec then reads the ended step and
+ * parents its `sandbox.exec` span to a dead startup step, and it copies the
+ * step's `criticalPath` flag. This helper resets the store for the wrapped work,
+ * so each continuation reads an empty store. Each run-time exec then opens an
+ * unparented span with no stale `criticalPath` flag.
+ *
+ * The helper forwards only the opaque store, so this package stays free of
+ * `@opentelemetry/api`. It needs no Node version gate.
+ */
+export function runWithoutActiveStep<T>(work: () => T): T {
+  return activeStepContextStorage.run(undefined, work);
+}
+
+/**
  * Set a numeric span attribute only when the value is a finite number. A reader
  * that returns `undefined` (the counter is unavailable) yields no attribute,
  * never `NaN` and never a misleading `0`. This mirrors the host counter guard
@@ -144,44 +381,20 @@ function setFiniteNumberAttr(
 }
 
 /**
- * Compute a counter delta from a reader. Return `undefined` when the reader is
- * absent, or when either the start or the end snapshot is not a finite number.
- * A `undefined` result yields no payload field and no span attribute.
- */
-function finiteDelta(
-  read: (() => number) | undefined,
-  start: number | undefined,
-): number | undefined {
-  if (!read) return undefined;
-  const end = read();
-  if (typeof end !== "number" || !Number.isFinite(end)) return undefined;
-  const base = typeof start === "number" && Number.isFinite(start) ? start : 0;
-  return end - base;
-}
-
-/**
- * Optional per-step attribution attached to a `run.startup.step` event, all
- * additive to the free-form jsonb payload (no schema change). Each reader is a
- * plain `() => number` closure so the timing helper stays decoupled from the
- * runner/provider it reads (Risk R1): `measureStartupStep` snapshots the reader
- * before `fn` and again in `finally`, emitting the delta.
+ * Optional per-step attribution for a `run.startup.step` event and its span.
+ * The event payload carries only the high-level fields (`step`, `durationMs`,
+ * `outcome`). The detailed per-step round-trip and provider-duration numbers
+ * ride the OTel spans (the per-execution `sandbox.exec` child spans and the
+ * step span), not the payload. These options configure the span path and the
+ * step context.
  *
- * - `roundTrips` — cumulative host→sandbox `runner.execute` count; the delta is
- *   how many round-trips the step performed (Open Q1, host boundary).
- * - `providerExecMs` / `providerGetMs` — cumulative provider-reported wall-time
- *   (ms) for the `executeCommand` REST call vs the `client.get` sandbox
- *   re-fetch; the delta attributes the step's round-trip time to its parts
- *   (Open Q1, finer provider attribution).
- * - `extra` — a reader (called once in `finally`, after `fn` settles) returning
- *   any additional numeric fields to merge into the payload; used by
- *   `acp.handshake` to carry its `createRuntimeMs` / `ensureSessionMs` sub-split
- *   (Open Q2), which are measured by the caller rather than read from a counter.
- *   The `extra` map feeds the EVENT payload only. Its keys never become span
- *   attributes, so a free-form key cannot widen the closed span allowlist.
  * - `tracer` — an injected structural tracer. It defaults to a no-op, so the
  *   span path changes no runtime behavior until the server injects a real
- *   tracer. The span carries only the closed attribute allowlist (`step`, the
- *   normalized `provider`, and the finite counter deltas).
+ *   tracer. The span carries only the closed attribute allowlist from
+ *   `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall time,
+ *   and the outcome. The step name rides the span name, not an attribute. The
+ *   round-trip and provider-duration detail rides the per-execution
+ *   `sandbox.exec` child spans.
  * - `parentContext` — an opaque parent-context token from the root span. When
  *   set, the step's span parents to that root. `measureStartupStep` forwards it
  *   to `startSpan` and never inspects it, so parenting stays explicit and does
@@ -191,13 +404,45 @@ function finiteDelta(
  *   low-cardinality `provider` span attribute. It never sets the raw key.
  */
 export interface StartupStepMeasureOptions {
-  roundTrips?: () => number;
-  providerExecMs?: () => number;
-  providerGetMs?: () => number;
-  extra?: () => Record<string, number>;
   tracer?: StartupTracer;
   parentContext?: StartupSpanContext;
   provider?: string;
+  /**
+   * Build a parent-context token whose active span is a given span. The server
+   * binds it to `@opentelemetry/api`. `measureStartupStep` uses it once, after
+   * it opens the step span, to publish the step's child context on the active
+   * step context. Inner code reads that context to parent an exec span to the
+   * step span. When absent, the active step context carries no parent token, so
+   * an inner exec span opens unparented (a no-op when tracing is off).
+   */
+  contextWithSpan?: (span: StartupSpan) => StartupSpanContext;
+  /**
+   * Whether the step sits on the startup critical path. It rides the active
+   * step context, so an inner exec span records it. Two overlapping steps (the
+   * parallel bridges) pass `false`; every other step defaults to `true`.
+   */
+  criticalPath?: boolean;
+  /**
+   * Report the step wall time (float ms) once the step settles. The executor
+   * accumulates it into the root-span work sum. A throwing reporter never
+   * changes startup control flow.
+   */
+  onWallMs?: (wallMs: number) => void;
+  /**
+   * A shared low-cardinality batch tag. Two steps that run in parallel (the
+   * bridges) pass the same value, so the trace marks them as one batch. It
+   * rides the span as the closed `…batch` attribute. Pass only a fixed literal,
+   * never run or user data.
+   */
+  batch?: string;
+  /**
+   * Named wall-time sub-splits (float ms) that ride the step span as fixed,
+   * closed attribute keys. Only `acp.handshake` uses it today, for the
+   * create-runtime and ensure-session sub-times. The helper maps each value to
+   * a hard-coded attribute key, so a free-form key can never widen the closed
+   * span allowlist. A non-finite value sets no attribute.
+   */
+  spanWallTimes?: () => Partial<Record<"createRuntime" | "ensureSession", number>>;
 }
 
 function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
@@ -214,8 +459,8 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
 
 /**
  * Time `fn` with the injected `now` clock and emit exactly one
- * `run.startup.step` event carrying `{ step, durationMs }` plus any counters
- * supplied via `options`. The event fires in a `finally`, so a throwing step
+ * `run.startup.step` event carrying only the high-level `{ step, durationMs,
+ * outcome }`. The event fires in a `finally`, so a throwing step
  * still reports its duration before the error is re-thrown. `now` is injected
  * (never `Date.now()` here) so callers/tests stay deterministic, and
  * `ctx.onEvent` is optional — a missing sink is a no-op that neither throws nor
@@ -223,11 +468,12 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
  * calls this helper, so it emits no event (never a zero).
  *
  * When `options.tracer` is injected, the helper also opens one span at `start`
- * and ends it in the `finally`. The span carries a closed attribute allowlist:
- * `step`, the normalized `provider`, and the finite counter deltas
- * (`roundTrips` / `providerExecMs` / `providerGetMs`). A throwing `fn` sets the
- * span error status before the span ends. The span build reuses the same delta
- * values as the event payload, so the two paths never drift. The tracer
+ * and ends it in the `finally`. The span carries a closed attribute allowlist
+ * from `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall
+ * time, and the outcome (`ok` or `failed`). The step name rides the span name.
+ * A throwing `fn` sets the span error status before the span ends and the
+ * outcome is `failed`. The round-trip and provider-duration detail rides the
+ * spans, not the payload. The tracer
  * defaults to a no-op, so a caller with no tracer changes nothing. Every span
  * call sits inside the same error swallow as the event sink, so a throwing
  * tracer never changes startup control flow.
@@ -240,16 +486,17 @@ export async function measureStartupStep<T>(
   options: StartupStepMeasureOptions = {},
 ): Promise<T> {
   const start = now();
-  const roundTripsStart = options.roundTrips?.();
-  const providerExecStart = options.providerExecMs?.();
-  const providerGetStart = options.providerGetMs?.();
 
   // Open the span with only the low-cardinality allowlisted attributes known at
-  // the start: the step name and the normalized provider family.
+  // the start: the normalized provider family. The span name already carries
+  // the step name, so no redundant `step` attribute rides the span.
   const tracer = options.tracer ?? NOOP_TRACER;
-  const startAttributes: Record<string, string> = { step };
+  const startAttributes: Record<string, string> = {};
   if (options.provider !== undefined) {
-    startAttributes.provider = normalizeProviderFamily(options.provider);
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.provider] = normalizeProviderFamily(options.provider);
+  }
+  if (options.batch !== undefined) {
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.batch] = options.batch;
   }
   let span: StartupSpan;
   try {
@@ -259,38 +506,66 @@ export async function measureStartupStep<T>(
     span = NOOP_SPAN;
   }
 
+  // Publish the active step context while `fn` runs. Inner code (the host→
+  // sandbox exec seam) reads it to parent an exec span to this step span. The
+  // parent token is the step span's own child context; a missing
+  // `contextWithSpan` (no injected trace context) yields `undefined`, so an
+  // inner exec span opens unparented — a no-op when tracing is off. The
+  // `contextWithSpan` call is guarded, so a throwing helper never changes
+  // startup control flow.
+  let stepChildContext: StartupSpanContext;
+  try {
+    stepChildContext = options.contextWithSpan?.(span);
+  } catch {
+    stepChildContext = undefined;
+  }
+  const activeStep: ActiveStepContext = {
+    span,
+    parentContext: stepChildContext,
+    criticalPath: options.criticalPath ?? true,
+  };
+
   let stepFailed = false;
   try {
-    return await fn();
+    return await activeStepContextStorage.run(activeStep, fn);
   } catch (err) {
     stepFailed = true;
     throw err;
   } finally {
     const durationMs = now() - start;
 
-    // One attribute-build block feeds both the event payload and the span, so
-    // the two paths never drift. `undefined` deltas produce neither a payload
-    // field nor a span attribute (fail open — never `NaN`, never `0`).
-    const roundTrips = finiteDelta(options.roundTrips, roundTripsStart);
-    const providerExecMs = finiteDelta(options.providerExecMs, providerExecStart);
-    const providerGetMs = finiteDelta(options.providerGetMs, providerGetStart);
+    // The step outcome. A throwing `fn` is `failed`; a settled `fn` is `ok`. A
+    // step that a warm cache skips uses `emitSkippedStartupStep` instead.
+    const outcome: SandboxStartupOutcome = stepFailed
+      ? SANDBOX_STARTUP_OUTCOME.failed
+      : SANDBOX_STARTUP_OUTCOME.ok;
 
-    const payload: Record<string, unknown> = { step, durationMs };
-    if (roundTrips !== undefined) payload.roundTrips = roundTrips;
-    if (providerExecMs !== undefined) payload.providerExecMs = providerExecMs;
-    if (providerGetMs !== undefined) payload.providerGetMs = providerGetMs;
-    if (options.extra) {
-      // `extra` feeds the EVENT payload only. Its keys never become span
-      // attributes, so it cannot widen the closed span allowlist.
-      Object.assign(payload, options.extra());
-    }
+    // The payload carries only the high-level fields. The detailed per-step
+    // round-trip and provider-duration numbers ride the OTel spans now, so the
+    // run-log copy is gone.
+    const payload: Record<string, unknown> = { step, durationMs, outcome };
 
     try {
       if (stepFailed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
-      setFiniteNumberAttr(span, "roundTrips", roundTrips);
-      setFiniteNumberAttr(span, "providerExecMs", providerExecMs);
-      setFiniteNumberAttr(span, "providerGetMs", providerGetMs);
+      // The step span carries only the step wall time and the outcome. The
+      // per-execution `sandbox.exec` child spans now carry the round-trip and
+      // provider-duration detail, so the step span no longer duplicates them.
+      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, durationMs);
+      span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.outcome, outcome);
+      if (options.spanWallTimes) {
+        // Map each named sub-time to a hard-coded, closed attribute key, so a
+        // caller cannot widen the span allowlist with a free-form key.
+        const sub = options.spanWallTimes();
+        setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.handshakeCreateRuntimeWallMs, sub.createRuntime);
+        setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.handshakeEnsureSessionWallMs, sub.ensureSession);
+      }
       span.end();
+    } catch {
+      // Observability must not change startup control flow.
+    }
+
+    try {
+      options.onWallMs?.(durationMs);
     } catch {
       // Observability must not change startup control flow.
     }
@@ -300,5 +575,116 @@ export async function measureStartupStep<T>(
     } catch {
       // Observability must not change startup control flow.
     }
+  }
+}
+
+/**
+ * The two root-span timing numbers. `wallMs` is the root span's own wall time.
+ * `workMs` is the sum of the step wall times. The difference (`workMs − wallMs`)
+ * is the overlap the parallel steps saved.
+ */
+export interface SandboxRootSpanTimings {
+  wallMs: number;
+  workMs: number;
+}
+
+/**
+ * The low-cardinality root-span context. Each field is optional and omitted
+ * when absent (fail open — never an invented value). The helper below bounds
+ * each value: `provider` through `normalizeProviderFamily`, `region` through a
+ * small allowlist, and each id or image through a non-reversible hash.
+ */
+export interface SandboxRootSpanContext {
+  coldStart?: boolean;
+  provider?: string;
+  region?: string;
+  imageId?: string;
+  sandboxId?: string;
+  leaseId?: string;
+}
+
+/**
+ * Assemble every root-span (`sandbox.startup`) attribute in one place. This is
+ * the single producer-side boundary for the root span: it sets only the closed
+ * `paperclip.sandbox.startup.` allowlist. It records the wall, work, and diff
+ * times, and the bounded context. A raw id, an image reference, or a region
+ * never rides the span un-bounded, and an absent value sets no attribute.
+ */
+export function setSandboxRootSpanAttributes(
+  span: StartupSpan,
+  timings: SandboxRootSpanTimings,
+  context: SandboxRootSpanContext,
+): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  setFiniteNumberAttr(span, A.rootWallMs, timings.wallMs);
+  setFiniteNumberAttr(span, A.rootWorkMs, timings.workMs);
+  setFiniteNumberAttr(span, A.rootDiffMs, timings.workMs - timings.wallMs);
+  if (context.coldStart !== undefined) span.setAttribute(A.coldStart, context.coldStart);
+  if (context.provider !== undefined) {
+    span.setAttribute(A.provider, normalizeProviderFamily(context.provider));
+  }
+  // A region rides only when a value is present; an unknown region maps to
+  // `unknown`, never a free-form string.
+  if (context.region !== undefined) {
+    const region = clampSpanLabel("region", context.region);
+    if (region !== undefined) span.setAttribute(A.region, region);
+  }
+  // The image id and the ids ride only as non-reversible hashes.
+  const imageId = clampSpanLabel("image_id", context.imageId);
+  if (imageId !== undefined) span.setAttribute(A.imageId, imageId);
+  const sandboxId = clampSpanLabel("sandbox_id", context.sandboxId);
+  if (sandboxId !== undefined) span.setAttribute(A.sandboxId, sandboxId);
+  const leaseId = clampSpanLabel("lease_id", context.leaseId);
+  if (leaseId !== undefined) span.setAttribute(A.leaseId, leaseId);
+}
+
+/** The options a skipped step reuses from a measured step: the tracer, the root
+ * parent-context token, and the raw provider key. */
+export type SkippedStartupStepOptions = Pick<
+  StartupStepMeasureOptions,
+  "tracer" | "parentContext" | "provider"
+>;
+
+/**
+ * Emit one `run.startup.step` span and event for a step that a warm cache
+ * skips, with `outcome = skipped` and a zero wall time. A skipped step runs no
+ * work, so this helper opens and ends the span without a body. It shows the
+ * skip as a real, distinct outcome, never a misleading zero-work `ok` step.
+ *
+ * The span and the event carry the closed allowlist: the step name (the span
+ * name), the normalized `provider` (when given), `step.wall_ms = 0`, and
+ * `outcome = skipped`. Every tracer and sink call sits inside an error swallow,
+ * so a throwing tracer or sink never changes startup control flow. The tracer
+ * defaults to a no-op, so a caller with no tracer only emits the event.
+ */
+export async function emitSkippedStartupStep(
+  ctx: Pick<AdapterExecutionContext, "onEvent">,
+  step: string,
+  options: SkippedStartupStepOptions = {},
+): Promise<void> {
+  const tracer = options.tracer ?? NOOP_TRACER;
+  const startAttributes: Record<string, string> = {};
+  if (options.provider !== undefined) {
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.provider] = normalizeProviderFamily(options.provider);
+  }
+  let span: StartupSpan;
+  try {
+    span = tracer.startSpan(step, { attributes: startAttributes }, options.parentContext);
+  } catch {
+    span = NOOP_SPAN;
+  }
+  try {
+    span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, 0);
+    span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.outcome, SANDBOX_STARTUP_OUTCOME.skipped);
+    span.end();
+  } catch {
+    // Observability must not change startup control flow.
+  }
+  try {
+    await ctx.onEvent?.(
+      buildStepEvent({ step, durationMs: 0, outcome: SANDBOX_STARTUP_OUTCOME.skipped }),
+    );
+  } catch {
+    // Observability must not change startup control flow.
   }
 }

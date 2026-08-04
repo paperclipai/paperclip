@@ -532,6 +532,7 @@ describePg("decisionService", () => {
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {
     const ttl = await createCommentDecision("lenient", { expiresAt: nearFutureExpiry() });
     const gone = await createCommentDecision("strict", { idempotencyKey: "gone" });
+    await db.update(decisions).set({ expiresAt: new Date(0) }).where(eq(decisions.id, ttl.id));
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, targetIssueId));
     await expireDecisionNow(ttl.id);
     expect((await service().sweepExpired()).expired).toBe(2);

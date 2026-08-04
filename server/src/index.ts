@@ -51,6 +51,7 @@ import {
   decisionRetentionService,
   externalObjectService,
   heartbeatService,
+  issueThreadInteractionService,
   issueService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -81,6 +82,7 @@ import {
   coordinateHeartbeatSchedulerShutdown,
   createEmbeddedPostgresHandoffLogContext,
   createShutdownLifecycleContext,
+  loadWithoutCoordinatedShutdownSignalHooks,
   prepareEmbeddedPostgresForHotRestart,
   restoreAbortedHotRestartPredecessor,
 } from "./shutdown.js";
@@ -460,7 +462,13 @@ async function startServerInternal(
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
-      const mod = await import(moduleName);
+      // embedded-postgres registers async-exit-hook handlers as an import side
+      // effect. Those handlers stop PostgreSQL immediately on SIGINT/SIGTERM,
+      // racing Paperclip's later heartbeat snapshot query. Paperclip explicitly
+      // stops the managed cluster in its own ordered shutdown path instead.
+      const mod = await loadWithoutCoordinatedShutdownSignalHooks(
+        () => import(moduleName),
+      );
       EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
       throw new Error(
@@ -810,6 +818,11 @@ async function startServerInternal(
   if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
     logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
   }
+  const confirmationSweep = await issueThreadInteractionService(db as any)
+    .sweepSupersededPendingRequestConfirmations();
+  if (confirmationSweep.expired > 0) {
+    logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
+  }
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,
@@ -1143,11 +1156,15 @@ async function startServerInternal(
     throw err;
   }
 
-  let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<unknown>) | null = null;
+  let drainHeartbeatRunsForShutdown: ((
+    signal: "SIGINT" | "SIGTERM" | "SIGBREAK",
+    runIds?: readonly string[] | null,
+  ) => Promise<unknown>) | null = null;
   let drainActiveHeartbeatRunExecutions: (() => Promise<void>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<{
     skipDrain: boolean;
     preserveEmbeddedPostgres?: boolean;
+    drainRunIds?: string[];
     previousServerPid?: number;
     requestedAt?: string;
     shutdownSnapshotCapturedAt?: string;
@@ -1197,7 +1214,9 @@ async function startServerInternal(
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
-    drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    drainHeartbeatRunsForShutdown = (signal, runIds) => (
+      heartbeat.drainRunningRunsForShutdown(signal, new Date(), runIds)
+    );
     drainActiveHeartbeatRunExecutions = heartbeat.drainActiveRunExecutions;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
@@ -1354,10 +1373,10 @@ async function startServerInternal(
     await runRetentionSweep();
 
     startHeartbeatSchedulerInterval(() => {
-      // Async so the suppression checks below can honor the override-aware
-      // resolver (e.g. worktree run-execution opt-in). The gated work is still
-      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
-      void (async () => {
+      // Track the outer async callback as well as the work it starts. Shutdown
+      // can then wait through an already-running suppression check before it
+      // captures the authoritative set of running heartbeat rows.
+      trackHeartbeatSchedulerWork((async () => {
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
@@ -1512,7 +1531,9 @@ async function startServerInternal(
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
         }
-      })();
+      })().catch((err) => {
+        logger.error({ err }, "heartbeat scheduler tick failed");
+      }));
     });
   } else {
     startHeartbeatSchedulerInterval(() => {
@@ -1636,10 +1657,11 @@ async function startServerInternal(
         launcherIdentity: launcherIdentity(),
       });
       logger.info({ shutdownLifecycle }, "server shutdown initiated");
+      const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
       if (skipHeartbeatDrain) {
         logger.info(
           { signal, hotRestart: heartbeatShutdown.hotRestart },
-          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
+          "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
         );
       } else if (heartbeatShutdown.preparationError) {
         logger.error(
@@ -1765,7 +1787,7 @@ async function startServerInternal(
 
       if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
         try {
-          const drain = await drainHeartbeatRunsForShutdown(signal);
+          const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
           logger.info({ signal, drain }, "graceful heartbeat run drain complete");
         } catch (err) {
           logger.error({ err, signal }, "graceful heartbeat run drain failed");
