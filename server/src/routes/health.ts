@@ -3,7 +3,9 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanAuthProviderHealth } from "@paperclipai/shared";
+import { HUMAN_AUTH_PROVIDER_NONE } from "@paperclipai/shared";
+import { isGatewayHumanAuthEnabled } from "../auth/gateway-auth.js";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
 import { logger } from "../middleware/logger.js";
@@ -62,6 +64,7 @@ export function healthRoutes(
   opts: {
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    humanAuthProvider?: HumanAuthProviderHealth;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
@@ -69,6 +72,7 @@ export function healthRoutes(
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
+    humanAuthProvider: HUMAN_AUTH_PROVIDER_NONE,
     authReady: true,
     companyDeletionEnabled: true,
   },
@@ -161,7 +165,7 @@ export function healthRoutes(
     // bootstrap_pending forever and lock every managed tenant out at the
     // claim screen. Self-hosted deployments (no tenant server token) are
     // unaffected.
-    if (opts.deploymentMode === "authenticated" && !isCloudManagedInstance()) {
+    if (opts.deploymentMode === "authenticated" && !isCloudManagedInstance() && !isGatewayHumanAuthEnabled()) {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)
@@ -209,6 +213,10 @@ export function healthRoutes(
       : undefined;
     const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
 
+    const humanAuthProvider =
+      opts.humanAuthProvider ??
+      (opts.deploymentMode === "local_trusted" ? HUMAN_AUTH_PROVIDER_NONE : "better_auth");
+
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
       const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
@@ -216,6 +224,7 @@ export function healthRoutes(
         status: "ok",
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
+        humanAuthProvider,
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
@@ -233,6 +242,7 @@ export function healthRoutes(
       commit,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
+      humanAuthProvider,
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,

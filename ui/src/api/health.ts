@@ -19,6 +19,7 @@ export type HealthStatus = {
   version?: string;
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
+  humanAuthProvider?: "none" | "better_auth" | "gateway";
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;

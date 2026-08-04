@@ -31,7 +31,8 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveHumanAuthProviderHealth } from "./config.js";
+import { assertGatewayAuthStartupConfig } from "./auth/gateway-auth.js";
 import { logger } from "./middleware/logger.js";
 import {
   getManagedInstanceConfig,
@@ -524,15 +525,18 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (config.deploymentMode === "authenticated") {
-    if (config.authBaseUrlMode === "explicit" && !config.authPublicBaseUrl) {
-      throw new Error("auth.baseUrlMode=explicit requires auth.publicBaseUrl");
-    }
-    if (config.deploymentExposure === "public") {
-      if (config.authBaseUrlMode !== "explicit") {
-        throw new Error("authenticated public exposure requires auth.baseUrlMode=explicit");
+    assertGatewayAuthStartupConfig(config.gatewayAuth);
+    if (config.humanAuthProvider !== "gateway") {
+      if (config.authBaseUrlMode === "explicit" && !config.authPublicBaseUrl) {
+        throw new Error("auth.baseUrlMode=explicit requires auth.publicBaseUrl");
       }
-      if (!config.authPublicBaseUrl) {
-        throw new Error("authenticated public exposure requires auth.publicBaseUrl");
+      if (config.deploymentExposure === "public") {
+        if (config.authBaseUrlMode !== "explicit") {
+          throw new Error("authenticated public exposure requires auth.baseUrlMode=explicit");
+        }
+        if (!config.authPublicBaseUrl) {
+          throw new Error("authenticated public exposure requires auth.publicBaseUrl");
+        }
       }
     }
   }
@@ -568,6 +572,13 @@ export async function startServer(): Promise<StartedServer> {
     logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
   }
   if (config.deploymentMode === "authenticated") {
+    if (config.humanAuthProvider === "gateway") {
+      logger.info(
+        { humanAuthProvider: config.humanAuthProvider },
+        "Gateway human auth enabled; Better Auth routes are disabled",
+      );
+      authReady = true;
+    } else {
     const {
       createBetterAuthHandler,
       createBetterAuthInstance,
@@ -599,6 +610,7 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
+    }
   }
 
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -748,6 +760,9 @@ export async function startServer(): Promise<StartedServer> {
       : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
+    humanAuthProvider: config.humanAuthProvider,
+    humanAuthProviderHealth: resolveHumanAuthProviderHealth(config),
+    gatewayAuth: config.gatewayAuth,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
     authReady,

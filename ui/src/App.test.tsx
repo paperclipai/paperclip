@@ -99,6 +99,32 @@ describe("CloudAccessGate", () => {
     vi.clearAllMocks();
   });
 
+  it("allows gateway-authenticated users through without a Better Auth session", async () => {
+    mockHealthApi.get.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      humanAuthProvider: "gateway",
+      bootstrapStatus: "ready",
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: "admin@example.com", name: "Admin", image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      source: "gateway",
+      keyId: null,
+    });
+
+    const root = renderGate(container);
+    await waitForText(container, "Outlet content");
+
+    expect(mockAuthApi.getSession).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Navigate:/auth");
+
+    unmountRoot(root);
+  });
+
   it("shows a no-access message for signed-in users without org access", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },

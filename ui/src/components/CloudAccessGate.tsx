@@ -26,6 +26,20 @@ function NoBoardAccessPage() {
   );
 }
 
+function GatewaySignInRequiredPage() {
+  return (
+    <div className="mx-auto max-w-xl py-10">
+      <Card className="block p-6">
+        <h1 className="text-xl font-semibold">Sign in required</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This instance uses SSO through your identity provider. Reload the page to sign in, or contact your platform
+          administrator if access fails after login.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
 export function CloudAccessGate() {
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -35,9 +49,15 @@ export function CloudAccessGate() {
     retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as
-        | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
+        | {
+            deploymentMode?: "local_trusted" | "authenticated";
+            humanAuthProvider?: "none" | "better_auth" | "gateway";
+            bootstrapStatus?: "ready" | "bootstrap_pending";
+          }
         | undefined;
-      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
+      return data?.deploymentMode === "authenticated"
+        && data.humanAuthProvider !== "gateway"
+        && data.bootstrapStatus === "bootstrap_pending"
         ? 2000
         : false;
     },
@@ -45,18 +65,20 @@ export function CloudAccessGate() {
   });
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
-  const isBootstrapPending = isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending";
+  const isGatewayAuth = healthQuery.data?.humanAuthProvider === "gateway";
+  const isBetterAuth = isAuthenticatedMode && !isGatewayAuth;
+  const isBootstrapPending = isBetterAuth && healthQuery.data?.bootstrapStatus === "bootstrap_pending";
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: isBetterAuth,
     retry: false,
   });
 
   const boardAccessQuery = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
+    enabled: isAuthenticatedMode && !isBootstrapPending && (isGatewayAuth || !!sessionQuery.data),
     retry: false,
   });
   const claimMutation = useMutation({
@@ -71,21 +93,28 @@ export function CloudAccessGate() {
   });
 
   if (
-    healthQuery.isLoading ||
-    (isAuthenticatedMode && sessionQuery.isLoading) ||
-    (isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data && boardAccessQuery.isLoading)
+    healthQuery.isLoading
+    || (isBetterAuth && sessionQuery.isLoading)
+    || (isAuthenticatedMode && !isBootstrapPending && (isGatewayAuth || !!sessionQuery.data) && boardAccessQuery.isLoading)
   ) {
     return <PaperclipLoading />;
   }
 
-  if (healthQuery.error || boardAccessQuery.error) {
+  if (healthQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {healthQuery.error instanceof Error
-          ? healthQuery.error.message
-          : boardAccessQuery.error instanceof Error
-            ? boardAccessQuery.error.message
-            : "Failed to load app state"}
+        {healthQuery.error instanceof Error ? healthQuery.error.message : "Failed to load app state"}
+      </div>
+    );
+  }
+
+  if (boardAccessQuery.error) {
+    if (isGatewayAuth && boardAccessQuery.error instanceof ApiError && boardAccessQuery.error.status === 401) {
+      return <GatewaySignInRequiredPage />;
+    }
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
+        {boardAccessQuery.error instanceof Error ? boardAccessQuery.error.message : "Failed to load app state"}
       </div>
     );
   }
@@ -112,16 +141,17 @@ export function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  if (isBetterAuth && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
 
+  const hasBoardContext = isGatewayAuth ? !!boardAccessQuery.data : !!sessionQuery.data;
   if (
-    isAuthenticatedMode &&
-    sessionQuery.data &&
-    !boardAccessQuery.data?.isInstanceAdmin &&
-    (boardAccessQuery.data?.companyIds.length ?? 0) === 0
+    isAuthenticatedMode
+    && hasBoardContext
+    && !boardAccessQuery.data?.isInstanceAdmin
+    && (boardAccessQuery.data?.companyIds.length ?? 0) === 0
   ) {
     return <NoBoardAccessPage />;
   }

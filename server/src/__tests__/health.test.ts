@@ -505,4 +505,42 @@ describe("GET /health", () => {
       bootstrapInviteActive: false,
     });
   });
+
+  it("reports humanAuthProvider gateway and skips bootstrap pending", async () => {
+    vi.stubEnv("PAPERCLIP_HUMAN_AUTH_PROVIDER", "gateway");
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "board", source: "gateway" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        humanAuthProvider: "gateway",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      humanAuthProvider: "gateway",
+      bootstrapStatus: "ready",
+    });
+  });
 });

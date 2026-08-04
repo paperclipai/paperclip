@@ -63,6 +63,7 @@ export function boardMutationGuard(): RequestHandler {
       req.actor.source === "local_implicit"
       || req.actor.source === "board_key"
       || req.actor.source === "cloud_tenant"
+      || req.actor.source === "gateway"
     ) {
       next();
       return;

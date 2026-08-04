@@ -3,7 +3,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanAuthProvider, HumanAuthProviderHealth } from "@paperclipai/shared";
+import type { GatewayAuthConfig } from "./config.js";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -250,6 +251,9 @@ export async function createApp(
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    humanAuthProvider: HumanAuthProvider;
+    humanAuthProviderHealth: HumanAuthProviderHealth;
+    gatewayAuth: GatewayAuthConfig | null;
     allowedHostnames: string[];
     bindHost: string;
     authReady: boolean;
@@ -312,6 +316,8 @@ export async function createApp(
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
+      humanAuthProvider: opts.humanAuthProvider,
+      gatewayAuth: opts.gatewayAuth,
       resolveSession: opts.resolveSession,
     }),
   );
@@ -360,6 +366,7 @@ export async function createApp(
     healthRoutes(db, {
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
+      humanAuthProvider: opts.humanAuthProviderHealth,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,

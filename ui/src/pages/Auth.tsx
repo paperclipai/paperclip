@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,18 @@ export function AuthPage() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const isGatewayAuth = healthQuery.data?.humanAuthProvider === "gateway";
+
+  useEffect(() => {
+    if (isGatewayAuth) {
+      navigate(nextPath, { replace: true });
+    }
+  }, [isGatewayAuth, navigate, nextPath]);
 
   useEffect(() => {
     if (session) {
@@ -68,10 +81,27 @@ export function AuthPage() {
     password.trim().length > 0 &&
     (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
 
-  if (isSessionLoading) {
+  if (isSessionLoading || healthQuery.isLoading) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <PaperclipLoading className="min-h-0" />
+      </div>
+    );
+  }
+
+  if (isGatewayAuth) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-background px-6">
+        <div className="max-w-md text-center">
+          <h1 className="text-xl font-semibold">Sign in with SSO</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This Paperclip instance uses your organization&apos;s identity provider. Return to the app home page to
+            sign in.
+          </p>
+          <Button className="mt-6" type="button" onClick={() => navigate(nextPath, { replace: true })}>
+            Continue
+          </Button>
+        </div>
       </div>
     );
   }

@@ -16,6 +16,14 @@ export type BindMode = (typeof BIND_MODES)[number];
 export const AUTH_BASE_URL_MODES = ["auto", "explicit"] as const;
 export type AuthBaseUrlMode = (typeof AUTH_BASE_URL_MODES)[number];
 
+/** Human login backend when deploymentMode is authenticated. Ignored in local_trusted. */
+export const HUMAN_AUTH_PROVIDERS = ["better_auth", "gateway"] as const;
+export type HumanAuthProvider = (typeof HUMAN_AUTH_PROVIDERS)[number];
+
+/** Value exposed on /api/health for local_trusted deployments. */
+export const HUMAN_AUTH_PROVIDER_NONE = "none" as const;
+export type HumanAuthProviderHealth = HumanAuthProvider | typeof HUMAN_AUTH_PROVIDER_NONE;
+
 export const AGENT_STATUSES = [
   "active",
   "paused",

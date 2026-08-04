@@ -186,6 +186,18 @@ export const authApi = {
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
   signOut: async (): Promise<SignOutResult | null> => {
+    const healthRes = await fetch("/api/health", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (healthRes.ok) {
+      const health = await healthRes.json().catch(() => null) as { humanAuthProvider?: string } | null;
+      if (health?.humanAuthProvider === "gateway") {
+        window.location.assign("/oauth2/sign_out");
+        return { success: true, redirectTo: "/oauth2/sign_out" };
+      }
+    }
+
     const payload = await authPost("/sign-out", {});
     if (!payload || typeof payload !== "object") return null;
 

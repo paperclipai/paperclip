@@ -13,8 +13,10 @@ import {
   instanceUserRoles,
 } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode, type HumanAuthProvider } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
+import type { GatewayAuthConfig } from "../config.js";
+import { resolveGatewayAuthActor } from "../auth/gateway-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -157,6 +159,8 @@ async function auditAgentKeyMissingResponsibleUser(
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
+  humanAuthProvider?: HumanAuthProvider;
+  gatewayAuth?: GatewayAuthConfig | null;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
@@ -179,7 +183,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
-      if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
+      if (opts.deploymentMode === "authenticated") {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
           req.actor = {
@@ -190,39 +194,58 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
 
-        let session: BetterAuthSessionResult | null = null;
-        try {
-          session = await opts.resolveSession(req);
-        } catch (err) {
-          logger.warn(
-            { err, method: req.method, url: req.originalUrl },
-            "Failed to resolve auth session from request headers",
-          );
-        }
-        if (session?.user?.id && session.session?.id) {
-          const userId = session.user.id;
-          const [roleRow, memberships] = await Promise.all([
-            db
-              .select({ id: instanceUserRoles.id })
-              .from(instanceUserRoles)
-              .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-              .then((rows) => rows[0] ?? null),
-            loadActiveUserCompanyMemberships(db, userId),
-          ]);
-          req.actor = {
-            type: "board",
-            userId,
-            sessionId: session.session.id,
-            userName: session.user.name ?? null,
-            userEmail: session.user.email ?? null,
-            companyIds: memberships.map((row) => row.companyId),
-            memberships,
-            isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
-            source: "session",
-          };
-          next();
-          return;
+        if (opts.humanAuthProvider === "gateway" && opts.gatewayAuth) {
+          try {
+            const gatewayActor = await resolveGatewayAuthActor(db, req, opts.gatewayAuth);
+            if (gatewayActor) {
+              req.actor = {
+                ...gatewayActor,
+                runId: runIdHeader ?? undefined,
+              };
+              next();
+              return;
+            }
+          } catch (err) {
+            logger.warn(
+              { err, method: req.method, url: req.originalUrl },
+              "Failed to resolve gateway auth actor from request headers",
+            );
+          }
+        } else if (opts.resolveSession) {
+          let session: BetterAuthSessionResult | null = null;
+          try {
+            session = await opts.resolveSession(req);
+          } catch (err) {
+            logger.warn(
+              { err, method: req.method, url: req.originalUrl },
+              "Failed to resolve auth session from request headers",
+            );
+          }
+          if (session?.user?.id && session.session?.id) {
+            const userId = session.user.id;
+            const [roleRow, memberships] = await Promise.all([
+              db
+                .select({ id: instanceUserRoles.id })
+                .from(instanceUserRoles)
+                .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+                .then((rows) => rows[0] ?? null),
+              loadActiveUserCompanyMemberships(db, userId),
+            ]);
+            req.actor = {
+              type: "board",
+              userId,
+              sessionId: session.session.id,
+              userName: session.user.name ?? null,
+              userEmail: session.user.email ?? null,
+              companyIds: memberships.map((row) => row.companyId),
+              memberships,
+              isInstanceAdmin: Boolean(roleRow),
+              runId: runIdHeader ?? undefined,
+              source: "session",
+            };
+            next();
+            return;
+          }
         }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;

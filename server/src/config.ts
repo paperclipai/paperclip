@@ -10,12 +10,16 @@ import {
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
+  HUMAN_AUTH_PROVIDERS,
+  HUMAN_AUTH_PROVIDER_NONE,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
   type BindMode,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
+  type HumanAuthProvider,
+  type HumanAuthProviderHealth,
   type SecretProvider,
   type StorageProvider,
   inferBindModeFromHost,
@@ -49,6 +53,26 @@ const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
 type DatabaseMode = "embedded-postgres" | "postgres";
 
+function parseCommaSeparatedEnv(value: string | undefined, fallback: string[]): string[] {
+  if (value === undefined || value.trim().length === 0) return fallback;
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+export interface GatewayAuthConfig {
+  secret: string;
+  adminRoles: string[];
+  memberRoles: string[];
+  defaultCompanyName: string;
+  defaultCompanyId: string | undefined;
+  headerEmail: string;
+  headerUser: string;
+  headerGroups: string;
+  headerToken: string;
+}
+
 export interface Config {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -60,6 +84,8 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  humanAuthProvider: HumanAuthProvider;
+  gatewayAuth: GatewayAuthConfig | null;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   databaseMigrationUrl: string | undefined;
@@ -213,6 +239,31 @@ export function loadConfig(): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
+  const humanAuthProviderFromEnvRaw = process.env.PAPERCLIP_HUMAN_AUTH_PROVIDER?.trim().toLowerCase();
+  const humanAuthProviderFromEnv =
+    humanAuthProviderFromEnvRaw &&
+    HUMAN_AUTH_PROVIDERS.includes(humanAuthProviderFromEnvRaw as HumanAuthProvider)
+      ? (humanAuthProviderFromEnvRaw as HumanAuthProvider)
+      : null;
+  const humanAuthProvider: HumanAuthProvider =
+    deploymentMode === "local_trusted"
+      ? "better_auth"
+      : (humanAuthProviderFromEnv ?? "better_auth");
+  const gatewayAuth: GatewayAuthConfig | null =
+    deploymentMode === "authenticated" && humanAuthProvider === "gateway"
+      ? {
+          secret: process.env.PAPERCLIP_GATEWAY_AUTH_SECRET?.trim() ?? "",
+          adminRoles: parseCommaSeparatedEnv(process.env.PAPERCLIP_GATEWAY_ADMIN_ROLES, ["paperclip-admin"]),
+          memberRoles: parseCommaSeparatedEnv(process.env.PAPERCLIP_GATEWAY_MEMBER_ROLES, ["paperclip-dev"]),
+          defaultCompanyName:
+            process.env.PAPERCLIP_GATEWAY_DEFAULT_COMPANY_NAME?.trim() || "Workforce",
+          defaultCompanyId: process.env.PAPERCLIP_GATEWAY_DEFAULT_COMPANY_ID?.trim() || undefined,
+          headerEmail: process.env.PAPERCLIP_GATEWAY_HEADER_EMAIL?.trim() || "X-Forwarded-Email",
+          headerUser: process.env.PAPERCLIP_GATEWAY_HEADER_USER?.trim() || "X-Forwarded-User",
+          headerGroups: process.env.PAPERCLIP_GATEWAY_HEADER_GROUPS?.trim() || "X-Forwarded-Groups",
+          headerToken: process.env.PAPERCLIP_GATEWAY_HEADER_TOKEN?.trim() || "X-Paperclip-Gateway-Token",
+        }
+      : null;
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -296,6 +347,8 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    humanAuthProvider,
+    gatewayAuth,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
@@ -334,4 +387,9 @@ export function loadConfig(): Config {
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
+}
+
+export function resolveHumanAuthProviderHealth(config: Pick<Config, "deploymentMode" | "humanAuthProvider">): HumanAuthProviderHealth {
+  if (config.deploymentMode === "local_trusted") return HUMAN_AUTH_PROVIDER_NONE;
+  return config.humanAuthProvider;
 }
