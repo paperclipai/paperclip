@@ -123,8 +123,12 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  HEARTBEAT_CIRCUIT_BREAKER_REASON,
+  HEARTBEAT_CIRCUIT_BREAKER_RUN_WINDOW_MS,
   evaluateIssueRewakeThrottle,
+  evaluateHeartbeatCircuitBreaker,
   isThrottleCandidateIssueRewake,
+  type HeartbeatCircuitBreakerDecision,
 } from "./issue-rewake-throttle.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
@@ -16420,6 +16424,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: promotedPayload,
         });
 
+        if (issue.status !== "done" && issue.status !== "cancelled") {
+          const breakerNow = new Date();
+          const requestedWakeReason = readNonEmptyString(promotedContextSnapshot.wakeReason) ?? promotedReason;
+          const breakerDecision = await evaluateHeartbeatCircuitBreakerForIssue(tx, {
+            companyId: deferredAgent.companyId,
+            agentId: deferredAgent.id,
+            issueId: issue.id,
+            requestedWakeReason,
+            now: breakerNow,
+          });
+          if (breakerDecision.blocked) {
+            await tripHeartbeatCircuitBreaker(tx, {
+              companyId: deferredAgent.companyId,
+              agentId: deferredAgent.id,
+              issueId: issue.id,
+              decision: breakerDecision,
+              requestedWakeReason,
+              currentWakeupRequestId: deferred.id,
+            });
+            return {
+              kind: "skipped" as const,
+              reason: HEARTBEAT_CIRCUIT_BREAKER_REASON,
+            };
+          }
+        }
+
         const sessionBefore =
           readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
           await resolveSessionBeforeForWakeup(deferredAgent, promotedTaskKey);
@@ -16858,6 +16888,208 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     await startNextQueuedRunForAgent(promotedRun.agentId);
+  }
+
+  async function evaluateHeartbeatCircuitBreakerForIssue(
+    tx: any,
+    input: {
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      requestedWakeReason: string | null;
+      now: Date;
+    },
+  ) {
+    const recentRuns = await tx
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        usageJson: heartbeatRuns.usageJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          sql`${heartbeatRuns.finishedAt} is not null`,
+          gte(heartbeatRuns.finishedAt, new Date(input.now.getTime() - HEARTBEAT_CIRCUIT_BREAKER_RUN_WINDOW_MS)),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt));
+
+    return evaluateHeartbeatCircuitBreaker({
+      now: input.now,
+      requestedWakeReason: input.requestedWakeReason,
+      recentTerminalRuns: recentRuns,
+    });
+  }
+
+  function buildHeartbeatCircuitBreakerComment(input: {
+    decision: Extract<HeartbeatCircuitBreakerDecision, { blocked: true }>;
+    requestedWakeReason: string | null;
+  }) {
+    return [
+      "Heartbeat circuit breaker tripped.",
+      "",
+      "- Action: paused the agent and blocked this issue for manual investigation.",
+      `- Trigger: ${input.decision.reason}`,
+      `- Requested wake reason: ${input.requestedWakeReason ?? "unknown"}`,
+      `- Recent runs in 60m: ${input.decision.runCount}`,
+      `- Active tokens in 60m: ${input.decision.activeTokens}`,
+      `- Same wake reason runs in 30m: ${input.decision.sameReasonCount}`,
+      `- Window start: ${input.decision.windowStart.toISOString()}`,
+      "",
+      "Resume the agent only after the wake/recovery loop is understood or this issue has a durable disposition.",
+    ].join("\n");
+  }
+
+  async function tripHeartbeatCircuitBreaker(
+    tx: any,
+    input: {
+      agentId: string;
+      companyId: string;
+      issueId: string;
+      decision: Extract<HeartbeatCircuitBreakerDecision, { blocked: true }>;
+      requestedWakeReason: string | null;
+      currentWakeupRequestId?: string | null;
+      skippedWake?: {
+        source: string;
+        triggerDetail: string | null;
+        payload: Record<string, unknown> | null;
+        requestedByActorType: string | null;
+        requestedByActorId: string | null;
+        idempotencyKey: string | null;
+      };
+    },
+  ) {
+    const now = new Date();
+    await tx
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: "system",
+        pausedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(agents.id, input.agentId), inArray(agents.status, ["active", "idle", "running", "error"])));
+
+    await tx
+      .update(issues)
+      .set({
+        status: "blocked",
+        updatedAt: now,
+      })
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), notInArray(issues.status, ["done", "cancelled"])));
+
+    await tx
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: "Cancelled because heartbeat circuit breaker tripped",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+        ),
+      );
+
+    if (input.currentWakeupRequestId) {
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled because heartbeat circuit breaker tripped",
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, input.currentWakeupRequestId));
+    }
+
+    if (input.skippedWake) {
+      await tx.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.skippedWake.source,
+        triggerDetail: input.skippedWake.triggerDetail,
+        reason: HEARTBEAT_CIRCUIT_BREAKER_REASON,
+        payload: {
+          ...(input.skippedWake.payload ?? {}),
+          issueId: input.issueId,
+          heartbeatCircuitBreaker: {
+            reason: input.decision.reason,
+            requestedWakeReason: input.requestedWakeReason,
+            runCount: input.decision.runCount,
+            activeTokens: input.decision.activeTokens,
+            sameReasonCount: input.decision.sameReasonCount,
+            windowStart: input.decision.windowStart.toISOString(),
+          },
+        },
+        status: "skipped",
+        requestedByActorType: input.skippedWake.requestedByActorType,
+        requestedByActorId: input.skippedWake.requestedByActorId,
+        idempotencyKey: input.skippedWake.idempotencyKey,
+        finishedAt: now,
+      });
+    }
+
+    await tx.insert(issueComments).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      authorType: "system",
+      body: buildHeartbeatCircuitBreakerComment({
+        decision: input.decision,
+        requestedWakeReason: input.requestedWakeReason,
+      }),
+      presentation: {
+        kind: "system_notice",
+        tone: "danger",
+        title: "Heartbeat circuit breaker tripped",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Circuit breaker",
+            rows: [
+              { type: "key_value", label: "Trigger", value: input.decision.reason },
+              { type: "key_value", label: "Requested wake reason", value: input.requestedWakeReason ?? "unknown" },
+              { type: "key_value", label: "Recent runs in 60m", value: String(input.decision.runCount) },
+              { type: "key_value", label: "Active tokens in 60m", value: String(input.decision.activeTokens) },
+              { type: "key_value", label: "Same wake reason runs in 30m", value: String(input.decision.sameReasonCount) },
+            ],
+          },
+        ],
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await logActivity(tx as unknown as Db, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.agentId,
+      runId: null,
+      action: "heartbeat.circuit_breaker_tripped",
+      entityType: "issue",
+      entityId: input.issueId,
+      details: {
+        reason: input.decision.reason,
+        requestedWakeReason: input.requestedWakeReason,
+        runCount: input.decision.runCount,
+        activeTokens: input.decision.activeTokens,
+        sameReasonCount: input.decision.sameReasonCount,
+      },
+    });
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -17591,6 +17823,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 resolvedMode,
                 resolvedStrategy,
                 hasResolvablePriorSessionWorkspace,
+              },
+            });
+            return { kind: "skipped" as const };
+          }
+        }
+
+        if (!activeExecutionRun && issue.status !== "done" && issue.status !== "cancelled") {
+          const breakerNow = new Date();
+          const requestedWakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+          const breakerDecision = await evaluateHeartbeatCircuitBreakerForIssue(tx, {
+            companyId: agent.companyId,
+            agentId,
+            issueId: issue.id,
+            requestedWakeReason,
+            now: breakerNow,
+          });
+          if (breakerDecision.blocked) {
+            await tripHeartbeatCircuitBreaker(tx, {
+              companyId: agent.companyId,
+              agentId,
+              issueId: issue.id,
+              decision: breakerDecision,
+              requestedWakeReason,
+              skippedWake: {
+                source,
+                triggerDetail,
+                payload,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
               },
             });
             return { kind: "skipped" as const };
