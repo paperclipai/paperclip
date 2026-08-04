@@ -76,6 +76,11 @@ function parseLimit(value: unknown): number | undefined {
   return parsed;
 }
 
+function parseDigestLimit(value: unknown): number {
+  const parsed = parseLimit(value) ?? 5;
+  return Math.min(parsed, 25);
+}
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw badRequest(`Missing ${field}`);
@@ -95,6 +100,18 @@ function optionalString(value: unknown, field: string): string | undefined {
 export function portfolioRoutes(db: Db) {
   const router = Router();
   const svc = portfolioService(db);
+
+  router.get("/portfolio/digest", async (req, res) => {
+    const digest = await svc.getDigest({ actor: req.actor, limit: parseDigestLimit(req.query.limit) });
+    res.json({
+      schema: {
+        version: "v1",
+        companies_fields: ["company_id", "company_name", "summary_updated_at", "summary_status"],
+        issue_fields: ["company_id", "company_name", "identifier", "title", "status", "priority", "updated_at"],
+      },
+      ...digest,
+    });
+  });
 
   router.get("/portfolio/runs", async (req, res) => {
     const since = parseDateParam(req.query.since, "since");

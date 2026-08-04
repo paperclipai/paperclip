@@ -1332,6 +1332,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             issueId: null,
             coalescedIntoRunId: null,
             failureReason: null,
+            deliveryReceipt: null,
             completedAt: null,
             createdAt: now,
             updatedAt: now,

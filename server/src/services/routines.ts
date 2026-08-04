@@ -194,6 +194,28 @@ function isCourierDeliveryPayload(raw: Record<string, unknown> | null | undefine
   return courierLabel && typeof raw.sourceIssue === "string" && raw.sourceIssue.trim().length > 0;
 }
 
+/** Key order must not change the hash, or a retry that serializes its JSON
+ *  differently would look like a NEW delivery and duplicate the destination
+ *  task -- the exact failure the key exists to prevent. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+/** Deterministic idempotency key for a courier envelope that did not carry one.
+ *
+ *  Same envelope in -> same key out -> the dedup path folds the retry into the
+ *  original destination task. Callers that supply their own key keep it; this is
+ *  only the fallback that makes the guarantee hold for existing senders, none of
+ *  which send a key today. */
+function deriveCourierIdempotencyKey(payload: Record<string, unknown> | null | undefined) {
+  return `courier:${crypto.createHash("sha256").update(stableStringify(payload ?? null)).digest("hex")}`;
+}
+
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 const ROUTINE_ISSUE_MODE_ENV_KEY = "PAPERCLIP_ROUTINE_ISSUE_MODE";
 const ROUTINE_PARENT_LIFECYCLE_BINDING_ENV_KEY = "PAPERCLIP_ROUTINE_PARENT_LIFECYCLE_BINDING";
@@ -4029,10 +4051,20 @@ export function routineService(
         });
       }
 
+      // TSMC-19355 requires a courier retry to create exactly ONE destination
+      // task, and the idempotency key is how that is enforced. Requiring the
+      // CALLER to supply one was a breaking wire-contract change: no existing
+      // sender does, so every actionable portfolio_directive began 422-ing and
+      // the TSMC-10038 coalescing contract broke.
+      //
+      // Derive one instead. A courier envelope is self-identifying -- it must
+      // name its sourceIssue to classify as a courier at all -- so the hash of
+      // its canonical payload is stable across retries. That IS the idempotency
+      // contract, without breaking any sender. An explicit caller-supplied key
+      // still wins, so a sender can scope retries more narrowly than the payload.
       const courierDelivery = isCourierDeliveryPayload(input.payload);
-      if (courierDelivery && !input.idempotencyKey?.trim()) {
-        throw unprocessable("Courier delivery requires an Idempotency-Key before it can be routed");
-      }
+      const effectiveIdempotencyKey = input.idempotencyKey?.trim()
+        || (courierDelivery ? deriveCourierIdempotencyKey(input.payload) : input.idempotencyKey);
 
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
       if (!eligibility.eligible) {
@@ -4052,7 +4084,7 @@ export function routineService(
         variables: isPlainRecord(input.payload) && isPlainRecord(input.payload.variables)
           ? input.payload.variables
           : null,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: effectiveIdempotencyKey,
         courierDelivery,
       });
     },

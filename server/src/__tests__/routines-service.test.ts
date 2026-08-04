@@ -2331,9 +2331,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       sourceIssue: "TSMC-18772",
     };
 
-    await expect(svc.firePublicTrigger(trigger.publicId!, { payload })).rejects.toThrow("Idempotency-Key");
-    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(0);
-
     await db.insert(routineRuns).values({
       companyId,
       routineId: routine.id,
@@ -2346,6 +2343,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const retry = await svc.firePublicTrigger(trigger.publicId!, { idempotencyKey, payload });
     expect(retry).toMatchObject({ status: "issue_created", failureReason: null });
     expect(retry.deliveryReceipt).toMatchObject({ idempotencyKey, destinationIssueId: retry.linkedIssueId });
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(1);
+  });
+
+  it("derives a stable idempotency key for an unkeyed courier so retries fold to one task", async () => {
+    const { routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const payload = {
+      kind: "portfolio_directive",
+      ask: "Deliver corrected route.",
+      sourceIssue: "TSMC-18772",
+    };
+
+    // Requiring the CALLER to supply a key was a breaking wire-contract change:
+    // no existing sender sends one, so every actionable portfolio_directive
+    // started 422-ing. An unkeyed courier now gets a key derived from its
+    // canonical payload instead of being rejected.
+    const first = await svc.firePublicTrigger(trigger.publicId!, { payload });
+    expect(first.idempotencyKey).toMatch(/^courier:[0-9a-f]{64}$/);
+
+    // Same envelope -> same derived key -> exactly one destination task, which is
+    // the TSMC-19355 guarantee the key exists to enforce.
+    const repeat = await svc.firePublicTrigger(trigger.publicId!, { payload });
+    expect(repeat.idempotencyKey).toBe(first.idempotencyKey);
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(1);
+
+    // Key order in the payload must not change the hash, or a retry that
+    // serialized its JSON differently would duplicate the destination task.
+    const reordered = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { sourceIssue: "TSMC-18772", kind: "portfolio_directive", ask: "Deliver corrected route." },
+    });
+    expect(reordered.idempotencyKey).toBe(first.idempotencyKey);
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(1);
   });
 

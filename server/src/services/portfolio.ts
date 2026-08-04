@@ -1,9 +1,10 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { agents, companies, costEvents, financeEvents, routineTriggers } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { agents, companies, costEvents, financeEvents, issues, routineTriggers, summarySlots } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { badRequest, forbidden } from "../errors.js";
 
 const PORTFOLIO_CAPABILITY = "portfolio_metrics:read";
+const PORTFOLIO_DIGEST_CAPABILITY = "portfolio_digest:read";
 const FAILURE_STATUSES = ["failed", "timed_out", "errored"] as const;
 
 export const FINANCE_EVENT_KINDS = ["revenue", "refund", "fee", "cost"] as const;
@@ -54,6 +55,23 @@ export interface PortfolioRunsRow {
   priced_cost_event_count: number;
   /** Token-bearing run rows whose provider price was not reported. */
   unpriced_cost_event_count: number;
+}
+
+export interface PortfolioDigestCompanyRow {
+  company_id: string;
+  company_name: string;
+  summary_updated_at: string | null;
+  summary_status: string | null;
+}
+
+export interface PortfolioDigestIssueRow {
+  company_id: string;
+  company_name: string;
+  identifier: string;
+  title: string;
+  status: string;
+  priority: string;
+  updated_at: string;
 }
 
 export interface PortfolioFinanceEventsQuery {
@@ -153,7 +171,53 @@ export function portfolioService(db: Db) {
     }
   }
 
+  async function assertDigestAgentAccess(actor: Express.Request["actor"]) {
+    if (actor.type !== "agent" || !actor.agentId || !actor.companyId) {
+      throw forbidden("Portfolio digest access denied");
+    }
+    const agent = await db
+      .select({ id: agents.id, companyId: agents.companyId, capabilities: agents.capabilities })
+      .from(agents)
+      .where(eq(agents.id, actor.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!agent || agent.companyId !== actor.companyId || !parseCapabilities(agent.capabilities).has(PORTFOLIO_DIGEST_CAPABILITY)) {
+      throw forbidden("Agent lacks portfolio_digest:read");
+    }
+    return actor.companyId;
+  }
+
   return {
+    async getDigest(input: { actor: Express.Request["actor"]; limit: number }) {
+      const parentCompanyId = await assertDigestAgentAccess(input.actor);
+      const childCompanies = await db
+        .select({ id: companies.id, name: companies.name })
+        .from(companies)
+        .where(eq(companies.parentCompanyId, parentCompanyId))
+        .orderBy(companies.name);
+      const companyIds = childCompanies.map((company) => company.id);
+      if (companyIds.length === 0) return { companies: [], issues: [] };
+
+      const summaries = await db
+        .select({ companyId: summarySlots.companyId, updatedAt: summarySlots.updatedAt, status: summarySlots.status })
+        .from(summarySlots)
+        .where(and(inArray(summarySlots.companyId, companyIds), eq(summarySlots.scopeKind, "workspaces_overview"), isNull(summarySlots.scopeId), eq(summarySlots.slotKey, "header")));
+      const summaryByCompanyId = new Map(summaries.map((summary) => [summary.companyId, summary]));
+      const digestIssues = await db
+        .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier, title: issues.title, status: issues.status, priority: issues.priority, updatedAt: issues.updatedAt })
+        .from(issues)
+        .where(and(inArray(issues.companyId, companyIds), inArray(issues.status, ["blocked", "in_review"]), isNull(issues.hiddenAt)))
+        .orderBy(sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`, desc(issues.updatedAt))
+        .limit(input.limit);
+      const companyNameById = new Map(childCompanies.map((company) => [company.id, company.name]));
+      return {
+        companies: childCompanies.map((company) => {
+          const summary = summaryByCompanyId.get(company.id);
+          return { company_id: company.id, company_name: company.name, summary_updated_at: summary?.updatedAt?.toISOString() ?? null, summary_status: summary?.status ?? null } satisfies PortfolioDigestCompanyRow;
+        }),
+        issues: digestIssues.map((issue) => ({ company_id: issue.companyId, company_name: companyNameById.get(issue.companyId) ?? "", identifier: issue.identifier ?? issue.id, title: issue.title, status: issue.status, priority: issue.priority, updated_at: issue.updatedAt.toISOString() } satisfies PortfolioDigestIssueRow)),
+      };
+    },
+
     async listRunsRollup(input: PortfolioRunsQuery) {
       if (input.actor.type === "agent") {
         await assertAgentAccess(input.actor, input.companyIds);

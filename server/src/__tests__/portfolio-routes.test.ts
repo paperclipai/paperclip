@@ -3,7 +3,7 @@ import express from "express";
 import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, costEvents, createDb, financeEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, financeEvents, heartbeatRuns, issues, summarySlots } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { portfolioRoutes } from "../routes/portfolio.js";
 import {
@@ -49,6 +49,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
   afterEach(async () => {
     await db.delete(financeEvents);
     await db.delete(costEvents);
+    await db.delete(summarySlots);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -246,6 +247,45 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "priced_cost_event_count",
       "unpriced_cost_event_count",
     ]);
+  });
+
+  it("returns only digest-safe issue and summary metadata for a dedicated CEO capability", async () => {
+    const opcoId = randomUUID();
+    const outsiderId = randomUUID();
+    const ceoId = randomUUID();
+    await db.insert(companies).values([
+      { id: TSMC_COMPANY_ID, name: "TSMC", issuePrefix: "TSMC", requireBoardApprovalForNewAgents: false },
+      { id: opcoId, name: "ThinkStack Media", issuePrefix: "TSM", parentCompanyId: TSMC_COMPANY_ID, requireBoardApprovalForNewAgents: false },
+      { id: outsiderId, name: "Outside Co", issuePrefix: "OUT", requireBoardApprovalForNewAgents: false },
+    ]);
+    await db.insert(agents).values({ id: ceoId, companyId: TSMC_COMPANY_ID, name: "CEO", role: "ceo", status: "idle", capabilities: "portfolio_digest:read", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values([
+      { companyId: opcoId, identifier: "TSM-1", title: "Critical blocker", description: "must not be returned", status: "blocked", priority: "critical" },
+      { companyId: opcoId, identifier: "TSM-2", title: "Review needed", status: "in_review", priority: "high" },
+      { companyId: outsiderId, identifier: "OUT-1", title: "Outside blocker", status: "blocked", priority: "critical" },
+    ]);
+    await db.insert(summarySlots).values({ companyId: opcoId, scopeKind: "workspaces_overview", scopeId: null, slotKey: "header", status: "idle" });
+
+    const res = await request(makeActor({ type: "agent", agentId: ceoId, companyId: TSMC_COMPANY_ID, source: "agent_key" }, db))
+      .get("/api/portfolio/digest");
+
+    expect(res.status).toBe(200);
+    expect(res.body.companies).toEqual([expect.objectContaining({ company_id: opcoId, company_name: "ThinkStack Media", summary_status: "idle" })]);
+    expect(res.body.issues).toEqual([
+      expect.objectContaining({ identifier: "TSM-1", title: "Critical blocker", status: "blocked", priority: "critical" }),
+      expect.objectContaining({ identifier: "TSM-2", title: "Review needed", status: "in_review", priority: "high" }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain("must not be returned");
+    expect(JSON.stringify(res.body)).not.toContain("Outside blocker");
+  });
+
+  it("rejects agents without the dedicated portfolio digest capability", async () => {
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: TSMC_COMPANY_ID, name: "TSMC", issuePrefix: "TSMC", requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId: TSMC_COMPANY_ID, name: "No digest", role: "engineer", status: "idle", capabilities: "portfolio_metrics:read", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    const res = await request(makeActor({ type: "agent", agentId, companyId: TSMC_COMPANY_ID, source: "agent_key" }, db)).get("/api/portfolio/digest");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent lacks portfolio_digest:read");
   });
 
   it("renders source-attributed run costs while preserving unpriced evidence", async () => {
