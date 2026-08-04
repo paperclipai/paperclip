@@ -28,6 +28,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
+import { agentModelShare, agentShareBasis } from "../lib/agent-model-share";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -729,6 +730,7 @@ export function Costs() {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
+                        const shareBasis = agentShareBasis(row);
                         return (
                           <div key={row.agentId} className="border border-border px-4 py-3">
                             <div
@@ -769,13 +771,7 @@ export function Costs() {
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
-                                  // A subscription-only agent has costCents 0 on every model row, which would
-                                  // render the whole breakdown as 0%. Fall back to the rate-card basis so the
-                                  // split still shows where the tokens actually went.
-                                  const useCash = row.costCents > 0;
-                                  const shareBasis = useCash ? row.costCents : row.rateCardCents;
-                                  const shareValue = useCash ? modelRow.costCents : modelRow.rateCardCents;
-                                  const sharePct = shareBasis > 0 ? Math.round((shareValue / shareBasis) * 100) : 0;
+                                  const { rateCardTagCents, sharePct } = agentModelShare(modelRow, shareBasis);
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
@@ -794,9 +790,7 @@ export function Costs() {
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
                                           {formatCents(modelRow.costCents)}
-                                          {useCash ? null : (
-                                            <RateCardEquivalent cents={modelRow.rateCardCents} className="ml-1" />
-                                          )}
+                                          <RateCardEquivalent cents={rateCardTagCents} className="ml-1" />
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
@@ -831,7 +825,10 @@ export function Costs() {
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <span className="font-medium tabular-nums">
+                              {formatCents(row.costCents)}
+                              <RateCardEquivalent cents={row.subscriptionRateCardCents} className="ml-1 text-xs" />
+                            </span>
                           </div>
                         ))
                       )}

@@ -767,6 +767,21 @@ export const BILLING_TYPES = [
 export type BillingType = (typeof BILLING_TYPES)[number];
 
 /**
+ * Billing types that bill against a plan rather than per token. Their `cost_cents`
+ * is a genuine zero, so their spend is only visible as a rate-card equivalent.
+ *
+ * Shared deliberately: the aggregate queries decide which rows feed
+ * `subscriptionRateCardCents` from this list, and the UI decides from the same
+ * list whether to render a rate-card tag. Two copies of that answer would drift
+ * and the tag would go on the wrong rows.
+ */
+export const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
+
+export function isSubscriptionBillingType(billingType: BillingType): boolean {
+  return (SUBSCRIPTION_BILLING_TYPES as readonly string[]).includes(billingType);
+}
+
+/**
  * How a cost event's money figures were arrived at.
  * - `reported`: the provider gave a credible cost, or there was no token usage.
  * - `derived`: the provider gave no credible cost (null, or 0 alongside real

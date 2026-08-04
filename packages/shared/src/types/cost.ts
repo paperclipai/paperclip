@@ -154,4 +154,6 @@ export interface CostByProject {
   outputTokens: number;
   cacheWriteTokens: number;
   rateCardCents: number;
+  /** What subscription-included runs would have cost at list price. */
+  subscriptionRateCardCents: number;
 }
