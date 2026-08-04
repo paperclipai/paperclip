@@ -476,6 +476,107 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
 
+  it("masks adapterConfig secrets on /agents/me self-view (RIP-1315)", async () => {
+    // An agent reading its own config via /agents/me must not see plaintext
+    // values for secret fields (password, authToken, devicePrivateKeyPem,
+    // headers.x-openclaw-token), but must still see non-secret runtime fields
+    // (url, agentId, sessionKey, timeoutSec) so it can reason about its own
+    // connectivity.
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "wss://gateway.example.test",
+        agentId: "builder",
+        sessionKey: "builder-session",
+        timeoutSec: 600,
+        password: "plaintext-password-secret",
+        authToken: "plaintext-auth-token-secret",
+        devicePrivateKeyPem: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n",
+        headers: { "x-openclaw-token": "plaintext-openclaw-token-secret" },
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 3600 },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    // Secret values masked, not returned in plaintext.
+    expect(res.body.adapterConfig.password).not.toBe("plaintext-password-secret");
+    expect(res.body.adapterConfig.authToken).not.toBe("plaintext-auth-token-secret");
+    expect(res.body.adapterConfig.devicePrivateKeyPem).not.toContain("BEGIN PRIVATE KEY");
+    expect(res.body.adapterConfig.headers["x-openclaw-token"]).not.toBe("plaintext-openclaw-token-secret");
+    // Non-secret fields preserved so the agent can read its own connectivity.
+    expect(res.body.adapterConfig.url).toBe("wss://gateway.example.test");
+    expect(res.body.adapterConfig.agentId).toBe("builder");
+    expect(res.body.adapterConfig.sessionKey).toBe("builder-session");
+    expect(res.body.adapterConfig.timeoutSec).toBe(600);
+    // Non-secret runtimeConfig preserved unchanged.
+    expect(res.body.runtimeConfig).toMatchObject({
+      heartbeat: { enabled: true, intervalSec: 3600 },
+    });
+  }, 20_000);
+
+  it("redacts adapterConfig on /companies/:companyId/agents list for callers with canCreateAgents (RIP-1315)", async () => {
+    // Even callers with canCreateAgents (which implies canReadConfigs) must
+    // not see plaintext secrets on the company agents list endpoint. The
+    // list is for discovering peers, not for ops troubleshooting — admins
+    // who need full detail can hit /agents/:id.
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, id: agentId });
+    mockAgentService.list.mockResolvedValue([
+      {
+        ...baseAgent,
+        id: "peer-agent-id",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "wss://gateway.example.test",
+          agentId: "peer",
+          password: "peer-plaintext-password",
+          authToken: "peer-plaintext-authtoken",
+          devicePrivateKeyPem: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n",
+        },
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 3600 } },
+      },
+    ]);
+    mockAccessService.canUser.mockResolvedValue(true); // canCreateAgents -> canReadConfigs path
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "test", explanation: "test" });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+    const peer = res.body.find((a: { id: string }) => a.id === "peer-agent-id");
+    expect(peer).toBeDefined();
+    // Secret values masked.
+    expect(peer.adapterConfig.password).not.toBe("peer-plaintext-password");
+    expect(peer.adapterConfig.authToken).not.toBe("peer-plaintext-authtoken");
+    expect(peer.adapterConfig.devicePrivateKeyPem).not.toContain("BEGIN PRIVATE KEY");
+    // Non-secret fields preserved.
+    expect(peer.adapterConfig.url).toBe("wss://gateway.example.test");
+    expect(peer.adapterConfig.agentId).toBe("peer");
+  }, 20_000);
+
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({

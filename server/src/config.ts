@@ -290,7 +290,7 @@ export function loadConfig(): Config {
     deploymentExposure,
     bind: resolvedBind.bind,
     customBindHost: resolvedBind.customBindHost,
-    host: resolvedBind.host,
+    host: process.env.PAPERCLIP_LISTEN_HOST ?? resolvedBind.host,
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
     allowedHostnames,
     authBaseUrlMode,

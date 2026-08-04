@@ -369,8 +369,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  claimedApiKeyPath: string = DEFAULT_CLAIMED_API_KEY_PATH,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -492,7 +492,8 @@ export function buildAgentParams(input: {
   }
 
   if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = input.waitTimeoutMs;
+    // OpenClaw agent RPC expects timeout in seconds, not milliseconds.
+    agentParams.timeout = Math.floor(input.waitTimeoutMs / 1000);
   }
 
   return agentParams;
@@ -591,6 +592,14 @@ function resolveDeviceIdentity(config: Record<string, unknown>): GatewayDeviceId
   const configuredPrivateKey = nonEmpty(config.devicePrivateKeyPem);
   if (configuredPrivateKey) {
     const privateKey = crypto.createPrivateKey(configuredPrivateKey);
+    // crypto.sign(null, ...) only works with Ed25519/Ed448. RSA/ECDSA keys require
+    // an explicit hash algorithm and throw "digital envelope routines::operation not
+    // supported for this keytype" on Node 17+ / OpenSSL 3.
+    if (privateKey.asymmetricKeyType !== "ed25519") {
+      throw new Error(
+        `devicePrivateKeyPem is a ${privateKey.asymmetricKeyType ?? "unknown"} key; only Ed25519 keys are supported for device auth. Generate a new key with: openssl genpkey -algorithm ed25519`,
+      );
+    }
     const publicKey = crypto.createPublicKey(privateKey);
     const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
     const raw = derivePublicKeyRaw(publicKeyPem);
@@ -1096,6 +1105,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
