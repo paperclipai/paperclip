@@ -24,9 +24,19 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: mockLogger,
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -187,6 +197,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      runId: req.header("x-paperclip-run-id") ?? undefined,
     };
     next();
   });
@@ -474,6 +485,71 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("does not wake the assignee for board-shaped issue update comments attributed to its run", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-run-patch",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "run-authored progress update",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "aaaaaaaa-0000-4000-8000-000000000001",
+      companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID,
+      contextSnapshot: { issueId: existing.id },
+    } as never);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-0000-4000-8000-000000000001")
+      .send({ comment: "run-authored progress update" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("aaaaaaaa-0000-4000-8000-000000000001");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unknown run", null],
+    ["cross-company run", { companyId: "company-2", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } }],
+    ["cross-issue run", { companyId: "company-1", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } }],
+    ["mismatched-agent run", { companyId: "company-1", agentId: PREVIOUS_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } }],
+  ])("fails closed and wakes for a board-shaped comment with an %s", async (_label, run) => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-invalid-run",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "board feedback",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue(run as never);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-0000-4000-8000-000000000002")
+      .send({ comment: "board feedback" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
   it("wakes the assignee on top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
@@ -515,6 +591,108 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+
+  it("does not wake the assignee for board-shaped top-level comments attributed to its run", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-run-post",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "run-authored closeout",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "aaaaaaaa-0000-4000-8000-000000000003",
+      companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID,
+      contextSnapshot: { taskId: existing.id },
+    } as never);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-0000-4000-8000-000000000003")
+      .send({ body: "run-authored closeout" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.getRun).toHaveBeenCalled());
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("aaaaaaaa-0000-4000-8000-000000000003");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unknown run", null],
+    ["cross-company run", { companyId: "company-2", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } }],
+    ["cross-issue run", { companyId: "company-1", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } }],
+    ["mismatched-agent run", { companyId: "company-1", agentId: PREVIOUS_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } }],
+  ])("fails closed and wakes for a board-shaped top-level comment with an %s", async (_label, run) => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-invalid-run-post",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "board feedback",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue(run as never);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-0000-4000-8000-000000000004")
+      .send({ body: "board feedback" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("aaaaaaaa-0000-4000-8000-000000000004");
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
+  it("fails open and wakes for a top-level comment when run attribution lookup rejects", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const lookupError = new Error("run lookup failed");
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-rejected-run-post",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "board feedback after lookup failure",
+    });
+    mockHeartbeatService.getRun.mockRejectedValue(lookupError);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-0000-4000-8000-000000000005")
+      .send({ body: "board feedback after lookup failure" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      {
+        err: lookupError,
+        issueId: existing.id,
+        runId: "aaaaaaaa-0000-4000-8000-000000000005",
+      },
+      "failed to resolve run attribution for issue comment wake",
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
     );
   });
 
