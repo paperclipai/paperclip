@@ -73,8 +73,13 @@ Slide-format and motion rules are shared TSM memory. Channel brand treatment may
 - **Slide-only videos are not b-roll**. A beat needs real visual substance: live UI capture, product footage, sourced b-roll, chart/data animation, archive media with rights, or an authored motion graphic with meaningful internal change.
 - **No seam jumps**. Consecutive frames that only change crop/scale/position on a repeated slide template fail visual QA, even if the audio alignment and duration gates pass.
 - **Beat source packs must classify visual type** before render. Duration/headroom checks are necessary but not sufficient; the source package must label still slide, UI capture, b-roll, chart, archive, motion graphic, or mixed media so QA can reject banned combinations early.
+- **The shared route is mandatory, not advisory.** Normal episodes must enter through `~/scripts/deck/build-deck.sh` / `build-episode.sh` and carry the Stage-3 storyboard plus b-roll manifest into the rejection gates. Do not substitute an issue-local PIL/ffmpeg builder, a self-authored `intentPass`, or pixel-delta report for the shared route.
+- **Proof provenance is independent.** UI/terminal proof requires a real Playwright/app/terminal/CI capture artifact plus capture time; designed, drawn, mock, generated, or `proof_designed` screens never satisfy a proof beat. Code reveals bind to real source/CI artifacts. Stats/charts bind to data sources or citations.
+- **Bespoke source packs fail closed.** If an approved exception genuinely needs a per-beat builder, it must emit a per-shot ledger and pass `python3 ~/scripts/deck/source-pack-contract-gate.py <pack>/qa/broll-provenance.json`. A missing/false `sharedGate`, renderer-authored proof, under 15% real b-roll runtime, or fewer than three distinct real b-roll shots is a rejection.
+- **Do not self-grade.** Expected intent comes from the approved Stage-3 map; delivered provenance comes from the source/capture ledger. The renderer may not generate both and declare equality as QA.
 - **Shared gates apply before channel-specific gates**. Stack Lab, Cashflow Compass and Vault Cases all inherit these rules; CC's stricter slide/motion treatment is the baseline, not a one-channel preference.
 - **If a contact sheet suggests no b-roll**, stop and inspect the source pack before rendering again. Do not spend Mini/GitHub cycles lengthening or looping static slides.
+- A contact sheet is an operator review aid, never the gate result. Before presenting it, attach the passing `motion-preflight.json`, shared rejection report, and (for bespoke packs) source-pack contract report. Any one red report means the candidate is not reviewable.
 
 ## Storage retention is part of production closeout
 
