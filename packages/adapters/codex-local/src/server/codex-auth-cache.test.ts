@@ -102,6 +102,31 @@ describe("codex auth cache store", () => {
       expect(toCacheKey("acct-42")).toBe("acct-42");
     });
 
+    it("resolveCodexAuthCacheDir rejects a traversal companyId before it builds the path", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      // A traversal companyId must never make the cache root escape the
+      // companies/ directory. Sanitization runs before path construction, so a
+      // relative segment, a path separator, an absolute path, and a NUL byte all
+      // fail loud.
+      expect(() => resolveCodexAuthCacheDir(env, "")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "   ")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "..")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, ".")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "../../etc")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "/etc")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "a/b")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "a\\b")).toThrow();
+      expect(() => resolveCodexAuthCacheDir(env, "a\0b")).toThrow();
+      // The clear path inherits the same guard, so a traversal companyId can
+      // never reach rm() on an escaped root.
+      await expect(clearCodexAuthCache(env, "../../etc")).rejects.toThrow();
+      const safeDir = resolveCodexAuthCacheDir(env, "company-a");
+      expect(safeDir).toBe(
+        path.resolve(home, "instances", "default", "companies", "company-a", "codex-auth-cache"),
+      );
+    });
+
     it("resolveCodexAuthCacheEntryPath verifies the resolved path stays under the cache root", async () => {
       const home = await makeInstanceRoot();
       const env = envFor(home);

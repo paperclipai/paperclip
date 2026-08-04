@@ -60,28 +60,39 @@ export function isCodexAuthCacheEnabled(env: NodeJS.ProcessEnv = process.env): b
 }
 
 /**
+ * Sanitizes one raw value to a single safe path segment. Rejects an empty value,
+ * a relative segment (`.` or `..`), a path separator (`/` or `\`), and a NUL
+ * byte, so the value can never become a path traversal. Returns the trimmed,
+ * safe segment. The `label` names the value in the error message. (Security
+ * condition 3.)
+ */
+function toSafePathSegment(value: string, label: string): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (trimmed.length === 0) {
+    throw new Error(`codex auth cache: ${label} is empty`);
+  }
+  if (trimmed === "." || trimmed === "..") {
+    throw new Error(`codex auth cache: ${label} is a relative path segment`);
+  }
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) {
+    throw new Error(`codex auth cache: ${label} contains a path separator`);
+  }
+  // Defense in depth: a safe segment is exactly its own basename. Anything else
+  // carries a separator or a relative segment the checks above must have caught.
+  if (path.basename(trimmed) !== trimmed) {
+    throw new Error(`codex auth cache: ${label} is not a single path segment`);
+  }
+  return trimmed;
+}
+
+/**
  * Sanitizes an `account_id` to one safe path segment. Rejects an empty value, a
  * relative segment (`.` or `..`), a path separator, and a NUL byte, so a raw
  * `account_id` can never become a path traversal. Returns the trimmed, safe
  * segment. (Security condition 3.)
  */
 export function toCacheKey(accountId: string): string {
-  const trimmed = typeof accountId === "string" ? accountId.trim() : "";
-  if (trimmed.length === 0) {
-    throw new Error("codex auth cache: account_id is empty");
-  }
-  if (trimmed === "." || trimmed === "..") {
-    throw new Error("codex auth cache: account_id is a relative path segment");
-  }
-  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) {
-    throw new Error("codex auth cache: account_id contains a path separator");
-  }
-  // Defense in depth: a safe key is exactly its own basename. Anything else
-  // carries a separator or a relative segment the checks above must have caught.
-  if (path.basename(trimmed) !== trimmed) {
-    throw new Error("codex auth cache: account_id is not a single path segment");
-  }
-  return trimmed;
+  return toSafePathSegment(accountId, "account_id");
 }
 
 /**
@@ -89,16 +100,17 @@ export function toCacheKey(accountId: string): string {
  * the managed Codex home (`resolveManagedCodexHomeDir`). The root is always
  * company-scoped, so a Codex credential can never cross a company boundary.
  * There is no instance-global fallback root: `companyId` is required, and an
- * empty value is a fail-loud error.
+ * empty value is a fail-loud error. `companyId` is sanitized to a single safe
+ * path segment, so a traversal value (`..`, `/etc`, `a/b`) can never make the
+ * cache root escape the `companies/` directory. Every downstream path (the
+ * entry path, the vend, and the clear) inherits this guard. (Security
+ * condition 1.)
  */
 export function resolveCodexAuthCacheDir(
   env: NodeJS.ProcessEnv = process.env,
   companyId: string,
 ): string {
-  const safeCompanyId = nonEmpty(companyId);
-  if (!safeCompanyId) {
-    throw new Error("codex auth cache: companyId is required for a company-scoped cache root");
-  }
+  const safeCompanyId = toSafePathSegment(companyId, "companyId");
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
