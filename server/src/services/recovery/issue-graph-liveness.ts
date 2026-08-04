@@ -1,5 +1,10 @@
-import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import {
+  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  getAgentWorkEligibility,
+  isAgentInvokable,
+} from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
+import { issueAllowsMonitor } from "../issue-execution-policy.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
 
@@ -156,6 +161,10 @@ function readPositiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function readDateMs(value: unknown): number | null {
   if (!(typeof value === "string" || value instanceof Date)) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -169,11 +178,43 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+function scheduledMonitorTargetAgentId(
+  issue: IssueLivenessIssueInput,
+  policyMonitor: Record<string, unknown>,
+) {
+  if (readNonEmptyString(policyMonitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+    const participantAgentId = readPrincipalAgentId(readRecord(issue.executionState)?.currentParticipant);
+    if (participantAgentId) return participantAgentId;
+  }
+  return issue.assigneeAgentId ?? null;
+}
+
+export function hasScheduledMonitorWaitingPath(
+  issue: IssueLivenessIssueInput,
+  nowMs: number,
+  agentsById: Map<string, IssueLivenessAgentInput>,
+) {
+  if (!issueAllowsMonitor(issue.status, issue.assigneeAgentId ?? null, issue.assigneeUserId ?? null)) {
+    return false;
+  }
+
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
   const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  if (!policyMonitor) return false;
+
+  const policyNextCheckAtMs = readDateMs(policyMonitor.nextCheckAt);
+  if (policyNextCheckAtMs === null || policyNextCheckAtMs !== nextCheckAtMs) {
+    return false;
+  }
+
+  if (stateMonitor) {
+    if (readNonEmptyString(stateMonitor.status) !== "scheduled") return false;
+    const stateNextCheckAtMs = readDateMs(stateMonitor.nextCheckAt);
+    if (stateNextCheckAtMs === null || stateNextCheckAtMs !== nextCheckAtMs) return false;
+  }
+
   const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
   if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
 
@@ -181,6 +222,13 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
   const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  const targetAgentId = scheduledMonitorTargetAgentId(issue, policyMonitor);
+  if (!targetAgentId) return false;
+  const targetAgent = agentsById.get(targetAgentId);
+  if (!targetAgent || targetAgent.companyId !== issue.companyId || !isInvokableAgent(targetAgent, agentsById)) {
+    return false;
+  }
 
   return true;
 }
@@ -401,7 +449,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
-      hasScheduledMonitor(issue, nowMs) ||
+      hasScheduledMonitorWaitingPath(issue, nowMs, agentsById) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||

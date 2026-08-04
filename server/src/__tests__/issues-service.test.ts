@@ -3573,6 +3573,169 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService monitor persistence normalization", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-monitor-persistence-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(environments);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedMonitorAssignee() {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "MonitorOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, assigneeAgentId };
+  }
+
+  it("materializes a real monitor contract when create receives legacy top-level monitor fields", async () => {
+    const { companyId, assigneeAgentId } = await seedMonitorAssignee();
+    const nextCheckAt = new Date("2026-08-03T14:00:00.000Z");
+
+    const created = await svc.create(companyId, {
+      title: "Legacy monitor create",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId,
+      monitorNextCheckAt: nextCheckAt,
+      monitorNotes: "Follow up on Monday.",
+      monitorScheduledBy: "assignee",
+    });
+
+    expect(created.monitorNextCheckAt?.toISOString()).toBe("2026-08-03T14:00:00.000Z");
+    expect(created.executionPolicy).toMatchObject({
+      monitor: {
+        nextCheckAt: "2026-08-03T14:00:00.000Z",
+        notes: "Follow up on Monday.",
+        scheduledBy: "assignee",
+      },
+    });
+    expect(created.executionState).toMatchObject({
+      monitor: {
+        status: "scheduled",
+        nextCheckAt: "2026-08-03T14:00:00.000Z",
+        notes: "Follow up on Monday.",
+        scheduledBy: "assignee",
+        attemptCount: 0,
+      },
+    });
+  });
+
+  it("materializes a real monitor contract when update receives legacy top-level monitor fields", async () => {
+    const { companyId, assigneeAgentId } = await seedMonitorAssignee();
+    const issue = await svc.create(companyId, {
+      title: "Legacy monitor update",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const updated = await svc.update(issue.id, {
+      monitorNextCheckAt: new Date("2026-08-03T14:00:00.000Z"),
+      monitorNotes: "Repair the persisted follow-up lane.",
+      monitorScheduledBy: "assignee",
+    });
+
+    expect(updated?.monitorNextCheckAt?.toISOString()).toBe("2026-08-03T14:00:00.000Z");
+    expect(updated?.executionPolicy).toMatchObject({
+      monitor: {
+        nextCheckAt: "2026-08-03T14:00:00.000Z",
+        notes: "Repair the persisted follow-up lane.",
+        scheduledBy: "assignee",
+      },
+    });
+    expect(updated?.executionState).toMatchObject({
+      monitor: {
+        status: "scheduled",
+        nextCheckAt: "2026-08-03T14:00:00.000Z",
+        notes: "Repair the persisted follow-up lane.",
+        scheduledBy: "assignee",
+        attemptCount: 0,
+      },
+    });
+  });
+
+  it("syncs top-level monitor fields when direct service callers set executionPolicy.monitor", async () => {
+    const { companyId, assigneeAgentId } = await seedMonitorAssignee();
+    const issue = await svc.create(companyId, {
+      title: "Direct policy update",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const updated = await svc.update(issue.id, {
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: "2026-08-03T14:00:00.000Z",
+          notes: "Canonical policy update.",
+          scheduledBy: "assignee",
+          externalRef: "provider-run-123",
+        },
+      },
+    });
+
+    expect(updated?.monitorNextCheckAt?.toISOString()).toBe("2026-08-03T14:00:00.000Z");
+    expect(updated?.monitorNotes).toBe("Canonical policy update.");
+    expect(updated?.monitorScheduledBy).toBe("assignee");
+    expect(updated?.executionPolicy).toMatchObject({
+      monitor: {
+        externalRef: "provider-run-123",
+      },
+    });
+    expect(updated?.executionState).toMatchObject({
+      monitor: {
+        status: "scheduled",
+        nextCheckAt: "2026-08-03T14:00:00.000Z",
+        notes: "Canonical policy update.",
+        scheduledBy: "assignee",
+        attemptCount: 0,
+      },
+    });
+  });
+});
+
 describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
