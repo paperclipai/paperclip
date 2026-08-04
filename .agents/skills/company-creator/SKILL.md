@@ -195,6 +195,17 @@ Ask the user where to write the package. Common options:
   success — a package can land with zero projects, tasks and skills and look like
   it worked.
 
+  This applies to the HTTP fallback too. Omitting `include` there does not mean
+  "import everything". The server fills in `DEFAULT_INCLUDE`
+  (`server/src/services/company-portability.ts`), which is:
+
+  ```
+  company: true, agents: true, projects: false, issues: false, skills: false
+  ```
+
+  The request then succeeds while it drops every project, issue and skill in the
+  package. Send `include` with each part set explicitly.
+
 **LICENSE** — include a LICENSE file. The copyright holder is the user creating the company, not the upstream repo author (they made the skills, the user is making the company). Use the same license type as the source repo (if from-repo) or ask the user (if from-scratch). Default to MIT if unclear.
 
 ### Step 7: Write Files and Summarize
