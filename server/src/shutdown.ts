@@ -5,6 +5,7 @@ import type {
 
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
+  preserveEmbeddedPostgres?: boolean;
 };
 
 export type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGBREAK";
@@ -51,7 +52,7 @@ export function createShutdownLifecycleContext(input: {
   launcherIdentity?: string;
   uptimeMs?: number;
 }): ShutdownLifecycleContext {
-  const preserveEmbeddedPostgres = input.hotRestart?.skipDrain === true;
+  const preserveEmbeddedPostgres = input.hotRestart?.preserveEmbeddedPostgres === true;
   return {
     controlEvent: input.signal,
     parentPid: input.parentPid ?? process.ppid,

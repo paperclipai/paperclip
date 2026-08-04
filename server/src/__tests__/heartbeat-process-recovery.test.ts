@@ -1455,7 +1455,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
       expect(result).toEqual({
         mode: "hot_restart",
-        skipDrain: true,
+        skipDrain: false,
+        preserveEmbeddedPostgres: true,
         activeRunIds: [runId],
         previousServerPid: process.pid,
         requestedAt: "2026-03-19T00:05:00.000Z",
@@ -1493,7 +1494,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("adopts an old-server legacy snapshot written for a new instance-scoped marker", async () => {
+  it("fails closed for a legacy live child whose completion plumbing cannot be reconstructed", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeGreaterThan(0);
@@ -1548,9 +1549,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(adoption).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [runId],
+        adoptedRunIds: [],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [],
+        lostRunIds: [runId],
+      });
+      const reconciled = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(reconciled).toMatchObject({
+        status: "failed",
+        errorCode: "hot_restart_completion_unrecoverable",
+      });
+      expect(reconciled?.resultJson).toMatchObject({
+        hotRestart: { retrySuppressed: true, reason: "completion_plumbing_unrecoverable" },
       });
     });
   });
@@ -1643,7 +1656,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
+  it("drains a real codex_local execution to its result boundary before replacement reconciliation", async () => {
     let releaseAdapter: (() => void) | null = null;
     let spawnedPid: number | null = null;
     const adapterStarted = new Promise<void>((resolve) => {
@@ -1722,13 +1735,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         new Date("2026-07-30T07:02:00.000Z"),
       );
 
+      let drained = false;
+      const drain = heartbeat.drainActiveRunExecutions().then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+      releaseAdapter();
+      await drain;
+
       const adoption = await heartbeat.reconcileHotRestartAdoption(
         new Date("2026-07-30T07:03:00.000Z"),
       );
       expect(adoption).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
         lostRunIds: [],
       });
       const report = JSON.parse(
@@ -1738,8 +1761,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect.arrayContaining([
           expect.objectContaining({
             runId,
-            classification: "adopted",
-            reason: "process_pid_alive",
+            classification: "finalized_while_down",
+            reason: "run_status_succeeded",
           }),
         ]),
       );
@@ -1750,13 +1773,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
 
-    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
-    releaseAdapter();
     const settled = await waitForRunToSettle(heartbeat, runId, 5_000);
     expect(settled?.status).toBe("succeeded");
   });
 
-  it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
+  it("stops an abnormal live child and suppresses retry instead of claiming PID-only adoption", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeGreaterThan(0);
@@ -1783,9 +1804,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(adoption).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [runId],
+        adoptedRunIds: [],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [],
+        lostRunIds: [runId],
         skippedRunIds: [],
       });
 
@@ -1796,73 +1817,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         previousServerPid: process.pid,
         newServerPid: process.pid,
         previousServerVersion: "old-version",
-        adoptedRunIds: [runId],
+        adoptedRunIds: [],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [],
+        lostRunIds: [runId],
       });
       expect(typeof report.newServerVersion).toBe("string");
 
       const reap = await heartbeat.reapOrphanedRuns();
       expect(reap).toEqual({ reaped: 0, runIds: [] });
-      const adopted = await db
+      const reconciled = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      expect(adopted?.status).toBe("running");
-      expect(adopted?.errorCode).not.toBe("process_lost");
-      expect(adopted?.resultJson).toMatchObject({
+      expect(reconciled?.status).toBe("failed");
+      expect(reconciled?.errorCode).toBe("hot_restart_completion_unrecoverable");
+      expect(reconciled?.resultJson).toMatchObject({
         hotRestart: {
-          adopted: true,
-          adoptionId: `2026-03-19T00:05:00.000Z:${process.pid}:${runId}`,
-          adoptedAt: "2026-03-19T00:07:00.000Z",
+          retrySuppressed: true,
+          reason: "completion_plumbing_unrecoverable",
           previousServerPid: process.pid,
           newServerPid: process.pid,
-          previousServerVersion: "old-version",
           processPid: child.pid,
         },
       });
-
-      // Simulate a crash after the atomic run+event commit but before report
-      // finalization. Replaying the same intent must preserve first-adoption
-      // time and must not append another adoption event.
-      await fs.rm(resolveHotRestartReportPath(home));
-      await writeHotRestartIntent({
-        previousServerPid: process.pid,
-        previousServerVersion: "old-version",
-        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
-      });
-      await heartbeat.prepareHotRestartShutdown(
-        "SIGBREAK",
-        new Date("2026-03-19T00:08:00.000Z"),
-      );
-      await expect(heartbeat.reconcileHotRestartAdoption(
-        new Date("2026-03-19T00:09:00.000Z"),
-      )).resolves.toMatchObject({ mode: "reported", adoptedRunIds: [runId] });
-
-      const replayed = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      expect(replayed?.resultJson).toMatchObject({
-        hotRestart: {
-          adoptionId: `2026-03-19T00:05:00.000Z:${process.pid}:${runId}`,
-          adoptedAt: "2026-03-19T00:07:00.000Z",
-        },
-      });
-      const adoptionEvents = await db
-        .select()
-        .from(heartbeatRunEvents)
-        .where(and(
-          eq(heartbeatRunEvents.runId, runId),
-          eq(heartbeatRunEvents.message, "Adopted live child process after hot restart"),
-        ));
-      expect(adoptionEvents).toHaveLength(1);
     });
   });
 
-  it.skipIf(process.platform === "win32")("keeps process-group-only hot-restart adoptions out of process_lost reaping", async () => {
+  it.skipIf(process.platform === "win32")("fails closed for a process-group-only child without completion plumbing", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
     expect(isPidAlive(orphan.descendantPid)).toBe(true);
@@ -1889,25 +1871,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(adoption).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [runId],
+        adoptedRunIds: [],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [],
+        lostRunIds: [runId],
         skippedRunIds: [],
       });
 
       const reap = await heartbeat.reapOrphanedRuns();
       expect(reap).toEqual({ reaped: 0, runIds: [] });
-      expect(isPidAlive(orphan.descendantPid)).toBe(true);
-      const adopted = await db
+      expect(isPidAlive(orphan.descendantPid)).toBe(false);
+      const reconciled = await db
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      expect(adopted?.status).toBe("running");
-      expect(adopted?.errorCode).not.toBe("process_lost");
-      expect(adopted?.resultJson).toMatchObject({
+      expect(reconciled?.status).toBe("failed");
+      expect(reconciled?.errorCode).toBe("hot_restart_completion_unrecoverable");
+      expect(reconciled?.resultJson).toMatchObject({
         hotRestart: {
-          adopted: true,
+          retrySuppressed: true,
           processPid: orphan.processPid,
           processGroupId: orphan.processGroupId,
         },

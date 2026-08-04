@@ -11,6 +11,7 @@ import {
   resolveEmbeddedPostgresOwnershipPath,
   releaseEmbeddedPostgresOwnership,
   writeEmbeddedPostgresHandoff,
+  writeEmbeddedPostgresOwnership,
   type EmbeddedPostgresProcessIdentity,
 } from "./services/hot-restart.js";
 import {
@@ -33,6 +34,8 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     const postgres: EmbeddedPostgresProcessIdentity = {
       pid: 54321,
       startedAtEpochSeconds: 1_754_000_000,
+      processStartedAtEpochMs: 1_754_000_000_250,
+      executablePath: resolve(homeDir, "postgres.exe"),
       dataDir: resolve(homeDir, "postgres"),
       port: 5432,
     };
@@ -71,6 +74,8 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           postgres: {
             pid: 54321,
             startedAtEpochSeconds: 1_754_000_000,
+            processStartedAtEpochMs: 1_754_000_000_250,
+            executablePath: resolve(homeDir, "postgres.exe"),
             dataDir: resolve(homeDir, "postgres"),
             port: 5432,
           },
@@ -132,7 +137,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     });
     const lifecycle = createShutdownLifecycleContext({
       signal: "SIGTERM",
-      hotRestart: { skipDrain: true },
+      hotRestart: { skipDrain: false, preserveEmbeddedPostgres: true },
       parentPid: 4242,
       launcherIdentity: "node:paperclipai",
       uptimeMs: 15_000,
@@ -234,7 +239,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       stop,
       lifecycle: createShutdownLifecycleContext({
         signal: "SIGTERM",
-        hotRestart: { skipDrain: true },
+        hotRestart: { skipDrain: true, preserveEmbeddedPostgres: true },
       }),
       persistHotRestartHandoff: vi.fn(async () => {
         throw writeError;
@@ -272,7 +277,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           "  const result = await prepareEmbeddedPostgresForHotRestart({",
           "    ownedByThisProcess: true,",
           "    stop: async () => { stopAttempts += 1; throw new Error('forced stop failure'); },",
-          "    lifecycle: createShutdownLifecycleContext({ signal: 'SIGTERM', hotRestart: { skipDrain: true } }),",
+          "    lifecycle: createShutdownLifecycleContext({ signal: 'SIGTERM', hotRestart: { skipDrain: true, preserveEmbeddedPostgres: true } }),",
           "    persistHotRestartHandoff: async () => { handoffAttempts += 1; throw new Error('forced handoff failure'); },",
           "    restorePredecessor: () => restoreAbortedHotRestartPredecessor({",
           "      signal: 'SIGTERM',",
@@ -321,9 +326,12 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       shutdownSnapshotCapturedAt,
       predecessorServerPid,
       predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+      predecessorServerExecutablePath: "/paperclip/node",
       postgres: {
         pid: 54321,
         startedAtEpochSeconds: 1_754_000_000,
+        processStartedAtEpochMs: 1_754_000_000_250,
+        executablePath: "/paperclip/postgres",
         dataDir: "/paperclip/postgres",
         port: 5432,
       },
@@ -362,9 +370,16 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
         "utf8",
       );
 
-      await expect(readEmbeddedPostgresProcessIdentity(dataDir)).resolves.toEqual({
+      await expect(readEmbeddedPostgresProcessIdentity(dataDir, {
+        readProcessIdentity: async () => ({
+          startedAtEpochMs: 1_754_000_000_250,
+          executablePath: resolve(homeDir, "postgres.exe"),
+        }),
+      })).resolves.toEqual({
         pid: 54321,
         startedAtEpochSeconds: 1_754_000_000,
+        processStartedAtEpochMs: 1_754_000_000_250,
+        executablePath: resolve(homeDir, "postgres.exe"),
         dataDir: await fs.realpath(dataDir),
         port: 5432,
       });
@@ -500,6 +515,53 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     });
   });
 
+  it("recovers stop authority for a fresh-start database after its server exits unexpectedly", async () => {
+    const homeDir = await fs.mkdtemp(resolve(os.tmpdir(), "paperclip-postgres-fresh-owner-"));
+    const postgres: EmbeddedPostgresProcessIdentity = {
+      pid: 55432,
+      startedAtEpochSeconds: 1_754_000_000,
+      processStartedAtEpochMs: 1_754_000_000_250,
+      executablePath: resolve(homeDir, "postgres.exe"),
+      dataDir: resolve(homeDir, "postgres"),
+      port: 5432,
+    };
+    try {
+      await writeEmbeddedPostgresOwnership({
+        homeDir,
+        ownerServerPid: 8101,
+        ownerServerStartedAtEpochMs: 1_754_000_100_000,
+        ownerServerExecutablePath: resolve(homeDir, "node.exe"),
+        postgres,
+        now: new Date("2026-08-04T10:00:00.000Z"),
+      });
+
+      const recovered = await claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 8102,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
+        replacementServerExecutablePath: resolve(homeDir, "node.exe"),
+        isProcessAlive: () => false,
+        now: new Date("2026-08-04T10:01:00.000Z"),
+      });
+
+      expect(recovered).toMatchObject({
+        ownershipKind: "fresh_start",
+        replacementServerPid: 8102,
+        postgres,
+      });
+      await expect(releaseEmbeddedPostgresOwnership({
+        homeDir,
+        ownerServerPid: 8102,
+        ownerServerStartedAtEpochMs: 1_754_000_200_000,
+        ownerServerExecutablePath: resolve(homeDir, "node.exe"),
+        expectedPostgres: postgres,
+      })).resolves.toBe(true);
+    } finally {
+      await fs.rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("transfers ownership so a replacement can stop the preserved database", async () => {
     const originalStop = vi.fn(async () => undefined);
     const replacement = {
@@ -512,7 +574,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       stop: originalStop,
       lifecycle: createShutdownLifecycleContext({
         signal: "SIGTERM",
-        hotRestart: { skipDrain: true },
+        hotRestart: { skipDrain: true, preserveEmbeddedPostgres: true },
       }),
       persistHotRestartHandoff: vi.fn(async () => undefined),
     });
@@ -526,14 +588,18 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       shutdownSnapshotCapturedAt,
       predecessorServerPid,
       predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+      predecessorServerExecutablePath: "/paperclip/node",
       postgres: {
         pid: 54321,
         startedAtEpochSeconds: 1_754_000_000,
+        processStartedAtEpochMs: 1_754_000_000_250,
+        executablePath: "/paperclip/postgres",
         dataDir: "/paperclip/postgres",
         port: 5432,
       },
       replacementServerPid: 4343,
       replacementServerStartedAtEpochMs: 1_754_000_100_000,
+      replacementServerExecutablePath: "/paperclip/node",
     });
     const result = await coordinateEmbeddedPostgresShutdown({
       ownedByThisProcess: true,

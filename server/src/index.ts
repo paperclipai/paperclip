@@ -99,6 +99,7 @@ import {
   releaseEmbeddedPostgresOwnership,
   releaseEmbeddedPostgresStartupRecovery,
   writeEmbeddedPostgresHandoff,
+  writeEmbeddedPostgresOwnership,
   writeEmbeddedPostgresStartupRecovery,
   type EmbeddedPostgresProcessIdentity,
   type ServerLifecycleBoot,
@@ -700,9 +701,39 @@ async function startServerInternal(
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        stopOwnedEmbeddedPostgres = () => embeddedPostgres!.stop();
+        let freshIdentity: EmbeddedPostgresProcessIdentity | null;
+        try {
+          freshIdentity = await readEmbeddedPostgresProcessIdentity(dataDir);
+        } catch (err) {
+          await embeddedPostgres.stop();
+          throw new Error("Failed to observe fresh embedded PostgreSQL OS process identity", { cause: err });
+        }
+        if (!freshIdentity) {
+          await embeddedPostgres.stop();
+          throw new Error("Embedded PostgreSQL started without a complete OS process identity");
+        }
+        try {
+          await writeEmbeddedPostgresOwnership({
+            ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+            postgres: freshIdentity,
+          });
+        } catch (err) {
+          await embeddedPostgres.stop();
+          throw new Error("Failed to persist fresh embedded PostgreSQL ownership", { cause: err });
+        }
+        stopOwnedEmbeddedPostgres = async () => {
+          await embeddedPostgres!.stop();
+          try {
+            await releaseEmbeddedPostgresOwnership({
+              ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+              expectedPostgres: freshIdentity,
+            });
+          } catch (err) {
+            logger.error({ err }, "Failed to clear stopped fresh embedded PostgreSQL ownership receipt");
+          }
+        };
         setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
-        ownedEmbeddedPostgresIdentity = await readEmbeddedPostgresProcessIdentity(dataDir);
+        ownedEmbeddedPostgresIdentity = freshIdentity;
       }
     }
   
@@ -1113,8 +1144,10 @@ async function startServerInternal(
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<unknown>) | null = null;
+  let drainActiveHeartbeatRunExecutions: (() => Promise<void>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<{
     skipDrain: boolean;
+    preserveEmbeddedPostgres?: boolean;
     previousServerPid?: number;
     requestedAt?: string;
     shutdownSnapshotCapturedAt?: string;
@@ -1135,6 +1168,7 @@ async function startServerInternal(
     while (heartbeatSchedulerInFlight.size > 0) {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
+    await drainActiveHeartbeatRunExecutions?.();
   };
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
@@ -1164,6 +1198,7 @@ async function startServerInternal(
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    drainActiveHeartbeatRunExecutions = heartbeat.drainActiveRunExecutions;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });

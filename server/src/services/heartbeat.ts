@@ -10029,7 +10029,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "Hot restart requested; leaving child process alive for startup adoption",
+        message: "Hot restart requested; draining child process to its normal result boundary before replacement",
         payload: {
           signal,
           previousServerPid: intent.previousServerPid,
@@ -10042,12 +10042,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     logger.info(
       { signal, previousServerPid: intent.previousServerPid, activeRunIds: snapshotRuns.map((run) => run.runId) },
-      "hot-restart shutdown snapshot captured; skipping graceful run drain",
+      "hot-restart shutdown snapshot captured; waiting for active runs before database handoff",
     );
 
     return {
       mode: "hot_restart" as const,
-      skipDrain: true as const,
+      skipDrain: false as const,
+      preserveEmbeddedPostgres: true as const,
       activeRunIds: snapshotRuns.map((run) => run.runId),
       previousServerPid: intent.previousServerPid,
       requestedAt: intent.requestedAt,
@@ -10206,12 +10207,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      const adoptionId = `${intent.requestedAt}:${intent.previousServerPid}:${candidate.runId}`;
-      const existingAdoption = readHotRestartAdoptionMetadata(parseObject(run.resultJson));
-      if (existingAdoption?.adoptionId === adoptionId) {
-        classify(candidate, "adopted", "already_adopted", patch);
-        continue;
-      }
       const processPidAlive = isProcessAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
@@ -10223,70 +10218,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const resultJson = mergeHotRestartAdoptionResultJson(parseObject(run.resultJson), {
-        adoptionId,
-        adoptedAt: now,
-        previousServerPid: intent.previousServerPid,
-        newServerPid: process.pid,
-        previousServerVersion: intent.previousServerVersion,
-        newServerVersion: serverVersion,
-        processPid,
-        processGroupId,
-      });
-      const updated = await db.transaction(async (tx) => {
-        const updatedRun = await tx
-          .update(heartbeatRuns)
-          .set({
-            resultJson,
-            error: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
-            errorCode: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.errorCode,
-            updatedAt: now,
-          })
-          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        if (!updatedRun) return null;
-        const [eventSeq] = await tx
-          .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
-          .from(heartbeatRunEvents)
-          .where(eq(heartbeatRunEvents.runId, run.id));
-        await tx.insert(heartbeatRunEvents).values({
-          companyId: updatedRun.companyId,
-          runId: updatedRun.id,
-          agentId: updatedRun.agentId,
-          seq: Number(eventSeq?.maxSeq ?? 0) + 1,
-          eventType: "lifecycle",
-          stream: "system",
-          level: "info",
-          message: "Adopted live child process after hot restart",
-          payload: {
-            adoptionId,
+      // A numeric PID cannot restore the predecessor's streams, exit listener,
+      // or result promise. Never claim adoption from liveness alone: stop the
+      // unobservable child and fail closed without an automatic retry, which
+      // prevents a completed external side effect from being repeated.
+      await terminateHeartbeatRunProcess({ pid: processPid, processGroupId });
+      const message = "Hot restart found a live child without reconstructable completion plumbing; stopped without automatic retry";
+      const updateResult = await setRunStatusIfRunning(run.id, "failed", {
+        finishedAt: now,
+        error: message,
+        errorCode: "hot_restart_completion_unrecoverable",
+        resultJson: {
+          ...parseObject(run.resultJson),
+          hotRestart: {
+            reconciledAt: now.toISOString(),
             previousServerPid: intent.previousServerPid,
             newServerPid: process.pid,
-            previousServerVersion: intent.previousServerVersion,
-            newServerVersion: serverVersion,
             processPid,
             processGroupId,
+            retrySuppressed: true,
+            reason: "completion_plumbing_unrecoverable",
           },
-        });
-        return updatedRun;
+        },
       });
 
-      if (!updated) {
-        const latest = await db
-          .select({ status: heartbeatRuns.status })
+      const updated = updateResult.run;
+      if (!updateResult.updated || !updated) {
+        const latest = updated ?? await db
+          .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, run.id))
           .then((rows) => rows[0] ?? null);
         if (latest && latest.status !== "running") {
           classify(candidate, "finalized_while_down", `run_status_${latest.status}`, patch);
         } else {
-          classify(candidate, "lost", "adoption_update_not_applied", patch);
+          classify(candidate, "lost", "safe_reconciliation_update_not_applied", patch);
         }
         continue;
       }
 
-      classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
+      await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+      await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message,
+        payload: { processPid, processGroupId, retrySuppressed: true },
+      });
+      await releaseIssueExecutionAndPromote(updated, { suppressImmediateRecovery: true });
+      classify(candidate, "lost", "completion_plumbing_unrecoverable_retry_suppressed", {
+        ...patch,
+        status: "failed",
+      });
     }
 
     const report = await writeHotRestartReport({

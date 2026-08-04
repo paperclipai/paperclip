@@ -556,6 +556,8 @@ describe("hot-restart path compatibility", { timeout: 30_000 }, () => {
       const postgres = {
         pid: 7201,
         startedAtEpochSeconds: 1_754_000_000,
+        processStartedAtEpochMs: 1_754_000_000_250,
+        executablePath: path.resolve(homeDir, "postgres.exe"),
         dataDir: path.resolve(homeDir, "postgres"),
         port: 5432,
       };
