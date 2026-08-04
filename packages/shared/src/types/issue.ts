@@ -930,6 +930,8 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  /** Responsible user attribution. Legacy and plugin-provided comment values may omit it. */
+  onBehalfOfUserId?: string | null;
   createdByRunId?: string | null;
   derivedAuthorAgentId?: string | null;
   derivedCreatedByRunId?: string | null;
@@ -1005,6 +1007,7 @@ export interface IssueCommentMetadataSection {
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
+  authorizationReason?: string | null;
   sections: IssueCommentMetadataSection[];
 }
 

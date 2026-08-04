@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const AGENT_ACTOR_ID = "11111111-1111-4111-8111-111111111111";
+const AGENT_RUN_ID = "44444444-4444-4444-8444-444444444444";
 const PAUSED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const IDLE_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
@@ -37,6 +38,13 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+}));
+
+const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+
+vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>(),
+  observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -138,20 +146,18 @@ function boardActor(): Actor {
   };
 }
 
-// No runId on purpose: a run-less agent actor exercises the assignment guard
-// without engaging watchdog-scope or checkout-ownership lookups.
 function agentActor(): Actor {
   return {
     type: "agent",
     agentId: AGENT_ACTOR_ID,
     companyId: "company-1",
     source: "agent_key",
+    runId: AGENT_RUN_ID,
   };
 }
 
 // Minimal chainable/thenable db stub: any query resolves to an empty row set.
-// Needed because some route paths (e.g. source-trust resolution for agent
-// actors) query the db directly rather than through the mocked services.
+// Run containment is mocked because this suite targets assignee invokability.
 function stubDb(): any {
   const query: any = {};
   for (const method of ["select", "from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for"]) {
@@ -204,6 +210,8 @@ describe("issue assignee invokability guard", () => {
     mockIssueService.createChild.mockReset();
     mockIssueService.addComment.mockReset();
     mockHeartbeatService.wakeup.mockClear();
+    mockObserveCrossIssueInfluence.mockClear();
+    mockObserveCrossIssueInfluence.mockResolvedValue(null);
   });
 
   it("refuses an agent assigning an issue to a paused agent", async () => {

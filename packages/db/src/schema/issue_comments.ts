@@ -10,6 +10,7 @@ import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { authUsers } from "./auth.js";
 
 export const issueComments = pgTable(
   "issue_comments",
@@ -19,6 +20,7 @@ export const issueComments = pgTable(
     issueId: uuid("issue_id").notNull().references(() => issues.id),
     authorAgentId: uuid("author_agent_id").references(() => agents.id),
     authorUserId: text("author_user_id"),
+    onBehalfOfUserId: text("on_behalf_of_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     // Persisted result of best-effort agent-attribution derivation for comments

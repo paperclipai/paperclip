@@ -573,6 +573,25 @@ budget gates, and pause gates remain independently enforced. Comment access is
 structurally downstream of issue read access (`issue:comment` is a subset of
 `issue:read`).
 
+Cross-issue writes are contained per heartbeat run. An agent-authored comment
+may wake the target assignee, including an explicit `resume: true` comment on a
+`done` or `cancelled` issue, but the wake remains agent-class and is subject to
+the normal agent rewake throttle; comment presentation cannot give it human
+wake privileges. Agent issue comments and updates require a persisted heartbeat
+run bound to the authenticated agent and company; missing, invalid, or mismatched
+run context fails closed before mutation. A run may attempt at most 20 cross-issue comments or issue
+updates across the shared counter. The server records each attempt with its
+source issue, target issue, run, count, and rollout mode, and fails closed with
+the cap in the error once enforcement is active. Assignee self-comments do not
+wake the assignee, and a non-assignee comment cannot mint a mention grant.
+
+Agent-authored issue comments persist the responsible user derived from the
+authenticated actor; clients cannot choose that attribution. Each comment also
+records the write-policy reason, and spoof attempts fail with an audited 422.
+Every issue PATCH emits an `issue.updated` activity receipt containing the
+actor, responsible user, run, authorization reason, and field-level before/after
+changes so both agent and board edits are visible in the issue activity stream.
+
 ## 9.4 Permission Terminology and Default Visibility Rule
 
 Paperclip V1 keeps a company-scoped visibility model as the default because centralized authorization and scoped work-object controls are not yet a core V1 control surface.

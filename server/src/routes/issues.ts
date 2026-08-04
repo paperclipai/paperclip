@@ -209,6 +209,12 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  crossIssueInfluenceLimitError,
+  crossIssueInfluenceRunContextError,
+  observeCrossIssueInfluence,
+  type CrossIssueInfluenceKind,
+} from "../services/cross-issue-influence-limit.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -498,6 +504,35 @@ async function auditAgentIssueCreateAttributionSpoof(input: {
   });
 }
 
+async function auditAgentIssueCommentAttributionSpoof(input: {
+  db: Db;
+  req: Request;
+  issue: { id: string; companyId: string; identifier: string | null };
+  surface: "issue.comment.create" | "issue.patch.comment";
+  requestedValue: string | null;
+}) {
+  const actor = getActorInfo(input.req);
+  await logActivity(input.db, {
+    companyId: input.issue.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
+    responsibleUserIdOverride: authenticatedActorResponsibleUserId(input.req),
+    action: "issue.attribution_spoof_rejected",
+    entityType: "issue",
+    entityId: input.issue.id,
+    details: {
+      identifier: input.issue.identifier,
+      surface: input.surface,
+      field: "onBehalfOfUserId",
+      requestedValue: input.requestedValue,
+      derivedFrom: "authenticated_actor",
+    },
+  });
+}
+
 async function sanitizeIssueCreateAttribution<T extends object>(
   db: Db,
   req: Request,
@@ -543,7 +578,15 @@ async function sanitizeIssueCreateAttribution<T extends object>(
 }
 
 function authenticatedActorResponsibleUserId(req: Request) {
-  return req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
+  return req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : undefined;
+}
+
+function issueWriteAuthorizationReason(
+  req: Request,
+  decision: true | { reason?: string | null },
+) {
+  if (decision !== true && decision.reason) return decision.reason;
+  return req.actor.type === "agent" ? "allow_scoped_agent_write" : "allow_board_actor";
 }
 
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
@@ -1800,7 +1843,7 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
-  return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+  return status === "done" || status === "cancelled" || status === "blocked" || status === "todo" || status === "in_progress";
 }
 
 // Log-class comment from the assignee agent on a terminal (done/cancelled)
@@ -2718,6 +2761,32 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ) {
     return resolveActorSourceTrustForIssue({ db, issue, actor });
+  }
+
+  async function assertCrossIssueInfluenceWithinRunCap(
+    req: Request,
+    res: Response,
+    issue: { id: string; identifier?: string | null; companyId: string },
+    kind: CrossIssueInfluenceKind,
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
+
+    // The counter transaction locks and validates the persisted run before it
+    // derives the source issue. Never trust the API-key run header by itself.
+    const decision = await observeCrossIssueInfluence(db, {
+      companyId: issue.companyId,
+      runId: req.actor.runId,
+      agentId: req.actor.agentId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+      targetIssueId: issue.id,
+      targetIssueIdentifier: issue.identifier ?? null,
+      kind,
+    });
+    if (!decision || decision.allowed) return true;
+
+    res.status(429).json(crossIssueInfluenceLimitError(decision));
+    return false;
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
@@ -4426,11 +4495,15 @@ export function issueRoutes(
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: Parameters<typeof decideIssueAccess>[1],
+    options: { resumeIntent?: boolean } = {},
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
-    if (issue.status === "cancelled") {
+    // Structured resume intent is the sole comment surface that may revive a
+    // cancelled issue. Bare status transitions and `reopen` keep using the
+    // dedicated restore-flow guard.
+    if (issue.status === "cancelled" && options.resumeIntent !== true) {
       res.status(409).json({
         error: "Cancelled issues must be restored through the dedicated restore flow",
         details: {
@@ -4495,6 +4568,8 @@ export function issueRoutes(
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (isDefaultOpenIssueWriteDecision(boundaryDecision)) return true;
 
     res.status(403).json({
       error: "Agent cannot request follow-up for another agent's issue",
@@ -6227,7 +6302,7 @@ export function issueRoutes(
       const id = req.params.id as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
         res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -8175,7 +8250,27 @@ export function issueRoutes(
     ) {
       throw forbidden("Agents cannot approve their own in-review work");
     }
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
+    if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
+      await auditAgentIssueCommentAttributionSpoof({
+        db,
+        req,
+        issue: existing,
+        surface: "issue.patch.comment",
+        requestedValue: readNonEmptyString(req.body.onBehalfOfUserId),
+      });
+      res.status(422).json({ error: "Agent comments cannot set onBehalfOfUserId" });
+      return;
+    }
+    const issueMutationAccess = await assertAgentIssueMutationAllowed(
+      req,
+      res,
+      existing,
+      { allowVisibleIssueWrite: true },
+    );
+    if (!issueMutationAccess) return;
+    const issueMutationAuthorizationReason = req.actor.type === "agent"
+      ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
+      : issueWriteAuthorizationReason(req, true);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -8198,6 +8293,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -8214,7 +8310,10 @@ export function issueRoutes(
     ) {
       return;
     }
-    if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
+    if (
+      resumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, existing, { resumeIntent: true }))
+    ) return;
     const agentStatusTransitionRequiresResumeAuthority =
       req.actor.type === "agent" &&
       typeof updateFields.status === "string" &&
@@ -8304,12 +8403,21 @@ export function issueRoutes(
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate =
-      req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
+      req.actor.type === "agent" &&
+      (Object.keys(updateFields).length > 0 || reviewRequest !== undefined || hiddenAtRaw !== undefined);
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
       return;
     }
+    if (
+      isAgentWorkUpdate &&
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
+    ) return;
+    if (
+      commentBody &&
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment"))
+    ) return;
 
     if (interruptRequested) {
       if (!commentBody) {
@@ -8749,18 +8857,14 @@ export function issueRoutes(
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
     }
 
-    // Build activity details with previous values for changed fields
-    const previous: Record<string, unknown> = {};
-    for (const key of Object.keys(updateFields)) {
-      if (key in existing && (existing as Record<string, unknown>)[key] !== (updateFields as Record<string, unknown>)[key]) {
-        previous[key] = (existing as Record<string, unknown>)[key];
-      }
-    }
-    if (Array.isArray(req.body.blockedByIssueIds)) {
-      previous.blockedByIssueIds = existingRelations?.blockedBy.map((relation) => relation.id) ?? [];
-    }
-
-    const hasFieldChanges = Object.keys(previous).length > 0;
+    // Use the service's row-lock-backed receipt as the activity source of truth.
+    // Requested fields alone miss server-side effects such as cleared run locks,
+    // status timestamps, goal fallback, and normalized relation arrays.
+    const issueChanges = issue.changes ?? {};
+    const previous: Record<string, unknown> = Object.fromEntries(
+      Object.entries(issueChanges).map(([key, change]) => [key, change.from]),
+    );
+    const hasFieldChanges = Object.keys(issueChanges).length > 0;
     let workspaceChange = null;
     if (hasIssueWorkspaceAuditChange(previous)) {
       try {
@@ -8819,12 +8923,15 @@ export function issueRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
+      responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        authorizationReason: issueMutationAuthorizationReason,
+        changes: issueChanges,
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
@@ -9060,7 +9167,9 @@ export function issueRoutes(
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
+        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
       }, {
+        authorizationReason: issueMutationAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(issue, actor),
       });
       await issueReferencesSvc.syncComment(comment.id);
@@ -9085,6 +9194,7 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
+        responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
         action: "issue.comment_added",
         entityType: "issue",
         entityId: issue.id,
@@ -9093,6 +9203,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          authorizationReason: issueMutationAuthorizationReason,
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(scheduledRetrySupersededByComment
@@ -9828,7 +9939,7 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (req.actor.type === "agent") {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     } else {
       assertBoard(req);
@@ -10601,8 +10712,20 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
+    if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
+      await auditAgentIssueCommentAttributionSpoof({
+        db,
+        req,
+        issue,
+        surface: "issue.comment.create",
+        requestedValue: readNonEmptyString(req.body.onBehalfOfUserId),
+      });
+      res.status(422).json({ error: "Agent comments cannot set onBehalfOfUserId" });
+      return;
+    }
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
+    const commentAuthorizationReason = issueWriteAuthorizationReason(req, commentAccessDecision);
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -10640,9 +10763,12 @@ export function issueRoutes(
       issue.assigneeAgentId !== req.actor.agentId &&
       !crossIssueCommentOnlyGrant
     ) {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
     }
-    if (effectiveResumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
+    if (
+      effectiveResumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))
+    ) return;
     if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
@@ -10688,6 +10814,7 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
@@ -10846,8 +10973,9 @@ export function issueRoutes(
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
               runId: actor.runId,
+              onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
             },
-            commentOptions,
+            { ...commentOptions, authorizationReason: commentAuthorizationReason },
             tx,
           );
           const updated = actor.actorType === "user" && currentIssue.status !== "done"
@@ -10918,10 +11046,12 @@ export function issueRoutes(
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
+        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
+        authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }
@@ -10946,6 +11076,7 @@ export function issueRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
+      responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
       action: "issue.comment_added",
       entityType: "issue",
       entityId: currentIssue.id,
@@ -10954,6 +11085,7 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        authorizationReason: commentAuthorizationReason,
         ...(isDirectParentReportDecision(commentAccessDecision)
           ? { directParentReportGrant: true }
           : {}),

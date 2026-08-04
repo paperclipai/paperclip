@@ -17938,6 +17938,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           isThrottleCandidateIssueRewake({
             reason,
             wakeCommentId: wakeCommentId ?? null,
+            requestedByActorType: opts.requestedByActorType ?? null,
             forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
             hasExplicitResume: Boolean(explicitResumeSession),
           })
@@ -17988,6 +17989,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     eq(activityLog.entityId, issue.id),
                     gt(activityLog.createdAt, lastRunFinishedAt),
                     inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                    wakeCommentId && opts.requestedByActorType === "agent"
+                      ? ne(activityLog.actorType, "agent")
+                      : undefined,
                   ),
                 )
                 .limit(1)
@@ -18001,6 +18005,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   .map((row) => row.runId)
                   .filter((runId): runId is string => Boolean(runId)),
               ),
+              // For an agent comment wake, the query excludes agent-authored
+              // activity while preserving genuinely new user/system input.
+              // Presentation/author metadata therefore cannot smuggle human
+              // wake privilege, nor can it mask an actual human response.
               hasNewIssueInputSinceLastRun: newInputRows.length > 0,
             });
 

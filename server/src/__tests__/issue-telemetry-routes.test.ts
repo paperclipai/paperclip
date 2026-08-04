@@ -16,13 +16,31 @@ const mockAgentService = vi.hoisted(() => ({
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  for: () => ({
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        agentId: "agent-1",
+        contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+        permissions: null,
+      }]).then(onFulfilled, onRejected),
+  }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
+    Promise.resolve([{
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      agentId: "agent-1",
+      contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+      permissions: null,
+    }]).then(onFulfilled, onRejected),
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect })),
 }));
 
 function registerModuleMocks() {
@@ -148,8 +166,24 @@ describe("issue telemetry routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "22222222-2222-4222-8222-222222222222",
+            companyId: "company-1",
+            agentId: "agent-1",
+            contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
+        Promise.resolve([{
+          id: "22222222-2222-4222-8222-222222222222",
+          companyId: "company-1",
+          agentId: "agent-1",
+          contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+          permissions: null,
+        }]).then(onFulfilled, onRejected),
     }));
   });
 
@@ -166,7 +200,7 @@ describe("issue telemetry routes", () => {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
-      runId: null,
+      runId: "22222222-2222-4222-8222-222222222222",
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")

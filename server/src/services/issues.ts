@@ -399,6 +399,40 @@ async function resolveCommentCreatedByRunId(
   return existing?.id ?? null;
 }
 
+async function resolveCommentResponsibleUserId(
+  dbOrTx: any,
+  companyId: string,
+  createdByRunId: string | null,
+  actorResponsibleUserId: string | null | undefined,
+): Promise<string | null> {
+  const actorValue = actorResponsibleUserId?.trim() || null;
+  if (actorValue) return actorValue;
+  if (!createdByRunId) return null;
+  return dbOrTx
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, createdByRunId), eq(heartbeatRuns.companyId, companyId)))
+    .then((rows: Array<{ responsibleUserId: string | null }>) => rows[0]?.responsibleUserId?.trim() || null);
+}
+
+function withAgentCommentAuthorizationMetadata(
+  metadata: IssueCommentMetadata | null,
+  authorizationReason: string | null | undefined,
+): IssueCommentMetadata {
+  const reason = authorizationReason?.trim() || "internal_agent_write";
+  return {
+    version: 1,
+    ...(metadata?.sourceRunId !== undefined ? { sourceRunId: metadata.sourceRunId } : {}),
+    authorizationReason: reason,
+    sections: metadata?.sections.length
+      ? metadata.sections
+      : [{
+          title: "Authorization",
+          rows: [{ type: "key_value", label: "Reason", value: reason }],
+        }],
+  };
+}
+
 /**
  * Best-effort agent attribution for comments whose stored author is a non-human
  * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
@@ -8518,11 +8552,17 @@ export function issueService(db: Db) {
     addComment: async (
       issueId: string,
       body: string,
-      actor: { agentId?: string; userId?: string; runId?: string | null },
+      actor: {
+        agentId?: string;
+        userId?: string;
+        runId?: string | null;
+        onBehalfOfUserId?: string | null;
+      },
       options?: {
         authorType?: IssueCommentAuthorType | null;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
+        authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
       },
@@ -8545,7 +8585,6 @@ export function issueService(db: Db) {
       );
       assertIssueCommentAuthorTypeAllowed(actor, authorType);
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
-      const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
       const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
@@ -8555,6 +8594,19 @@ export function issueService(db: Db) {
           "dropping invalid createdByRunId for issue comment insert",
         );
       }
+      const onBehalfOfUserId = actor.agentId
+        ? await resolveCommentResponsibleUserId(
+            dbOrTx,
+            issue.companyId,
+            createdByRunId,
+            actor.onBehalfOfUserId,
+          )
+        : null;
+      const metadata = issueCommentMetadataSchema.nullable().parse(
+        actor.agentId
+          ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
+          : options?.metadata ?? null,
+      );
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -8562,6 +8614,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          onBehalfOfUserId,
           authorType,
           createdByRunId,
           body: redactedBody,

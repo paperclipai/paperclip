@@ -10,6 +10,7 @@ import {
   agents,
   agentRuntimeState,
   agentWakeupRequests,
+  authUsers,
   budgetPolicies,
   companySecretBindings,
   companySecrets,
@@ -304,6 +305,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: "responsible-user",
+      name: "Responsible User",
+      email: "responsible-user@example.test",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
   }, 20_000);
 
   afterEach(async () => {

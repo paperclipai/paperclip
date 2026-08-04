@@ -26,6 +26,7 @@ describe("isThrottleCandidateIssueRewake", () => {
   const base = {
     reason: "issue_assigned",
     wakeCommentId: null,
+    requestedByActorType: "system" as const,
     forceFreshSession: false,
     hasExplicitResume: false,
   };
@@ -38,10 +39,34 @@ describe("isThrottleCandidateIssueRewake", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_graph_liveness_backstop" })).toBe(true);
   });
 
-  it("never throttles wakes that carry new information or an explicit escalation", () => {
-    expect(isThrottleCandidateIssueRewake({ ...base, wakeCommentId: "comment-1" })).toBe(false);
+  it("keeps agent comments throttle-eligible without granting human comment privileges", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      wakeCommentId: "comment-1",
+      requestedByActorType: "agent",
+    })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      wakeCommentId: "comment-1",
+      requestedByActorType: "user",
+    })).toBe(false);
+  });
+
+  it("never throttles trusted explicit escalation wakes", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, forceFreshSession: true })).toBe(false);
     expect(isThrottleCandidateIssueRewake({ ...base, hasExplicitResume: true })).toBe(false);
+  });
+
+  it("keeps agent-authored explicit resume comments throttle-eligible", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_reopened_via_comment",
+      wakeCommentId: "comment-1",
+      requestedByActorType: "agent",
+      hasExplicitResume: true,
+    })).toBe(true);
   });
 
   it("passes event-shaped wake reasons through", () => {
