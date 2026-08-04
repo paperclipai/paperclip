@@ -17,6 +17,26 @@ passende Modell auf dem Renderknoten bereits liegt:
 Es fehlt allein die Verdrahtung: eine Workflow-Vorlage, ein Modellname im
 Brief und ein Weg, das Quellbild auf den Knoten zu bekommen.
 
+> **Korrektur vom 04.08., nach dem ersten Rauchtest:** Der Satz oben war
+> falsch — genauer: er verwechselte *liegt auf dem Knoten* mit *läuft auf dem
+> Knoten*. `qwen_image_edit_2511_int8_convrot` ist **int8**-quantisiert, und
+> die Int8-Matrixmultiplikation `aten::_int_mm` gibt es auf dem MPS-Backend
+> nicht. Das Modell konnte auf Apple Silicon nie rechnen; der erste echte
+> Auftrag scheiterte im `KSampler`.
+>
+> Für Qwen-Image-Edit **2511 gibt es kein reines `fp8_e4m3fn`** — nur `bf16`
+> (40,9 GB), `fp8mixed` (20,5 GB) und eben `int8_convrot`. Gewählt:
+> **`fp8mixed`**, gleiche Modellgeneration wie die Lightning-4steps-LoRA auf
+> dem Knoten und dasselbe fp8-Muster, mit dem der normale Bildpfad dort
+> seit Tagen läuft.
+>
+> **Die Lektion, allgemeiner:** Eine Modelldatei auf der Platte ist kein
+> Beleg für Lauffähigkeit. Vor dem Planen eines Renderpfads gehört ein
+> Ein-Schritt-Sampler-Lauf gegen das Modell — die Quantisierung entscheidet,
+> ob Metal es überhaupt rechnen kann. Das ist die zweite Quantisierungsfalle
+> dieses Knotens; die erste (LoRA-Variante gegen Basismodell) steht in
+> [`2026-08-03-360-panorama-und-video.md`](2026-08-03-360-panorama-und-video.md).
+
 ## Umfang
 
 **Drin:** ein bis drei Quellbilder je Auftrag, als Anhänge am Issue.
