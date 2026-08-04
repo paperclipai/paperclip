@@ -297,7 +297,10 @@ describeEmbeddedPostgres("agent service clearError", () => {
     expect(terminalIssue?.assigneeAgentId).toBe(terminatedAgentId);
     expect(directReport?.reportsTo).toBe(managerId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({ authorType: "system" });
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      body: `System: assignment released from source agent ${terminatedAgentId}; reason: agent was terminated; reassigned to its manager.`,
+    });
   });
 
   it("allows the released manager to PATCH work after terminating its assignee", async () => {
@@ -363,7 +366,13 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await agentService(db).terminate(terminatedAgentId);
 
     const [openIssue] = await db.select().from(issues).where(eq(issues.id, openIssueId));
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, openIssueId));
     expect(openIssue?.assigneeAgentId).toBeNull();
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      body: `System: assignment released from source agent ${terminatedAgentId}; reason: agent was terminated; moved to the unassigned queue.`,
+    });
   });
 
   it("releases open work to the unassigned queue when the terminated agent's manager is pending approval", async () => {

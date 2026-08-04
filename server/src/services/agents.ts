@@ -760,8 +760,8 @@ export function agentService(db: Db) {
               issueId: issue.id,
               authorType: "system" as const,
               body: replacementAssigneeId
-                ? "System: assignment released because the prior agent was terminated; reassigned to its manager."
-                : "System: assignment released because the prior agent was terminated; moved to the unassigned queue.",
+                ? `System: assignment released from source agent ${id}; reason: agent was terminated; reassigned to its manager.`
+                : `System: assignment released from source agent ${id}; reason: agent was terminated; moved to the unassigned queue.`,
               createdAt: now,
               updatedAt: now,
             })),

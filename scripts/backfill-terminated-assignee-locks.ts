@@ -71,8 +71,8 @@ async function main() {
           issueId: candidate.issueId,
           authorType: "system",
           body: assigneeAgentId
-            ? "System backfill: released an assignment held by a terminated agent to its manager."
-            : "System backfill: released an assignment held by a terminated or missing agent to the unassigned queue.",
+            ? `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; reassigned to its manager.`
+            : `System backfill: released an assignment from source agent ${candidate.assigneeAgentId}; reason: ${candidate.assigneeStatus === "terminated" ? "agent was terminated" : "source agent is missing"}; moved to the unassigned queue.`,
         });
       });
     }
