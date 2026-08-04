@@ -108,6 +108,7 @@ export type AuthorizationDecision = {
     | "allow_direct_parent_report"
     | "allow_self"
     | "allow_company_agent"
+    | "allow_company_ceo"
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
@@ -2015,6 +2016,13 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (actorAgent.role.toLowerCase() === "ceo") {
+        return allow({
+          action: input.action,
+          reason: "allow_company_ceo",
+          explanation: "Allowed because the actor is the company CEO.",
         });
       }
       if (
