@@ -78,11 +78,32 @@ async function main() {
     }
   }
 
+  let afterCount = beforeCount;
+  if (!dryRun) {
+    afterCount = 0;
+    for (const company of companyRows) {
+      const remainingCandidates = await db
+        .select({ issueId: issues.id })
+        .from(issues)
+        .leftJoin(agents, eq(issues.assigneeAgentId, agents.id))
+        .where(
+          and(
+            eq(issues.companyId, company.id),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNotNull(issues.assigneeAgentId),
+            or(eq(agents.status, "terminated"), isNull(agents.id)),
+          ),
+        );
+      afterCount += remainingCandidates.length;
+    }
+  }
+
   console.log(`${dryRun ? "Dry run: " : ""}terminated-assignee backfill counts`);
   console.log(`before=${beforeCount}`);
   console.log(`released_to_manager=${releasedToManager}`);
   console.log(`released_to_unassigned_queue=${releasedToQueue}`);
-  console.log(`after=${dryRun ? beforeCount : 0}`);
+  console.log(`after=${afterCount}`);
+  await db.$client.end({ timeout: 1 });
 }
 
 void main().catch((error) => {
