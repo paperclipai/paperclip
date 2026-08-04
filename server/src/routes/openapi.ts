@@ -2082,6 +2082,7 @@ registry.registerPath({
     ),
     401: r.unauthorized,
     404: r.notFound,
+    409: r.conflict,
   },
 });
 
