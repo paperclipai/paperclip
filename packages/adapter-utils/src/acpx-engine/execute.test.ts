@@ -35,7 +35,11 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
-import { getActiveStepContext, SANDBOX_STARTUP_SPAN_ATTRS } from "./startup-timing.js";
+import {
+  getActiveStepContext,
+  runWithRuntimeParent,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "./startup-timing.js";
 
 
 const tempRoots: string[] = [];
@@ -3887,6 +3891,261 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     );
     expect(result.exitCode).toBe(0);
     expect(spans).toHaveLength(0);
+  });
+
+  it("test_full_trace_tree_parents_correctly", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Drive one remote-sandbox run and issue an exec at four points of the run.
+    // Each exec issues through the same host-to-sandbox seam that the run uses,
+    // so the recorder captures the exact parent of each exec span. Each point
+    // fires exactly once, so the run records exactly four `sandbox.exec` spans.
+    let rootRegionExecFired = false;
+    let syncExecFired = false;
+    let turnExecFired = false;
+
+    // A run-scoped getter holder. The engine publishes the current-run parent
+    // token through `runtimeOptions.getRuntimeParentContext`. A detached site
+    // reads it per unit of work and wraps the work in `runWithRuntimeParent`.
+    let getRuntimeParentContext: (() => unknown) | undefined;
+
+    const execute = createAcpxEngineExecutor({
+      prepareRemoteManagedHome: async (input) => {
+        // Point 2: an exec inside the measured `stage.sync` step body. The step
+        // overrides the runtime-parent store, so this exec parents to the sync
+        // step span, not to `sandbox.startup`.
+        if (!syncExecFired) {
+          syncExecFired = true;
+          issueSandboxExecFromStore(traceContext);
+        }
+        const stagedRuntime = await input.stage([]);
+        return { stagedRuntime };
+      },
+      createRuntime: (options) => {
+        const opts = options as unknown as {
+          getRuntimeParentContext?: () => unknown;
+        };
+        getRuntimeParentContext = opts.getRuntimeParentContext;
+        const runtime = buildRuntime();
+        return {
+          ...runtime,
+          startTurn: (input: Record<string, unknown>) => {
+            // Point 3: a detached exec during the turn. The detached site reads
+            // the getter (the `agent.turn` token here) and wraps the work in
+            // `runWithRuntimeParent`, so the exec parents to `agent.turn`.
+            if (!turnExecFired) {
+              turnExecFired = true;
+              runWithRuntimeParent(opts.getRuntimeParentContext?.(), () =>
+                issueSandboxExecFromStore(traceContext),
+              );
+            }
+            return (runtime.startTurn as (input: unknown) => unknown)(input);
+          },
+        } as never;
+      },
+    });
+
+    const runtimeMcp = {
+      getServers: () => {
+        // Point 1: a root-region exec. `getServers` runs inside the bring-up,
+        // after `sandbox.startup` opens and outside every measured step, so the
+        // store holds the `sandbox.startup` context and this exec parents to it.
+        if (!rootRegionExecFired) {
+          rootRegionExecFired = true;
+          issueSandboxExecFromStore(traceContext);
+        }
+        return [];
+      },
+    };
+
+    const result = await execute({
+      runId: "run-e2e-tree",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      runtimeMcp: runtimeMcp as never,
+      startupTraceContext: traceContext,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+
+    // Point 4: a detached exec after the turn. The getter returns the `task.run`
+    // token now, so an off-turn detached exec parents to `task.run`.
+    runWithRuntimeParent(getRuntimeParentContext?.(), () =>
+      issueSandboxExecFromStore(traceContext),
+    );
+
+    // The four framing spans of the run.
+    const runSpan = spans.find((span) => span.name === "task.run");
+    expect(runSpan).toBeTruthy();
+    const startupSpan = spans.find((span) => span.name === "sandbox.startup");
+    expect(startupSpan).toBeTruthy();
+    const turnSpan = spans.find((span) => span.name === "agent.turn");
+    expect(turnSpan).toBeTruthy();
+    const syncStepSpan = spans.find((span) => span.name === "stage.sync");
+    expect(syncStepSpan).toBeTruthy();
+
+    // `task.run` is the trace root. `sandbox.startup` and `agent.turn` are its
+    // direct children.
+    expect(runSpan!.parent).toBeNull();
+    expect(startupSpan!.parent).toBe(runSpan);
+    expect(turnSpan!.parent).toBe(runSpan);
+
+    // The run records exactly the four injected exec spans.
+    const execSpans = spans.filter((span) => span.name === "sandbox.exec");
+    expect(execSpans).toHaveLength(4);
+
+    // A root-region exec parents to `sandbox.startup`.
+    const rootRegionExec = execSpans.find((span) => span.parent === startupSpan);
+    expect(rootRegionExec, "a root-region exec must parent to sandbox.startup").toBeTruthy();
+
+    // A `stage.sync` body exec parents to the sync step, not to `sandbox.startup`.
+    const syncExec = execSpans.find((span) => span.parent === syncStepSpan);
+    expect(syncExec, "a stage.sync exec must parent to the sync step").toBeTruthy();
+    expect(syncExec!.parent).not.toBe(startupSpan);
+
+    // A turn detached exec parents to `agent.turn`.
+    const turnExec = execSpans.find((span) => span.parent === turnSpan);
+    expect(turnExec, "a turn detached exec must parent to agent.turn").toBeTruthy();
+
+    // An off-turn detached exec parents to `task.run`.
+    const offTurnExec = execSpans.find((span) => span.parent === runSpan);
+    expect(offTurnExec, "an off-turn detached exec must parent to task.run").toBeTruthy();
+
+    // The four execs are distinct spans with four distinct parents.
+    const execParents = new Set([rootRegionExec, syncExec, turnExec, offTurnExec]);
+    expect(execParents.size).toBe(4);
+  });
+
+  it("test_no_sandbox_exec_parents_to_http_root", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Open a top-level HTTP request span before the run. In production the run
+    // opens under the HTTP request span, and the buggy exec parented to it. The
+    // recorder resolves an explicit parent token to its `span`, and it resolves
+    // an `undefined` token to `null`. A `sandbox.exec` issued with an `undefined`
+    // token is exactly the exec that the real tracer would attach to the ambient
+    // HTTP request span. So the two negatives are: no exec names this request
+    // span, and no exec opens with an `undefined` token (the ambient root).
+    const httpRequestSpan = traceContext.tracer.startSpan("http.request", undefined, undefined);
+
+    let rootRegionExecFired = false;
+    let syncExecFired = false;
+    let turnExecFired = false;
+    let getRuntimeParentContext: (() => unknown) | undefined;
+
+    const execute = createAcpxEngineExecutor({
+      prepareRemoteManagedHome: async (input) => {
+        if (!syncExecFired) {
+          syncExecFired = true;
+          issueSandboxExecFromStore(traceContext);
+        }
+        const stagedRuntime = await input.stage([]);
+        return { stagedRuntime };
+      },
+      createRuntime: (options) => {
+        const opts = options as unknown as {
+          getRuntimeParentContext?: () => unknown;
+        };
+        getRuntimeParentContext = opts.getRuntimeParentContext;
+        const runtime = buildRuntime();
+        return {
+          ...runtime,
+          startTurn: (input: Record<string, unknown>) => {
+            // The detached site reads the getter and wraps the work. The getter
+            // never returns `undefined` inside a live run, so this exec never
+            // detaches to the HTTP request span.
+            if (!turnExecFired) {
+              turnExecFired = true;
+              runWithRuntimeParent(opts.getRuntimeParentContext?.(), () =>
+                issueSandboxExecFromStore(traceContext),
+              );
+            }
+            return (runtime.startTurn as (input: unknown) => unknown)(input);
+          },
+        } as never;
+      },
+    });
+
+    const runtimeMcp = {
+      getServers: () => {
+        if (!rootRegionExecFired) {
+          rootRegionExecFired = true;
+          issueSandboxExecFromStore(traceContext);
+        }
+        return [];
+      },
+    };
+
+    const result = await execute({
+      runId: "run-e2e-http",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      runtimeMcp: runtimeMcp as never,
+      startupTraceContext: traceContext,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+
+    // The off-turn detached exec also reads the getter, so it also stays under a
+    // run span.
+    runWithRuntimeParent(getRuntimeParentContext?.(), () =>
+      issueSandboxExecFromStore(traceContext),
+    );
+
+    const execSpans = spans.filter((span) => span.name === "sandbox.exec");
+    // The run issues four exec spans, so there is something to scan.
+    expect(execSpans.length).toBeGreaterThan(0);
+
+    for (const span of execSpans) {
+      // Negative 1: no exec parents to the top-level HTTP request span.
+      expect(span.parent, "a sandbox.exec must not parent to the HTTP request span").not.toBe(
+        httpRequestSpan,
+      );
+      // Negative 2: no exec opens unparented inside the run. An `undefined`
+      // parent token is the ambient root that would attach to the HTTP request
+      // span in production, and a `null` parent is a detached span.
+      expect(span.parentContextArg, "a sandbox.exec must open with an explicit parent token")
+        .not.toBeUndefined();
+      expect(span.parent, "a sandbox.exec must not open unparented inside the run").not.toBeNull();
+    }
   });
 });
 
