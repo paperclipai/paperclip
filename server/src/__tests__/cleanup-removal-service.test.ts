@@ -292,6 +292,26 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
+  it("cancels active runs before deleting managed files", async () => {
+    const { companyId, runId } = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const order: string[] = [];
+    const cancelRun = vi.fn(async () => {
+      order.push("cancel");
+    });
+    const removeManagedFiles = vi.fn(async () => {
+      order.push("cleanup");
+    });
+
+    const removed = await companyService(db, { cancelRun, removeManagedFiles }).remove(companyId, {
+      deleteFiles: true,
+    });
+
+    expect(cancelRun).toHaveBeenCalledWith(runId, "Cancelled because the company was deleted");
+    expect(order).toEqual(["cancel", "cleanup"]);
+    expect(removed?.fileCleanup).toBe("succeeded");
+  });
+
   it("does not delete managed files by default", async () => {
     const { companyId } = await seedFixture();
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
