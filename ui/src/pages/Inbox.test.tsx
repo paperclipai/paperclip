@@ -465,12 +465,14 @@ describe("Inbox toolbar", () => {
 
     const rows = container.querySelectorAll("[data-inbox-item]");
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
+    // The hover wash lives on the IssueRow root band (the overlay link's
+    // parent), not the overlay link itself.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
 
     // Nothing selected before hover — both rows show the hover-accent class.
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
     // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
     // state-selected band (which would swap to hover:bg-transparent). Coupling
@@ -482,9 +484,9 @@ describe("Inbox toolbar", () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
 
     act(() => {
       root.unmount();
@@ -578,12 +580,13 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
-    // The keyboard-selected row swaps to `hover:bg-transparent`; find its index.
+    // The keyboard-selected row swaps to `hover:bg-transparent` on its root
+    // band (the overlay link's parent, where the wash now lives); find its index.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
     const selectedRowIndex = () =>
       [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
-        linkOf(row)?.className.includes("hover:bg-transparent"),
+        bandOf(row)?.className.includes("hover:bg-transparent"),
       );
 
     try {

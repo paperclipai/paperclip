@@ -236,6 +236,8 @@
   --motion-count-tween: var(--motion-duration-slow);
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
+  --motion-line-scroll: 240ms;          /* completed interstitial line sliding out of the 1lh live-line viewport */
+  --motion-interstitial-dwell: 4000ms;  /* interstitial update hold: minimum before the next swaps in, and how long a finished update sits before sliding away */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
@@ -535,6 +537,10 @@
     --motion-plan-entry-stagger: 0ms;
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
+    --motion-line-scroll: 0ms;
+    /* --motion-interstitial-dwell is deliberately NOT zeroed: it is a pacing
+       hold, not a movement — zeroing it would make the interstitial line churn
+       faster under reduced motion. Swaps themselves snap (line-scroll: 0). */
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
@@ -570,7 +576,6 @@
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
 }
-
 .tc-enter-bubble { animation: tc-fade-rise var(--motion-bubble-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-marker { animation: tc-fade-in var(--motion-marker-enter) var(--motion-ease-out) both; }
 .tc-enter-tool { animation: tc-fade-rise var(--motion-tool-enter) var(--motion-ease-out-expo) both; }
@@ -580,6 +585,13 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+/* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
+   wrapped interstitial block. On wrap, the inner block translates up whole
+   line-heights (set inline as translateY(-(n−1)·1lh)) so the completed line
+   slides out the top — transform-only, same motion grammar as tool rows
+   animating in. */
+.tc-line-scroll { display: block; height: 1lh; overflow: hidden; }
+.tc-line-scroll-inner { transition: transform var(--motion-line-scroll) var(--motion-ease-standard); will-change: transform; }
 
 /* Scroll-to-latest pill (stock shadcn MessageScrollerButton motion, tokenized).
    The pill is centered with translateX(-50%), so the keyframes carry the X
@@ -621,6 +633,7 @@
   .tc-scroll-pill-out,
   .tc-enter-plan-entry { animation: none; }
   .tc-turn-fold,
+  .tc-line-scroll-inner,
   .tc-pane-glide { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
@@ -894,6 +907,44 @@
 .shimmer-text-muted {
   --shimmer-base: var(--muted-foreground);
   --shimmer-highlight: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+}
+
+/* Utilities expected by shadcn base components (ui/attachment.tsx). Declared
+   with @utility so variant forms (e.g. group-data-[state=uploading]:shimmer)
+   compile under Tailwind v4. */
+@utility shimmer {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility scroll-fade-x {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 12px,
+    black calc(100% - 12px),
+    transparent
+  );
 }
 
 @media (prefers-reduced-motion: reduce) {

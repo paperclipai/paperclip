@@ -291,6 +291,14 @@ export interface PluginInvocationScope {
 export interface PluginInvocationContext {
   id: string;
   scope: PluginInvocationScope;
+  /**
+   * An optional W3C `traceparent` for the active host span. The host mints it
+   * per call from the active startup span. The worker treats it as opaque: it
+   * tags its provider span with it and never derives parentage from it. The host
+   * mints the parentage from its own invocation record, so a worker can never
+   * forge a parent.
+   */
+  traceparent?: string;
 }
 
 /**
@@ -300,6 +308,12 @@ export interface PluginInvocationContext {
 export interface WorkerHostCallContext {
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
+  /**
+   * The W3C `traceparent` the host minted for the echoed invocation. The host
+   * recovers it from its own invocation record, not from the worker, so a worker
+   * can never forge a span parent. The span host handler validates and uses it.
+   */
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1270,6 +1284,25 @@ export interface WorkerToHostMethods {
       meta?: Record<string, unknown>;
       /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
       companyId?: string | null;
+    },
+    result: void,
+  ];
+
+  // Provider span sink. The worker sends a finished provider span; the host
+  // re-clamps the label and the attributes at its trust boundary, mints the
+  // parentage from its own invocation record, and records the span through the
+  // real tracer. The worker never sends the parent `traceparent`; the host
+  // recovers it from the echoed invocation id. The RPC is capability-gated.
+  "span.record": [
+    params: {
+      /** The bounded span name (for example `pack` or `transfer`). The host
+       * clamps it to a closed set, so a name never carries free-form data. */
+      name: string;
+      /** The span attributes. The host drops every key that is not on the closed
+       * plugin-span allowlist and re-clamps each remaining value. */
+      attributes?: Record<string, string | number | boolean>;
+      /** The optional span status. */
+      status?: { code: number; message?: string };
     },
     result: void,
   ];

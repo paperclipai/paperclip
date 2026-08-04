@@ -892,6 +892,172 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("supersedes older pending confirmations from the same agent without crossing agent or kind", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Newer confirmation supersedes older");
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const older = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:first:older",
+      payload: { version: 1, prompt: "Approve the older draft?" },
+    }, { agentId: firstAgentId });
+    const otherKind = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      idempotencyKey: "checkbox:first",
+      payload: {
+        version: 1,
+        prompt: "Select regions",
+        options: [{ id: "us", label: "US" }],
+      },
+    }, { agentId: firstAgentId });
+    const otherAgent = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:second",
+      payload: { version: 1, prompt: "Approve the second agent's draft?" },
+    }, { agentId: secondAgentId });
+    const replacement = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "confirmation:first:newer",
+      payload: { version: 1, prompt: "Approve the newer draft?" },
+    }, { agentId: firstAgentId });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    expect(interactions.find((interaction) => interaction.id === older.id)).toMatchObject({
+      status: "expired",
+      resolvedByAgentId: firstAgentId,
+      result: {
+        outcome: "superseded_by_newer_request",
+        supersededByInteractionId: replacement.id,
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === replacement.id)?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === otherAgent.id)?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
+  });
+
+  it("sweeps historical confirmation pile-ups idempotently per issue, kind, and agent", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical confirmation sweep");
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const firstAgentIds = [randomUUID(), randomUUID(), randomUUID()];
+    const secondAgentIds = [randomUUID(), randomUUID()];
+    const checkboxId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      ...firstAgentIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: firstAgentId,
+        payload: { version: 1 as const, prompt: `First agent draft ${index + 1}` },
+        createdAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+      })),
+      ...secondAgentIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: secondAgentId,
+        payload: { version: 1 as const, prompt: `Second agent draft ${index + 1}` },
+        createdAt: new Date(`2026-07-01T13:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T13:0${index}:00.000Z`),
+      })),
+      {
+        id: checkboxId,
+        companyId,
+        issueId,
+        kind: "request_checkbox_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: firstAgentId,
+        payload: { version: 1, prompt: "Select one", options: [{ id: "one", label: "One" }] },
+        createdAt: new Date("2026-07-01T14:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T14:00:00.000Z"),
+      },
+    ]);
+
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 3 });
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 0 });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    for (const id of firstAgentIds.slice(0, -1)) {
+      expect(interactions.find((interaction) => interaction.id === id)).toMatchObject({
+        status: "expired",
+        result: {
+          outcome: "superseded_by_newer_request",
+          supersededByInteractionId: firstAgentIds.at(-1),
+        },
+      });
+    }
+    expect(interactions.find((interaction) => interaction.id === firstAgentIds.at(-1))?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === secondAgentIds[0])).toMatchObject({
+      status: "expired",
+      result: {
+        outcome: "superseded_by_newer_request",
+        supersededByInteractionId: secondAgentIds[1],
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === secondAgentIds[1])?.status).toBe("pending");
+    expect(interactions.find((interaction) => interaction.id === checkboxId)?.status).toBe("pending");
+  });
+
   it("refuses to create an interaction on a closed issue", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Closed issue create guard");
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));

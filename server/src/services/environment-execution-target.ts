@@ -5,7 +5,13 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
-import { normalizeProviderFamily } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import {
+  clampSpanLabel,
+  getActiveStepContext,
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_OUTCOME,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { parseObject } from "../adapters/utils.js";
 import { getStartupTracer } from "../instrumentation.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
@@ -17,12 +23,25 @@ export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
  * span satisfies it; the no-op tracer's span satisfies it too. */
 type ExecSpan = {
   setAttribute(key: string, value: string | number | boolean): void;
+  setStatus(status: { code: number; message?: string }): void;
   end(): void;
 };
 
+/**
+ * The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. The server injects
+ * a real OTel span, but this module stays OTel-free, so it uses the numeric value
+ * directly. A failed exec span sets this status, so a trace UI counts and filters
+ * the failure through the native span status, not only the `outcome` attribute.
+ */
+const SPAN_STATUS_CODE_ERROR = 2;
+
 /** The minimal tracer surface the provider-exec seam calls. `getStartupTracer`
- * returns a real or no-op implementation that satisfies it. */
-type ExecTracer = { startSpan(name: string): ExecSpan };
+ * returns a real or no-op implementation that satisfies it. The optional third
+ * argument is the explicit parent-context token: the seam passes the active
+ * step context, so the exec span parents to its step span. */
+type ExecTracer = {
+  startSpan(name: string, options?: unknown, context?: unknown): ExecSpan;
+};
 
 /**
  * Set a numeric span attribute only when the value is a finite number. A value
@@ -34,6 +53,112 @@ function setFiniteNumberAttr(span: ExecSpan, key: string, value: unknown): void 
   if (typeof value === "number" && Number.isFinite(value)) {
     span.setAttribute(key, value);
   }
+}
+
+/** Read a free-form metadata value as a finite number, or `undefined`. The
+ * provider durations ride the exec result's untyped `metadata`, so a provider
+ * that omits or mistypes one yields no attribute — never a misleading `0`. */
+function toFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Read a free-form metadata value as a boolean, or `undefined`. The provider
+ * cache-hit flag rides the exec result's untyped `metadata`, so a provider that
+ * omits or mistypes it yields no attribute — never a misleading `false`. */
+function toBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * The closed input for one `sandbox.exec` span. The seam builds it from the
+ * exec result and the active step context. Every field is already bounded or
+ * numeric; the raw command clamps inside the helper below.
+ */
+interface SandboxExecSpanInput {
+  /** The low-cardinality provider family (already through `normalizeProviderFamily`). */
+  provider: string;
+  /** The raw `argv[0]`. The helper clamps it; the raw value never rides the span. */
+  command: string;
+  /** The numeric process exit code, or `null`. */
+  exitCode: number | null;
+  /** The host-measured wall time of the execution. */
+  wallMs: number;
+  /** The provider handle-fetch wait before the execution ran. */
+  waitBeforeMs: number | undefined;
+  /** The in-sandbox run time of the execution. */
+  sandboxMs: number | undefined;
+  /** Whether the execution sits on the startup critical path. */
+  criticalPath: boolean;
+  /** Whether the provider served the sandbox handle from its warm cache. */
+  cacheHit: boolean | undefined;
+}
+
+/**
+ * Assemble every `sandbox.exec` span attribute in one place. This is the single
+ * producer-side boundary for the exec span: it sets only the closed
+ * `paperclip.sandbox.startup.exec.*` allowlist. The command rides only as a
+ * clamped label, so a full command line, an argument, a path, an environment
+ * value, or any standard-stream text can never ride the span. A non-finite
+ * numeric input yields no attribute (fail open — never `NaN`, never a
+ * misleading `0`).
+ */
+function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInput): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  if (typeof input.exitCode === "number" && Number.isFinite(input.exitCode)) {
+    span.setAttribute(A.execExitCode, input.exitCode);
+  }
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  setFiniteNumberAttr(span, A.execWaitBeforeMs, input.waitBeforeMs);
+  setFiniteNumberAttr(span, A.execSandboxMs, input.sandboxMs);
+  // The transport time the host adds around the provider work: wall minus the
+  // handle-fetch wait minus the in-sandbox run. Set it only when both parts are
+  // present, so a provider that reports no durations yields no derived value.
+  if (input.waitBeforeMs !== undefined && input.sandboxMs !== undefined) {
+    setFiniteNumberAttr(span, A.execNetworkMs, input.wallMs - input.waitBeforeMs - input.sandboxMs);
+  }
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  // The explicit provider cache-hit flag, from `result.metadata.cacheHit`. The
+  // plugin decides it at the handle lookup, so the span no longer infers a
+  // cache hit from `wait_before_ms == 0`. A provider that omits it yields no
+  // attribute.
+  if (typeof input.cacheHit === "boolean") {
+    span.setAttribute(A.execCacheHit, input.cacheHit);
+  }
+  const failed = input.exitCode !== 0;
+  span.setAttribute(
+    A.outcome,
+    failed ? SANDBOX_STARTUP_OUTCOME.failed : SANDBOX_STARTUP_OUTCOME.ok,
+  );
+  // A non-zero exit code is a failed execution, so set the native span status to
+  // ERROR too. The success path leaves the status unset, so a successful exec
+  // keeps the default OTel status. A `null` exit code counts as failed here.
+  if (failed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+}
+
+/**
+ * Record a failed `sandbox.exec` span when the provider execution throws. There
+ * is no exec result, so only the bounded provider family, the clamped command
+ * label, the measured wall time, the critical-path flag, and the `failed`
+ * outcome ride the span. The raw command never rides the span. A thrown
+ * execution now still produces a span, instead of no span at all.
+ */
+function setSandboxExecSpanFailure(
+  span: ExecSpan,
+  input: { provider: string; command: string; wallMs: number; criticalPath: boolean },
+): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  span.setAttribute(A.outcome, SANDBOX_STARTUP_OUTCOME.failed);
+  // A thrown execution is a failed execution, so set the native span status to
+  // ERROR too, not only the `outcome` attribute.
+  span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
 }
 
 export async function resolveEnvironmentExecutionTarget(input: {
@@ -89,20 +214,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
-    // Per-lease-runner cumulative counters for startup-step attribution (Open
-    // Q1). Closed over by the `runner.execute` seam below and read back as
-    // deltas by `measureStartupStep`.
-    let execCount = 0;
-    let providerExecMs = 0;
-    let providerGetMs = 0;
-    const accumulateProviderDurations = (metadata: Record<string, unknown> | undefined): void => {
-      if (!metadata) return;
-      const exec = metadata.durationMs;
-      const get = metadata.getDurationMs;
-      if (typeof exec === "number" && Number.isFinite(exec)) providerExecMs += exec;
-      if (typeof get === "number" && Number.isFinite(get)) providerGetMs += get;
-    };
-
     // The low-cardinality public provider family. A plugin-backed / operator-
     // defined key maps to `plugin`, so a raw unbounded key never rides a span.
     const providerFamily = normalizeProviderFamily(parsed.config.provider);
@@ -130,60 +241,113 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // here. The client falls back to the chunked upload path when this is
             // false.
             supportsSingleStreamStdinProgress: false,
-            // Round-trip counter + provider-duration accumulators on the single
-            // host→sandbox exec seam (Open Q1). `measureStartupStep` reads the
-            // per-step delta of each via the `() => number` closures below. The
-            // provider durations ride the exec result's free-form `metadata`
-            // (set by the Daytona plugin), so no protocol/schema change is
-            // needed and providers that omit them simply accumulate nothing.
-            execCount: () => execCount,
-            providerExecMs: () => providerExecMs,
-            providerGetMs: () => providerGetMs,
             execute: async (commandInput) => {
-              execCount += 1;
-              const startedAt = new Date().toISOString();
-              const result = await input.environmentRuntime!.execute({
-                environment: input.environment as Environment,
-                lease: input.lease!,
-                command: commandInput.command,
-                args: commandInput.args,
-                cwd: commandInput.cwd ?? remoteCwd,
-                env: commandInput.env,
-                stdin: commandInput.stdin,
-                timeoutMs: commandInput.timeoutMs,
-              });
-              accumulateProviderDurations(result.metadata);
-              // Emit one span for this host→sandbox exec (opt-in; a no-op tracer
-              // when tracing is off). It carries ONLY closed-allowlist,
-              // low-cardinality attributes: the normalized provider family, the
-              // exit status (a two-value enum), and the host-received provider
-              // durations (per field, only when finite). The full command, args,
-              // env, stdout, and stderr never ride a span — not as an attribute
-              // and not as an event. The span name is the fixed operation label.
+              // Record true start and stop timestamps around the provider await,
+              // so the exec span and the result carry a real wall time.
+              const startedAtMs = Date.now();
+              const startedAt = new Date(startedAtMs).toISOString();
+              // Open one `sandbox.exec` span BEFORE the provider await, so the
+              // native span duration covers the whole execution and a thrown
+              // execution still produces a span. The span parents to the active
+              // step span. `startSpan` sits inside a guard; observability must
+              // never change execution control flow, and a no-op tracer
+              // (tracing off) makes the whole block inert.
+              const activeStep = getActiveStepContext();
+              const criticalPath = activeStep?.criticalPath ?? true;
+              let span: ExecSpan | null = null;
               try {
-                const span = tracer.startSpan("provider.execute");
-                try {
-                  span.setAttribute("provider", providerFamily);
-                  span.setAttribute("exit", result.exitCode === 0 ? "ok" : "error");
-                  setFiniteNumberAttr(span, "provider.exec.duration_ms", result.metadata?.durationMs);
-                  setFiniteNumberAttr(span, "provider.get.duration_ms", result.metadata?.getDurationMs);
-                } finally {
-                  span.end();
-                }
+                span = tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
               } catch {
-                // Observability must not change execution control flow.
+                span = null;
               }
-              if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-              if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-              return {
-                exitCode: result.exitCode,
-                signal: result.signal ?? null,
-                timedOut: result.timedOut,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                pid: null,
-                startedAt,
-              };
+              try {
+                // Classify the span outcome from the provider execution ONLY.
+                // The inner try/catch wraps just the provider await, so a thrown
+                // provider execution marks the span failed. A later log-callback
+                // rejection sits outside this block and never flips a successful
+                // execution to failed.
+                let result;
+                try {
+                  result = await input.environmentRuntime!.execute({
+                    environment: input.environment as Environment,
+                    lease: input.lease!,
+                    command: commandInput.command,
+                    args: commandInput.args,
+                    cwd: commandInput.cwd ?? remoteCwd,
+                    env: commandInput.env,
+                    stdin: commandInput.stdin,
+                    timeoutMs: commandInput.timeoutMs,
+                  });
+                } catch (error) {
+                  // The provider execution threw. Mark the span failed with the
+                  // measured wall time, then rethrow the original error unchanged.
+                  if (span) {
+                    try {
+                      setSandboxExecSpanFailure(span, {
+                        provider: providerFamily,
+                        command: commandInput.command,
+                        wallMs: Date.now() - startedAtMs,
+                        criticalPath,
+                      });
+                    } catch {
+                      // Observability must not change execution control flow.
+                    }
+                  }
+                  throw error;
+                }
+                // The provider execution succeeded. The span timing and outcome
+                // come from the command result, not from the log callbacks below.
+                const finishedAtMs = Date.now();
+                const finishedAt = new Date(finishedAtMs).toISOString();
+                const durationMs = finishedAtMs - startedAtMs;
+                // `setSandboxExecSpanAttributes` sets ONLY the closed
+                // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
+                // provider family, the clamped command label, the numeric exit
+                // code, the wall / wait-before / sandbox / network times, the
+                // critical-path flag, and the outcome. The full command, args,
+                // env, stdout, and stderr never ride the span.
+                if (span) {
+                  try {
+                    setSandboxExecSpanAttributes(span, {
+                      provider: providerFamily,
+                      command: commandInput.command,
+                      exitCode: result.exitCode,
+                      wallMs: durationMs,
+                      waitBeforeMs: toFiniteNumber(result.metadata?.getDurationMs),
+                      sandboxMs: toFiniteNumber(result.metadata?.durationMs),
+                      criticalPath,
+                      cacheHit: toBoolean(result.metadata?.cacheHit),
+                    });
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+                // Deliver the captured output. A rejected `onLog` still
+                // propagates to the caller (control flow is unchanged), but the
+                // span already carries the successful outcome, so a log failure
+                // never marks the execution failed.
+                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+                return {
+                  exitCode: result.exitCode,
+                  signal: result.signal ?? null,
+                  timedOut: result.timedOut,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  pid: null,
+                  startedAt,
+                  finishedAt,
+                  durationMs,
+                };
+              } finally {
+                if (span) {
+                  try {
+                    span.end();
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+              }
             },
             // Expose the native file-sync capability only when the provider's
             // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut

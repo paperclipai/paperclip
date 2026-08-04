@@ -23,6 +23,12 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  // The stop timestamp and the measured wall time of one execution. Both are
+  // optional and additive: a producer that does not measure them leaves them
+  // absent, so the many existing `RunProcessResult` producers stay unchanged.
+  // The sandbox runner sets them, so the exec span records a true wall time.
+  finishedAt?: string | null;
+  durationMs?: number | null;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 

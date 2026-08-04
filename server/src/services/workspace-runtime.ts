@@ -77,6 +77,21 @@ export interface ExecutionWorkspaceInput {
   additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
 }
 
+/**
+ * A prepared credential-bearing git invocation for one remote URL, or null to keep ambient
+ * behavior. Structurally compatible with the provider built by `git-credentials.ts` — this
+ * module deliberately takes prepared invocations rather than tokens, so it never imports the
+ * secrets layer and test fakes stay trivial.
+ */
+export type GitRemoteAuthInvocation = {
+  configArgs: string[];
+  env: Record<string, string>;
+  source?: string;
+  secretName?: string | null;
+};
+
+export type GitRemoteAuthProvider = (remoteUrl: string) => Promise<GitRemoteAuthInvocation | null>;
+
 export interface ExecutionWorkspaceIssueRef {
   id: string;
   identifier: string | null;
@@ -562,11 +577,12 @@ async function executeProcess(input: {
   };
 }
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
+    env: opts?.env,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -597,26 +613,40 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   return { remote, branch };
 }
 
-async function refreshRemoteTrackingBaseRef(repoRoot: string, baseRef: string): Promise<string[]> {
+export async function refreshRemoteTrackingBaseRef(
+  repoRoot: string,
+  baseRef: string,
+  resolveGitAuth?: GitRemoteAuthProvider | null,
+): Promise<string[]> {
   const remoteTracking = parseRemoteTrackingRef(baseRef);
   if (!remoteTracking) return [];
 
-  const remoteExists = await runGit(["remote", "get-url", remoteTracking.remote], repoRoot)
-    .then(() => true)
-    .catch(() => false);
-  if (!remoteExists) return [];
+  const remoteUrl = await runGit(["remote", "get-url", remoteTracking.remote], repoRoot)
+    .then((value) => value.trim() || null)
+    .catch(() => null);
+  if (!remoteUrl) return [];
 
+  const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl).catch(() => null) : null;
   try {
     await runGit([
+      ...(auth?.configArgs ?? []),
       "fetch",
       "--prune",
       remoteTracking.remote,
       `+refs/heads/${remoteTracking.branch}:refs/remotes/${remoteTracking.remote}/${remoteTracking.branch}`,
-    ], repoRoot);
+    ], repoRoot, auth ? { env: { ...process.env, ...auth.env } } : undefined);
     return [];
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}`];
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    // Mask URL userinfo (any scheme) and whole URL query strings before the message rides
+    // warnings that reach run logs.
+    const message = rawMessage
+      .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
+      .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
+    const authNote = auth
+      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
+      : "";
+    return [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`];
   }
 }
 
@@ -637,6 +667,7 @@ export async function inspectExecutionWorkspaceBaseDrift(input: {
   baseRef: string | null;
   recordedBaseRefSha?: string | null;
   skipRefresh?: boolean;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{
   warnings: string[];
   currentBaseRefSha: string | null;
@@ -647,7 +678,9 @@ export async function inspectExecutionWorkspaceBaseDrift(input: {
     return { warnings: [], currentBaseRefSha: null, branchBaseRefSha: null };
   }
 
-  const warnings = input.skipRefresh ? [] : await refreshRemoteTrackingBaseRef(input.repoRoot, baseRef);
+  const warnings = input.skipRefresh
+    ? []
+    : await refreshRemoteTrackingBaseRef(input.repoRoot, baseRef, input.resolveGitAuth);
   const currentBaseRefSha = await resolveBaseRefSha(input.repoRoot, baseRef);
   if (!currentBaseRefSha) {
     warnings.push(`Could not resolve base ref ${baseRef} while checking execution workspace freshness.`);
@@ -1991,9 +2024,10 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 async function resolveAuthoritativeBaseRef(
   repoRoot: string,
   configuredBaseRef: string | null,
+  resolveGitAuth?: GitRemoteAuthProvider | null,
 ): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
   const warnings: string[] = [];
-  const detectOrHead = async () => (await detectDefaultBranch(repoRoot)) ?? "HEAD";
+  const detectOrHead = async () => (await detectDefaultBranch(repoRoot, resolveGitAuth)) ?? "HEAD";
 
   const configured = configuredBaseRef?.trim();
   if (!configured || configured === "HEAD") {
@@ -2008,7 +2042,7 @@ async function resolveAuthoritativeBaseRef(
     const remoteCandidate = `origin/${configured}`;
     // Refresh here and keep the warnings; the caller skips its own refresh of
     // the returned ref (see `refreshed`) so we never fetch the same ref twice.
-    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
       return { baseRef: remoteCandidate, warnings, refreshed: true };
     }
@@ -2179,9 +2213,12 @@ async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
-async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
+async function detectDefaultBranch(
+  repoRoot: string,
+  resolveGitAuth?: GitRemoteAuthProvider | null,
+): Promise<string | null> {
   const originMasterRef = "origin/master";
-  await refreshRemoteTrackingBaseRef(repoRoot, originMasterRef);
+  await refreshRemoteTrackingBaseRef(repoRoot, originMasterRef, resolveGitAuth);
   if (await resolveBaseRefSha(repoRoot, originMasterRef)) {
     return originMasterRef;
   }
@@ -2193,7 +2230,7 @@ async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
       repoRoot,
     );
     if (remoteHead) {
-      await refreshRemoteTrackingBaseRef(repoRoot, remoteHead);
+      await refreshRemoteTrackingBaseRef(repoRoot, remoteHead, resolveGitAuth);
       if (await resolveBaseRefSha(repoRoot, remoteHead)) return remoteHead;
     }
   } catch {
@@ -2203,7 +2240,7 @@ async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
   // Fallback: check for common default branch names on the remote
   for (const candidate of ["origin/master", "origin/main", "main", "master"]) {
     try {
-      await refreshRemoteTrackingBaseRef(repoRoot, candidate);
+      await refreshRemoteTrackingBaseRef(repoRoot, candidate, resolveGitAuth);
       await runGit(["rev-parse", "--verify", `${candidate}^{commit}`], repoRoot);
       return candidate;
     } catch {
@@ -2689,6 +2726,7 @@ export async function realizeExecutionWorkspace(input: {
   enableWorkspaceBranchReconcileForward?: boolean;
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
@@ -2727,10 +2765,10 @@ export async function realizeExecutionWorkspace(input: {
     baseRef,
     warnings: baseRefResolutionWarnings,
     refreshed: baseRefAlreadyRefreshed,
-  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef);
+  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
   const baseRefreshWarnings = [
     ...baseRefResolutionWarnings,
-    ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef)),
+    ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, input.resolveGitAuth)),
   ];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
 
@@ -2962,6 +3000,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   enableWorkspaceBranchReconcileForward?: boolean;
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<RealizedExecutionWorkspace | null> {
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
   if (!cwd) return null;
@@ -3039,7 +3078,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       );
     }
     const baseRefreshWarnings = reuseBaseRef
-      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)
+      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, input.resolveGitAuth)
       : [];
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
     const refresh = reuseBaseRef && currentBaseRefSha
@@ -3090,7 +3129,9 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
   const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
-  const restoreRefreshWarnings = restoreBaseRef ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef) : [];
+  const restoreRefreshWarnings = restoreBaseRef
+    ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, input.resolveGitAuth)
+    : [];
   const restoreCurrentBaseRefSha = restoreBaseRef ? await resolveBaseRefSha(repoRoot, restoreBaseRef) : null;
 
   let created = false;

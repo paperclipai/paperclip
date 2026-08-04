@@ -18,6 +18,7 @@ export const TASK_CHAT_STATES = [
   "agent-message",
   "thinking",
   "responding",
+  "responding-burst",
   "tool-call",
   "diff",
   "working",
@@ -80,6 +81,13 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
     tier: "live",
     surface: "thread",
     protocol: "text_delta stream:output, streaming",
+  },
+  "responding-burst": {
+    id: "responding-burst",
+    label: "Responding (update burst)",
+    tier: "live",
+    surface: "thread",
+    protocol: "text_delta stream:output ×N, tool calls between (PAP-368 dwell)",
   },
   "tool-call": {
     id: "tool-call",

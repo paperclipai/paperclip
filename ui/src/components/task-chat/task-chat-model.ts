@@ -76,6 +76,24 @@ export interface TaskChatMessageItem {
   modeLabel?: string;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  /**
+   * Agent text streamed inside a run turn (interstitial updates between tool
+   * calls). Ephemeral in the redesigned view (PAP-361): while streaming it
+   * takes the live parent row's line (TaskChatStatusItem.selfTalk); once
+   * finished it renders nowhere — the run log / classic transcript remain the
+   * archive. Tagged for live and settled transcripts alike.
+   */
+  interstitial?: boolean;
+  /** Epoch ms of the message's first streamed chunk. */
+  atMs?: number;
+  /**
+   * The settled run turn "attached" to this bubble (round 9): when the run's
+   * final reply lands, the live parent row transforms into the "Worked · …"
+   * summary rendered on this bubble's always-visible timestamp line —
+   * "2:34 PM · ✓ Worked · 38s · 3 tools" — instead of a standalone row.
+   * Expanding still nests the tool history beneath the bubble.
+   */
+  attachedTurn?: TaskChatTurnItem;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */
@@ -130,6 +148,17 @@ export interface TaskChatStatusItem {
   detail?: string;
   /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
   toolName?: string;
+  /**
+   * Flattened plain text of the interstitial update currently streaming
+   * (PAP-361, round 9): it renders in a dedicated single-line row directly
+   * above the status line — a slot PERMANENTLY RESERVED while the turn is
+   * live, so the layout above never jumps — inside a one-line viewport
+   * showing the streaming tail line; the gerund rotation below runs
+   * uninterrupted. When the message finishes the pill HOLDS the text as a
+   * static ellipsized line until the next update supersedes it or the turn
+   * ends (PAP-368) — nothing persists in the settled thread.
+   */
+  selfTalk?: string;
   elapsedMs?: number;
   /** Run start epoch ms; live states tick their own elapsed from this. */
   startedAtMs?: number;
@@ -152,6 +181,18 @@ export interface TaskChatUsageItem {
   id: string;
   kind: "usage";
   usage: TaskChatTokenUsage;
+}
+
+/**
+ * The task description rendered as the requester's first chat bubble
+ * (PAP-375). A placeholder kind only — the host supplies the render
+ * (TaskChatThread binds TaskChatDescriptionBubble to the live issue), mirroring
+ * how interaction items defer to renderInteraction. Always prepended AFTER
+ * thread assembly, so no backbone entry or settled turn can sort above it.
+ */
+export interface TaskChatBriefItem {
+  id: string;
+  kind: "brief";
 }
 
 /**
@@ -178,15 +219,23 @@ export type TaskChatTurnChildItem =
 /**
  * One agent turn's activity (thinking/tools/diffs) grouped so a finished turn
  * can fold into a one-line expandable summary ("✓ Worked · 38s · 3 tools ·
- * +34 −3"). While `settled` is false the children render fully interleaved;
- * on the live → settled transition the fold animates (~ --motion-turn-fold),
- * while turns that load already-settled collapse instantly.
+ * +34 −3"). A live turn carrying `liveStatus` renders as a single expandable
+ * parent row headed by that status line (gerund/tool-state + elapsed +
+ * tokens); expanding nests the chronological activity underneath, and on
+ * settle the header morphs in place into the summary. The live → settled
+ * fold animates (~ --motion-turn-fold), while turns that load already-settled
+ * collapse instantly.
  */
 export interface TaskChatTurnItem {
   id: string;
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /**
+   * The in-flight run's status line, hoisted to be THE turn's single visible
+   * row while collapsed (PAP-354 parent-row model). Absent once settled.
+   */
+  liveStatus?: TaskChatStatusItem;
   /** Animate the fold when settling (false = collapse instantly, e.g. history). */
   animateFold?: boolean;
   summary: {
@@ -210,7 +259,8 @@ export type TaskChatItem =
   | TaskChatMarkerItem
   | TaskChatUsageItem
   | TaskChatInteractionItem
-  | TaskChatTurnItem;
+  | TaskChatTurnItem
+  | TaskChatBriefItem;
 
 /** A structured plan entry (ACP PlanEntry) for the Plans tab. */
 export interface TaskChatPlanEntry {

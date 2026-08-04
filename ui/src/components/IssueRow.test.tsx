@@ -150,10 +150,16 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={issue} selected />);
     });
 
+    // The hover wash lives on the ROOT row band (not the overlay link) so the
+    // tint paints behind the content. Selected rows suppress the accent hover.
+    const row = container.firstElementChild as HTMLElement | null;
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
-    expect(link).not.toBeNull();
-    expect(link?.className).toContain("hover:bg-transparent");
-    expect(link?.className).not.toContain("hover:bg-accent/50");
+    expect(row).not.toBeNull();
+    expect(row?.className).toContain("hover:bg-transparent");
+    expect(row?.className).not.toContain("hover:bg-accent/50");
+    // The overlay link no longer carries the hover wash.
+    expect(link?.className ?? "").not.toContain("hover:bg-transparent");
+    expect(link?.className ?? "").not.toContain("hover:bg-accent/50");
 
     act(() => {
       root.unmount();
@@ -212,7 +218,7 @@ describe("IssueRow", () => {
     });
   });
 
-  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+  it("puts the unread dot in the reserved desktop slot and overlays it on mobile", () => {
     const root = createRoot(container);
     act(() => {
       root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
@@ -224,12 +230,16 @@ describe("IssueRow", () => {
     expect(slot).not.toBeNull();
     expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
 
-    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    // Mobile: all inbox rows reserve a gutter and the dot stays fully inside
+    // it, so the control cannot be clipped or indent the status/title.
     const mobileDot = container
       .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
       ?.closest("span.sm\\:hidden");
     expect(mobileDot).not.toBeNull();
-    expect(mobileDot?.className).toContain("order-first");
+    expect(mobileDot?.className).toContain("absolute");
+    expect(mobileDot?.className).toContain("left-0");
+    expect(mobileDot?.className).not.toContain("order-first");
+    expect(container.firstElementChild?.className).toContain("pl-4");
 
     act(() => {
       root.unmount();
@@ -348,12 +358,17 @@ describe("IssueRow", () => {
       );
     });
 
+    // `aria-current="step"` stays on the overlay link (the focusable target),
+    // but the current-step wash moved to the ROOT row band alongside the hover
+    // wash so it paints behind the content.
+    const row = container.firstElementChild as HTMLElement | null;
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
 
     expect(link).not.toBeNull();
     expect(link?.getAttribute("aria-current")).toBe("step");
-    expect(link?.className).toContain("bg-primary/5");
-    expect(link?.className).not.toContain("border-l-");
+    expect(row?.className).toContain("bg-primary/5");
+    expect(row?.className).not.toContain("border-l-");
+    expect(link?.className ?? "").not.toContain("bg-primary/5");
 
     act(() => {
       root.unmount();
@@ -441,6 +456,67 @@ describe("IssueRow", () => {
     });
 
     expect(container.querySelector('[data-testid="issue-row-parked-blocker"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders no bottom divider by default", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    // Dividers are opt-in: without `showDivider` no row-separating border
+    // renders on either the root band or the overlay link.
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(row).not.toBeNull();
+    expect(row?.className).not.toContain("border-b");
+    expect(link?.className ?? "").not.toContain("border-b");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders an opt-in bottom divider on the row root when showDivider is set", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} showDivider />);
+    });
+
+    // The divider lives on the ROOT row band with `last:border-b-0` so the real
+    // last row drops its border — it is not on the overlay link.
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(row?.className).toContain("border-b");
+    expect(row?.className).toContain("last:border-b-0");
+    expect(link?.className ?? "").not.toContain("border-b");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the hover wash on the row root while the overlay link stays a bare positioning layer", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const row = container.firstElementChild as HTMLElement | null;
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    // Hover wash paints behind the content on the root band...
+    expect(row?.className).toContain("hover:bg-accent/50");
+    expect(link?.className ?? "").not.toContain("hover:bg-accent/50");
+    // ...and the overlay link keeps only positioning + focus concerns.
+    expect(link?.className).toContain("absolute");
+    expect(link?.className).toContain("inset-0");
 
     act(() => {
       root.unmount();

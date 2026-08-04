@@ -77,6 +77,32 @@ Some workspaces need heavy one-time setup — seeding a database, warming caches
   - **Provisioning failed** — the command failed; the workspace detail links to the runtime logs for the failing operation.
 - While the command runs, the runtime service shows a **Provisioning…** state before it transitions to starting/running.
 
+## Private repositories and repo-only project workspaces
+
+A project workspace can be **repo-only**: a `Repo URL` with no local path. The server then
+materializes a managed checkout on demand (`git clone` into a managed directory) and, for
+isolated `git_worktree` runs, refreshes the base ref (`git fetch`) before preparing each
+worktree. Both operations run on the server, outside any agent process — so agent-scoped
+credential env bindings do not apply to them.
+
+For **private GitHub repositories**, store a token as a **company secret** named one of
+`GITHUB_TOKEN`, `GH_TOKEN`, or `PAPERCLIP_GITHUB_TOKEN` (checked in that order; Settings →
+Secrets). The server resolves it per run and authenticates managed clones and base-ref
+fetches with it. Details and caveats:
+
+- Scope: only `https://github.com/...` repo URLs are authenticated this way. SSH URLs, GitHub
+  Enterprise hosts, and other providers keep ambient behavior (system git config/credential
+  helpers on the server host). URLs that embed their own credentials are never overridden.
+- Fallback: with no matching company secret, the server falls back to a `GITHUB_TOKEN` or
+  `GH_TOKEN` variable in the **server process environment** (useful for self-hosted single-tenant
+  deployments), then to unauthenticated access — public repos keep working with no setup.
+- The token never appears in command lines, URLs, or on disk; it is passed to git through an
+  ephemeral credential helper. Each resolution is recorded as a secret access event.
+- This is separate from the **agent push credential**: agents pushing branches/PRs still need
+  `GH_TOKEN`/`GITHUB_TOKEN` bound at agent or project scope (see
+  [deploy/secrets](../../deploy/secrets.md)) so the token reaches the agent process env. The
+  same company secret can back both uses via a binding.
+
 ## Cross-run persistence (no-remote-git contract)
 
 Code state moves between runs through the local execution-workspace cwd alone — not through a git remote.

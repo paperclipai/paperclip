@@ -12,6 +12,7 @@ import {
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
   companySkillListQuerySchema,
+  companySkillProjectBrowseRequestSchema,
   companySkillProjectScanRequestSchema,
   companySkillRenameSchema,
   companySkillResetSchema,
@@ -1207,6 +1208,17 @@ export function companySkillRoutes(db: Db) {
       });
 
       res.status(result.action === "created" ? 201 : 200).json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/browse-project",
+    validate(companySkillProjectBrowseRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
+      const result = await svc.browseProjectWorkspace(companyId, req.body);
+      res.json(result);
     },
   );
 

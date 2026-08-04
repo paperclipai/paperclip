@@ -43,6 +43,11 @@ interface StartupTracerHandle {
   startSpan(
     name: string,
     options?: unknown,
+    // The optional explicit parent-context token. A real OTel
+    // `startSpan(name, options, context)` parents the new span to the span that
+    // `context` carries. The no-op tracer ignores it. The exec seam passes the
+    // active step context here, so an exec span parents to its step span.
+    context?: unknown,
   ): {
     setAttribute(key: string, value: unknown): void;
     setStatus(status: { code: number; message?: string }): void;
@@ -163,6 +168,86 @@ export function getStartupTraceContext(name = "paperclip.startup"): StartupTrace
       );
     }
     return NOOP_TRACE_CONTEXT;
+  }
+}
+
+/**
+ * The parsed parts of a W3C `traceparent`. The host builds a remote parent span
+ * context from these parts to parent a plugin span to the active host span.
+ */
+export interface ParsedTraceparent {
+  traceId: string;
+  spanId: string;
+  traceFlags: number;
+}
+
+/**
+ * Serialize an OTel context token to a W3C `traceparent` string. The host passes
+ * the token to the plugin worker per call, so the worker's provider span can
+ * parent to the active host span. The function reads the span context from the
+ * token and formats it by hand, so it needs no registered propagator. It returns
+ * `undefined` when `@opentelemetry/api` is absent, when the token holds no span
+ * context, or when the span context is invalid.
+ */
+export function traceparentFromContextToken(contextToken: unknown): string | undefined {
+  if (contextToken === undefined || contextToken === null) return undefined;
+  try {
+    const require = createRequire(import.meta.url);
+    const api = require("@opentelemetry/api") as {
+      trace?: { getSpanContext(context: unknown): { traceId: string; spanId: string; traceFlags: number } | undefined };
+    };
+    const spanContext = api.trace?.getSpanContext?.(contextToken);
+    if (!spanContext) return undefined;
+    const { traceId, spanId, traceFlags } = spanContext;
+    if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) return undefined;
+    const flags = (traceFlags & 0xff).toString(16).padStart(2, "0");
+    return `00-${traceId}-${spanId}-${flags}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Record a plugin-originated provider span through the real tracer, parented to
+ * a host span. The host handler validates and clamps the span data first (the
+ * trust boundary), then passes the parsed parent and the clamped attributes
+ * here. This function only does the OTel plumbing: it builds a remote parent
+ * span context, opens the span, sets its attributes and status, and ends it. It
+ * is a no-op when `@opentelemetry/api` is absent (the endpoint is unset) or when
+ * the parent parts are invalid. It never throws — observability must not change
+ * control flow.
+ */
+export function recordProviderPluginSpan(input: {
+  name: string;
+  parent: ParsedTraceparent;
+  attributes: Record<string, string | number | boolean>;
+  status?: { code: number; message?: string };
+}): void {
+  try {
+    const require = createRequire(import.meta.url);
+    const api = require("@opentelemetry/api") as {
+      trace?: {
+        getTracer(n: string): StartupTracerHandle;
+        setSpanContext(context: unknown, spanContext: unknown): unknown;
+      };
+      context?: { active(): unknown };
+    };
+    const trace = api.trace;
+    const context = api.context;
+    if (!trace?.getTracer || !trace.setSpanContext || !context?.active) return;
+    const remoteSpanContext = {
+      traceId: input.parent.traceId,
+      spanId: input.parent.spanId,
+      traceFlags: input.parent.traceFlags,
+      isRemote: true,
+    };
+    const parentContext = trace.setSpanContext(context.active(), remoteSpanContext);
+    const tracer = trace.getTracer("paperclip.startup");
+    const span = tracer.startSpan(input.name, { attributes: input.attributes }, parentContext);
+    if (input.status) span.setStatus(input.status);
+    span.end();
+  } catch {
+    // Observability must not change control flow.
   }
 }
 

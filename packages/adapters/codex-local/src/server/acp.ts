@@ -40,6 +40,7 @@ import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
@@ -491,19 +492,6 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-async function hasCodexNativeCredentials(codexHome: string): Promise<boolean> {
-  const raw = await fs.readFile(path.join(codexHome, "auth.json"), "utf8").catch(() => null);
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const record = parsed as Record<string, unknown>;
-    return isNonEmpty(record.OPENAI_API_KEY) || isNonEmpty(record.refresh_token);
-  } catch {
-    return false;
-  }
-}
-
 export async function testCodexAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -573,34 +561,50 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
-  const configApiKey = envConfig.OPENAI_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.OPENAI_API_KEY : undefined;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
-    checks.push({
-      code: "codex_acp_openai_api_key_detected",
-      level: "info",
-      message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-      detail: `Detected in ${source}.`,
+  if (!targetIsRemote) {
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const hostApiKey =
+      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+        ? null
+        : isNonEmpty(process.env.OPENAI_API_KEY)
+        ? process.env.OPENAI_API_KEY
+        : null;
+    const configuredApiKey = configApiKey ?? hostApiKey;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey,
     });
-  } else if (!targetIsRemote) {
-    const codexHome = isNonEmpty(envConfig.CODEX_HOME)
-      ? envConfig.CODEX_HOME
-      : path.join(process.env.HOME ?? "", ".codex");
-    if (codexHome && await hasCodexNativeCredentials(codexHome)) {
+
+    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+      checks.push({
+        code: "codex_acp_openai_api_key_detected",
+        level: "info",
+        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+      });
+    } else if (credentialReadiness.ready && !credentialReadiness.managed) {
+      checks.push({
+        code: "codex_acp_external_home_configured",
+        level: "info",
+        message: "Codex ACP will use an externally managed CODEX_HOME.",
+        detail: credentialReadiness.effectiveHome,
+      });
+    } else if (credentialReadiness.ready) {
       checks.push({
         code: "codex_acp_native_auth_detected",
         level: "info",
         message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials found in ${path.join(codexHome, "auth.json")}.`,
+        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
       });
     } else {
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials were detected.",
-        hint: "Set OPENAI_API_KEY or run `codex login` before starting a Codex ACP agent.",
+        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
       });
     }
   }

@@ -403,6 +403,10 @@ export interface IssueBlockerAttention {
   pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
+  /** True when a blocker or one of its open descendants is actively progressing. */
+  blockingTreeLive?: boolean;
+  /** The sampled leaf blocker that requires action, rather than the blocked root. */
+  terminalBlockerIssueId?: string | null;
 }
 
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
@@ -1226,9 +1230,17 @@ export interface RequestItemVerdictsPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "withdrawn" | "issue_closed";
+  outcome:
+    | "accepted"
+    | "rejected"
+    | "superseded_by_comment"
+    | "superseded_by_newer_request"
+    | "stale_target"
+    | "withdrawn"
+    | "issue_closed";
   reason?: string | null;
   commentId?: string | null;
+  supersededByInteractionId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
   resumeFailure?: {
     status: "retrying" | "needs_attention";

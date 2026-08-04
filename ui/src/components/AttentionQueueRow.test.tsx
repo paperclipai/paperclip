@@ -761,12 +761,13 @@ describe("AttentionQueueRow", () => {
     });
   }
 
-  // Training moved off the header strip into the row's overflow menu, so the
-  // header carries only recency + overflow. Menu items live in a portal that
+  // Training lives in the row's overflow menu AND on a visible inline "Train"
+  // pill for untrained rows. Menu items live in a portal that
   // only mounts once opened — environment-flaky in jsdom (see the dismiss test
-  // above) — so the untrained path asserts the menu exists and no badge is
-  // shown, and the onTrain contract is exercised through the inline badge.
-  it("offers training through the row menu and shows no badge until trained", () => {
+  // above) — so the untrained path asserts the menu exists, no trained badge is
+  // shown, and the onTrain contract is exercised through the visible pill.
+  it("shows a visible Train pill (no trained badge) and fires onTrain when clicked", () => {
+    const onTrain = vi.fn();
     render(
       <AttentionQueueRow
         item={trainableItem()}
@@ -774,11 +775,30 @@ describe("AttentionQueueRow", () => {
         expanded={false}
         onToggleExpand={noop}
         onDismiss={noop}
-        onTrain={noop}
+        onTrain={onTrain}
       />,
     );
     expect(container?.querySelector('[aria-label="Row actions"]')).toBeTruthy();
     expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
+    const trainPill = container?.querySelector('[data-testid="attention-train-inline"]');
+    expect(trainPill?.textContent).toContain("Train");
+    act(() => trainPill?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
+  it("hides the visible Train pill once trained (the badge stands in for it)", () => {
+    render(
+      <AttentionQueueRow
+        item={trainableItem({ trainingExampleId: "example-1" })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={noop}
+      />,
+    );
+    expect(container?.querySelector('[data-testid="attention-train-inline"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeTruthy();
   });
 
   it("renders a Trained ✓ badge once trained and fires onTrain when it is clicked", () => {

@@ -9,8 +9,10 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin, NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
 import type {
+  PluginContext,
+  PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentCancelInteractiveSetupResult,
@@ -45,6 +47,33 @@ import { performSyncIn, performSyncOut } from "./file-sync.js";
 // `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
 // are deterministic. The timing path never calls `Date.now()` directly.
 let timingNow: () => number = () => Date.now();
+
+// The plugin context, hoisted to a module variable in `setup(ctx)`. The
+// lifecycle hooks and the file-sync helpers have no closure over `ctx`, so they
+// read the tracer through `getPluginTracer()`. Before `setup` runs (or in a
+// test) the tracer is a no-op, so a span never throws.
+let pluginContext: PluginContext | null = null;
+
+/**
+ * Return the plugin tracer. It is the injected `ctx.tracer` after `setup`, or a
+ * no-op before it. A provider span opened through it records only when tracing
+ * is on and an active host trace context is present.
+ */
+export function getPluginTracer(): PluginTracer {
+  return pluginContext?.tracer ?? NOOP_PLUGIN_TRACER;
+}
+
+/**
+ * Test seam: set the module-level plugin context, and return a restore function.
+ * `plugin.test.ts` uses it to inject a recording tracer without running `setup`.
+ */
+export function __setDaytonaPluginContextForTest(ctx: PluginContext | null): () => void {
+  const previous = pluginContext;
+  pluginContext = ctx;
+  return () => {
+    pluginContext = previous;
+  };
+}
 
 /**
  * Test seam: override the provider-timing clock and return a restore function.
@@ -998,6 +1027,11 @@ type SandboxHandleCacheEntry = {
 
 type SandboxLookupOptions = {
   bypassTeardownGate?: boolean;
+  // Report the cache decision at the handle lookup. `true` means the warm
+  // handle cache served the handle; `false` means the lookup called
+  // `client.get`. The caller uses this to set the explicit exec `cache_hit`
+  // flag, instead of the old `providerGetMs == 0` proxy.
+  onCacheDecision?: (cacheHit: boolean) => void;
 };
 
 type SandboxHandleTeardownGate = {
@@ -1182,6 +1216,9 @@ const sandboxHandleCache = (() => {
 
     const entry = entries.get(key);
     if (entry) {
+      // The warm handle cache holds an entry, so this lookup serves the handle
+      // without a `client.get` round trip. Report the cache decision now.
+      options.onCacheDecision?.(true);
       const sandbox = await entry.sandbox;
       // Re-assert on every hit; evict + fail closed on any mismatch (C2).
       try {
@@ -1205,6 +1242,9 @@ const sandboxHandleCache = (() => {
       }
       return sandbox;
     }
+    // The warm handle cache holds no entry, so this lookup calls `client.get`.
+    // Report the cache decision now, before the single-flight populate.
+    options.onCacheDecision?.(false);
     // Single-flight: the first miss stores the in-flight promise under the
     // composite key so concurrent misses on the same lease share one `client.get`
     // instead of double-fetching. The promise lives only under this key (C5).
@@ -1496,6 +1536,9 @@ async function executeOneShot(
 
 const plugin = definePlugin({
   async setup(ctx) {
+    // Hoist the context to a module variable so the lifecycle hooks and the
+    // file-sync helpers can read `ctx.tracer` — they have no closure over `ctx`.
+    pluginContext = ctx;
     ctx.logger.info("Daytona sandbox provider plugin ready");
   },
 
@@ -2119,13 +2162,24 @@ const plugin = definePlugin({
       // is a no-op for an already-started sandbox, so it is excluded from the get
       // measurement.
       const getStart = timingNow();
+      // Decide the explicit `cache_hit` flag at the true cache decision: the
+      // handle lookup reports whether the warm cache served the handle or the
+      // lookup called `client.get`. This replaces the old `providerGetMs == 0`
+      // proxy. The default `false` covers the theoretical case where the lookup
+      // reports nothing.
+      let cacheHit = false;
       const sandbox = await getSandbox({
         driverKey: params.driverKey,
         companyId: params.companyId,
         environmentId: params.environmentId,
         providerLeaseId,
         config,
-      }, { bypassTeardownGate: true });
+      }, {
+        bypassTeardownGate: true,
+        onCacheDecision: (hit) => {
+          cacheHit = hit;
+        },
+      });
       const getDurationMs = timingNow() - getStart;
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       // Read the advisory bwrap flags from the lease metadata and read the
@@ -2149,7 +2203,7 @@ const plugin = definePlugin({
       }
       return {
         ...result,
-        metadata: { ...(result.metadata ?? {}), getDurationMs },
+        metadata: { ...(result.metadata ?? {}), getDurationMs, cacheHit },
       };
     });
   },

@@ -84,26 +84,29 @@ test.describe.serial("applications lifecycle", () => {
 
     await gotoApps(page, seed.prefix);
 
-    // The status pill ("Healthy" / "Not connected") is derived from two separate
-    // react-query fetches (applications + connections). A row can paint as soon as
-    // the applications fetch resolves, but the pill only renders once the
-    // connections fetch also settles. Under CI load that second fetch can land
-    // after Playwright's default 5s assertion timeout, so give the pill
-    // assertions the same generous window used by the rest of this spec — this is
-    // a polling wait on the real rendered label, not a fixed sleep, so coverage of
-    // the exact status text is preserved.
+    // The connected app starts with a "Healthy" pill and an "Open" action. A
+    // background health sweep then probes the connection endpoint. The test
+    // endpoint is an unreachable fixture URL, so the probe fails and the pill
+    // becomes "Needs attention" and the action becomes "Reconnect". Both are
+    // connected states that navigate to the same connection detail. This test
+    // proves the connected-vs-not-connected split, not the transient health
+    // label, so accept either connected state instead of the racy exact label.
+    // The pill is derived from two react-query fetches (applications +
+    // connections), so keep the same generous window the rest of this spec uses.
     const connectedRow = page.locator("tbody tr", { hasText: connectedName });
     await expect(connectedRow).toBeVisible();
-    await expect(connectedRow.getByText("Healthy")).toBeVisible({ timeout: 30_000 });
-    await expect(connectedRow.getByRole("button", { name: "Open" })).toBeVisible();
+    await expect(connectedRow.getByText(/^(Healthy|Needs attention)$/)).toBeVisible({ timeout: 30_000 });
+    await expect(connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ })).toBeVisible();
 
+    // The not-connected app has no connection, so the health sweep never touches
+    // it and its "Not connected" pill and "Connect" action stay deterministic.
     const notConnectedRow = page.locator("tbody tr", { hasText: notConnectedName });
     await expect(notConnectedRow).toBeVisible();
     await expect(notConnectedRow.getByText("Not connected")).toBeVisible({ timeout: 30_000 });
     await expect(notConnectedRow.getByRole("button", { name: "Connect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
-    await connectedRow.getByRole("button", { name: "Open" }).click();
+    await connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connected.id}`), { timeout: 20_000 });
 
     await gotoApps(page, seed.prefix);

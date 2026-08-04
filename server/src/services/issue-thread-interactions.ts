@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -345,6 +345,14 @@ function buildStaleTargetResult(
     version: 1,
     outcome: "stale_target",
     staleTarget,
+  } as const;
+}
+
+function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
+  return {
+    version: 1,
+    outcome: "superseded_by_newer_request",
+    supersededByInteractionId: replacementInteractionId,
   } as const;
 }
 
@@ -1207,6 +1215,83 @@ export function issueThreadInteractionService(db: Db) {
       return row ? hydrateInteraction(row) : null;
     },
 
+    sweepSupersededPendingRequestConfirmations: async () => {
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          isNotNull(issueThreadInteractions.createdByAgentId),
+        ))
+        .orderBy(
+          asc(issueThreadInteractions.companyId),
+          asc(issueThreadInteractions.issueId),
+          asc(issueThreadInteractions.kind),
+          asc(issueThreadInteractions.createdByAgentId),
+          desc(issueThreadInteractions.createdAt),
+          desc(issueThreadInteractions.id),
+        );
+
+      const newestByGroup = new Map<string, IssueThreadInteractionRow>();
+      const supersededRows: Array<{
+        row: IssueThreadInteractionRow;
+        replacementInteractionId: string;
+      }> = [];
+      for (const row of rows) {
+        if (!row.createdByAgentId) continue;
+        const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
+        const newest = newestByGroup.get(groupKey);
+        if (!newest) {
+          newestByGroup.set(groupKey, row);
+          continue;
+        }
+        supersededRows.push({ row, replacementInteractionId: newest.id });
+      }
+
+      if (supersededRows.length === 0) return { expired: 0 };
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      for (const { row, replacementInteractionId } of supersededRows) {
+        const updated = await db.transaction(async (tx) => {
+          const [updatedRow] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByNewerRequestResult(replacementInteractionId),
+              resolvedByAgentId: null,
+              resolvedByUserId: null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!updatedRow) return null;
+          await resolveLinkedToolActionRequests(tx, updatedRow, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor: {},
+            now,
+          });
+          return updatedRow;
+        });
+        if (!updated) continue;
+        expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        for (const issueId of new Set(expired.map((interaction) => interaction.issueId))) {
+          await touchIssue(db, issueId);
+        }
+        await emitResolvedInteractionsTelemetry(db, expired);
+      }
+      return { expired: expired.length };
+    },
+
     create: async (
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
@@ -1270,20 +1355,19 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       let created: IssueThreadInteractionRow;
+      let superseded: IssueThreadInteractionRow[] = [];
       try {
-        // A terminal issue must not regain pending actionable cards. FOR SHARE
-        // on the issue row serializes this insert against the terminal status
-        // transition's row lock: either the close committed first and this
-        // read rejects the create, or the insert commits before the close
-        // proceeds and the close's expiry sweep collects the new row.
+        // A terminal issue must not regain pending actionable cards. FOR UPDATE
+        // on the issue row serializes this insert both against terminal status
+        // transitions and against concurrent confirmations on the same issue.
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
-        created = await db.transaction(async (tx) => {
+        const result = await db.transaction(async (tx) => {
           const [issueRow] = await tx
             .select({ status: issues.status })
             .from(issues)
             .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-            .for("share");
+            .for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
           }
@@ -1305,8 +1389,43 @@ export function issueThreadInteractionService(db: Db) {
               payload: data.payload,
             })
             .returning();
-          return row;
+
+          if (data.kind !== "request_confirmation" || !actor.agentId) {
+            return { row, supersededRows: [] };
+          }
+
+          const now = new Date();
+          const supersededRows = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByNewerRequestResult(row.id),
+              resolvedByAgentId: actor.agentId,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.kind, data.kind),
+              eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+              eq(issueThreadInteractions.status, "pending"),
+              ne(issueThreadInteractions.id, row.id),
+            ))
+            .returning();
+          for (const supersededRow of supersededRows) {
+            await resolveLinkedToolActionRequests(tx, supersededRow, {
+              status: "expired",
+              fromStatuses: ["pending", "approved"],
+              actor,
+              now,
+            });
+          }
+          return { row, supersededRows };
         });
+        created = result.row;
+        superseded = result.supersededRows;
       } catch (error) {
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
@@ -1326,6 +1445,9 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      if (superseded.length > 0) {
+        await emitResolvedInteractionsTelemetry(db, superseded.map(hydrateInteraction));
+      }
       return hydrateInteraction(created);
     },
 

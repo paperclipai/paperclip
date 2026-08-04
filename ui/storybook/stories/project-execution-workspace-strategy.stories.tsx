@@ -56,3 +56,36 @@ export const IsolatedStrategy: Story = {
     </Hydrate>
   ),
 };
+
+// Stateful wrapper so the (controlled) shared workspace concurrency select reflects
+// the picked option — in the real app the value round-trips through a server refetch.
+function StatefulConcurrency() {
+  const [project, setProject] = useState<Project>(editableProject);
+  return (
+    <div className="max-w-2xl rounded-lg border border-border bg-background p-4">
+      <ProjectProperties
+        project={project}
+        onFieldUpdate={(_field, data) => {
+          const nextPolicy = data.executionWorkspacePolicy;
+          if (nextPolicy && typeof nextPolicy === "object") {
+            setProject((prev) => ({
+              ...prev,
+              executionWorkspacePolicy: nextPolicy as Project["executionWorkspacePolicy"],
+            }));
+          }
+        }}
+        getFieldSaveState={fieldState}
+        onArchive={() => undefined}
+      />
+    </div>
+  );
+}
+
+export const SharedWorkspaceConcurrency: Story = {
+  name: "Shared workspace concurrency select",
+  render: () => (
+    <Hydrate>
+      <StatefulConcurrency />
+    </Hydrate>
+  ),
+};

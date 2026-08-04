@@ -43,6 +43,7 @@ export function attentionRoutes(db: Db) {
       includeDismissed,
       archived,
       all,
+      allowUnscopedAll: all,
       activitySince,
       activityUntil,
       queue,

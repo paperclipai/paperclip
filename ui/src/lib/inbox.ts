@@ -1126,6 +1126,9 @@ export function buildGroupedInboxSections(
   const keyPrefix = options?.keyPrefix ?? "";
   const searchSection = options?.searchSection ?? "none";
   const nestingEnabled = options?.nestingEnabled ?? false;
+  if (searchSection !== "none" && items.length === 0) {
+    return [];
+  }
 
   return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
     const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")

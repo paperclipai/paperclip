@@ -158,6 +158,7 @@ export type AttentionItemDetail =
         identifier: string | null;
         title: string | null;
       } | null;
+      blockedTaskCount?: number;
       images: AttentionDetailImage[];
     }
   | {
@@ -220,7 +221,13 @@ export interface AttentionFeed {
   companyId: string;
   generatedAt: string;
   totalCount: number;
-  decideNowCount: number;
+  /**
+   * The sidebar badge: distinct items that either surfaced today ("new today")
+   * or carry an explicit decide-by deadline that is due today/past ("overdue").
+   * Computed before pagination so a small first page still reflects the
+   * company-wide load. The desk no longer editorializes about what "can wait".
+   */
+  deskBadgeCount: number;
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
