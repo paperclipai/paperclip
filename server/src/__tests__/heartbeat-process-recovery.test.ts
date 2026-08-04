@@ -6706,8 +6706,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return { companyId, agentId, issueIds, runIds };
     }
 
-    it("staggers stranded-issue recovery wakes across a random window when a reconcile sweep finds a restart-scale batch for one agent", async () => {
-      const batchSize = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
+    it("keeps a small immediate burst and staggers the remaining tail once an agent's actually-enqueued recovery count for the sweep reaches the restart-batch threshold", async () => {
+      // The stagger decision is driven by the count of recoveries actually
+      // enqueued so far in this sweep (not a raw candidate-count prediction,
+      // which Greptile flagged as overcounting and unnecessarily delaying
+      // small batches -- RENA-54203 review fix). That means the first
+      // `threshold - 1` recoveries in a sweep queue immediately, and only
+      // once an agent's real count reaches the threshold does the remaining
+      // tail get staggered. Use a batch comfortably above the threshold so
+      // both the immediate burst and the staggered tail are non-empty.
+      const threshold = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
+      const batchSize = threshold + 2;
       const { runIds } = await seedRestartBatchStrandedTodoFixture(batchSize);
       const heartbeat = heartbeatService(db);
 
@@ -6721,9 +6730,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(inArray(heartbeatRuns.retryOfRunId, runIds));
       expect(retryRuns).toHaveLength(batchSize);
 
-      for (const retryRun of retryRuns) {
+      const immediateRuns = retryRuns.filter((retryRun) => retryRun.scheduledRetryReason === null);
+      const staggeredRuns = retryRuns.filter(
+        (retryRun) => retryRun.scheduledRetryReason === RESTART_BATCH_STAGGER_RETRY_REASON,
+      );
+      expect(immediateRuns).toHaveLength(threshold - 1);
+      expect(staggeredRuns).toHaveLength(batchSize - (threshold - 1));
+
+      for (const retryRun of immediateRuns) {
+        expect(["queued", "running", "succeeded"]).toContain(retryRun.status);
+        expect(retryRun.scheduledRetryAt).toBeNull();
+      }
+
+      for (const retryRun of staggeredRuns) {
         expect(retryRun.status).toBe("scheduled_retry");
-        expect(retryRun.scheduledRetryReason).toBe(RESTART_BATCH_STAGGER_RETRY_REASON);
         expect(retryRun.scheduledRetryAttempt).toBe(1);
         expect(retryRun.scheduledRetryAt).not.toBeNull();
 

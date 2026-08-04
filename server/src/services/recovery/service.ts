@@ -3691,53 +3691,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     // RENA-54203: a control-plane restart resets in-memory process tracking, so a
     // single reconcile sweep can find many issues "stranded" for the same agent at
-    // once (all last-known runs lost together). Count candidates per target agent
-    // BEFORE the processing loop below, mirroring reapOrphanedRuns's
-    // isRestartBatchReap/reapEligibleCount pattern in heartbeat.ts, and stagger
-    // that agent's recovery wakes instead of enqueueing them all in the same
-    // instant. This is a coarse batch-size heuristic (like reapOrphanedRuns), not
-    // an exact count of issues that will actually reach an enqueue call below --
-    // computing that exactly would require duplicating every downstream
-    // eligibility check.
-    const candidateCountByAgentId = new Map<string, number>();
-    for (const candidate of candidates) {
-      const candidateExecutionState = candidate.status === "in_review"
-        ? parseIssueExecutionState(candidate.executionState)
-        : null;
-      const candidatePendingExecutionState = candidateExecutionState?.status === "pending"
-        ? candidateExecutionState
-        : null;
-      const candidateParticipant = candidatePendingExecutionState
-        ? candidatePendingExecutionState.currentParticipant
-        : null;
-      const candidateParticipantAgentId = candidateParticipant?.type === "agent"
-        ? candidateParticipant.agentId
-        : null;
-      const candidateAgentId = candidate.status === "in_review" && candidateParticipantAgentId
-        ? candidateParticipantAgentId
-        : candidate.assigneeAgentId;
-      if (!candidateAgentId) continue;
-      candidateCountByAgentId.set(candidateAgentId, (candidateCountByAgentId.get(candidateAgentId) ?? 0) + 1);
-    }
-    const restartBatchStaggeredAgentIds = new Set(
-      [...candidateCountByAgentId.entries()]
-        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
-        .map(([agentId]) => agentId),
-    );
-    if (restartBatchStaggeredAgentIds.size > 0) {
-      logger.warn(
-        {
-          affectedAgentIds: [...restartBatchStaggeredAgentIds],
-          threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
-          staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
-        },
-        "restart-batch stranded-issue reconciliation sweep detected; recovery wakes for affected agents will be staggered to avoid a thundering herd",
-      );
-    }
-    const staggerMsForAgent = (agentId: string | null | undefined): number | undefined =>
-      agentId && restartBatchStaggeredAgentIds.has(agentId)
-        ? computeRestartBatchStaggerDelayMs()
-        : undefined;
+    // once (all last-known runs lost together). Pre-counting every candidate (before
+    // the guards below run) over-estimates the real batch, since most candidates are
+    // filtered out by hasActiveExecutionPath/hasPendingWakeInteraction/budget/etc.
+    // and never reach an enqueue call -- duplicating every one of those guards here
+    // just to predict the exact count isn't worth the maintenance risk in a function
+    // this large (review fix for an earlier version of this change, which did
+    // pre-count candidates and could delay a below-threshold real batch by up to
+    // five minutes). Instead, track the actual number of recovery wakes enqueued per
+    // agent AS THIS SWEEP PROGRESSES: once an agent's real enqueue count in this
+    // sweep reaches the restart-batch threshold, every subsequent enqueue for that
+    // agent in the same sweep is staggered instead of requeued immediately. This is
+    // exact (based on real outcomes, not a prediction) and needs no duplicated
+    // eligibility logic.
+    const enqueuedCountByAgentId = new Map<string, number>();
+    const restartBatchLoggedAgentIds = new Set<string>();
+    const staggerMsForAgent = (agentId: string | null | undefined): number | undefined => {
+      if (!agentId) return undefined;
+      const countSoFar = enqueuedCountByAgentId.get(agentId) ?? 0;
+      if (countSoFar < RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD - 1) return undefined;
+      if (!restartBatchLoggedAgentIds.has(agentId)) {
+        restartBatchLoggedAgentIds.add(agentId);
+        logger.warn(
+          {
+            agentId,
+            threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+            staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+          },
+          "restart-batch stranded-issue reconciliation sweep detected for an agent; further recovery wakes will be staggered to avoid a thundering herd",
+        );
+      }
+      return computeRestartBatchStaggerDelayMs();
+    };
+    const recordEnqueuedForAgent = (agentId: string | null | undefined) => {
+      if (!agentId) return;
+      enqueuedCountByAgentId.set(agentId, (enqueuedCountByAgentId.get(agentId) ?? 0) + 1);
+    };
 
     for (const issue of candidates) {
       const executionState = issue.status === "in_review"
@@ -3950,6 +3939,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             },
           });
           if (queued) {
+            recordEnqueuedForAgent(agentId);
             result.continuationRequeued += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -4096,6 +4086,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           },
         });
         if (queued) {
+          recordEnqueuedForAgent(participantAgentId);
           result.reviewParticipantRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -4169,6 +4160,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           staggerMs: staggerMsForAgent(agentId),
         });
         if (queued) {
+          recordEnqueuedForAgent(agentId);
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -4258,6 +4250,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           staggerMs: staggerMsForAgent(agentId),
         });
         if (queued) {
+          recordEnqueuedForAgent(agentId);
           result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -4355,6 +4348,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         staggerMs: staggerMsForAgent(agentId),
       });
       if (queued) {
+        recordEnqueuedForAgent(agentId);
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else {
