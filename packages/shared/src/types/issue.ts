@@ -432,7 +432,8 @@ export type IssueBlockedInboxReason =
   | "pending_board_decision"
   | "pending_user_decision"
   | "external_owner_action"
-  | "open_recovery_issue";
+  | "open_recovery_issue"
+  | "recovery_stalled";
 
 export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
 

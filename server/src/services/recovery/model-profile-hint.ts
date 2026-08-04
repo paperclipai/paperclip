@@ -48,6 +48,14 @@ export function withRecoveryModelProfileHint<T extends Record<string, unknown>>(
   | WithoutRecoveryModelProfileHints<T>
   | (WithoutRecoveryModelProfileHints<T> & typeof STATUS_ONLY_RECOVERY_GUARD_CONTEXT & {
     modelProfile: typeof RECOVERY_MODEL_PROFILE_KEY;
+  });
+export function withRecoveryModelProfileHint<T extends Record<string, unknown>>(
+  input: T,
+  workClass: RecoveryModelProfileWorkClass,
+):
+  | WithoutRecoveryModelProfileHints<T>
+  | (WithoutRecoveryModelProfileHints<T> & typeof STATUS_ONLY_RECOVERY_GUARD_CONTEXT & {
+    modelProfile: typeof RECOVERY_MODEL_PROFILE_KEY;
   }) {
   if (workClass === "normal_model") {
     return scrubRecoveryModelProfileHints(input);
@@ -60,6 +68,10 @@ export function withRecoveryModelProfileHint<T extends Record<string, unknown>>(
   };
 }
 
-export function recoveryAssigneeAdapterOverrides(_workClass: Extract<RecoveryModelProfileWorkClass, "status_only">) {
-  return { modelProfile: RECOVERY_MODEL_PROFILE_KEY };
+export function recoveryModelProfileWorkClass(input: { critical: boolean }): RecoveryModelProfileWorkClass {
+  return input.critical ? "normal_model" : "status_only";
+}
+
+export function recoveryAssigneeAdapterOverrides(workClass: RecoveryModelProfileWorkClass) {
+  return workClass === "status_only" ? { modelProfile: RECOVERY_MODEL_PROFILE_KEY } : null;
 }

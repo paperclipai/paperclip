@@ -99,7 +99,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
+    executionPolicy?: Record<string, unknown> | null;
     executionState?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorLastTriggeredAt?: Date | null;
+    monitorAttemptCount?: number | null;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -116,7 +120,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
+      executionPolicy: input.executionPolicy ?? null,
       executionState: input.executionState ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      monitorLastTriggeredAt: input.monitorLastTriggeredAt ?? null,
+      monitorAttemptCount: input.monitorAttemptCount ?? 0,
       description: input.description ?? null,
     });
     return id;
@@ -146,6 +154,37 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
+  async function requireSuccessfulRunDisposition(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: input.issueId,
+      agentId: input.agentId,
+      details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
+    });
+  }
+
+  async function pendingConfirmation(input: { companyId: string; issueId: string }) {
+    const id = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Confirm the next action" },
+    });
+    return id;
+  }
+
   it("classifies a blocked parent as covered when its child has a running execution path", async () => {
     const { companyId, agentId } = await createCompany("PBC");
     const parentId = await insertIssue({ companyId, identifier: "PBC-1", title: "Parent", status: "blocked" });
@@ -170,6 +209,154 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PBC-2",
     });
+  });
+
+  it("treats a future bounded monitor as live blocker and blocked-inbox coverage", async () => {
+    const { companyId, agentId } = await createCompany("PBMF");
+    const now = Date.now();
+    const nextCheckAt = new Date(now + 60 * 60 * 1000);
+    const parentId = await insertIssue({ companyId, identifier: "PBMF-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMF-2",
+      title: "Monitored dependency",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          timeoutAt: new Date(now + 2 * 60 * 60 * 1000).toISOString(),
+          maxAttempts: 2,
+        },
+      },
+      monitorNextCheckAt: nextCheckAt,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMF-2",
+    });
+    expect((await svc.list(companyId, { attention: "blocked" })).some((issue) => issue.id === parentId)).toBe(false);
+  });
+
+  it("does not treat a routine parent link as monitor coverage", async () => {
+    const { companyId, agentId } = await createCompany("PBRM");
+    const routineParentId = await insertIssue({
+      companyId,
+      identifier: "PBRM-1",
+      title: "Routine parent",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await activeRun({ companyId, agentId, issueId: routineParentId });
+    const routineExecutionId = await insertIssue({
+      companyId,
+      identifier: "PBRM-2",
+      title: "Routine execution without monitor",
+      status: "in_review",
+      parentId: routineParentId,
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+    });
+
+    const routineExecution = (await svc.list(companyId, { attention: "blocked" }))
+      .find((issue) => issue.id === routineExecutionId);
+
+    expect(routineExecution?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "in_review_without_action_path",
+      leafIssue: { id: routineExecutionId },
+    });
+  });
+
+  it("does not let overdue or uninvokable-owner monitors hide real review stalls", async () => {
+    const { companyId, agentId, pausedAgentId } = await createCompany("PBMX");
+    const now = Date.now();
+    const cases = [
+      {
+        suffix: "overdue",
+        agentId,
+        nextCheckAt: new Date(now - 60 * 1000),
+      },
+      {
+        suffix: "paused",
+        agentId: pausedAgentId,
+        nextCheckAt: new Date(now + 60 * 60 * 1000),
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const parentId = await insertIssue({
+        companyId,
+        identifier: `PBMX-${index * 2 + 1}`,
+        title: `Parent ${testCase.suffix}`,
+        status: "blocked",
+      });
+      const blockerId = await insertIssue({
+        companyId,
+        identifier: `PBMX-${index * 2 + 2}`,
+        title: `Monitor ${testCase.suffix}`,
+        status: "in_review",
+        assigneeAgentId: testCase.agentId,
+        executionPolicy: { monitor: { nextCheckAt: testCase.nextCheckAt.toISOString(), maxAttempts: 2 } },
+        monitorNextCheckAt: testCase.nextCheckAt,
+      });
+      await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+      const parent = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === parentId);
+      expect(parent?.blockedInboxAttention, testCase.suffix).toMatchObject({
+        state: "needs_attention",
+        reason: "in_review_without_action_path",
+        leafIssue: { id: blockerId },
+      });
+    }
+  });
+
+  it("keeps a consumed monitor covered during the bounded post-trigger continuation grace", async () => {
+    const { companyId, agentId } = await createCompany("PBMG");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "PBMG-1",
+      title: "Monitor just fired",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorLastTriggeredAt: new Date(Date.now() - 60 * 1000),
+      monitorAttemptCount: 1,
+    });
+
+    expect((await svc.list(companyId, { attention: "blocked" })).some((issue) => issue.id === issueId)).toBe(false);
+
+    await db
+      .update(issues)
+      .set({ monitorLastTriggeredAt: new Date(Date.now() - 10 * 60 * 1000) })
+      .where(eq(issues.id, issueId));
+
+    const expired = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === issueId);
+    expect(expired?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "in_review_without_action_path",
+    });
+  });
+
+  it("keeps a queued monitor continuation covered after trigger grace expires", async () => {
+    const { companyId, agentId } = await createCompany("PBMQ");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "PBMQ-1",
+      title: "Monitor waiting for capacity",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorLastTriggeredAt: new Date(Date.now() - 10 * 60 * 1000),
+      monitorAttemptCount: 1,
+    });
+    await activeRun({ companyId, agentId, issueId, status: "queued", current: false });
+
+    expect((await svc.list(companyId, { attention: "blocked" })).some((issue) => issue.id === issueId)).toBe(false);
   });
 
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
@@ -703,6 +890,201 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(await svc.list(companyId, { attention: "blocked" })).toEqual([]);
   });
 
+  it("propagates a live descendant continuation through full ancestry and suppresses missing disposition", async () => {
+    const { companyId, agentId } = await createCompany("BIF");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "BIF-1",
+      title: "Root awaiting descendant work",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    await requireSuccessfulRunDisposition({ companyId, issueId: rootId, agentId });
+
+    const chainIds = [rootId];
+    let parentId = rootId;
+    for (let index = 2; index <= 12; index += 1) {
+      const childId = await insertIssue({
+        companyId,
+        identifier: `BIF-${index}`,
+        title: `Continuation level ${index}`,
+        status: index === 12 ? "todo" : "blocked",
+        parentId,
+        assigneeAgentId: agentId,
+      });
+      chainIds.push(childId);
+      parentId = childId;
+    }
+    const runId = await activeRun({
+      companyId,
+      agentId,
+      issueId: chainIds.at(-1)!,
+      status: "queued",
+      current: false,
+    });
+
+    const coveredRows = await svc.list(companyId, { attention: "blocked" });
+    expect(coveredRows.filter((issue) => chainIds.includes(issue.id))).toEqual([]);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    const stoppedRoot = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === rootId);
+    expect(stoppedRoot?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
+  });
+
+  it("propagates a live descendant through terminal topology connectors", async () => {
+    const { companyId, agentId } = await createCompany("BITC");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "BITC-1",
+      title: "Blocked source",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const firstDoneConnectorId = await insertIssue({
+      companyId,
+      identifier: "BITC-2",
+      title: "Completed connector one",
+      status: "done",
+      parentId: rootId,
+      assigneeAgentId: agentId,
+    });
+    const secondDoneConnectorId = await insertIssue({
+      companyId,
+      identifier: "BITC-3",
+      title: "Completed connector two",
+      status: "done",
+      parentId: firstDoneConnectorId,
+      assigneeAgentId: agentId,
+    });
+    const activeGrandchildId = await insertIssue({
+      companyId,
+      identifier: "BITC-4",
+      title: "Live descendant",
+      status: "in_progress",
+      parentId: secondDoneConnectorId,
+      assigneeAgentId: agentId,
+    });
+    await activeRun({ companyId, agentId, issueId: activeGrandchildId });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+
+    expect(rows.some((issue) => issue.id === rootId)).toBe(false);
+  });
+
+  it("does not propagate descendant continuation coverage across company boundaries", async () => {
+    const primary = await createCompany("BITA");
+    const other = await createCompany("BITB");
+    const rootId = await insertIssue({
+      companyId: primary.companyId,
+      identifier: "BITA-1",
+      title: "Tenant A source",
+      status: "in_progress",
+      assigneeAgentId: primary.agentId,
+    });
+    await requireSuccessfulRunDisposition({
+      companyId: primary.companyId,
+      issueId: rootId,
+      agentId: primary.agentId,
+    });
+    const foreignChildId = await insertIssue({
+      companyId: other.companyId,
+      identifier: "BITB-1",
+      title: "Tenant B child with a forged parent edge",
+      status: "todo",
+      parentId: rootId,
+      assigneeAgentId: other.agentId,
+    });
+    await activeRun({
+      companyId: other.companyId,
+      agentId: other.agentId,
+      issueId: foreignChildId,
+      status: "queued",
+      current: false,
+    });
+
+    const source = (await svc.list(primary.companyId, { attention: "blocked" })).find((issue) => issue.id === rootId);
+    expect(source?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
+  });
+
+  it("propagates a pending descendant interaction as awaiting_decision", async () => {
+    const { companyId, agentId } = await createCompany("BIP");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "BIP-1",
+      title: "Blocked source",
+      status: "blocked",
+    });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "BIP-2",
+      title: "Human decision gate",
+      status: "in_review",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+    const interactionId = await pendingConfirmation({ companyId, issueId: childId });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const byId = new Map(rows.map((issue) => [issue.id, issue]));
+    expect(byId.get(childId)?.blockedInboxAttention).toMatchObject({
+      state: "awaiting_decision",
+      reason: "pending_board_decision",
+      interactionId,
+      sourceIssue: { id: childId },
+      leafIssue: null,
+    });
+    expect(byId.get(parentId)?.blockedInboxAttention).toMatchObject({
+      state: "awaiting_decision",
+      reason: "pending_board_decision",
+      interactionId,
+      sourceIssue: { id: parentId },
+      leafIssue: { id: childId, identifier: "BIP-2" },
+    });
+    expect(byId.get(parentId)?.blockedInboxAttention?.reason).not.toBe("blocked_chain_stalled");
+  });
+
+  it("keeps a real stalled branch visible when another descendant awaits a decision", async () => {
+    const { companyId, agentId } = await createCompany("BISR");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "BISR-1",
+      title: "Mixed blocked source",
+      status: "blocked",
+    });
+    const decisionChildId = await insertIssue({
+      companyId,
+      identifier: "BISR-2",
+      title: "Decision branch",
+      status: "in_review",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const stalledChildId = await insertIssue({
+      companyId,
+      identifier: "BISR-3",
+      title: "Unassigned branch",
+      status: "todo",
+      parentId,
+    });
+    await block({ companyId, blockerIssueId: decisionChildId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: stalledChildId, blockedIssueId: parentId });
+    await pendingConfirmation({ companyId, issueId: decisionChildId });
+
+    const parent = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === parentId);
+    expect(parent?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "blocked_by_unassigned_issue",
+      leafIssue: { id: stalledChildId, identifier: "BISR-3" },
+    });
+  });
+
   it("classifies assigned backlog and invalid review leaves for blocked inbox attention", async () => {
     const { companyId, agentId, pausedAgentId } = await createCompany("BIC");
     const backlogParentId = await insertIssue({ companyId, identifier: "BIC-1", title: "Blocked by parked work", status: "blocked" });
@@ -751,7 +1133,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("classifies recovery issues and missing successful-run dispositions", async () => {
+  it("classifies live recovery issues and missing successful-run dispositions", async () => {
     const { companyId, agentId } = await createCompany("BID");
     const sourceId = await insertIssue({ companyId, identifier: "BID-1", title: "Stopped source", status: "blocked" });
     const leafId = await insertIssue({ companyId, identifier: "BID-2", title: "Stopped leaf", status: "todo" });
@@ -786,6 +1168,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId,
       details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
     });
+    await activeRun({ companyId, agentId, issueId: recoveryId, current: false });
 
     const rows = await svc.list(companyId, { attention: "blocked" });
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -833,6 +1216,45 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(exhaustedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
+    });
+  });
+
+  it("classifies a recovery with only terminal failures as stalled", async () => {
+    const { companyId, agentId } = await createCompany("BIRS");
+    const sourceId = await insertIssue({
+      companyId,
+      identifier: "BIRS-1",
+      title: "Stopped source",
+      status: "blocked",
+    });
+    const recoveryId = await insertIssue({
+      companyId,
+      identifier: "BIRS-2",
+      title: "Recovery without executable path",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: sourceId,
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await activeRun({
+        companyId,
+        agentId,
+        issueId: recoveryId,
+        status: "failed",
+        current: false,
+      });
+    }
+
+    const recovery = (await svc.list(companyId, { attention: "blocked" }))
+      .find((issue) => issue.id === recoveryId);
+
+    expect(recovery?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "recovery_stalled",
+      owner: { type: "agent", agentId },
+      recoveryIssue: { id: recoveryId },
+      action: { label: "Restart recovery" },
     });
   });
 

@@ -48,6 +48,29 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("rejects top-level monitor aliases without making the full update schema strict", () => {
+    for (const [field, value] of [
+      ["monitorNextCheckAt", "2026-12-01T12:00:00.000Z"],
+      ["monitorAttemptCount", 2],
+      ["monitorLastTriggeredAt", "2026-12-01T11:00:00.000Z"],
+    ] as const) {
+      const parsed = updateIssueSchema.safeParse({ [field]: value });
+
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toContainEqual(expect.objectContaining({
+          message: expect.stringContaining("executionPolicy.monitor"),
+          path: [field],
+        }));
+      }
+    }
+
+    expect(updateIssueSchema.parse({
+      title: "Compatible update",
+      futureCompatibleField: "still stripped",
+    })).toEqual({ title: "Compatible update" });
+  });
+
   it("validates structured unblock descriptors", () => {
     expect(updateIssueSchema.parse({
       status: "blocked",

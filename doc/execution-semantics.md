@@ -477,6 +477,16 @@ Monitor policy lives under `executionPolicy.monitor` and includes:
 
 Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
 
+Liveness and blocked-inbox reads treat a valid future `monitorNextCheckAt` as live coverage. After dispatch consumes that timestamp, `monitorLastTriggeredAt` provides a five-minute transition grace while the wake enters capacity admission; a queued/running run or queued/deferred wake remains the durable continuation after that grace. An expired grace with no active continuation is stalled and must surface again.
+
+Live continuations and pending issue-thread interactions propagate only through same-company `parentId` and blocker ancestry. This propagation is cycle-safe and unbounded by presentation depth: a deep descendant continuation can satisfy an ancestor's successful-run handoff, and a descendant interaction surfaces as `awaiting_decision` on an otherwise covered ancestor. Coverage from one branch never hides a separate stalled branch, and no parent, blocker, run, wake, monitor, or interaction crosses a company boundary.
+
+Topology traversal includes visible terminal issues as connectors even though terminal issues are never returned as blocked-inbox findings. A live descendant therefore covers its ancestor through intervening `done` or `cancelled` parent links; filtering terminal rows before building the graph would hide that real continuation.
+
+An issue-backed recovery is `recovery_open` only when it has both a responsible owner and a currently executable path such as a live run, queued wake, scheduled retry, monitor, interaction, or approval. A non-terminal recovery issue whose runs are all terminal is explicit evidence but not a live path; the inbox surfaces it as `recovery_stalled` and asks the owner to restart or repair recovery.
+
+A successful-run handoff in either `required` or `escalated` state resolves when a valid disposition materializes. This includes a first-class blocker superseding a source-scoped recovery: source revalidation cancels the stale recovery action and records `issue.successful_run_handoff_resolved`, so the historical missing-disposition card cannot survive behind the new blocker state.
+
 Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
 
 Monitor bounds are enforced. Paperclip rejects attempts to re-arm a monitor whose `timeoutAt` or `maxAttempts` is already exhausted. When a scheduled monitor reaches an exhausted bound at trigger time, Paperclip clears it and follows `recoveryPolicy`: `wake_owner` queues a bounded recovery wake for the assignee, `create_recovery_issue` opens visible issue-backed recovery work, and `escalate_to_board` records a board-visible escalation comment/activity.
@@ -560,6 +570,8 @@ This keeps the post-decomposition umbrella (§7) on a real waiting path instead 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
+
+Critical recovery never inherits the cheap lane. Its issue and wake context use the selected owner's normal model profile, without choosing a substitute agent or adding an automatic retry loop; the existing bounded recovery lifecycle remains responsible for any failure.
 
 ## 10. Startup and Periodic Reconciliation
 

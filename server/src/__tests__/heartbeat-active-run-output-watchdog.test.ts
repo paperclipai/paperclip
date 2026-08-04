@@ -524,6 +524,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluation?.originId).toBe(runId);
+    expect(evaluation?.assigneeAdapterOverrides).toBeNull();
     expect(evaluation?.parentId).toBeNull();
   });
 

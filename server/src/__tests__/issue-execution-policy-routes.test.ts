@@ -352,6 +352,46 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it.each([
+    ["monitorNextCheckAt", "2026-12-01T12:00:00.000Z"],
+    ["monitorAttemptCount", 2],
+    ["monitorLastTriggeredAt", "2026-12-01T11:00:00.000Z"],
+  ])("rejects top-level %s without applying sibling updates", async (field, value) => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1006",
+      title: "Original title",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ title: "Must not persist", [field]: value });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining("executionPolicy.monitor"),
+      details: {
+        code: "invalid_issue_monitor_payload",
+        field,
+        path: ["executionPolicy", "monitor"],
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -400,7 +440,18 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({
         status: "in_review",
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+          }),
+        }),
         monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
+        executionState: expect.objectContaining({
+          monitor: expect.objectContaining({
+            status: "scheduled",
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+          }),
+        }),
       }),
     );
   });

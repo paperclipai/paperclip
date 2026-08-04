@@ -1608,6 +1608,78 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("resolves an escalated handoff when a first-class blocker supersedes recovery", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "First-class unblock work",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: managerId,
+      action: "issue.successful_run_handoff_escalated",
+      entityType: "issue",
+      entityId: sourceIssueId,
+      details: { sourceRunId: randomUUID(), detectedProgressSummary: "Recovery required" },
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:blocker-materialized",
+      evidence: { sourceIssueId },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [blockerIssueId] })
+      .expect(200);
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue now has unresolved first-class blockers.",
+    });
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    const handoffResolutions = activityRows.filter(
+      (row) => row.action === "issue.successful_run_handoff_resolved",
+    );
+    expect(handoffResolutions).toHaveLength(1);
+    expect(handoffResolutions[0]?.details).toMatchObject({
+      resolvedFromState: "escalated",
+      resolvedByRecoveryActionOutcome: "cancelled",
+    });
+
+    const blockedInbox = await request(app)
+      .get(`/api/companies/${companyId}/issues?attention=blocked`)
+      .expect(200);
+    const sourceCard = blockedInbox.body.find((issue: { id: string }) => issue.id === sourceIssueId);
+    expect(sourceCard).toBeDefined();
+    expect(sourceCard.blockedInboxAttention.reason).toBe("blocked_chain_stalled");
+  });
+
   it("folds stale recovery during read projection after the source issue reaches done", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);

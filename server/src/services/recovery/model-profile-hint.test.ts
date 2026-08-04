@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   recoveryAssigneeAdapterOverrides,
+  recoveryModelProfileWorkClass,
   scrubRecoveryModelProfileHints,
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
@@ -16,6 +17,17 @@ describe("recovery model profile policy", () => {
       modelProfile: "cheap",
     });
     expect(recoveryAssigneeAdapterOverrides("status_only")).toEqual({ modelProfile: "cheap" });
+  });
+
+  it("keeps critical recovery on the primary model lane", () => {
+    const workClass = recoveryModelProfileWorkClass({ critical: true });
+
+    expect(workClass).toBe("normal_model");
+    expect(recoveryAssigneeAdapterOverrides(workClass)).toBeNull();
+    expect(withRecoveryModelProfileHint({
+      issueId: "critical-recovery",
+      modelProfile: "cheap",
+    }, workClass)).toEqual({ issueId: "critical-recovery" });
   });
 
   it("scrubs inherited cheap hints from normal model source-work retries", () => {
