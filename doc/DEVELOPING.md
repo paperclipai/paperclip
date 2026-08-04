@@ -148,6 +148,42 @@ look like a zero-loss restart.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+#### Two continuity lanes: adoption vs. session-resume (ACPX local adapters)
+
+Local heartbeat adapters run their agent through one of two lanes, and the two
+lanes have different, deliberate restart behavior. The persisted
+`processGroupId` on the run distinguishes them:
+
+- **Detached direct-spawn lane (`processGroupId` is non-null).** The agent runs
+  in its own process group, survives the old server, and is re-signalable by
+  group. These runs are *left alive* across a hot restart and **adopted** live by
+  the new server (`adoptedRunIds`).
+- **ACP-engine lane — `codex_local`, `claude_local`, `gemini_local` on their
+  default path (`processGroupId` is null).** The agent is driven over an
+  in-process stdio JSON-RPC transport owned by the server process. When the
+  server exits, the agent gets stdin EOF and dies, and the transport **cannot be
+  reattached** — there is no safe way to adopt it. Rather than falsely promise
+  adoption and then lose the run, the new server **fails closed**: it finalizes
+  the original run (`finalized_while_down`, run `errorCode` /report `reason`
+  `acp_transport_not_reattachable`) and queues a retry that **resumes the
+  persisted ACP session** on the new server. Continuity for this lane is
+  therefore session-store resume, not process adoption.
+
+  Tradeoff: the in-flight turn that was mid-flight at restart is not preserved at
+  the process level; the retry re-enters the agent and resumes its saved session
+  (transcript, working state) from the last checkpoint the ACP session store
+  persisted. This is the honest outcome — the null `processGroupId` is a
+  load-bearing signal, not a gap. Do **not** make the ACP lane report a synthetic
+  process group (e.g. by detaching the agent spawn) to force adoption: the stdio
+  transport still dies with the server, so that would only restore the false
+  promise the fix removed. See `isReattachableHotRestartRun` in
+  `server/src/services/heartbeat.ts` and the invariant note on `onAgentSpawn` in
+  `packages/adapter-utils/src/acpx-engine/execute.ts`.
+
+For an ACP-engine local heartbeat, a zero-loss restart therefore records the
+original run in `finalizedWhileDownRunIds` (not `adoptedRunIds`), keeps
+`lostRunIds` empty, and leaves a `retryOfRunId` continuation queued.
+
 ### Recovering a deploy blocked by missing process metadata
 
 If the currently installed version already has a running local-agent heartbeat
@@ -183,9 +219,15 @@ jq -e --arg run "$RUN_ID" \
   "$PAPERCLIP_HOME/hot-restart-report.json"
 ```
 
-An alive child appears in `adoptedRunIds`; a child that completed during the
-restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
-`lostRunIds` entry remains a failed deploy and must not be waived.
+An alive, reattachable child (detached lane, non-null `processGroupId`) appears in
+`adoptedRunIds`; a child that completed during the restart window appears in
+`finalizedWhileDownRunIds`. An ACP-engine local run (`codex_local` /
+`claude_local` / `gemini_local`, null `processGroupId`) also appears in
+`finalizedWhileDownRunIds` — finalized fail-closed with a session-resume retry
+queued (see "Two continuity lanes" above), so for that lane the check above is
+satisfied by the `finalizedWhileDownRunIds` branch, not `adoptedRunIds`. All
+three are continuous. A `lostRunIds` entry remains a failed deploy and must not
+be waived.
 
 Tailscale/private-auth dev mode:
 

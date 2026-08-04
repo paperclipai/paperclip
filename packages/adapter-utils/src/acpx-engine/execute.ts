@@ -3075,6 +3075,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         : undefined,
       onAgentSpawn: async (meta) => {
         processIdentitySink.latest = meta;
+        // `processGroupId: null` is a deliberate, load-bearing invariant, not a
+        // gap. The ACP agent is spawned in THIS process's group and driven over
+        // an in-process stdio JSON-RPC transport owned by this server, so it
+        // cannot be reattached across a `paperclip.service` restart (it dies on
+        // stdin EOF when the server exits). The server relies on a null group id
+        // to fail-close hot-restart adoption for this lane and instead resume the
+        // persisted ACP session on retry — see `isReattachableHotRestartRun` in
+        // `server/src/services/heartbeat.ts`. Do NOT report a synthetic group id
+        // here (e.g. by detaching the spawn) without also teaching the server a
+        // separate reattachability signal, or hot restart will silently promise
+        // an adoption it cannot honor.
         await processIdentitySink.current?.({
           pid: meta.pid,
           processGroupId: null,
@@ -3187,6 +3198,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // not emit another spawn event. Persist its known identity on this run
       // before the next prompt starts so every running heartbeat is adoptable.
       if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
+        // Same invariant as the spawn hook above: a warm-handle reuse re-persists
+        // the in-process ACP agent's identity with a null group id, keeping the
+        // run fail-closed for hot-restart adoption. See the note on `onAgentSpawn`.
         await ctx.onSpawn({
           pid: processIdentitySink.latest.pid,
           processGroupId: null,

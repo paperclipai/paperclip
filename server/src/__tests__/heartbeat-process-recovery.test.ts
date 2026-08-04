@@ -1491,13 +1491,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("adopts an old-server legacy snapshot written for a new instance-scoped marker", async () => {
-    const child = spawnAliveProcess();
-    childProcesses.add(child);
-    expect(child.pid).toBeGreaterThan(0);
+    // A genuinely reattachable run: the detached direct-spawn lane leaves the
+    // agent in its own process group, so the group survives this server and can
+    // be adopted. (The ACP-engine lane with a null group id is fail-closed
+    // instead — covered by the dedicated regressions below.)
+    const group = await spawnOrphanedProcessGroup();
+    cleanupPids.add(group.descendantPid);
+    expect(group.processGroupId).toBeGreaterThan(0);
     const { companyId, agentId, issueId, runId } = await seedRunFixture({
       agentStatus: "running",
-      processPid: child.pid ?? null,
-      processGroupId: null,
+      processPid: group.processPid,
+      processGroupId: group.processGroupId,
     });
 
     await withTempPaperclipHome(async (home) => {
@@ -1523,8 +1527,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           agentId,
           adapterType: "codex_local",
           status: "running",
-          processPid: child.pid,
-          processGroupId: null,
+          processPid: group.processPid,
+          processGroupId: group.processGroupId,
           issueId,
         }],
       };
@@ -1534,7 +1538,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(mergedIntent).toMatchObject({
         preflightActiveRunIds: [runId],
         shutdownSnapshot: {
-          activeRuns: [expect.objectContaining({ runId, processPid: child.pid })],
+          activeRuns: [expect.objectContaining({ runId, processGroupId: group.processGroupId })],
         },
       });
 
@@ -1637,7 +1641,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
+  it("persists codex_local ACP spawn identity (pid, null process group) for the live run", async () => {
     let releaseAdapter: (() => void) | null = null;
     let spawnedPid: number | null = null;
     const adapterStarted = new Promise<void>((resolve) => {
@@ -1696,6 +1700,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           return row?.status === "running" && row.processPid ? row : null;
         }),
     );
+    // The ACP-engine lane records the agent pid but a null process group: the
+    // agent runs behind an in-process stdio transport, not a detached group. This
+    // null group id is the load-bearing signal the hot-restart reconciler uses to
+    // fail-close adoption for this lane (see the dedicated regressions below).
     expect(running).toMatchObject({
       id: runId,
       status: "running",
@@ -1704,118 +1712,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processStartedAt: new Date("2026-07-30T07:00:00.000Z"),
     });
 
-    await withTempPaperclipHome(async (home) => {
-      await writeHotRestartIntent({
-        previousServerPid: process.pid,
-        previousServerVersion: "old-version",
-        requestedAt: new Date("2026-07-30T07:01:00.000Z"),
-      });
-      await heartbeat.prepareHotRestartShutdown(
-        "SIGTERM",
-        new Date("2026-07-30T07:02:00.000Z"),
-      );
-
-      const adoption = await heartbeat.reconcileHotRestartAdoption(
-        new Date("2026-07-30T07:03:00.000Z"),
-      );
-      expect(adoption).toMatchObject({
-        mode: "reported",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
-        lostRunIds: [],
-      });
-      const report = JSON.parse(
-        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
-      ) as { runs?: Array<Record<string, unknown>> };
-      expect(report.runs).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            runId,
-            classification: "adopted",
-            reason: "process_pid_alive",
-          }),
-        ]),
-      );
-      expect(report.runs).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ runId, reason: "missing_process_metadata" }),
-        ]),
-      );
-    });
-
     if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
     releaseAdapter();
     const settled = await waitForRunToSettle(heartbeat, runId, 5_000);
     expect(settled?.status).toBe("succeeded");
   });
 
-  it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
-    const child = spawnAliveProcess();
-    childProcesses.add(child);
-    expect(child.pid).toBeGreaterThan(0);
-    const { runId } = await seedRunFixture({
-      agentStatus: "running",
-      processPid: child.pid ?? null,
-      processGroupId: null,
-    });
-
-    await withTempPaperclipHome(async (home) => {
-      const heartbeat = heartbeatService(db);
-      await writeHotRestartIntent({
-        previousServerPid: process.pid,
-        previousServerVersion: "old-version",
-        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
-      });
-      await heartbeat.prepareHotRestartShutdown(
-        "SIGTERM",
-        new Date("2026-03-19T00:06:00.000Z"),
-      );
-
-      const adoption = await heartbeat.reconcileHotRestartAdoption(
-        new Date("2026-03-19T00:07:00.000Z"),
-      );
-      expect(adoption).toMatchObject({
-        mode: "reported",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
-        lostRunIds: [],
-        skippedRunIds: [],
+  // PAP-16219: an ACP-engine local run (null process group) cannot be reattached
+  // across a restart. It must be finalized fail-closed (never `lost`, never a
+  // bare-pid `adopted`) with a session-resume retry queued — for both codex_local
+  // and claude_local. A live child pid is deliberately still alive here to prove
+  // we do NOT adopt by bare pid (which would also risk latching a recycled pid).
+  for (const adapterType of ["codex_local", "claude_local"] as const) {
+    it(`finalizes a live ${adapterType} ACP run fail-closed on hot restart and queues a session-resume retry`, async () => {
+      const child = spawnAliveProcess();
+      childProcesses.add(child);
+      expect(child.pid).toBeGreaterThan(0);
+      const { agentId, runId, issueId } = await seedRunFixture({
+        adapterType,
+        agentStatus: "idle",
+        processPid: child.pid ?? null,
+        processGroupId: null,
       });
 
-      const report = JSON.parse(
-        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
-      ) as Record<string, unknown>;
-      expect(report).toMatchObject({
-        previousServerPid: process.pid,
-        newServerPid: process.pid,
-        previousServerVersion: "old-version",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
-        lostRunIds: [],
-      });
-      expect(typeof report.newServerVersion).toBe("string");
-
-      const reap = await heartbeat.reapOrphanedRuns();
-      expect(reap).toEqual({ reaped: 0, runIds: [] });
-      const adopted = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      expect(adopted?.status).toBe("running");
-      expect(adopted?.errorCode).not.toBe("process_lost");
-      expect(adopted?.resultJson).toMatchObject({
-        hotRestart: {
-          adopted: true,
-          adoptedAt: "2026-03-19T00:07:00.000Z",
+      await withTempPaperclipHome(async (home) => {
+        const heartbeat = heartbeatService(db);
+        await writeHotRestartIntent({
           previousServerPid: process.pid,
-          newServerPid: process.pid,
           previousServerVersion: "old-version",
-          processPid: child.pid,
-        },
+          requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+          preflightActiveRunIds: [runId],
+        });
+        await heartbeat.prepareHotRestartShutdown(
+          "SIGTERM",
+          new Date("2026-03-19T00:06:00.000Z"),
+        );
+
+        const adoption = await heartbeat.reconcileHotRestartAdoption(
+          new Date("2026-03-19T00:07:00.000Z"),
+        );
+        // Success condition: empty lostRunIds; the original run recorded in
+        // finalizedWhileDownRunIds; nothing falsely adopted.
+        expect(adoption).toMatchObject({
+          mode: "reported",
+          adoptedRunIds: [],
+          finalizedWhileDownRunIds: [runId],
+          lostRunIds: [],
+          skippedRunIds: [],
+        });
+
+        const report = JSON.parse(
+          await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+        ) as { runs?: Array<Record<string, unknown>> };
+        expect(report.runs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              runId,
+              adapterType,
+              classification: "finalized_while_down",
+              reason: "acp_transport_not_reattachable",
+              // Usable persisted process identity is retained on the report.
+              processPid: child.pid,
+            }),
+          ]),
+        );
+
+        // The run is honestly finalized (not left "running" under a false
+        // adoption promise) and is not marked lost/process_lost.
+        const finalized = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        expect(finalized?.status).toBe("interrupted");
+        expect(finalized?.errorCode).toBe("acp_transport_not_reattachable");
+        expect(finalized?.processPid).toBe(child.pid);
+
+        // The durable handoff: a retry is queued so the persisted ACP session
+        // resumes on the new server.
+        const retryRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
+        expect(retryRuns).toHaveLength(1);
+        expect(["queued", "running"]).toContain(retryRuns[0]?.status);
+
+        // A subsequent startup reap does not double-handle the finalized run.
+        const reap = await heartbeat.reapOrphanedRuns();
+        expect(reap.runIds).not.toContain(runId);
+        expect(issueId).toBeTruthy();
       });
     });
-  });
+  }
 
   it.skipIf(process.platform === "win32")("keeps process-group-only hot-restart adoptions out of process_lost reaping", async () => {
     const orphan = await spawnOrphanedProcessGroup();

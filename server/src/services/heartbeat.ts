@@ -5783,6 +5783,39 @@ function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
 
+/**
+ * Whether a tracked local run keeps a child process that can be safely
+ * *reattached* — i.e. adopted live — across a `paperclip.service` restart.
+ *
+ * The only lane that qualifies is the detached direct-spawn lane
+ * (`runChildProcess` in adapter-utils), which launches the agent in its own
+ * process group (recorded as a non-null `processGroupId`). Such a child outlives
+ * this server, stays re-signalable by group, and reports its result out-of-band,
+ * so the new server can genuinely adopt it.
+ *
+ * The ACP-engine lane (`claude_local` / `codex_local` / `gemini_local` on their
+ * default path) drives the agent over an *in-process* stdio JSON-RPC transport
+ * owned by THIS server process, and spawns the agent in the server's own process
+ * group — so it records `processGroupId: null`. When the server exits, the agent
+ * gets stdin EOF / stdout EPIPE and dies, and the transport cannot be
+ * reattached. A null `processGroupId` on a tracked local run is therefore a
+ * load-bearing signal: the run has no reattachable process and must be finalized
+ * fail-closed on hot restart (and resumed from its persisted ACP session on
+ * retry) rather than promised a bare-pid adoption we cannot honor — which would
+ * also risk adopting a recycled pid. See `acpx-engine/execute.ts` for the
+ * spawn-side invariant.
+ */
+function isReattachableHotRestartRun(input: {
+  adapterType: string;
+  processGroupId: number | null;
+}): boolean {
+  return (
+    isTrackedLocalChildProcessAdapter(input.adapterType)
+    && typeof input.processGroupId === "number"
+    && input.processGroupId > 0
+  );
+}
+
 function isHeartbeatRunTerminalStatus(
   status: string | null | undefined,
 ): status is (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number] {
@@ -10030,14 +10063,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       capturedAt: now,
     });
 
-    for (const { run } of activeRuns) {
+    // Record an honest per-run continuity note. A reattachable run (detached
+    // direct-spawn lane, real `processGroupId`) is genuinely left alive for the
+    // new server to adopt. A non-reattachable run (ACP-engine lane, null
+    // `processGroupId`) is NOT promised adoption — its in-process transport dies
+    // with this server; startup reconciliation finalizes it fail-closed and
+    // resumes its persisted ACP session on retry. Emitting the false
+    // "leaving child alive for startup adoption" promise for the latter is the
+    // exact behavior PAP-16219 repairs.
+    for (const { run, adapterType } of activeRuns) {
+      const reattachable = isReattachableHotRestartRun({
+        adapterType,
+        processGroupId: run.processGroupId ?? null,
+      });
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "Hot restart requested; leaving child process alive for startup adoption",
+        message: reattachable
+          ? "Hot restart requested; leaving child process alive for startup adoption"
+          : "Hot restart requested; ACP transport is not reattachable — run will be finalized and resumed on the new server",
         payload: {
           signal,
+          reattachable,
           previousServerPid: intent.previousServerPid,
           previousServerVersion: intentWithVersion.previousServerVersion,
           processPid: run.processPid ?? null,
@@ -10056,6 +10104,82 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       skipDrain: true as const,
       activeRunIds: snapshotRuns.map((run) => run.runId),
     };
+  }
+
+  // Fail-closed finalization for a tracked local run whose ACP stdio transport
+  // cannot be reattached across a restart (null `processGroupId`). Mirrors the
+  // shutdown drain's per-run body: mark the run interrupted, resolve its wakeup,
+  // release its environment/issue leases, and enqueue a process-loss retry that
+  // resumes the persisted ACP session on this server. Returns the interrupted run
+  // (or the unchanged run when it already left `running`, e.g. a graceful drain
+  // beat us to it). Never leaves the run `running` under a false adoption.
+  async function finalizeNonReattachableHotRestartRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    intent: NonNullable<Awaited<ReturnType<typeof readHotRestartIntent>>>;
+    now: Date;
+  }): Promise<typeof heartbeatRuns.$inferSelect> {
+    const { run, agent, intent, now } = input;
+    if (run.status !== "running") return run;
+
+    const message =
+      "ACP transport is not reattachable across a paperclip.service restart; "
+      + "finalized while the server was down and queued a session-resume retry";
+    const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
+      finishedAt: now,
+      error: message,
+      errorCode: "acp_transport_not_reattachable",
+      resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+        resultJson: parseObject(run.resultJson),
+        errorCode: "acp_transport_not_reattachable",
+        errorMessage: message,
+      }),
+    });
+    if (!interruptedStatus.updated || !interruptedStatus.run) {
+      // Another path (graceful drain, a racing reconcile) already finalized it.
+      return interruptedStatus.run ?? run;
+    }
+    let interrupted = interruptedStatus.run;
+
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: null,
+    });
+    interrupted =
+      (await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)))
+      ?? interrupted;
+
+    await releaseEnvironmentLeasesForRun({
+      runId: interrupted.id,
+      companyId: interrupted.companyId,
+      agentId: interrupted.agentId,
+      status: interrupted.status,
+      failureReason: interrupted.error ?? undefined,
+    });
+
+    const retry = await enqueueProcessLossRetry(interrupted, agent, now);
+    if (!retry) {
+      await releaseIssueExecutionAndPromote(interrupted);
+    }
+
+    await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message,
+      payload: {
+        previousServerPid: intent.previousServerPid,
+        newServerPid: process.pid,
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(retry ? { retryRunId: retry.id } : {}),
+      },
+    });
+
+    await finalizeAgentStatus(run.agentId, "interrupted", message, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    });
+
+    return interrupted;
   }
 
   async function reconcileHotRestartAdoption(now = new Date()) {
@@ -10100,7 +10224,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await db
         .select({
           run: heartbeatRuns,
-          adapterType: agents.adapterType,
+          agent: agents,
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -10135,7 +10259,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const candidate = toHotRestartIntentRun(current);
+      const candidate = toHotRestartIntentRun({
+        run: current.run,
+        adapterType: current.agent.adapterType,
+      });
       if (current.run.status !== "running") {
         classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
       } else {
@@ -10157,12 +10284,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const { run, adapterType } = current;
+      const { run, agent } = current;
+      const adapterType = agent.adapterType;
+      const processPid = run.processPid ?? candidate.processPid;
+      const processGroupId = run.processGroupId ?? candidate.processGroupId;
       const patch = {
         adapterType,
         status: run.status,
-        processPid: run.processPid ?? candidate.processPid,
-        processGroupId: run.processGroupId ?? candidate.processGroupId,
+        processPid,
+        processGroupId,
       };
 
       if (run.status !== "running") {
@@ -10180,8 +10310,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const processPid = run.processPid ?? candidate.processPid;
-      const processGroupId = run.processGroupId ?? candidate.processGroupId;
+      // Fail-closed hot-restart contract for the ACP-engine local lane. A tracked
+      // local run with a null `processGroupId` drives its agent over an in-process
+      // stdio JSON-RPC transport that died with the previous server (stdin EOF).
+      // It cannot be adopted: the agent is gone, and "adopting" a bare pid would
+      // either promise a live run we cannot talk to or, worse, latch onto a
+      // recycled pid. Finalize it honestly as finalized_while_down and requeue a
+      // retry that resumes the persisted ACP session on this server — the durable
+      // handoff. Never classify it `lost` and never falsely `adopted`.
+      if (!isReattachableHotRestartRun({ adapterType, processGroupId })) {
+        const finalized = await finalizeNonReattachableHotRestartRun({
+          run,
+          agent,
+          intent,
+          now,
+        });
+        classify(candidate, "finalized_while_down", "acp_transport_not_reattachable", {
+          ...patch,
+          status: finalized?.status ?? run.status,
+        });
+        continue;
+      }
+
       const processPidAlive = isProcessAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
