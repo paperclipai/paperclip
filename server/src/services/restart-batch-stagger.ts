@@ -12,13 +12,22 @@
 // server/src/services/recovery/service.ts (reconcileStrandedAssignedIssues)
 // so every restart-triggered enqueue path gets the same protection from one
 // place instead of duplicated constants.
+function parseEnvInt(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export const RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD = Math.max(
   1,
-  Math.floor(Number(process.env.HEARTBEAT_RESTART_BATCH_REAP_THRESHOLD)) || 8,
+  parseEnvInt(process.env.HEARTBEAT_RESTART_BATCH_REAP_THRESHOLD, 8),
 );
+// An explicit "0" here means staggering is disabled; only fall back to the
+// 5-minute default when the env var is unset or not a finite number (RENA-54203
+// review fix -- the previous `|| 5 * 60 * 1000` silently discarded a real 0).
 export const RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS = Math.max(
   0,
-  Math.floor(Number(process.env.HEARTBEAT_RESTART_BATCH_STAGGER_MAX_MS)) || 5 * 60 * 1000,
+  parseEnvInt(process.env.HEARTBEAT_RESTART_BATCH_STAGGER_MAX_MS, 5 * 60 * 1000),
 );
 export const RESTART_BATCH_STAGGER_RETRY_REASON = "restart_batch_stagger";
 export const RESTART_BATCH_STAGGER_WAKE_REASON = "restart_batch_stagger_retry";

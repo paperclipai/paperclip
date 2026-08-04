@@ -10360,16 +10360,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Same thundering-herd guard as reapOrphanedRuns (RENA-54107): a graceful
     // shutdown/redeploy drains every "running" run at once, so a large batch here
     // gets staggered retries instead of all requeuing the moment the new instance
-    // starts up.
-    const isRestartBatchShutdown = activeRuns.length >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
-    if (isRestartBatchShutdown) {
+    // starts up. Batch size is scoped per agent (RENA-54203) so one overloaded
+    // agent's runs don't cause unrelated agents' small batches to be staggered too.
+    const drainCountByAgentId = new Map<string, number>();
+    for (const { run } of activeRuns) {
+      drainCountByAgentId.set(run.agentId, (drainCountByAgentId.get(run.agentId) ?? 0) + 1);
+    }
+    const restartBatchShutdownAgentIds = new Set(
+      [...drainCountByAgentId.entries()]
+        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
+        .map(([agentId]) => agentId),
+    );
+    if (restartBatchShutdownAgentIds.size > 0) {
       logger.warn(
         {
           drainedRunCount: activeRuns.length,
+          restartBatchAgentCount: restartBatchShutdownAgentIds.size,
           threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
           staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
         },
-        "restart-batch shutdown drain detected; process-loss retries will be staggered to avoid a thundering herd",
+        "restart-batch shutdown drain detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
       );
     }
 
@@ -10424,7 +10434,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         interrupted,
         agent,
         now,
-        isRestartBatchShutdown ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
+        restartBatchShutdownAgentIds.has(run.agentId) ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
       );
       if (!retry) {
         await releaseIssueExecutionAndPromote(interrupted);
@@ -12945,15 +12955,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return true;
     };
     const reapEligibleCount = activeRuns.filter(({ run, adapterType }) => isReapEligible(run, adapterType)).length;
-    const isRestartBatchReap = reapEligibleCount >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
-    if (isRestartBatchReap) {
+    // Batch size is scoped per agent (RENA-54203) so one overloaded agent's reap
+    // batch doesn't cause unrelated agents' small batches to be staggered too.
+    const reapEligibleCountByAgentId = new Map<string, number>();
+    for (const { run, adapterType } of activeRuns) {
+      if (!isReapEligible(run, adapterType)) continue;
+      reapEligibleCountByAgentId.set(run.agentId, (reapEligibleCountByAgentId.get(run.agentId) ?? 0) + 1);
+    }
+    const restartBatchReapAgentIds = new Set(
+      [...reapEligibleCountByAgentId.entries()]
+        .filter(([, count]) => count >= RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD)
+        .map(([agentId]) => agentId),
+    );
+    if (restartBatchReapAgentIds.size > 0) {
       logger.warn(
         {
           reapEligibleCount,
+          restartBatchAgentCount: restartBatchReapAgentIds.size,
           threshold: RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
           staggerMaxMs: RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
         },
-        "restart-batch reap sweep detected; process-loss retries will be staggered to avoid a thundering herd",
+        "restart-batch reap sweep detected for one or more agents; process-loss retries will be staggered to avoid a thundering herd",
       );
     }
 
@@ -13077,7 +13099,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             finalizedRun,
             retryAgent,
             now,
-            isRestartBatchReap ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
+            restartBatchReapAgentIds.has(run.agentId) ? { staggerMs: computeRestartBatchStaggerDelayMs() } : undefined,
           );
         }
       } else if (retryAgent) {
