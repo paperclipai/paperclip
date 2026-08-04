@@ -43,6 +43,7 @@ können es künftig ebenso.
 | Umfang | **Die zehn `@whitestag.ai`-Absender.** `paperclip@clara-werden.de` bleibt vorerst außen vor (eigener Mandant, kein Branding vorhanden) |
 | Branding | **Alle sechs Bereiche**, pro Mail wählbar |
 | Disclaimer | **Ja**, wortgleich zum Original |
+| sorbART | **Stillgelegt.** Kein eigener Bereich mehr, auch nicht bei Luna |
 
 ## Aufbau der Signatur
 
@@ -100,10 +101,32 @@ bei ACADEMY, APP und DE trägt das Logo den Claim.
 | `academy` | *(keine)* | `ws@whitestag.academy` / `www.whitestag.academy` |
 | `app` | *(keine)* | `ws@whitestag.app` / `www.whitestag.app` |
 | `de` | *(keine)* | `ws@whitestag.de` / `www.whitestag.de` |
-| `sorbart` | *(Bestand, nur für Luna)* | wie heute |
 
-Adresse, Telefon und Mobil sind in allen Bereichen identisch:
-`Cottbus: Parzellenstr. 28 – 03050 Cottbus`, `T: 0355-49943777`, `M: 0177-4511000`.
+Grußformel (`Beste Grüße`), Funktionsbezeichnung (`Inhaber`), Anschrift
+(`Cottbus: Parzellenstr. 28 – 03050 Cottbus`), `T: 0355-49943777`,
+`M: 0177-4511000` und der Disclaimer sind in allen sechs Bereichen identisch
+und gehören deshalb in die Vorlage, nicht in die Datentabelle.
+
+## sorbART wird stillgelegt
+
+sorbART war bislang Lunas dritter Bereich (`--area SORBART`) mit eigener
+Signaturdatei, eigener Grußformel, eigener Firmenzeile und eigenem
+Disclaimer-Firmennamen. Der Bereich entfällt ersatzlos:
+
+- `luna_mail_render.AREAS` schrumpft auf `AI` und `FILM`. Da
+  `luna-queue-approval.py` sein `--area` gegen `list(render.AREAS)` prüft,
+  sperrt das neue Vorgänge automatisch.
+- Die Zuordnungsregel in Lunas Anweisungen (`…@sorbart.de` /
+  `…@sorbart.shop` → SORBART) entfällt. Solche Absender fallen künftig unter
+  die bestehende Rückfrage-Regel, statt still einem falschen Bereich
+  zugeordnet zu werden.
+- **Vor der Umstellung** muss der offene Freigabevorgang mit
+  `area: "SORBART"` erledigt oder storniert werden — sonst scheitert sein
+  Versand.
+
+Nebeneffekt: Ohne sorbART sind alle verbleibenden Bereiche in Grußformel,
+Funktionsbezeichnung und Disclaimer gleich. Die Variabilität dafür war
+ausschließlich sorbARTs wegen nötig und entfällt mit.
 
 ## Architektur
 
@@ -135,7 +158,7 @@ Der Webhook-Body bekommt ein optionales Feld:
 }
 ```
 
-- **`bereich`** — `ai` | `film` | `tv` | `academy` | `app` | `de` | `sorbart`.
+- **`bereich`** — `ai` | `film` | `tv` | `academy` | `app` | `de`.
   Fehlt das Feld oder ist der Wert unbekannt: `ai`.
 - **`signatur`** — `auto` (Vorgabe) oder `none`. `none` setzt, wer die Signatur
   bereits mitbringt; das ist ausschließlich Lunas Pfad.
@@ -148,12 +171,19 @@ Der Webhook-Body bekommt ein optionales Feld:
 4. Beides an `html` anhängen; an `text` eine Nur-Text-Fassung ohne Logo,
    Disclaimer inbegriffen.
 
-Die Schnittkante zwischen beiden Teilen liegt beim Logo:
+Die Schnittkante ist ein Platzhalter, kein Aneinanderhängen:
 
-- **Absenderblock** (im Node, je Absender verschieden): Grußformel „Beste Grüße",
-  die beiden `i.A.`-Zeilen, dann „Walter Schönenbröcher / Inhaber".
-- **Bereichsbaustein** (auf Platte, je Bereich verschieden): Logo, Bereichszeile,
-  Kontaktblock, Trennlinie, Disclaimer.
+- **Bereichsbaustein** (auf Platte, je Bereich eine Datei) enthält die
+  **komplette** Signatur — Grußformel, Walter, Logo, Bereichszeile,
+  Kontaktblock, Trennlinie, Disclaimer — mit dem wörtlichen Platzhalter
+  `{{ABSENDERBLOCK}}` an der Stelle, wo die `i.A.`-Zeilen stehen.
+- **Absenderblock** (zur Laufzeit gebildet, je Absender verschieden) sind
+  genau die beiden `i.A.`-Zeilen, die den Platzhalter ersetzen.
+
+Der Platzhalter statt einer Zweiteilung, weil die `i.A.`-Zeilen mitten im
+Aufbau sitzen — zwischen Grußformel und Walters Namen. Zwei Fragmente
+aneinanderzuhängen ginge nur, wenn der Absenderblock am Anfang oder Ende
+stünde.
 
 Damit ist der Baustein für Luna und die Agenten identisch verwendbar — sie
 unterscheiden sich ausschließlich im Absenderblock.
@@ -179,16 +209,18 @@ Zeile ins Log. Eine nackte Alarmmail ist besser als keine.
 
 ```
 ~/.paperclip/scripts/signatur/
-  signatur-build.py      # Generator
+  signatur_build.py      # Generator
   bereiche.json          # Bereichsdaten (Tabelle oben)
   vorlage.html           # gemeinsames Gerüst
   logos/<key>.png        # aufbereitete Logos
-  bereich-<key>.html     # erzeugt: Logo + Bereichszeile + Kontakt + Disclaimer
+  bereich-<key>.html     # erzeugt: komplette Signatur mit {{ABSENDERBLOCK}}
+  signatur.py            # Laufzeit (Python) — Luna
+  relay_signatur.js      # Laufzeit (JavaScript) — n8n-Node
 ```
 
-Der Generator erzeugt die sieben Bausteine aus Vorlage, Bereichsdaten und Logos.
+Der Generator erzeugt die sechs Bausteine aus Vorlage, Bereichsdaten und Logos.
 Ein neues Logo oder eine geänderte Telefonnummer ist danach ein Edit plus ein
-Generatorlauf statt sieben Handgriffe.
+Generatorlauf statt sechs Handgriffe.
 
 Ablageort ist `~/.paperclip/scripts/`, nicht der SynologyDrive-Ordner: launchd
 kann SynologyDrive nicht lesen, und die Bausteine müssen zur Laufzeit erreichbar
@@ -196,10 +228,12 @@ sein.
 
 ### Logo-Aufbereitung
 
-Die Originale sind 105–139 KB bei 260×260 px, angezeigt werden sie mit
-116–125 px Breite. Sie werden auf **250 px Breite** heruntergerechnet (scharf auf
-Retina) und optimiert. Zielgröße 30–50 KB pro Bereich; base64 legt ein Drittel
-drauf. Referenz ist Lunas heutiges AI-Logo mit 26 KB.
+Die Originale sind 105–139 KB bei 261×261 px, angezeigt werden sie mit
+116–125 px Breite. Das Herunterrechnen allein bringt wenig — die Größe kommt aus
+der Fotografik, nicht aus den Abmessungen. Der Hebel ist die Farbreduktion.
+Verfahren: auf **250 px Breite** (Faktor 2 für Retina), dann pngquant.
+Gemessen ergibt das **24–38 KB** pro Bereich bei erhaltenem Geweih und
+stufenfreiem Partikelverlauf. Referenz ist Lunas heutiges AI-Logo mit 26 KB.
 
 Das Festival-Lorbeer-Banner der FILM-Signatur (749 KB) **entfällt**. Es ist ein
 Vertriebs-Asset für Kundenmails, steckt auch in Lunas heutiger FILM-Signatur nicht
@@ -222,10 +256,10 @@ als `office@` ohne eigene Signatur sendet, nicht nackt rausgeht.
 ### Luna
 
 `load_sig()` liest künftig denselben Bereichsbaustein und setzt Lunas eigenen
-Absenderblock davor — inklusive ihrer Freigabe-Hinweiszeile, die inhaltlich
-korrekt bleibt. Die drei Dateien unter `Vault/Paperclip/Luna/signaturen/` entfallen;
-`sorbart` wird als siebter Baustein mitgeneriert, damit ihr dritter Bereich nicht
-wegbricht.
+Absenderblock in den Platzhalter — inklusive ihrer Freigabe-Hinweiszeile, die bei
+ihr inhaltlich korrekt bleibt. Die drei Dateien unter
+`Vault/Paperclip/Luna/signaturen/` entfallen, ihr dritter Bereich sorbART
+ebenfalls (siehe oben).
 
 Luna rendert weiterhin client-seitig, weil sie die fertige Fassung **vor** dem
 Versand für die Telegram-Freigabevorschau braucht. Beide Renderer teilen sich die
@@ -240,12 +274,13 @@ wird nachts überschrieben, direkte Edits dort sind am nächsten Morgen weg.
 
 ## Reihenfolge
 
-1. **Generator und Bausteine bauen.** Logos aufbereiten, sieben Bausteine
+1. **Generator und Bausteine bauen.** Logos aufbereiten, sechs Bausteine
    erzeugen, Größen prüfen. Noch nichts live.
 2. **Luna umstellen.** Kleinster Wirkungskreis, sofort sichtbarer Nutzen (altes
    Logo verschwindet), und ihr Pfad kann die Bausteine schon lesen.
 3. **Relay auf die nächste Version** mit dem Signatur-Node.
-4. **Rollen-Anweisungen** um das `bereich`-Feld ergänzen und generieren.
+4. **Rollen-Anweisungen** um das `bereich`-Feld ergänzen und sorbART aus Lunas
+   Anweisungen entfernen, dann generieren.
 
 Der n8n-Schritt ist der einzige heikle: Version hochzählen und sauber publizieren
 per deactivate → activate, sonst führt n8n weiter die alte `activeVersionId` aus
@@ -256,7 +291,7 @@ Signaturdateien zurücklegen.
 
 ## Testabnahme
 
-**Generator:** Sieben Bausteine erzeugt, jeder enthält genau ein base64-Bild,
+**Generator:** Sechs Bausteine erzeugt, jeder enthält genau ein base64-Bild,
 jeder unter dem Größenbudget.
 
 **Signatur-Node:**
