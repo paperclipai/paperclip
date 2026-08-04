@@ -1,6 +1,6 @@
 # Bild-, 360°- und Video-Aufträge an den CEO
 
-**Stand:** 2026-08-04 · geprüft gegen den laufenden Bilddienst, die Live-Instruktionen der Agenten und den Renderknoten
+**Stand:** 2026-08-04, abends · geprüft gegen den laufenden Bilddienst, die Live-Instruktionen der Agenten und den Renderknoten. Bild→Bild ist seit heute Abend bestellbar und am Knoten mit zwei Läufen belegt.
 
 Diese Anleitung beschreibt, wie du Bildaufträge in die Firma gibst — was der
 CEO daraus macht, welche Formulierungen funktionieren und wo die Kette heute
@@ -14,7 +14,7 @@ noch endet.
 |---|---|---|---|
 | **Text → Bild** (flach) | **ja** | `modell: qwen` (lokal) oder `modell: openai` | ~14 s / ~20 s |
 | **Text → 360°-Panorama** | **ja** | `modell: qwen360` | ~5–6 min |
-| **Bild → Bild** (Variante, Retusche, Umstilisierung) | **nein** | Modell liegt auf dem Knoten, ist aber nicht angeschlossen | — |
+| **Bild → Bild** (Variante, Retusche, Kombination) | **ja** | `modell: qwenedit`, ein bis drei Bildanhänge | ~2–3 min |
 | **Text → Video** | **nein** | LTX-2.3 läuft, aber nur von Hand auf dem Knoten | ~3 min Rechnen, ~41 min Kaltstart |
 | **Bild → Video** | **nein** | dito (LTX kann `--image`, ist nicht angeschlossen) | — |
 | 360°-Video | **nein** | kein produktionsreifes freies Modell | — |
@@ -174,6 +174,68 @@ Normalbilder**, nicht abwechselnd.
 
 ---
 
+## 4a. Bild → Bild
+
+### Was du dem CEO sagst
+
+> Ich hänge dir zwei Bilder an: das Produktfoto und die Studioszene. Lass das
+> Produkt in die Szene setzen, Licht von links, Rest der Szene unverändert.
+
+### Der Brief
+
+Wie ein normaler Bildauftrag — mit **einem bis drei Bildanhängen am Issue**:
+
+```
+prompt: Ersetze die blaue Kugel in Bild 1 durch die orangefarbene Kugel
+        aus Bild 2, behalte den Schriftzug darunter
+modell: qwenedit
+seed: 7
+```
+
+**„Bild 1" ist der zuerst angehängte.** Bei nur einem Anhang brauchst du gar
+keinen Verweis — dann genügt „entferne die Person im Hintergrund".
+
+**Kein `format:`.** Die Ausgabegröße folgt dem ersten Quellbild. Gibst du
+trotzdem eines an, wird es ignoriert und im Kommentar vermerkt — nicht
+stillschweigend verworfen.
+
+### Vier Dinge, die den Unterschied machen
+
+1. **Sag, was bleiben soll**, nicht nur was sich ändert. „Ersetze die Kugel,
+   **behalte den Schriftzug darunter**" trifft zuverlässiger als „ersetze die
+   Kugel".
+2. **Beziehe dich ausdrücklich auf die Bildnummern**, sobald es mehr als eines
+   ist. Ohne Verweis rät das Modell, welches Bild die Vorlage und welches die
+   Änderung ist.
+3. **Schrift bleibt heikel.** Vorhandene Schrift im Bild übersteht die
+   Bearbeitung meist, wird aber an den Rändern unsauber. Bei Text, auf den es
+   ankommt: Bild ohne Text bearbeiten lassen und die Typografie hinterher
+   setzen.
+4. **Nicht mit normalen Bildern mischen.** Der Knoten kann das 41-GB-Edit-Modell
+   und das normale nicht gleichzeitig vorhalten; jeder Wechsel kostet Ladezeit.
+   Erst alle Edit-Aufträge, dann alle normalen.
+
+### Fehlerfälle
+
+| Fall | Was passiert |
+|---|---|
+| kein Bildanhang | Abbruch mit Hinweis — der Dienst kann nicht raten, was du bearbeiten willst |
+| mehr als drei Bilder | Abbruch. Bewusst kein stillschweigendes Kürzen: sonst meint „Bild 2" etwas anderes, als du siehst |
+| Anhang über 20 MB | Abbruch mit Größenangabe |
+| PDF/XLSX am Issue | wird ignoriert, zählt nicht als Bild |
+
+### Gemessen am 04.08.
+
+| Lauf | Dauer |
+|---|---|
+| ein Quellbild, kalt (inkl. Laden der 41 GB) | 180 s |
+| zwei Quellbilder, warm | 120 s |
+| normales Bild danach (Modell-Rückwechsel) | 51 s statt 14 s |
+
+Belegt ist außerdem, dass der Edit-Pfad die **normalen Bilder nicht
+verändert**: derselbe Auftrag mit festem Seed lieferte vor und nach einem
+Edit-Lauf ein bitgleiches PNG.
+
 ## 5. Was du dem CEO zusätzlich mitgeben solltest
 
 Der Bilddienst kennt nur den Prompt — Marke, Zweck und Zielformat kennt er
@@ -196,23 +258,6 @@ Web-Design).
 ## 6. Was heute nicht bestellbar ist
 
 Damit du nicht auf etwas wartest, das nicht kommt.
-
-### Bild → Bild (Variante, Retusche, Umstilisierung)
-
-**Nicht bestellbar.** Der Brief hat kein Feld für ein Eingangsbild, und die
-Workflow-Vorlage erzeugt ihr Latent immer leer (`EmptySD3LatentImage`) — es
-gibt keinen Weg, ein vorhandenes Bild hineinzugeben.
-
-Bemerkenswert: Das passende Modell **liegt bereits auf dem Renderknoten**
-(`qwen_image_edit_2511_int8_convrot.safetensors` plus die 4-Schritt-Lightning-
-LoRA). Es fehlt nur die Verdrahtung: eine Workflow-Vorlage, ein Modellname
-wie `qwenedit`, ein Brief-Feld für das Quellbild und der Upload des Anhangs
-zum Knoten. Das ist ein überschaubarer Ausbau — sag Bescheid, wenn er kommen
-soll.
-
-**Bis dahin:** Bildbearbeitung an den **Adobe-Agenten** geben (Photoshop-
-Automatisierung: Freistellen, Retusche, Compositing, Export). Das ist
-klassische Bearbeitung, keine generative Variante.
 
 ### Text → Video und Bild → Video
 
@@ -261,6 +306,8 @@ Kein produktionsreifes freies Modell. Zurückgestellt.
 | Gleichzeitige Renders | 3 | Auftrag wartet, einmaliger Kommentar „Warteschlange voll" |
 | Zeitlimit normales Bild | 300 s | ein automatischer zweiter Versuch, dann Abbruch + Alarmmail |
 | Zeitlimit 360° | 900 s | dito |
+| Zeitlimit Bild→Bild | 600 s | dito |
+| Quellbilder je Auftrag | 1–3, je ≤ 20 MB | Abbruch mit Hinweis |
 | Poll-Takt des Dienstes | 60 s | — |
 
 Der Dienst bedient alle drei Firmen (WHITESTAG, Clara, Health) aus derselben

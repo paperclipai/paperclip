@@ -1,7 +1,7 @@
 # Bild→Bild im Bilddienst (Qwen-Image-Edit)
 
 **Stand:** 2026-08-04
-**Status:** entworfen, noch nicht gebaut
+**Status:** umgesetzt und live am 2026-08-04
 **Knoten:** MacBook M5 Max, `192.168.2.40`, ComfyUI auf Port 8189
 
 ## Warum
@@ -243,11 +243,31 @@ Vor dem Scharfstellen, an einem Wegwerf-Issue:
    bitgleich zum selben Auftrag vor dem Edit-Lauf? Damit ist belegt, dass der
    Edit-Pfad den normalen Bildpfad nicht verändert.
 
-**Offene technische Frage, die der Rauchtest beantworten muss:** ob die
-`Lightning-4steps`-LoRA (bf16) sauber auf dem `int8_convrot`-Basismodell
-sitzt. Beim 360-Pfad hat genau diese Paarung — LoRA-Quantisierung gegen
-Basismodell-Quantisierung — großflächige Patch-Artefakte erzeugt. Fallback:
-ohne LoRA mit 20 Schritten und cfg 3.5, dann langsamer.
+### Ergebnis der Rauchtests (04.08., abends)
+
+Alle drei Schritte bestanden, auf `qwen_image_edit_2511_bf16` mit der
+`Lightning-4steps`-LoRA (bf16), 4 Schritte, cfg 1.0.
+
+| Lauf | Beleg | Dauer |
+|---|---|---|
+| ein Quellbild, kalt (inkl. Laden der 41 GB) | WHI-3513, Seed 42: dunkles Logo-Bild → Motiv erhalten, Hintergrund durch helles Studio ersetzt | 180 s |
+| zwei Quellbilder, warm | Seed 7: „Ersetze die blaue Kugel in Bild 1 durch die orangefarbene aus Bild 2, behalte den Schriftzug" → genau das | 120 s |
+| normales Bild danach | Modell-Rückwechsel | 51 s statt 14 s |
+
+**Die LoRA-Frage hat sich erledigt:** bf16-Basis und bf16-LoRA sind das
+kanonische Paar, keine Artefakte, der Fallback (20 Schritte, cfg 3.5) wurde
+nicht gebraucht.
+
+**Die Reihenfolge stimmt — und das ist bewiesen, nicht behauptet.** Der
+Zwei-Bilder-Test war so gewählt, dass eine vertauschte Zuordnung ein sichtbar
+anderes Bild ergeben hätte (blaue Kugel ohne Schriftzug statt orangefarbener
+mit). Das Ergebnis zeigt die orangefarbene Kugel mit Schriftzug.
+
+**Die Gegenprobe ist bestanden:** derselbe `qwen`-Auftrag mit festem Seed 4242
+lieferte vor und nach dem Edit-Lauf ein **bitgleiches** PNG
+(`72805eb34a89131dceb1988808b199e5071fe3dc1e38df3be6b062bd5480d45b`). Der
+Edit-Pfad verändert die zwischengespeicherten Modelle des normalen Pfades
+nicht — eigene Modellkopien wie beim 360-Workflow sind nicht nötig.
 
 ## Ausrollen
 
