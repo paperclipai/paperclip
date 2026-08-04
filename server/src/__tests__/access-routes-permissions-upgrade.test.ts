@@ -27,7 +27,12 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 
 type Db = ReturnType<typeof createDb>;
 
-async function createApp(db: Db, companyId: string, userId: string) {
+async function createApp(
+  db: Db,
+  companyId: string,
+  userId: string,
+  opts?: { restrictedSession?: boolean },
+) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
   const { accessRoutes } = await import("../routes/access.js");
@@ -37,10 +42,11 @@ async function createApp(db: Db, companyId: string, userId: string) {
     req.actor = {
       type: "board",
       userId,
-      source: "local_implicit",
+      source: opts?.restrictedSession ? "session" : "local_implicit",
+      sessionId: opts?.restrictedSession ? `session-${userId}` : undefined,
       companyIds: [companyId],
       memberships: [{ companyId, membershipRole: "owner", status: "active" }],
-      isInstanceAdmin: true,
+      isInstanceAdmin: !opts?.restrictedSession,
     };
     next();
   });
@@ -163,5 +169,104 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       scope: customScope,
       grantedByUserId: owner.principalId,
     });
+  });
+
+  it("allows a board owner to update explicit grants for an agent membership", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const agentMember = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: randomUUID(),
+        status: "active",
+        membershipRole: "member",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const res = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${agentMember.id}/permissions`)
+      .send({
+        grants: [
+          { permissionKey: "tasks:assign", scope: null },
+          { permissionKey: "agents:configure", scope: null },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, company.id),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, agentMember.principalId),
+        ),
+      );
+    expect(grants.map((grant) => grant.permissionKey).sort()).toEqual([
+      "agents:configure",
+      "tasks:assign",
+    ]);
+  });
+
+  it("rejects board actors that do not belong to the target company", async () => {
+    const { company: actorCompany, owner: actorOwner } = await createCompanyWithOwner(db);
+    const { company: targetCompany } = await createCompanyWithOwner(db);
+    const targetAgent = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: targetCompany.id,
+        principalType: "agent",
+        principalId: randomUUID(),
+        status: "active",
+        membershipRole: "member",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const res = await request(await createApp(
+      db,
+      actorCompany.id,
+      actorOwner.principalId,
+      { restrictedSession: true },
+    ))
+      .patch(`/api/companies/${targetCompany.id}/members/${targetAgent.id}/permissions`)
+      .send({ grants: [{ permissionKey: "agents:configure", scope: null }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, targetAgent.principalId));
+    expect(grants).toHaveLength(0);
+  });
+
+  it("rejects a member id belonging to another company", async () => {
+    const { company: actorCompany, owner: actorOwner } = await createCompanyWithOwner(db);
+    const { company: otherCompany } = await createCompanyWithOwner(db);
+    const otherAgent = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: otherCompany.id,
+        principalType: "agent",
+        principalId: randomUUID(),
+        status: "active",
+        membershipRole: "member",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const res = await request(await createApp(db, actorCompany.id, actorOwner.principalId))
+      .patch(`/api/companies/${actorCompany.id}/members/${otherAgent.id}/permissions`)
+      .send({ grants: [{ permissionKey: "agents:configure", scope: null }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, otherAgent.principalId));
+    expect(grants).toHaveLength(0);
   });
 });
