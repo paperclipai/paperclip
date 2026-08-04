@@ -525,34 +525,44 @@ describe("copyBackCodexAuth identity-keyed cache write", () => {
     expect(combined).not.toContain("id-token");
   });
 
-  it("a read-only cache directory fails loud on the cache write and leaves no partial slot, host overwrite intact", async () => {
+  it("a read-only cache directory does not fail the copy-back: the successful host result is kept and no partial slot remains", async () => {
     const { env, sharedHomeAuthPath } = await makeEnv();
     const sandboxAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER, marker: "sandbox" });
     const hostAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER, marker: "host" });
     await writeFile(sharedHomeAuthPath, hostAuth, { mode: 0o600 });
 
     // Pre-create the entry directory, then make it read-only so the cache-slot
-    // temp create fails. The host overwrite runs first and must stay intact.
+    // temp create fails. The host overwrite runs first and must stay intact. The
+    // additive cache write is best-effort, so its failure must not throw.
     const entryPath = await ensureCodexAuthCacheEntryDir(env, "acct-x", COMPANY_ID);
     const slotDir = path.dirname(entryPath);
+    const logs: string[] = [];
     await chmod(slotDir, 0o500);
+    let outcome: string;
     try {
-      await expect(
-        copyBackCodexAuth({
-          readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
-          hostAuthPath: sharedHomeAuthPath,
-          log: () => {},
-          resolveCacheEntryPath: (accountId) => ensureCodexAuthCacheEntryDir(env, accountId, COMPANY_ID),
-          env,
-        }),
-      ).rejects.toThrow();
+      outcome = await copyBackCodexAuth({
+        readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
+        hostAuthPath: sharedHomeAuthPath,
+        log: (line) => {
+          logs.push(line);
+        },
+        resolveCacheEntryPath: (accountId) => ensureCodexAuthCacheEntryDir(env, accountId, COMPANY_ID),
+        env,
+      });
     } finally {
       await chmod(slotDir, 0o700);
     }
 
+    // The host copy-back succeeded and its result is returned unchanged.
+    expect(outcome).toBe("copied");
     // Host default overwrite ran before the cache write and stays applied.
     expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(sandboxAuth);
     // No partial slot file; only the (empty) slot directory remains.
     expect(await readdir(slotDir)).toEqual([]);
+    // The failure is visible in the log with only the errno code. The raw
+    // account_id (which the failing slot path embeds) never reaches the log.
+    const combined = logs.join("\n");
+    expect(combined).toContain("additive cache write failed (EACCES)");
+    expect(combined).not.toContain("acct-x");
   });
 });

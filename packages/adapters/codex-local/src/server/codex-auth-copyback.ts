@@ -170,18 +170,33 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
     }
   });
 
-  // Additive cache write (Phase 3). Independent of the host default overwrite
-  // above: it runs on its own directory lock, keys the slot by the real sandbox
+  // Additive cache write. Independent of the host default overwrite above: it
+  // runs on its own directory lock, keys the slot by the real sandbox
   // `account_id`, and can write a slot for a different identity than the host
-  // holds (matrix rows 1b, 3). It never touches the host default store. The
-  // off-switch (default on) makes this a no-op when disabled. Only a usable
-  // subscription credential has an identity to key; an api-key or unusable
-  // sandbox credential is skipped.
+  // holds. It never touches the host default store. The off-switch (default on)
+  // makes this a no-op when disabled. Only a usable subscription credential has
+  // an identity to key; an api-key or unusable sandbox credential is skipped.
+  //
+  // The cache write is best-effort. The host copy-back above already finished
+  // and set `hostOutcome`, so a failure of this additive write must not replace
+  // that successful result. Catch the error, log it, and return `hostOutcome`.
+  // The cache stays a hint: the next teardown re-attempts the write.
   if (resolveCacheEntryPath && isCodexAuthCacheEnabled(env)) {
-    const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
-    if (sandboxAccountId) {
-      const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
-      await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log });
+    try {
+      const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
+      if (sandboxAccountId) {
+        const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
+        await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log });
+      }
+    } catch (error) {
+      // Log only the errno code, never the error message. The message embeds the
+      // cache slot path, and the slot path embeds the raw `account_id`; the code
+      // (for example EACCES or ENOSPC) makes the failure diagnosable without a
+      // leak. Token bytes never reach the log.
+      const code = (error as NodeJS.ErrnoException | null)?.code ?? "unknown";
+      await log(
+        `[paperclip] Codex auth cache: additive cache write failed (${code}); host copy-back result kept.`,
+      );
     }
   }
 

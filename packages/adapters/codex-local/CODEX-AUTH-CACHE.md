@@ -46,7 +46,10 @@ The identity anchor rule is the load-bearing constraint:
   "no random pick from the cache when the host is empty" rule.
 - The **cache write** keys each entry by the real `account_id` of the credential
   that flows back from the sandbox. It writes to a per-identity cache slot, never
-  to the host default store.
+  to the host default store. The cache write is best-effort: it runs after the
+  host copy-back finishes, so a cache-write failure never replaces the successful
+  copy-back result. The failure is logged with its errno code and the next
+  teardown re-attempts the write.
 
 The host never learns an identity from the cache. The host only refreshes an
 identity a real credential already states.

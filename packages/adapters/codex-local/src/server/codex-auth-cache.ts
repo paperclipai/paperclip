@@ -86,22 +86,25 @@ export function toCacheKey(accountId: string): string {
 
 /**
  * Resolves the company-scoped cache root under the same isolation boundary as
- * the managed Codex home (`resolveManagedCodexHomeDir`). When `companyId` is
- * present, the root is company-scoped, so a Codex credential can never cross a
- * company boundary. It is never an instance-global root. (Security condition 1.)
+ * the managed Codex home (`resolveManagedCodexHomeDir`). The root is always
+ * company-scoped, so a Codex credential can never cross a company boundary.
+ * There is no instance-global fallback root: `companyId` is required, and an
+ * empty value is a fail-loud error.
  */
 export function resolveCodexAuthCacheDir(
   env: NodeJS.ProcessEnv = process.env,
-  companyId?: string,
+  companyId: string,
 ): string {
+  const safeCompanyId = nonEmpty(companyId);
+  if (!safeCompanyId) {
+    throw new Error("codex auth cache: companyId is required for a company-scoped cache root");
+  }
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
     env,
   });
-  return companyId
-    ? path.resolve(instanceRoot, "companies", companyId, CACHE_DIR_NAME)
-    : path.resolve(instanceRoot, CACHE_DIR_NAME);
+  return path.resolve(instanceRoot, "companies", safeCompanyId, CACHE_DIR_NAME);
 }
 
 /**
@@ -114,7 +117,7 @@ export function resolveCodexAuthCacheDir(
 export function resolveCodexAuthCacheEntryPath(
   env: NodeJS.ProcessEnv = process.env,
   accountId: string,
-  companyId?: string,
+  companyId: string,
 ): string {
   const resolvedRoot = resolveCodexAuthCacheDir(env, companyId);
   const safeKey = toCacheKey(accountId);
@@ -158,7 +161,7 @@ async function ensurePrivateDir(dir: string): Promise<void> {
 export async function ensureCodexAuthCacheEntryDir(
   env: NodeJS.ProcessEnv = process.env,
   accountId: string,
-  companyId?: string,
+  companyId: string,
 ): Promise<string> {
   const entryPath = resolveCodexAuthCacheEntryPath(env, accountId, companyId);
   await ensurePrivateDir(resolveCodexAuthCacheDir(env, companyId));
@@ -229,29 +232,6 @@ async function decideExitCode(
     throw new Error(`codex auth cache decision predicate failed: ${detail}`);
   }
   throw new Error("codex auth cache decision predicate exited 0 (expected 10 or 20)");
-}
-
-/**
- * Atomically installs `sourceBytes` over `destinationPath` on the same
- * filesystem: stage a private (0600) temp file next to the destination, then
- * `rename` it over the target. The temp is always removed, so a failure never
- * leaves a partial file.
- */
-async function atomicInstall(destinationPath: string, sourceBytes: Buffer): Promise<void> {
-  const destinationDir = path.dirname(destinationPath);
-  const stagedTempPath = path.join(
-    destinationDir,
-    `.auth.json.cache-${process.pid}-${randomUUID()}.tmp`,
-  );
-  const handle = await open(stagedTempPath, "wx", 0o600);
-  try {
-    await handle.writeFile(sourceBytes);
-    await handle.close();
-    await rename(stagedTempPath, destinationPath);
-  } finally {
-    await handle.close().catch(() => undefined);
-    await rm(stagedTempPath, { force: true }).catch(() => undefined);
-  }
 }
 
 export type WriteCodexAuthCacheEntryOutcome = "written" | "kept-slot";
@@ -339,32 +319,49 @@ export async function selectVendCredential(
     return "no-host-identity";
   }
 
-  const cacheBytes = await readFile(cacheEntryPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (!cacheBytes) {
-    await log("[paperclip] Codex auth cache: no cached credential for the host identity; host credential kept.");
-    return "kept-host";
-  }
-
   const hostDir = path.dirname(sharedHomeAuthPath);
   return withDirectoryMergeLock(hostDir, async () => {
-    // Default-mode predicate: install the cache copy only when it is strictly
-    // newer for the SAME identity. Same-identity + strictly-newer keeps the
-    // change additive and semantics-preserving.
-    const decision = await decideExitCode(cacheEntryPath, sharedHomeAuthPath);
-    if (decision === USE_SOURCE_EXIT) {
-      await atomicInstall(sharedHomeAuthPath, cacheBytes);
-      await log(
-        "[paperclip] Codex auth cache: refreshed the host credential with a strictly-newer cached copy of the same identity at mode 0600.",
-      );
-      return "vended";
+    // Read the cached bytes under the lock, then stage exactly those bytes into a
+    // private (0600) temp next to the host target. The predicate reads the temp,
+    // so the vend installs exactly the bytes the predicate approved. This closes
+    // the read-after-validate skew: a separate reader of `cacheEntryPath` could
+    // otherwise see different bytes than the ones installed. The rename over the
+    // host target stays device-local and atomic.
+    const cacheBytes = await readFile(cacheEntryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!cacheBytes) {
+      await log("[paperclip] Codex auth cache: no cached credential for the host identity; host credential kept.");
+      return "kept-host";
     }
-    await log(
-      "[paperclip] Codex auth cache: host credential kept (the cached copy is not strictly newer for the same identity).",
+    const stagedTempPath = path.join(
+      hostDir,
+      `.auth.json.vend-${process.pid}-${randomUUID()}.tmp`,
     );
-    return "kept-host";
+    const handle = await open(stagedTempPath, "wx", 0o600);
+    try {
+      await handle.writeFile(cacheBytes);
+      await handle.close();
+      // Default-mode predicate: install the cache copy only when it is strictly
+      // newer for the SAME identity. Same-identity + strictly-newer keeps the
+      // change additive and semantics-preserving.
+      const decision = await decideExitCode(stagedTempPath, sharedHomeAuthPath);
+      if (decision === USE_SOURCE_EXIT) {
+        await rename(stagedTempPath, sharedHomeAuthPath);
+        await log(
+          "[paperclip] Codex auth cache: refreshed the host credential with a strictly-newer cached copy of the same identity at mode 0600.",
+        );
+        return "vended";
+      }
+      await log(
+        "[paperclip] Codex auth cache: host credential kept (the cached copy is not strictly newer for the same identity).",
+      );
+      return "kept-host";
+    } finally {
+      await handle.close().catch(() => undefined);
+      await rm(stagedTempPath, { force: true }).catch(() => undefined);
+    }
   });
 }
 
@@ -376,7 +373,7 @@ export async function selectVendCredential(
 export async function clearCodexAuthCacheEntry(
   env: NodeJS.ProcessEnv = process.env,
   accountId: string,
-  companyId?: string,
+  companyId: string,
 ): Promise<void> {
   const entryPath = resolveCodexAuthCacheEntryPath(env, accountId, companyId);
   const entryDir = path.dirname(entryPath);
@@ -399,7 +396,7 @@ export async function clearCodexAuthCacheEntry(
  */
 export async function clearCodexAuthCache(
   env: NodeJS.ProcessEnv = process.env,
-  companyId?: string,
+  companyId: string,
 ): Promise<void> {
   const cacheDir = resolveCodexAuthCacheDir(env, companyId);
   await rm(cacheDir, { recursive: true, force: true });
