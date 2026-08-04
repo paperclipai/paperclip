@@ -222,6 +222,9 @@ interface RecordingSpan {
   parentContextArg: unknown;
   status: { code: number } | null;
   ended: boolean;
+  // The count of `end` calls. A guarded `end` closure ends the span at most
+  // once, so a test asserts this count equals one for the run root span.
+  endCalls: number;
   setAttribute(key: string, value: string | number | boolean): void;
   setStatus(status: { code: number; message?: string }): void;
   end(): void;
@@ -252,6 +255,7 @@ function createRecordingStartupTrace() {
           parentContextArg: context,
           status: null,
           ended: false,
+          endCalls: 0,
           setAttribute(key: string, value: string | number | boolean) {
             span.attributes[key] = value;
           },
@@ -260,6 +264,7 @@ function createRecordingStartupTrace() {
           },
           end() {
             span.ended = true;
+            span.endCalls += 1;
           },
         };
         spans.push(span);
@@ -296,6 +301,14 @@ const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set<string>([
   A.handshakeCreateRuntimeWallMs,
   A.handshakeEnsureSessionWallMs,
   A.batch,
+]);
+
+// The closed attribute allowlist for the run root span. It carries only a
+// non-reversible run-id hash and its own wall time, so no command, path, id, or
+// error text can ride the `task.run` span.
+const ALLOWED_RUN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
+  "paperclip.task.run.run_id",
+  "paperclip.task.run.wall_ms",
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -3213,15 +3226,26 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
 
-    // Exactly one root span, and it is the bring-up root.
+    // Exactly one trace root, and it is the run root span.
     const roots = spans.filter((span) => span.parent === null);
     expect(roots).toHaveLength(1);
-    const rootSpan = roots[0]!;
-    expect(rootSpan.name).toBe("sandbox.startup");
-    expect(rootSpan.ended).toBe(true);
+    const runRootSpan = roots[0]!;
+    expect(runRootSpan.name).toBe("task.run");
+    expect(runRootSpan.ended).toBe(true);
+
+    // The sandbox bring-up span parents to the run root span.
+    const startupSpan = spans.find((span) => span.name === "sandbox.startup");
+    expect(startupSpan).toBeTruthy();
+    expect(startupSpan!.parent).toBe(runRootSpan);
+    expect(startupSpan!.ended).toBe(true);
 
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
-    const childNames = spans.filter((span) => span !== rootSpan).map((span) => span.name).sort();
+    // Each boundary span parents to the sandbox bring-up span, not to the run
+    // root.
+    const childNames = spans
+      .filter((span) => span !== runRootSpan && span !== startupSpan)
+      .map((span) => span.name)
+      .sort();
     expect(childNames).toEqual(
       [
         "acp.handshake",
@@ -3234,15 +3258,15 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       ],
     );
 
-    // Every child parents to the one root and ends.
+    // Every boundary span parents to the sandbox bring-up span and ends.
     for (const span of spans) {
-      if (span === rootSpan) continue;
-      expect(span.parent, `span "${span.name}" must parent to the root`).toBe(rootSpan);
+      if (span === runRootSpan || span === startupSpan) continue;
+      expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }
   });
 
-  it("test_sandbox_startup_span_is_trace_root_today", async () => {
+  it("test_task_run_span_opens_and_ends_once_for_remote", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const localCwd = path.join(root, "worktree");
@@ -3252,9 +3276,8 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     const executionTarget = await remoteSandboxTarget(root);
     const { traceContext, spans } = createRecordingStartupTrace();
 
-    // Run the executor startup path with a fake remote-sandbox tracer. The
-    // startup root opens the `sandbox.startup` span with no third `startSpan`
-    // argument today.
+    // Run the executor with a fake remote-sandbox tracer. The engine opens one
+    // `task.run` root span and ends it once at the run return.
     await runExecutor(
       {
         agent: "codex",
@@ -3266,13 +3289,75 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
 
+    // Exactly one `task.run` span opens for a remote-sandbox run.
+    const runSpans = spans.filter((span) => span.name === "task.run");
+    expect(runSpans).toHaveLength(1);
+    const runSpan = runSpans[0]!;
+    // It is the trace root: it opens with no parent-context token.
+    expect(runSpan.parent).toBeNull();
+    expect(runSpan.parentContextArg).toBeUndefined();
+    // It ends exactly once. A clean run sets no error status.
+    expect(runSpan.ended).toBe(true);
+    expect(runSpan.endCalls).toBe(1);
+    expect(runSpan.status).toBeNull();
+    // The run id rides only as a non-reversible hash; the raw run id never rides
+    // the span.
+    expect(runSpan.attributes["paperclip.task.run.run_id"]).toMatch(/^[0-9a-f]{12}$/);
+    expect(String(runSpan.attributes["paperclip.task.run.run_id"])).not.toContain("run-");
+  });
+
+  it("test_sandbox_startup_parents_to_task_run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Run the executor startup path with a fake remote-sandbox tracer. The run
+    // root opens the `task.run` span first, then the startup root opens the
+    // `sandbox.startup` span as its child.
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const runSpan = spans.find((span) => span.name === "task.run");
+    expect(runSpan).toBeTruthy();
     const startupSpan = spans.find((span) => span.name === "sandbox.startup");
     expect(startupSpan).toBeTruthy();
-    // The `sandbox.startup` `startSpan` call receives `undefined` as its third
-    // argument, so the parent-context token is `undefined` and the span starts a
-    // new trace root.
-    expect(startupSpan!.parentContextArg).toBeUndefined();
-    expect(startupSpan!.parent).toBeNull();
+    // The `sandbox.startup` `startSpan` call now receives the `task.run` parent
+    // context as its third argument. The recorder builds the token as
+    // `{ span }`, so the token carries the run span and the startup span parents
+    // to `task.run`.
+    expect(startupSpan!.parentContextArg).toEqual({ span: runSpan });
+    expect(startupSpan!.parent).toBe(runSpan);
+  });
+
+  it("test_task_run_span_is_noop_for_local_target", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // A local run has no sandbox, so the run root span stays a no-op even when a
+    // trace context is injected. No real `task.run` span opens.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", startupTraceContext: traceContext },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans.some((span) => span.name === "task.run")).toBe(false);
+    expect(spans).toHaveLength(0);
   });
 
   it("records root wall / work / diff times and the bounded context on the root span", async () => {
@@ -3299,7 +3384,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
 
-    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup");
     expect(rootSpan).toBeTruthy();
     // The three timing numbers are present, finite, and non-negative.
     for (const key of [A.rootWallMs, A.rootWorkMs, A.rootDiffMs]) {
@@ -3355,7 +3440,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       .filter((event) => event.payload?.step !== "skills.reconcile")
       .reduce((total, event) => total + (event.payload?.durationMs as number), 0);
 
-    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup");
     expect(rootSpan).toBeTruthy();
     expect(rootSpan!.attributes[A.rootWorkMs]).toBe(sumExceptReconcile);
   });
@@ -3373,7 +3458,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
 
-    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup");
     expect(rootSpan).toBeTruthy();
     const paperclip = spans.find((span) => span.name === "bridge.paperclip");
     const processSession = spans.find((span) => span.name === "bridge.process-session");
@@ -3423,9 +3508,15 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     expect(spans.length).toBeGreaterThan(0);
     for (const span of spans) {
+      // The run root span uses its own closed allowlist; every other span uses
+      // the sandbox startup allowlist.
+      const allowed =
+        span.name === "task.run"
+          ? ALLOWED_RUN_SPAN_ATTRIBUTE_KEYS
+          : ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS;
       for (const [key, value] of Object.entries(span.attributes)) {
         expect(
-          ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS.has(key),
+          allowed.has(key),
           `span "${span.name}" set a non-allowlisted attribute "${key}"`,
         ).toBe(true);
         // No non-finite numeric attribute (no NaN, no Infinity).
@@ -3475,7 +3566,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     } as never);
 
     expect(result.exitCode).toBe(1);
-    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup");
     expect(rootSpan).toBeTruthy();
     expect(rootSpan!.ended).toBe(true);
     // `2` is `SpanStatusCode.ERROR`.
