@@ -67,7 +67,8 @@ echo "==> existing Node"
 run_with_node with-node bash /paperclip-scripts/install.sh --no-prompt --no-onboard
 assert_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/with-node.args" "install"
-assert_line "$RESULTS_DIR/with-node.args" "--yes"
+assert_line "$RESULTS_DIR/with-node.args" "-g"
+assert_line "$RESULTS_DIR/with-node.args" "--prefix"
 assert_line "$RESULTS_DIR/with-node.args" "--registry=https://registry.npmjs.org"
 assert_line "$RESULTS_DIR/with-node.args" "NPM_CONFIG_REGISTRY=https://registry.npmjs.org"
 assert_line "$RESULTS_DIR/with-node.args" "npm_config_registry=https://registry.npmjs.org"
@@ -97,7 +98,7 @@ if run_with_node ref-master bash /paperclip-scripts/install.sh --ref master --no
   exit 1
 fi
 [ ! -e "$RESULTS_DIR/ref-master.args" ] || {
-  echo "Expected --ref failure before invoking npx" >&2
+  echo "Expected --ref failure before invoking npm" >&2
   exit 1
 }
 
@@ -109,7 +110,7 @@ fi
 
 echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
-assert_line "$RESULTS_DIR/piped.args" "--yes"
+assert_line "$RESULTS_DIR/piped.args" "install"
 
 echo "==> piped mode refuses privileged Node bootstrap"
 if docker run --rm \
@@ -126,7 +127,7 @@ assert_line "$RESULTS_DIR/piped-no-node.out" "[paperclip] error: Node.js bootstr
 echo "==> dry run"
 run_with_node dry-run bash /paperclip-scripts/install.sh --no-prompt --dry-run --no-onboard
 [ ! -e "$RESULTS_DIR/dry-run.args" ] || {
-  echo "Expected --dry-run to avoid invoking npx" >&2
+  echo "Expected --dry-run to avoid invoking npm" >&2
   exit 1
 }
 
@@ -143,11 +144,8 @@ docker run --rm \
   node:22-bookworm-slim \
   bash /paperclip-scripts/install.sh
 assert_line "$RESULTS_DIR/env.args" "paperclipai@2026.722.0"
-assert_line "$RESULTS_DIR/env.args" "--version"
-assert_line "$RESULTS_DIR/env.args" "2026.722.0"
 assert_no_line "$RESULTS_DIR/env.args" "--repo"
 assert_no_line "$RESULTS_DIR/env.args" "--install-service"
-assert_line "$RESULTS_DIR/env.args" "service"
 
 echo "==> no Node, apt bootstrap"
 docker run --rm \
