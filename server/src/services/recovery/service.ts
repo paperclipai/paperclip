@@ -131,6 +131,11 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const RESTART_LANE_RECOVERY_BATCH_SIZE = 5;
+const RESTART_LANE_RECOVERY_BATCH_TIMEOUT_MS = 30_000;
+const RESTART_LANE_RECOVERY_ISSUE_TITLE = "Restart-lane recovery sweep — unrecoverable agents";
+const RESTART_LANE_RECOVERY_ERROR_PREFIX = "restart_lane_recovery_unrecoverable:";
+const RESTART_LANE_RECOVERY_SIGNATURE_RE = /(?:\bconnection_close(?:d)?\b|\bprocess_exit\b[\s\S]{0,240}\bsignal["':=\s]*SIGTERM\b|\bProcess lost -- child pid\b)/i;
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -882,6 +887,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
+  let restartLaneRecoverySweepInFlight: Promise<RestartLaneRecoverySweepResult> | null = null;
+
+  type RestartLaneRecoverySweepResult = {
+    candidates: number;
+    reset: number;
+    recovered: number;
+    unrecoverable: number;
+    skipped: number;
+    batchSizes: number[];
+    successorRunIds: string[];
+    unrecoverableAgentIds: string[];
+    issueIds: string[];
+  };
+
+  type RestartLaneCandidate = {
+    agent: typeof agents.$inferSelect;
+    failedRun: Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "error" | "errorCode" | "resultJson" | "createdAt">;
+  };
+
+  type RestartLaneUnrecoverable = RestartLaneCandidate & {
+    reason: string;
+    attemptCount: number;
+  };
 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7057,6 +7085,193 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  function restartLaneFailureText(run: RestartLaneCandidate["failedRun"]) {
+    return [
+      run.error,
+      run.errorCode,
+      JSON.stringify(parseObject(run.resultJson)),
+    ].filter((value): value is string => Boolean(value)).join("\n");
+  }
+
+  async function countRestartLaneAttempts(candidate: RestartLaneCandidate) {
+    const rows = await db
+      .select({ error: heartbeatRuns.error, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, candidate.agent.companyId),
+        eq(heartbeatRuns.agentId, candidate.agent.id),
+        inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+      ));
+    return Math.max(1, rows.filter((run) => RESTART_LANE_RECOVERY_SIGNATURE_RE.test([
+      run.error,
+      run.errorCode,
+      JSON.stringify(parseObject(run.resultJson)),
+    ].filter(Boolean).join("\n"))).length);
+  }
+
+  async function recordRestartLaneUnrecoverable(entry: RestartLaneUnrecoverable) {
+    const detail = `${RESTART_LANE_RECOVERY_ERROR_PREFIX}${entry.reason}; failed_run=${entry.failedRun.id}; attempts=${entry.attemptCount}`;
+    await db
+      .update(agents)
+      .set({ status: "error", errorReason: detail, updatedAt: new Date() })
+      .where(and(eq(agents.id, entry.agent.id), eq(agents.status, "error")));
+  }
+
+  async function createRestartLaneRecoveryIssues(entries: RestartLaneUnrecoverable[]) {
+    const issueIds: string[] = [];
+    const byCompany = new Map<string, RestartLaneUnrecoverable[]>();
+    for (const entry of entries) {
+      const companyEntries = byCompany.get(entry.agent.companyId) ?? [];
+      companyEntries.push(entry);
+      byCompany.set(entry.agent.companyId, companyEntries);
+    }
+    for (const [companyId, companyEntries] of byCompany) {
+      const body = [
+        "Automated restart-lane recovery could not obtain a successor heartbeat run for the lanes below.",
+        "",
+        ...companyEntries.map((entry) =>
+          `- ${entry.agent.name} (agent \`${entry.agent.id}\`): ${entry.reason}; last error: ${restartLaneFailureText(entry.failedRun) || "none"}; run \`${entry.failedRun.id}\`; attempt ${entry.attemptCount}`,
+        ),
+        "",
+        "A board operator should repair the affected lanes before another recovery sweep is attempted.",
+      ].join("\n");
+      const fingerprint = companyEntries
+        .map((entry) => `${entry.agent.id}:${entry.failedRun.id}:${entry.attemptCount}`)
+        .sort()
+        .join(",");
+      const issue = await issuesSvc.create(companyId, {
+        title: RESTART_LANE_RECOVERY_ISSUE_TITLE,
+        description: body,
+        status: "backlog",
+        priority: "high",
+        originKind: "restart_lane_recovery",
+        originId: companyId,
+        originFingerprint: fingerprint,
+        idempotencyKey: `restart-lane-recovery:${companyId}:${fingerprint}`,
+      });
+      issueIds.push(issue.id);
+    }
+    return issueIds;
+  }
+
+  async function runRestartLaneRecoverySweep(): Promise<RestartLaneRecoverySweepResult> {
+    const result: RestartLaneRecoverySweepResult = {
+      candidates: 0,
+      reset: 0,
+      recovered: 0,
+      unrecoverable: 0,
+      skipped: 0,
+      batchSizes: [],
+      successorRunIds: [],
+      unrecoverableAgentIds: [],
+      issueIds: [],
+    };
+    const erroredAgents = await db.select().from(agents).where(eq(agents.status, "error"));
+    const candidates: RestartLaneCandidate[] = [];
+    for (const agent of erroredAgents) {
+      // A previous timed-out batch is terminal for that exact failure: a new
+      // operator action/new failing run is required before it is considered again.
+      if ((agent.errorReason ?? "").startsWith(RESTART_LANE_RECOVERY_ERROR_PREFIX)) {
+        result.skipped += 1;
+        continue;
+      }
+      const failedRun = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          error: heartbeatRuns.error,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id)))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !failedRun ||
+        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          failedRun.status as typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES[number],
+        ) ||
+        !RESTART_LANE_RECOVERY_SIGNATURE_RE.test(restartLaneFailureText(failedRun))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+      candidates.push({ agent, failedRun });
+    }
+    result.candidates = candidates.length;
+    const unrecoverable: RestartLaneUnrecoverable[] = [];
+
+    for (let offset = 0; offset < candidates.length; offset += RESTART_LANE_RECOVERY_BATCH_SIZE) {
+      const batch = candidates.slice(offset, offset + RESTART_LANE_RECOVERY_BATCH_SIZE);
+      result.batchSizes.push(batch.length);
+      const settled = await Promise.all(batch.map((candidate) => {
+        const work = (async () => {
+        const attemptCount = await countRestartLaneAttempts(candidate);
+        const reset = await db
+          .update(agents)
+          .set({ status: "idle", errorReason: null, pauseReason: null, pausedAt: null, updatedAt: new Date() })
+          .where(and(eq(agents.id, candidate.agent.id), eq(agents.status, "error")))
+          .returning({ id: agents.id })
+          .then((rows) => rows[0] ?? null);
+        if (!reset) return { candidate, attemptCount, kind: "skipped" as const };
+        const successor = await deps.enqueueWakeup(candidate.agent.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "restart_lane_recovery",
+          requestedByActorType: "system",
+          requestedByActorId: "recovery",
+          payload: { failedRunId: candidate.failedRun.id, mutation: "restart_lane_recovery" },
+          idempotencyKey: `restart-lane-recovery:${candidate.agent.id}:${candidate.failedRun.id}`,
+        });
+        if (!successor || successor.id === candidate.failedRun.id || successor.createdAt <= candidate.failedRun.createdAt) {
+          return { candidate, attemptCount, kind: "unrecoverable" as const, reason: "successor_run_not_created" };
+        }
+        return { candidate, attemptCount, kind: "recovered" as const, successorRunId: successor.id };
+        })();
+        return Promise.race([
+          work,
+          new Promise<{ candidate: RestartLaneCandidate; attemptCount: number; kind: "unrecoverable"; reason: string }>((resolve) => {
+            setTimeout(() => resolve({
+              candidate,
+              attemptCount: 1,
+              kind: "unrecoverable",
+              reason: "batch_timeout",
+            }), RESTART_LANE_RECOVERY_BATCH_TIMEOUT_MS);
+          }),
+        ]);
+      }));
+
+      for (const entry of settled) {
+        if (entry.kind === "recovered") {
+          result.reset += 1;
+          result.recovered += 1;
+          result.successorRunIds.push(entry.successorRunId);
+        } else if (entry.kind === "unrecoverable") {
+          result.reset += 1;
+          result.unrecoverable += 1;
+          result.unrecoverableAgentIds.push(entry.candidate.agent.id);
+          unrecoverable.push({ ...entry.candidate, reason: entry.reason, attemptCount: entry.attemptCount });
+        } else {
+          result.skipped += 1;
+        }
+      }
+    }
+    for (const entry of unrecoverable) await recordRestartLaneUnrecoverable(entry);
+    result.issueIds = await createRestartLaneRecoveryIssues(unrecoverable);
+    return result;
+  }
+
+  async function sweepRestartLaneRecovery(): Promise<RestartLaneRecoverySweepResult> {
+    if (restartLaneRecoverySweepInFlight) return restartLaneRecoverySweepInFlight;
+    restartLaneRecoverySweepInFlight = runRestartLaneRecoverySweep().finally(() => {
+      restartLaneRecoverySweepInFlight = null;
+    });
+    return restartLaneRecoverySweepInFlight;
+  }
+
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
@@ -7174,6 +7389,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    sweepRestartLaneRecovery,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,
