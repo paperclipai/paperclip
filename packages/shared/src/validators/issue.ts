@@ -675,6 +675,64 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+const taskWatchdogRecoveryUpdateSchema = updateIssueSchema.pick({
+  status: true,
+  assigneeAgentId: true,
+  assigneeUserId: true,
+  blockedByIssueIds: true,
+  reopen: true,
+  resume: true,
+  comment: true,
+}).strict();
+
+export const taskWatchdogRecoveryBatchSchema = z.object({
+  stopFingerprint: z.string().trim().min(1),
+  mutations: z.array(z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("update_issue"),
+      issueId: z.string().uuid(),
+      update: taskWatchdogRecoveryUpdateSchema,
+    }).strict(),
+    z.object({
+      type: z.literal("add_comment"),
+      issueId: z.string().uuid(),
+      body: multilineTextSchema.pipe(z.string().min(1)),
+    }).strict(),
+  ])).min(1).max(3),
+}).strict().superRefine((value, ctx) => {
+  value.mutations.forEach((mutation, index) => {
+    if (mutation.type !== "update_issue") return;
+    const { update } = mutation;
+    if (update.reopen === true && update.resume === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "resume"],
+        message: "A recovery mutation cannot request both reopen and resume",
+      });
+    }
+    if (update.resume === true && !update.comment?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "comment"],
+        message: "A recovery resume requires a comment",
+      });
+    }
+    if (
+      (update.reopen === true || update.resume === true) &&
+      update.status !== undefined &&
+      update.status !== "todo"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "status"],
+        message: "A recovery reopen or resume must move the issue to todo",
+      });
+    }
+  });
+});
+
+export type TaskWatchdogRecoveryBatch = z.infer<typeof taskWatchdogRecoveryBatchSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionResolverPolicySchema = z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES);

@@ -743,6 +743,11 @@ export interface IssueWatchdogSummary {
   watchdogIssueId: string | null;
   lastObservedFingerprint: string | null;
   lastReviewedFingerprint: string | null;
+  restorationFingerprint: string | null;
+  restorationVerificationPending: boolean;
+  restorationAttemptCount: number;
+  restorationAttempts: Array<{ attempt: number; fingerprint: string; runId: string | null; mutations: Array<Record<string, unknown>>; completedAt: string }>;
+  restorationEscalatedAt: Date | null;
   lastTriggeredAt: Date | null;
   lastCompletedAt: Date | null;
   triggerCount: number;

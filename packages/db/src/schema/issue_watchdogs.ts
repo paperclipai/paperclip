@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -19,6 +19,11 @@ export const issueWatchdogs = pgTable(
     lastReviewedFingerprint: text("last_reviewed_fingerprint"),
     lastObservedStopSnapshot: jsonb("last_observed_stop_snapshot"),
     lastReviewedStopSnapshot: jsonb("last_reviewed_stop_snapshot"),
+    restorationFingerprint: text("restoration_fingerprint"),
+    restorationVerificationPending: boolean("restoration_verification_pending").notNull().default(false),
+    restorationAttemptCount: integer("restoration_attempt_count").notNull().default(0),
+    restorationAttempts: jsonb("restoration_attempts").$type<Array<{ attempt: number; fingerprint: string; runId: string | null; mutations: Array<Record<string, unknown>>; completedAt: string }>>().notNull().default([]),
+    restorationEscalatedAt: timestamp("restoration_escalated_at", { withTimezone: true }),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     triggerCount: integer("trigger_count").notNull().default(0),

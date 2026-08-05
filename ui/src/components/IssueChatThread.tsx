@@ -454,6 +454,12 @@ interface IssueChatThreadProps {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
+  /**
+   * P6 top-of-thread slot for the blocked-chain needs-attention banner and watchdog escalation card.
+   * Composed by the detail page (which holds the full issue + unblock handlers) and rendered at the
+   * head of the notice stack.
+   */
+  blockerAttentionSurface?: ReactNode;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
@@ -4333,6 +4339,7 @@ export function IssueChatThread({
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
+  blockerAttentionSurface,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending = false,
@@ -5066,6 +5073,7 @@ export function IssueChatThread({
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  {blockerAttentionSurface}
                   <IssueAssignedBacklogNotice
                     issueStatus={issueStatus ?? ""}
                     assigneeAgent={assignedAgent}

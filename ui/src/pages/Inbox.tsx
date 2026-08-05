@@ -726,8 +726,10 @@ export function Inbox() {
     () => loadInboxFilterPreferences(selectedCompanyId),
   );
   const [groupBy, setGroupBy] = useState<InboxWorkItemGroupBy>(() => loadInboxWorkItemGroupBy());
-  const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("none");
-  const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("most_recent");
+  // P6: the Blocked tab defaults to the "what to do" tier grouping so unrouted dead ends and
+  // watchdog escalations land at the top where attention goes, instead of a flat list.
+  const [blockedGroupBy, setBlockedGroupBy] = useState<BlockedInboxGroupBy>("attention_tier");
+  const [blockedSortBy, setBlockedSortBy] = useState<BlockedInboxSort>("urgency");
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
   const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);

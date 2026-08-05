@@ -3,6 +3,7 @@ import type {
   IssueBlockedInboxAttention,
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
+  IssueBlockedInboxState,
 } from "@paperclipai/shared";
 
 export type BlockedReasonVariant =
@@ -106,13 +107,80 @@ export interface BlockedInboxIssueRow {
   stoppedAtMs: number | null;
 }
 
-export type BlockedInboxGroupBy = "blocker_type" | "none";
+export type BlockedInboxGroupBy = "attention_tier" | "blocker_type" | "none";
 export type BlockedInboxSort = "urgency" | "most_recent" | "longest_stopped";
 
 export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = [
+  ["attention_tier", "What to do"],
   ["blocker_type", "Blocker type"],
   ["none", "None"],
 ];
+
+/**
+ * P6 surface 1a — the "what must the human do" tier. The Blocked tab groups on this, most-urgent
+ * first (Serial Position + Von Restorff put unrouted dead ends at the top where attention lands),
+ * collapsing the five shipped `blockedInboxAttention` states into three actionable tiers:
+ *
+ *  - `attention` — an unrouted dead end (or exhausted-watchdog escalation) a human must act on now.
+ *  - `decision`  — a legitimate but visible wait on an approval / interaction / disposition choice.
+ *  - `covered`   — progressing under active recovery or an external owner; de-emphasized so it does
+ *                  not cry wolf (the incident failure mode was covered work masquerading as stalled).
+ */
+export type BlockedAttentionTier = "attention" | "decision" | "covered";
+
+const TIER_BY_STATE: Record<IssueBlockedInboxState, BlockedAttentionTier> = {
+  needs_attention: "attention",
+  awaiting_decision: "decision",
+  missing_disposition: "decision",
+  recovery_open: "covered",
+  external_wait: "covered",
+};
+
+export const BLOCKED_TIER_ORDER: BlockedAttentionTier[] = ["attention", "decision", "covered"];
+
+export const BLOCKED_TIER_LABELS: Record<BlockedAttentionTier, string> = {
+  attention: "Needs your attention",
+  decision: "Awaiting a decision",
+  covered: "Covered by active work",
+};
+
+/** Sub-header shown under the covered group so it reads as intentionally quiet. */
+export const BLOCKED_TIER_SUBTITLES: Partial<Record<BlockedAttentionTier, string>> = {
+  covered: "these are progressing — no action needed",
+};
+
+export const BLOCKED_TIER_TONE: Record<BlockedAttentionTier, BlockedInboxBadgeTone> = {
+  attention: "amber",
+  decision: "amber",
+  covered: "muted",
+};
+
+export function blockedAttentionTier(state: IssueBlockedInboxState): BlockedAttentionTier {
+  return TIER_BY_STATE[state] ?? "attention";
+}
+
+/**
+ * An exhausted-watchdog escalation (P4). Surfaces as a top-priority `attention` row with the red
+ * `Escalation` chip. Derived from either the recovery action's `escalated` status or the watchdog's
+ * recorded escalation timestamp, whichever the read model carries.
+ */
+export function isBlockedRowEscalated(issue: Issue): boolean {
+  return (
+    issue.activeRecoveryAction?.status === "escalated" ||
+    Boolean(issue.watchdog?.restorationEscalatedAt)
+  );
+}
+
+/** The dead-end leaf identifier a needs_attention row names (`sampleBlockerIdentifier` per plan). */
+export function blockedRowDeadEndIdentifier(row: BlockedInboxIssueRow): string | null {
+  return (
+    row.attention.leafIssue?.identifier ??
+    row.attention.sampleIssueIdentifier ??
+    row.issue.blockerAttention?.sampleBlockerIdentifier ??
+    row.issue.blockerAttention?.sampleStalledBlockerIdentifier ??
+    null
+  );
+}
 
 export const BLOCKED_SORT_OPTIONS: readonly [BlockedInboxSort, string][] = [
   ["urgency", "Most urgent"],
@@ -211,6 +279,51 @@ export function groupBlockedInboxRows(
     if (!list || list.length === 0) continue;
     const sorted = sortBlockedInboxRows(list, sort);
     groups.push({ variant, label: BLOCKED_VARIANT_LABELS[variant], rows: sorted });
+  }
+  return groups;
+}
+
+export interface BlockedInboxTierGroup {
+  tier: BlockedAttentionTier;
+  label: string;
+  subtitle: string | null;
+  rows: BlockedInboxIssueRow[];
+}
+
+/**
+ * Group rows into the three human-action tiers (attention → decision → covered), each internally
+ * sorted by the active sort. Within the `attention` tier, exhausted-watchdog escalations float to
+ * the top ahead of ordinary dead ends — the escalation is the loudest thing on the board.
+ */
+export function groupBlockedInboxRowsByTier(
+  rows: readonly BlockedInboxIssueRow[],
+  sort: BlockedInboxSort = "urgency",
+): BlockedInboxTierGroup[] {
+  const buckets = new Map<BlockedAttentionTier, BlockedInboxIssueRow[]>();
+  for (const row of rows) {
+    const tier = blockedAttentionTier(row.attention.state);
+    const list = buckets.get(tier) ?? [];
+    list.push(row);
+    buckets.set(tier, list);
+  }
+  const groups: BlockedInboxTierGroup[] = [];
+  for (const tier of BLOCKED_TIER_ORDER) {
+    const list = buckets.get(tier);
+    if (!list || list.length === 0) continue;
+    const sorted = sortBlockedInboxRows(list, sort);
+    if (tier === "attention") {
+      sorted.sort((a, b) => {
+        const escalationDiff =
+          Number(isBlockedRowEscalated(b.issue)) - Number(isBlockedRowEscalated(a.issue));
+        return escalationDiff;
+      });
+    }
+    groups.push({
+      tier,
+      label: BLOCKED_TIER_LABELS[tier],
+      subtitle: BLOCKED_TIER_SUBTITLES[tier] ?? null,
+      rows: sorted,
+    });
   }
   return groups;
 }

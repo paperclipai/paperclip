@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, OctagonAlert } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
@@ -8,22 +8,44 @@ import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
+  blockedRowDeadEndIdentifier,
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
   formatStoppedAge,
   groupBlockedInboxRows,
+  groupBlockedInboxRowsByTier,
+  isBlockedRowEscalated,
   sortBlockedInboxRows,
   type BlockedInboxGroupBy,
   type BlockedInboxIssueRow,
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
 import { BlockedReasonChip } from "./BlockedReasonChip";
+import { DeadEndBadge } from "./DeadEndBadge";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+
+/** The exhausted-watchdog escalation chip — the loudest thing in the Needs-your-attention tier. */
+function EscalationChip({ className }: { className?: string }) {
+  return (
+    <Badge
+      variant="outline"
+      data-testid="blocked-row-escalation-chip"
+      className={cn(
+        "gap-1 border-destructive/40 bg-destructive/10 text-destructive",
+        className,
+      )}
+    >
+      <OctagonAlert className="h-3 w-3 shrink-0" aria-hidden="true" />
+      Escalation
+    </Badge>
+  );
+}
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -103,6 +125,10 @@ export function BlockedInboxView({
   const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [issueFilteredRows, sortBy]);
   const groups = useMemo(
     () => groupBlockedInboxRows(issueFilteredRows, sortBy),
+    [issueFilteredRows, sortBy],
+  );
+  const tierGroups = useMemo(
+    () => groupBlockedInboxRowsByTier(issueFilteredRows, sortBy),
     [issueFilteredRows, sortBy],
   );
 
@@ -221,6 +247,50 @@ export function BlockedInboxView({
               showUpdatedColumn={showUpdatedColumn}
             />
           ))
+        ) : groupBy === "attention_tier" ? (
+          tierGroups.map((group) => {
+            const isCollapsed = collapsedVariants.has(group.tier);
+            const deEmphasized = group.tier === "covered";
+            return (
+              <div key={group.tier} data-testid={`blocked-inbox-tier-${group.tier}`}>
+                <div className="px-3 sm:px-4">
+                  <IssueGroupHeader
+                    label={`${group.label} · ${group.rows.length}`}
+                    collapsible
+                    collapsed={isCollapsed}
+                    onToggle={() => toggleVariant(group.tier)}
+                    trailing={
+                      group.subtitle ? (
+                        <span className="text-(length:--text-micro) font-normal normal-case tracking-normal text-muted-foreground">
+                          {group.subtitle}
+                        </span>
+                      ) : undefined
+                    }
+                  />
+                </div>
+                {!isCollapsed && (
+                  <div className={cn(deEmphasized && "opacity-70")}>
+                    {group.rows.map((row) => (
+                      <BlockedInboxRow
+                        key={row.issue.id}
+                        row={row}
+                        tierMode
+                        deEmphasized={deEmphasized}
+                        issueLinkState={issueLinkState}
+                        agentNameById={agentNameById}
+                        userLabelById={userLabelById}
+                        liveIssueIds={liveIssueIds}
+                        subtreeLiveCounts={subtreeLiveCounts}
+                        showStatusColumn={showStatusColumn}
+                        showIdentifierColumn={showIdentifierColumn}
+                        showUpdatedColumn={showUpdatedColumn}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })
         ) : (
           groups.map((group) => {
             const isCollapsed = collapsedVariants.has(group.variant);
@@ -271,6 +341,9 @@ interface BlockedInboxRowProps {
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
+  /** In the "what to do" tier grouping, needs_attention rows name the dead-end leaf + flag escalations. */
+  tierMode?: boolean;
+  deEmphasized?: boolean;
 }
 
 function resolveOwnerName(
@@ -299,6 +372,8 @@ function BlockedInboxRow({
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
+  tierMode = false,
+  deEmphasized = false,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
@@ -307,8 +382,24 @@ function BlockedInboxRow({
     loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
   });
 
+  const escalated = isBlockedRowEscalated(row.issue);
+  // A needs_attention row names which leaf is the dead end (the incident's core UI gap).
+  const deadEndIdentifier =
+    tierMode && row.attention.state === "needs_attention" ? blockedRowDeadEndIdentifier(row) : null;
+  const deadEndChip = deadEndIdentifier ? (
+    <DeadEndBadge className="align-middle" title={`Dead-end leaf ${deadEndIdentifier}`}>
+      dead end · {deadEndIdentifier}
+    </DeadEndBadge>
+  ) : null;
+
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
+      {escalated ? <EscalationChip className="hidden sm:inline-flex" /> : null}
+      {deadEndChip ? (
+        <span className="hidden max-w-(--sz-12rem) sm:inline-flex" data-testid="blocked-row-dead-end">
+          {deadEndChip}
+        </span>
+      ) : null}
       <span
         className="hidden w-(--sz-10_5rem) shrink-0 justify-start sm:inline-flex"
         data-testid="blocked-row-reason-column"
@@ -374,11 +465,15 @@ function BlockedInboxRow({
         </span>
       }
       titleSuffix={
-        <BlockedReasonChip
-          reason={row.attention.reason}
-          severity={row.attention.severity}
-          className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
-        />
+        <span className={cn("ml-2 inline-flex flex-wrap items-center gap-1.5 align-middle sm:hidden", deEmphasized && "opacity-80")}>
+          {escalated ? <EscalationChip /> : null}
+          {deadEndChip}
+          <BlockedReasonChip
+            reason={row.attention.reason}
+            severity={row.attention.severity}
+            className="max-w-(--sz-12rem)"
+          />
+        </span>
       }
       mobileMeta={mobileMeta}
       desktopTrailing={desktopTrailing}

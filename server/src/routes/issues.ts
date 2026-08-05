@@ -51,6 +51,7 @@ import {
   feedbackVoteValueSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  taskWatchdogRecoveryBatchSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -370,6 +371,9 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       skipped: 0,
       watchdogIssueIds: [],
     }),
+    applyRecoveryBatch: async () => {
+      throw unprocessable("Task watchdog service is unavailable");
+    },
     revalidateMutationScope: async () => ({
       allowed: true,
       classification: {
@@ -5965,6 +5969,36 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
   });
+
+  router.post(
+    "/issues/:id/watchdog/recovery-batch",
+    validate(taskWatchdogRecoveryBatchSchema),
+    async (req, res) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) {
+        res.status(403).json({ error: "Only active task-watchdog agent runs can submit recovery batches." });
+        return;
+      }
+      const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+      if (scope.kind === "none") {
+        res.status(403).json({ error: "Only task-watchdog runs can submit recovery batches." });
+        return;
+      }
+      if (scope.kind === "invalid") {
+        res.status(403).json({ error: scope.detail });
+        return;
+      }
+      if (scope.watchedIssueId !== req.params.id) {
+        res.status(403).json({ error: "Recovery batch target does not match the persisted watched issue." });
+        return;
+      }
+
+      const result = await taskWatchdogsSvc.applyRecoveryBatch(scope, req.body, {
+        agentId: req.actor.agentId,
+        runId: req.actor.runId,
+      });
+      res.json(result);
+    },
+  );
 
   router.put("/issues/:id/watchdog", validate(upsertIssueWatchdogSchema), async (req, res) => {
     const id = req.params.id as string;

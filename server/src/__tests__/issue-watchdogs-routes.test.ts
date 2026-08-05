@@ -29,7 +29,7 @@ import { runningProcesses } from "../adapters/index.ts";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { taskWatchdogService } from "../services/task-watchdogs.js";
+import { taskWatchdogService, type TaskWatchdogServiceDeps } from "../services/task-watchdogs.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -97,7 +97,11 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(companyId: string, actor?: Record<string, unknown>) {
+  function createApp(
+    companyId: string,
+    actor?: Record<string, unknown>,
+    taskWatchdogEnqueueWakeup: TaskWatchdogServiceDeps["enqueueWakeup"] | null = null,
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -111,7 +115,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       };
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null }));
+    app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup }));
     app.use(errorHandler);
     return app;
   }
@@ -625,6 +629,255 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
+  });
+
+  it("applies a fingerprint-bound recovery batch atomically and records restoration lineage", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Recovery Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", status: "blocked" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Stopped child",
+      status: "blocked",
+      parentId: watchedRootId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, watchedRootId));
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [
+          { type: "add_comment", issueId: watchedRootId, body: "Reopening the stopped child." },
+          { type: "update_issue", issueId: watchedChildId, update: { status: "todo" } },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ attempt: 1, attemptLimit: 3 });
+    const [child] = await db.select().from(issues).where(eq(issues.id, watchedChildId));
+    expect(child?.status).toBe("todo");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watchedRootId));
+    expect(comments.some((comment) => comment.body === "Reopening the stopped child.")).toBe(true);
+    const [updatedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog!.id));
+    expect(updatedWatchdog).toMatchObject({
+      restorationFingerprint: watchdog!.lastObservedFingerprint,
+      restorationVerificationPending: true,
+      restorationAttemptCount: 1,
+      lastReviewedFingerprint: null,
+    });
+    expect(updatedWatchdog?.restorationAttempts).toHaveLength(1);
+    expect(updatedWatchdog?.restorationAttempts[0]).toMatchObject({ attempt: 1, runId });
+
+    const replay = await request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [{ type: "add_comment", issueId: watchedRootId, body: "Duplicate attempt." }],
+      });
+    expect(replay.status).toBe(409);
+  });
+
+  it("applies resume lifecycle semantics and enqueues the restored assignee wake", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Recovery Watchdog" });
+    const restoredAgentId = await seedAgent(companyId, { name: "Restored Worker" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", status: "blocked" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Stopped child",
+      status: "blocked",
+      parentId: watchedRootId,
+      assigneeAgentId: restoredAgentId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, watchedRootId));
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    }, enqueueWakeup);
+
+    const missingComment = await request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [{ type: "update_issue", issueId: watchedChildId, update: { resume: true } }],
+      });
+    expect(missingComment.status).toBe(400);
+
+    const resumed = await request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [{
+          type: "update_issue",
+          issueId: watchedChildId,
+          update: { resume: true, comment: "Resume normal-model work on this leaf." },
+        }],
+      });
+
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(resumed.body.results).toContainEqual(expect.objectContaining({
+      issueId: watchedChildId,
+      status: "todo",
+      lifecycleIntent: "resume",
+    }));
+    const [child] = await db.select().from(issues).where(eq(issues.id, watchedChildId));
+    expect(child?.status).toBe("todo");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watchedChildId));
+    expect(comments.some((comment) => comment.body === "Resume normal-model work on this leaf.")).toBe(true);
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      restoredAgentId,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        contextSnapshot: expect.objectContaining({
+          issueId: watchedChildId,
+          resumeIntent: true,
+          followUpRequested: true,
+          resumeRequiresNormalModel: true,
+        }),
+      }),
+    );
+  });
+
+  it("rolls back the whole recovery batch when a later mutation is outside the watched subtree", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Atomic Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", status: "blocked" });
+    const unrelatedIssueId = await seedIssue(companyId, { title: "Unrelated issue", status: "blocked" });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, watchedRootId));
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [
+          { type: "add_comment", issueId: watchedRootId, body: "This must roll back." },
+          { type: "update_issue", issueId: unrelatedIssueId, update: { status: "todo" } },
+        ],
+      });
+
+    expect(res.status).toBe(409);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watchedRootId));
+    expect(comments.some((comment) => comment.body === "This must roll back.")).toBe(false);
+    const [unchangedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog!.id));
+    expect(unchangedWatchdog?.restorationAttemptCount).toBe(0);
+    expect(unchangedWatchdog?.restorationAttempts).toEqual([]);
+  });
+
+  it("aborts the batch when a concurrent subtree change wins before fingerprint revalidation", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Stale Guard Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", status: "blocked" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Stopped child",
+      status: "blocked",
+      parentId: watchedRootId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, watchedRootId));
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    let releaseConcurrent!: () => void;
+    let markLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { markLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseConcurrent = resolve; });
+    const concurrentMutation = db.transaction(async (tx) => {
+      await tx.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, watchedChildId));
+      markLocked();
+      await release;
+    });
+    await locked;
+
+    const responsePromise = request(app)
+      .post(`/api/issues/${watchedRootId}/watchdog/recovery-batch`)
+      .send({
+        stopFingerprint: watchdog!.lastObservedFingerprint,
+        mutations: [{ type: "add_comment", issueId: watchedRootId, body: "Must not survive staleness." }],
+      })
+      .then((response) => response);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseConcurrent();
+    await concurrentMutation;
+    const res = await responsePromise;
+
+    expect(res.status).toBe(409);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watchedRootId));
+    expect(comments.some((comment) => comment.body === "Must not survive staleness.")).toBe(false);
+    const [unchangedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog!.id));
+    expect(unchangedWatchdog?.restorationAttemptCount).toBe(0);
   });
 
   it("rejects cross-company watched issues and watchdog agents", async () => {

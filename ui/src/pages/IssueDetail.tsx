@@ -93,6 +93,9 @@ import {
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+import { NeedsAttentionBanner } from "../components/NeedsAttentionBanner";
+import { WatchdogEscalationCard } from "../components/WatchdogEscalationCard";
+import { isWatchdogEscalated } from "../lib/watchdog-escalation";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -885,6 +888,8 @@ type IssueDetailChatTabProps = {
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
+  /** P6 top-of-thread needs-attention banner + watchdog escalation card slot. */
+  blockerAttentionSurface?: ReactNode;
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
@@ -991,6 +996,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   successfulRunHandoff,
   scheduledRetry,
   recoveryAction,
+  blockerAttentionSurface,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending,
@@ -1249,6 +1255,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         successfulRunHandoff={successfulRunHandoff}
         scheduledRetry={scheduledRetry}
         recoveryAction={recoveryAction ?? null}
+        blockerAttentionSurface={blockerAttentionSurface}
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
@@ -3264,6 +3271,117 @@ export function IssueDetail() {
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // P6 (surfaces 1b / 2b) — unblock actions for a needs_attention chain or an exhausted-watchdog
+  // escalation. Defined before the properties-panel effect below so the panel can wire them.
+  const deadEndLeaf = issue?.blockedInboxAttention?.leafIssue ?? null;
+  const reopenDeadEnd = useMutation({
+    // Reopen the stalled leaf to todo (the structural fix Fire #2 in the incident couldn't make).
+    // Moving the leaf back to todo re-arms its owner + re-runs the watchdog verification.
+    mutationFn: (leafId: string) => issuesApi.update(leafId, { status: "todo", reopen: true }),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: "Dead end reopened",
+        body: "The stalled leaf was reopened to todo; its assignee will be woken.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reopen failed",
+        body: err instanceof Error ? err.message : "Unable to reopen the dead-end leaf.",
+        tone: "error",
+      });
+    },
+  });
+  const handleReopenDeadEnd = useCallback(() => {
+    if (!deadEndLeaf) return;
+    void reopenDeadEnd.mutateAsync(deadEndLeaf.id);
+  }, [deadEndLeaf, reopenDeadEnd.mutateAsync]);
+  const handleReassignDeadEnd = useCallback(() => {
+    // Route to a different owner: land the operator on the dead-end leaf, where the assignee picker
+    // and reassignment composer already live.
+    if (!deadEndLeaf) return;
+    navigate(createIssueDetailPath(deadEndLeaf.identifier ?? deadEndLeaf.id));
+  }, [deadEndLeaf, navigate]);
+  const handleDismissEscalation = useCallback(
+    (reason: string) => {
+      // Dismiss = "this stop is legitimate": resolve the escalated recovery action as a false
+      // positive (the audited suppression path), carrying the operator's required reason. Keeps the
+      // watched issue's status where it is rather than force-flipping it.
+      const actionId = issue?.activeRecoveryAction?.id;
+      if (!actionId) return;
+      const status = issue?.status;
+      const sourceIssueStatus =
+        status === "todo" || status === "done" || status === "in_review" || status === "blocked"
+          ? status
+          : "blocked";
+      void resolveRecoveryAction.mutateAsync({
+        actionId,
+        outcome: "false_positive",
+        sourceIssueStatus,
+        resolutionNote: reason,
+      });
+    },
+    [issue?.activeRecoveryAction?.id, issue?.status, resolveRecoveryAction.mutateAsync],
+  );
+  const unblockOwnerName = useMemo(() => {
+    const owner = issue?.blockedInboxAttention?.owner;
+    if (!owner) return null;
+    if (owner.label) return owner.label;
+    if (owner.agentId) return agentMap.get(owner.agentId)?.name ?? null;
+    if (owner.userId) return formatUserLabel(owner.userId, userLabelMap);
+    return null;
+  }, [issue?.blockedInboxAttention?.owner, agentMap, userLabelMap]);
+  const watchdogAgentName = useMemo(() => {
+    const id = issue?.watchdog?.watchdogAgentId;
+    return id ? agentMap.get(id)?.name ?? null : null;
+  }, [issue?.watchdog?.watchdogAgentId, agentMap]);
+  const hasActiveRecoveryAction = Boolean(issue?.activeRecoveryAction?.id);
+  const blockerAttentionSurface = useMemo(() => {
+    if (!issue) return null;
+    const needsAttention = issue.blockedInboxAttention?.state === "needs_attention";
+    const escalated = isWatchdogEscalated(issue);
+    if (!needsAttention && !escalated) return null;
+    return (
+      <>
+        {escalated ? (
+          <WatchdogEscalationCard
+            issue={issue}
+            watchdogAgentName={watchdogAgentName}
+            deadEndLeaf={deadEndLeaf}
+            onReopenDeadEnd={deadEndLeaf ? handleReopenDeadEnd : undefined}
+            onReassign={deadEndLeaf ? handleReassignDeadEnd : undefined}
+            onDismiss={hasActiveRecoveryAction ? handleDismissEscalation : undefined}
+            reopenPending={reopenDeadEnd.isPending}
+            dismissPending={resolveRecoveryAction.isPending}
+          />
+        ) : null}
+        {needsAttention ? (
+          <NeedsAttentionBanner
+            issue={issue}
+            ownerName={unblockOwnerName}
+            onReopenDeadEnd={deadEndLeaf ? handleReopenDeadEnd : undefined}
+            onReassign={deadEndLeaf ? handleReassignDeadEnd : undefined}
+            reopenPending={reopenDeadEnd.isPending}
+          />
+        ) : null}
+      </>
+    );
+  }, [
+    issue,
+    unblockOwnerName,
+    watchdogAgentName,
+    deadEndLeaf,
+    handleReopenDeadEnd,
+    handleReassignDeadEnd,
+    handleDismissEscalation,
+    hasActiveRecoveryAction,
+    reopenDeadEnd.isPending,
+    resolveRecoveryAction.isPending,
+  ]);
+
   useEffect(() => {
     if (!panelIssue) {
       closePanel();
@@ -3282,6 +3400,14 @@ export function IssueDetail() {
         onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
         onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
         checkingMonitorNow={checkIssueMonitorNow.isPending}
+        {...(panelIssue.id === issue?.id
+          ? {
+              unblockOwnerName,
+              onReopenDeadEnd: deadEndLeaf ? handleReopenDeadEnd : undefined,
+              onReassignDeadEnd: deadEndLeaf ? handleReassignDeadEnd : undefined,
+              reopenDeadEndPending: reopenDeadEnd.isPending,
+            }
+          : {})}
       />
     );
     return () => closePanel();
@@ -3293,6 +3419,12 @@ export function IssueDetail() {
     openPanel,
     panelChildIssues,
     panelIssue,
+    issue?.id,
+    unblockOwnerName,
+    deadEndLeaf,
+    handleReopenDeadEnd,
+    handleReassignDeadEnd,
+    reopenDeadEnd.isPending,
     resolvedHasActiveRun,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
@@ -4718,6 +4850,7 @@ export function IssueDetail() {
             liveIssueIds={liveIssueIds}
             mutedIssueIds={mutedChildIssueIds}
             issueBadgeById={childPauseBadgeById}
+            deadEndIssueId={issue.blockedInboxAttention?.leafIssue?.id ?? null}
             projectId={issue.projectId ?? undefined}
             viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
             issueLinkState={resolvedIssueDetailState ?? location.state}
@@ -4957,6 +5090,7 @@ export function IssueDetail() {
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
+              blockerAttentionSurface={blockerAttentionSurface}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
@@ -5268,6 +5402,10 @@ export function IssueDetail() {
                 onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
                 onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
                 checkingMonitorNow={checkIssueMonitorNow.isPending}
+                unblockOwnerName={unblockOwnerName}
+                onReopenDeadEnd={deadEndLeaf ? handleReopenDeadEnd : undefined}
+                onReassignDeadEnd={deadEndLeaf ? handleReassignDeadEnd : undefined}
+                reopenDeadEndPending={reopenDeadEnd.isPending}
               />
             </div>
           </ScrollArea>

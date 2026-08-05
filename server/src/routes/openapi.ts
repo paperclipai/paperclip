@@ -37,6 +37,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  taskWatchdogRecoveryBatchSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -2133,6 +2134,25 @@ registry.registerPath({
   summary: "Get active issue watchdog",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/watchdog/recovery-batch",
+  tags: ["issues"],
+  summary: "Apply an atomic task-watchdog recovery batch",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(taskWatchdogRecoveryBatchSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 registry.registerPath({

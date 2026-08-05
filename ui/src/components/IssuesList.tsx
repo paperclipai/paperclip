@@ -86,6 +86,7 @@ import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import { DeadEndBadge, DEAD_END_ROW_TINT } from "@/components/DeadEndBadge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -492,6 +493,8 @@ interface IssuesListProps {
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
   issueBadgeById?: Map<string, string>;
+  /** P6 surface 1c: flag the offending descendant leaf with a red "× dead end" badge + row tint. */
+  deadEndIssueId?: string | null;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
@@ -703,6 +706,7 @@ export function IssuesList({
   isLoadingMoreIssues = false,
   mutedIssueIds,
   issueBadgeById,
+  deadEndIssueId,
   onLoadMoreIssues,
   onSearchChange,
   onUpdateIssue,
@@ -2001,6 +2005,7 @@ export function IssuesList({
                   const parentIssue = issue.parentId ? issueById.get(issue.parentId) ?? null : null;
                   const issueBadge = issueBadgeById?.get(issue.id);
                   const isMutedIssue = mutedIssueIds?.has(issue.id) === true;
+                  const isDeadEndIssue = deadEndIssueId != null && issue.id === deadEndIssueId;
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
@@ -2126,6 +2131,11 @@ export function IssuesList({
                                 </Badge>
                               )
                             ) : null}
+                            {isDeadEndIssue ? (
+                              <DeadEndBadge className="ml-1.5 px-1.5 text-(length:--text-nano)" title="This leaf is where the chain died">
+                                dead end
+                              </DeadEndBadge>
+                            ) : null}
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <Badge variant="outline"
                                 className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
@@ -2138,7 +2148,11 @@ export function IssuesList({
                             ) : null}
                           </>
                         )}
-                        className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
+                        className={cn(
+                          isMutedIssue && "opacity-70",
+                          isDeadEndIssue && DEAD_END_ROW_TINT,
+                          selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50",
+                        )}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>

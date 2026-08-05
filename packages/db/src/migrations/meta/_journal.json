@@ -1436,6 +1436,13 @@
       "when": 1785853648732,
       "tag": "0206_review_path_recovery_idempotency_index",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1785888000000,
+      "tag": "0207_task_watchdog_restoration_attempts",
+      "breakpoints": true
     }
   ]
 }

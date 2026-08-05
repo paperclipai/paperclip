@@ -89,6 +89,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { UnblockPropertySection } from "@/components/UnblockPropertySection";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
 import { Badge } from "@/components/ui/badge";
@@ -143,6 +144,11 @@ interface IssuePropertiesProps {
   onRetryExternalObjects?: () => void;
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
+  /** P6 surface 1b: resolved routed-owner name for the "Unblock" section (needs_attention chains). */
+  unblockOwnerName?: string | null;
+  onReopenDeadEnd?: () => void;
+  onReassignDeadEnd?: () => void;
+  reopenDeadEndPending?: boolean;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -161,6 +167,10 @@ export function IssueProperties({
   onRetryExternalObjects,
   onCheckMonitorNow,
   checkingMonitorNow = false,
+  unblockOwnerName,
+  onReopenDeadEnd,
+  onReassignDeadEnd,
+  reopenDeadEndPending = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -2011,6 +2021,13 @@ export function IssueProperties({
 
   const propertiesBody = (
     <div>
+      <UnblockPropertySection
+        issue={issue}
+        ownerName={unblockOwnerName}
+        onReopen={onReopenDeadEnd}
+        onReassign={onReassignDeadEnd}
+        reopenPending={reopenDeadEndPending}
+      />
       <PropertySection title="Triage" first>
         <PropertyRow label="Status">
           <StatusIcon

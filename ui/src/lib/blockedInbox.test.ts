@@ -20,6 +20,11 @@ import {
   compareBlockedRows,
   formatStoppedAge,
   groupBlockedInboxRows,
+  groupBlockedInboxRowsByTier,
+  blockedAttentionTier,
+  blockedRowDeadEndIdentifier,
+  isBlockedRowEscalated,
+  BLOCKED_TIER_ORDER,
   sortBlockedInboxRows,
   type BlockedInboxIssueRow,
 } from "./blockedInbox";
@@ -271,5 +276,58 @@ describe("blockedInbox", () => {
     expect(formatStoppedAge("2026-05-09T20:00:00.000Z", now)).toBe("stopped 4h");
     expect(formatStoppedAge("2026-05-07T00:00:00.000Z", now)).toBe("stopped 3d");
     expect(formatStoppedAge("2026-04-15T00:00:00.000Z", now)).toBe("stopped 3w");
+  });
+});
+
+describe("attention-tier grouping (P6 surface 1a)", () => {
+  it("maps each blocked-inbox state to the right tier", () => {
+    expect(blockedAttentionTier("needs_attention")).toBe("attention");
+    expect(blockedAttentionTier("awaiting_decision")).toBe("decision");
+    expect(blockedAttentionTier("missing_disposition")).toBe("decision");
+    expect(blockedAttentionTier("recovery_open")).toBe("covered");
+    expect(blockedAttentionTier("external_wait")).toBe("covered");
+  });
+
+  it("groups rows attention -> decision -> covered, dropping empty tiers", () => {
+    const rows = buildBlockedInboxRows([
+      makeIssue({ id: "covered-1" }, makeAttention({ state: "recovery_open", reason: "open_recovery_issue" })),
+      makeIssue({ id: "decision-1" }, makeAttention({ state: "awaiting_decision", reason: "pending_board_decision" })),
+      makeIssue({ id: "attention-1" }, makeAttention({ state: "needs_attention", reason: "blocked_chain_stalled" })),
+    ]);
+    const groups = groupBlockedInboxRowsByTier(rows, "urgency");
+    expect(groups.map((g) => g.tier)).toEqual(["attention", "decision", "covered"]);
+    expect(groups[2]!.subtitle).toContain("no action needed");
+  });
+
+  it("floats an exhausted-watchdog escalation to the top of the attention tier", () => {
+    const escalated = makeIssue(
+      { id: "escalated", watchdog: { restorationEscalatedAt: new Date() } as never },
+      makeAttention({ state: "needs_attention", reason: "blocked_chain_stalled", stoppedSinceAt: "2026-05-01T00:00:00.000Z" }),
+    );
+    const ordinary = makeIssue(
+      { id: "ordinary" },
+      makeAttention({ state: "needs_attention", reason: "blocked_by_unassigned_issue", stoppedSinceAt: "2026-05-09T00:00:00.000Z" }),
+    );
+    const groups = groupBlockedInboxRowsByTier(buildBlockedInboxRows([ordinary, escalated]), "urgency");
+    const attention = groups.find((g) => g.tier === "attention")!;
+    expect(attention.rows[0]!.issue.id).toBe("escalated");
+    expect(isBlockedRowEscalated(escalated)).toBe(true);
+    expect(isBlockedRowEscalated(ordinary)).toBe(false);
+  });
+
+  it("resolves the dead-end identifier from the leaf, sample, or blockerAttention", () => {
+    const withLeaf = buildBlockedInboxRows([
+      makeIssue({ id: "leaf" }, makeAttention({ leafIssue: { id: "l", identifier: "PAP-99", title: "x", status: "blocked", priority: "high", assigneeAgentId: null, assigneeUserId: null } })),
+    ])[0]!;
+    expect(blockedRowDeadEndIdentifier(withLeaf)).toBe("PAP-99");
+
+    const withSample = buildBlockedInboxRows([
+      makeIssue({ id: "sample" }, makeAttention({ leafIssue: null, sampleIssueIdentifier: "PAP-77" })),
+    ])[0]!;
+    expect(blockedRowDeadEndIdentifier(withSample)).toBe("PAP-77");
+  });
+
+  it("orders tiers per BLOCKED_TIER_ORDER", () => {
+    expect(BLOCKED_TIER_ORDER).toEqual(["attention", "decision", "covered"]);
   });
 });
