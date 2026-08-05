@@ -1,0 +1,16 @@
+{
+  "query_only": 1,
+  "read_uri": "file:/home/gus-pinsoneault/Desktop/sage_extract.db?mode=ro",
+  "read_window_utc": {
+    "finished": "2026-08-05T22:48:55.098333+00:00",
+    "started": "2026-08-05T22:48:41.128809+00:00"
+  },
+  "source_sha256_after": "2c48aa6c32108f468e071577afbca70c56854db7055dc1a3cfeeb067befadb43",
+  "source_sha256_before": "2c48aa6c32108f468e071577afbca70c56854db7055dc1a3cfeeb067befadb43",
+  "source_snapshot_status": "MATCH",
+  "tool": {
+    "openpyxl": "3.1.5",
+    "python": "3.14.4",
+    "sqlite": "3.46.1"
+  }
+}
