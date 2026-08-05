@@ -215,7 +215,6 @@ describe("instance settings routes", () => {
 
     expect(mockHeartbeatService.reconcileIssueGraphLiveness).toHaveBeenCalledWith({
       runId: null,
-      force: true,
       lookbackHours: 12,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);

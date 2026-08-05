@@ -116,9 +116,15 @@ export function instanceSettingsRoutes(db: Db) {
     async (req, res) => {
       assertCanManageInstanceSettings(req);
       const actor = getActorInfo(req);
+      // Deliberately no `force`. Forcing let any caller holding the
+      // instance-settings permission -- including an agent run -- create
+      // "Unblock liveness incident" issues while the auto-recovery toggle was
+      // off, which is how escalations kept reappearing on instances that had
+      // it disabled. The endpoint now respects the toggle; obsolete-escalation
+      // retirement still runs either way, so this stays usable as a cleanup
+      // path. The UI already gates the button on the toggle being on.
       const result = await heartbeat.reconcileIssueGraphLiveness({
         runId: actor.runId,
-        force: true,
         lookbackHours: req.body.lookbackHours,
       });
       const companyIds = await svc.listCompanyIds();
