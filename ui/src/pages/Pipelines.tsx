@@ -3327,6 +3327,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                     return updateConversationWorkMode(nextMode);
                   }}
                   onAcceptInteraction={handleAcceptConversationInteraction}
+                  onRefreshInteraction={invalidateConversation}
                   onRejectInteraction={handleRejectConversationInteraction}
                   onSubmitInteractionAnswers={handleSubmitConversationInteractionAnswers}
                   onCancelInteraction={handleCancelConversationInteraction}

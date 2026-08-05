@@ -126,6 +126,7 @@ export function AttentionInteractionResolver({
       onAcceptInteraction={(target, selectedClientKeys, selectedOptionIds) =>
         acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds }).then(() => undefined)
       }
+      onRefreshInteraction={invalidate}
       onRejectInteraction={(target, reason) =>
         rejectMutation.mutateAsync({ interactionId: target.id, reason }).then(() => undefined)
       }

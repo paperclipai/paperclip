@@ -10,6 +10,10 @@ import {
   getCheckboxConfirmationSelectedLabels,
   getItemVerdictProgress,
   getQuestionAnswerLabels,
+  interactionSyncGateRetryDelayMs,
+  INTERACTION_SYNC_GATE_MAX_RETRIES,
+  isInteractionAlreadyResolvedConflict,
+  isInteractionWorkspaceSyncConflict,
   normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
@@ -58,6 +62,8 @@ interface IssueThreadInteractionCardProps {
       | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  /** Refresh the interaction after a workspace-sync gate clears. */
+  onRefreshInteraction?: () => Promise<void> | void;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
@@ -73,6 +79,57 @@ interface IssueThreadInteractionCardProps {
   ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
+}
+
+function useSyncGateAccept() {
+  const [syncWaiting, setSyncWaiting] = useState(false);
+  const [syncRetryExhausted, setSyncRetryExhausted] = useState(false);
+
+  async function acceptWithSyncRetry(
+    accept: () => Promise<void> | void,
+    onRefreshInteraction?: () => Promise<void> | void,
+  ) {
+    let retryNumber = 0;
+    setSyncRetryExhausted(false);
+    while (true) {
+      try {
+        await accept();
+        setSyncWaiting(false);
+        setSyncRetryExhausted(false);
+        // The accept response is authoritative, but a refetch also pulls in
+        // any continuation state written immediately after resolution.
+        await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
+        return;
+      } catch (error) {
+        if (isInteractionAlreadyResolvedConflict(error)) {
+          setSyncWaiting(false);
+          setSyncRetryExhausted(false);
+          await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
+          return;
+        }
+        if (!isInteractionWorkspaceSyncConflict(error) || retryNumber >= INTERACTION_SYNC_GATE_MAX_RETRIES) {
+          setSyncWaiting(false);
+          setSyncRetryExhausted(isInteractionWorkspaceSyncConflict(error));
+          throw error;
+        }
+        retryNumber += 1;
+        setSyncWaiting(true);
+        await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, interactionSyncGateRetryDelayMs(retryNumber));
+        });
+      }
+    }
+  }
+
+  return { acceptWithSyncRetry, syncWaiting, syncRetryExhausted };
+}
+
+function interactionActionError(error: unknown, fallback: string): string {
+  if (isInteractionWorkspaceSyncConflict(error)) {
+    return "Workspace sync is still in progress. Automatic retries stopped; try again manually once the workspace finishes syncing.";
+  }
+  return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
 function resolveActorLabel(args: {
@@ -610,6 +667,7 @@ function SuggestTasksCard({
   userLabelMap,
   onAcceptInteraction,
   onRejectInteraction,
+  onRefreshInteraction,
 }: {
   interaction: SuggestTasksInteraction;
   agentMap?: Map<string, Agent>;
@@ -623,6 +681,7 @@ function SuggestTasksCard({
     interaction: SuggestTasksInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
@@ -689,6 +748,7 @@ function SuggestTasksCard({
     setWorking("reject");
     try {
       await onRejectInteraction(interaction, rejectReason.trim() || undefined);
+      await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
       setRejecting(false);
     } finally {
       setWorking(null);
@@ -1699,6 +1759,7 @@ function RequestToolActionCard({
   requestedByLabel,
   onAcceptInteraction,
   onRejectInteraction,
+  onRefreshInteraction,
   externalReferences,
 }: {
   interaction: RequestConfirmationInteraction;
@@ -1712,6 +1773,7 @@ function RequestToolActionCard({
     interaction: RequestConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const payload = interaction.payload.toolAction!;
@@ -1719,6 +1781,7 @@ function RequestToolActionCard({
   const [rejectReason, setRejectReason] = useState("");
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const { acceptWithSyncRetry, syncWaiting, syncRetryExhausted } = useSyncGateAccept();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const isPending = state === "pending";
   const isDestructive = payload.risk === "destructive";
@@ -1741,9 +1804,12 @@ function RequestToolActionCard({
     setWorking("accept");
     setActionError(null);
     try {
-      await onAcceptInteraction(interaction);
-    } catch {
-      setActionError("Couldn't submit. Try again.");
+      await acceptWithSyncRetry(
+        () => onAcceptInteraction(interaction),
+        onRefreshInteraction,
+      );
+    } catch (error) {
+      setActionError(interactionActionError(error, "Couldn't submit. Try again."));
     } finally {
       setWorking(null);
     }
@@ -1755,9 +1821,10 @@ function RequestToolActionCard({
     setActionError(null);
     try {
       await onRejectInteraction(interaction, rejectReason.trim() || undefined);
+      await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
       setRejecting(false);
-    } catch {
-      setActionError("Couldn't submit. Try again.");
+    } catch (error) {
+      setActionError(interactionActionError(error, "Couldn't submit. Try again."));
     } finally {
       setWorking(null);
     }
@@ -1799,7 +1866,14 @@ function RequestToolActionCard({
                 disabled={!onAcceptInteraction || working !== null}
                 onClick={() => void handleAccept()}
               >
-                {working === "accept" ? (
+                {syncWaiting ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Waiting for workspace sync…
+                  </>
+                ) : syncRetryExhausted ? (
+                  "Retry"
+                ) : working === "accept" ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                     Approving…
@@ -1820,6 +1894,12 @@ function RequestToolActionCard({
                 Approving runs this action now.
               </span>
             </div>
+
+            {syncWaiting ? (
+              <p className="text-sm text-muted-foreground">
+                Waiting for the agent&apos;s workspace to sync — your response will apply automatically.
+              </p>
+            ) : null}
 
             {rejecting ? (
               <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
@@ -1882,6 +1962,7 @@ function RequestConfirmationCard({
   primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
+  onRefreshInteraction,
   onUploadImage,
   externalReferences,
 }: {
@@ -1895,6 +1976,7 @@ function RequestConfirmationCard({
     interaction: RequestConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
@@ -1906,6 +1988,7 @@ function RequestConfirmationCard({
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const { acceptWithSyncRetry, syncWaiting, syncRetryExhausted } = useSyncGateAccept();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Screenshots ride along in the decline reason as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
@@ -1964,9 +2047,12 @@ function RequestConfirmationCard({
     setWorking("accept");
     setActionError(null);
     try {
-      await onAcceptInteraction(interaction);
-    } catch {
-      setActionError("Try again");
+      await acceptWithSyncRetry(
+        () => onAcceptInteraction(interaction),
+        onRefreshInteraction,
+      );
+    } catch (error) {
+      setActionError(interactionActionError(error, "Try again"));
     } finally {
       setWorking(null);
     }
@@ -1979,9 +2065,10 @@ function RequestConfirmationCard({
     setActionError(null);
     try {
       await onRejectInteraction(interaction, composeReason());
+      await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
       setRejecting(false);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(interactionActionError(error, "Try again"));
     } finally {
       setWorking(null);
     }
@@ -2020,7 +2107,14 @@ function RequestConfirmationCard({
               disabled={!onAcceptInteraction || working !== null}
               onClick={() => void handleAccept()}
             >
-              {working === "accept" ? (
+              {syncWaiting ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Waiting for workspace sync…
+                </>
+              ) : syncRetryExhausted ? (
+                "Retry"
+              ) : working === "accept" ? (
                 <>
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                   Confirming...
@@ -2045,6 +2139,12 @@ function RequestConfirmationCard({
               {interaction.payload.rejectLabel ?? "Decline"}
             </Button>
           </div>
+
+          {syncWaiting ? (
+            <p className="text-sm text-muted-foreground">
+              Waiting for the agent&apos;s workspace to sync — your response will apply automatically.
+            </p>
+          ) : null}
 
           {rejecting ? (
             <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
@@ -2293,6 +2393,7 @@ function RequestCheckboxConfirmationCard({
   interaction,
   onAcceptInteraction,
   onRejectInteraction,
+  onRefreshInteraction,
   externalReferences,
 }: {
   interaction: RequestCheckboxConfirmationInteraction;
@@ -2305,6 +2406,7 @@ function RequestCheckboxConfirmationCard({
     interaction: RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const options = interaction.payload.options;
@@ -2328,6 +2430,7 @@ function RequestCheckboxConfirmationCard({
   const [rejectAttempted, setRejectAttempted] = useState(false);
   const [acceptAttempted, setAcceptAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const { acceptWithSyncRetry, syncWaiting, syncRetryExhausted } = useSyncGateAccept();
 
   const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
 
@@ -2395,9 +2498,12 @@ function RequestCheckboxConfirmationCard({
     setWorking("accept");
     setActionError(null);
     try {
-      await onAcceptInteraction(interaction, undefined, [...selectedOptionIds]);
-    } catch {
-      setActionError("Try again");
+      await acceptWithSyncRetry(
+        () => onAcceptInteraction(interaction, undefined, [...selectedOptionIds]),
+        onRefreshInteraction,
+      );
+    } catch (error) {
+      setActionError(interactionActionError(error, "Try again"));
     } finally {
       setWorking(null);
     }
@@ -2410,9 +2516,10 @@ function RequestCheckboxConfirmationCard({
     setActionError(null);
     try {
       await onRejectInteraction(interaction, trimmedRejectReason || undefined);
+      await Promise.resolve(onRefreshInteraction?.()).catch(() => undefined);
       setRejecting(false);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(interactionActionError(error, "Try again"));
     } finally {
       setWorking(null);
     }
@@ -2508,7 +2615,14 @@ function RequestCheckboxConfirmationCard({
             disabled={!onAcceptInteraction || working !== null}
             onClick={() => void handleAccept()}
           >
-            {working === "accept" ? (
+            {syncWaiting ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Waiting for workspace sync…
+              </>
+            ) : syncRetryExhausted ? (
+              "Retry"
+            ) : working === "accept" ? (
               <>
                 <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                 Confirming...
@@ -2533,6 +2647,12 @@ function RequestCheckboxConfirmationCard({
             {interaction.payload.rejectLabel ?? "Request changes"}
           </Button>
         </div>
+
+        {syncWaiting ? (
+          <p className="text-sm text-muted-foreground">
+            Waiting for the agent&apos;s workspace to sync — your response will apply automatically.
+          </p>
+        ) : null}
 
         {rejecting ? (
           <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
@@ -3087,6 +3207,7 @@ export function IssueThreadInteractionCard({
   userLabelMap,
   onAcceptInteraction,
   onRejectInteraction,
+  onRefreshInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
   primaryActionOnRight,
@@ -3262,6 +3383,7 @@ export function IssueThreadInteractionCard({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onRefreshInteraction={onRefreshInteraction}
           />
         ) : interaction.kind === "ask_user_questions" ? (
           <AskUserQuestionsCard
@@ -3275,6 +3397,7 @@ export function IssueThreadInteractionCard({
             interaction={interaction}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onRefreshInteraction={onRefreshInteraction}
             externalReferences={externalReferences}
           />
         ) : isToolAction && interaction.kind === "request_confirmation" && toolActionState ? (
@@ -3285,6 +3408,7 @@ export function IssueThreadInteractionCard({
             requestedByLabel={createdByLabel}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onRefreshInteraction={onRefreshInteraction}
             externalReferences={externalReferences}
           />
         ) : interaction.kind === "request_item_verdicts" ? (
@@ -3300,6 +3424,7 @@ export function IssueThreadInteractionCard({
             primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onRefreshInteraction={onRefreshInteraction}
             onUploadImage={onUploadImage}
             externalReferences={externalReferences}
           />

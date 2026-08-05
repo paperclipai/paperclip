@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
+import { ApiError } from "../api/client";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
@@ -401,6 +402,104 @@ describe("IssueThreadInteractionCard", () => {
     expect(onAcceptInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
     );
+  });
+
+  it("waits for workspace sync and retries a gated confirmation", async () => {
+    vi.useFakeTimers();
+    try {
+      const syncGateError = new ApiError(
+        "Cannot accept interaction: the run that created this interaction has not finished syncing its workspace.",
+        409,
+        {
+          code: "workspace_sync_pending",
+          details: { executionWorkspaceId: "workspace-1", sourceRunId: "run-1" },
+        },
+      );
+      const onAcceptInteraction = vi.fn()
+        .mockRejectedValueOnce(syncGateError)
+        .mockResolvedValueOnce(undefined);
+      const onRefreshInteraction = vi.fn(async () => undefined);
+      const host = renderCard({
+        interaction: pendingRequestConfirmationInteraction,
+        onAcceptInteraction,
+        onRefreshInteraction,
+      });
+
+      const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Approve plan"),
+      );
+      await act(async () => {
+        confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(host.textContent).toContain("Waiting for workspace sync");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(2);
+      expect(onRefreshInteraction).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds automatic retries when workspace sync never resolves", async () => {
+    vi.useFakeTimers();
+    try {
+      const syncGateError = new ApiError(
+        "Cannot accept interaction: the run that created this interaction has not finished syncing its workspace.",
+        409,
+        {
+          code: "workspace_sync_pending",
+          details: { executionWorkspaceId: "workspace-1", sourceRunId: "run-1" },
+        },
+      );
+      const onAcceptInteraction = vi.fn().mockRejectedValue(syncGateError);
+      const host = renderCard({
+        interaction: pendingRequestConfirmationInteraction,
+        onAcceptInteraction,
+      });
+
+      const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Approve plan"),
+      );
+      await act(async () => {
+        confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000 + 2000 + 4000 + 8000 + 16000);
+      });
+
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(6);
+      expect(host.textContent).toContain("Workspace sync is still in progress. Automatic retries stopped");
+      expect(host.textContent).toContain("Retry");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refetches instead of retrying when the interaction was already resolved", async () => {
+    const onAcceptInteraction = vi.fn().mockRejectedValue(
+      new ApiError("Interaction has already been resolved", 409, {}),
+    );
+    const onRefreshInteraction = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+      onAcceptInteraction,
+      onRefreshInteraction,
+    });
+
+    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve plan"),
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onAcceptInteraction).toHaveBeenCalledTimes(1);
+    expect(onRefreshInteraction).toHaveBeenCalledTimes(1);
+    expect(host.textContent).not.toContain("Try again");
   });
 
   it("does not expose continuation wake policy labels in the card header", () => {

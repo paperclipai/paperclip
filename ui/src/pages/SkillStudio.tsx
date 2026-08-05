@@ -3372,6 +3372,9 @@ function InteractionSection({
                 key={summary.id}
                 interaction={full}
                 agentMap={agentMap}
+                onRefreshInteraction={async () => {
+                  await Promise.all([fullQuery.refetch(), Promise.resolve(onAnswered())]);
+                }}
                 onAcceptInteraction={async (interaction, _keys, optionIds) => {
                   await accept.mutateAsync({ interaction, optionIds });
                 }}

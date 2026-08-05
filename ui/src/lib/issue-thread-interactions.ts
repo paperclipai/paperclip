@@ -52,6 +52,58 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 
+export const INTERACTION_SYNC_GATE_MAX_RETRIES = 5;
+export const INTERACTION_SYNC_GATE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000] as const;
+
+/**
+ * Accepting a confirmation is intentionally blocked while its source run is
+ * still syncing the execution workspace. Keep this classification narrow so
+ * other 409 conflicts remain visible to the operator instead of being retried.
+ */
+export function isInteractionWorkspaceSyncConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    status?: unknown;
+    message?: unknown;
+    body?: unknown;
+  };
+  if (candidate.status !== 409) return false;
+
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  if (message.includes("has not finished syncing its workspace")) return true;
+
+  const body = candidate.body;
+  if (!body || typeof body !== "object") return false;
+  const record = body as Record<string, unknown>;
+  const nestedDetails = record.details && typeof record.details === "object"
+    ? record.details as Record<string, unknown>
+    : null;
+  const code = record.code ?? nestedDetails?.code;
+  if (code === "workspace_sync_pending") return true;
+  if (typeof code === "string") return false;
+  return typeof record.executionWorkspaceId === "string"
+    && typeof record.sourceRunId === "string";
+}
+
+export function isInteractionAlreadyResolvedConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { status?: unknown; message?: unknown; body?: unknown };
+  if (candidate.status !== 409) return false;
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  if (message.includes("already been resolved")) return true;
+  if (!candidate.body || typeof candidate.body !== "object") return false;
+  const record = candidate.body as Record<string, unknown>;
+  const details = record.details && typeof record.details === "object"
+    ? record.details as Record<string, unknown>
+    : null;
+  return record.code === "interaction_already_resolved" || details?.code === "interaction_already_resolved";
+}
+
+export function interactionSyncGateRetryDelayMs(retryNumber: number): number {
+  const index = Math.max(0, Math.min(retryNumber - 1, INTERACTION_SYNC_GATE_RETRY_DELAYS_MS.length - 1));
+  return INTERACTION_SYNC_GATE_RETRY_DELAYS_MS[index];
+}
+
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];

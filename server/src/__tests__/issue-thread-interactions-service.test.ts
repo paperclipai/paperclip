@@ -2793,7 +2793,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         message: expect.stringContaining(
           "the run that created this interaction has not finished syncing its workspace",
         ),
-        details: { executionWorkspaceId, sourceRunId },
+        details: { code: "workspace_sync_pending", executionWorkspaceId, sourceRunId },
       });
 
       const row = await db
@@ -2921,7 +2921,39 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         message: expect.stringContaining(
           "the run that created this interaction has not finished syncing its workspace",
         ),
-        details: { executionWorkspaceId, sourceRunId },
+        details: { code: "workspace_sync_pending", executionWorkspaceId, sourceRunId },
+      });
+    });
+
+    it("persists request_confirmation rejection while a workspace_finalize is running", async () => {
+      const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "running" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "running",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      const rejected = await interactionsSvc.rejectInteraction(
+        { id: issueId, companyId },
+        interactionId,
+        { reason: "Please revise this plan." },
+        { userId: "local-board" },
+      );
+
+      expect(rejected).toMatchObject({
+        id: interactionId,
+        kind: "request_confirmation",
+        status: "rejected",
+        result: {
+          outcome: "rejected",
+          reason: "Please revise this plan.",
+        },
+        resolvedByUserId: "local-board",
       });
     });
 
@@ -3015,7 +3047,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         message: expect.stringContaining(
           "the run that created this interaction has not finished syncing its workspace",
         ),
-        details: { executionWorkspaceId, sourceRunId },
+        details: { code: "workspace_sync_pending", executionWorkspaceId, sourceRunId },
       });
 
       await db.insert(workspaceOperations).values({

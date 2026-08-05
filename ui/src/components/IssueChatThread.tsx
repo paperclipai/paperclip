@@ -217,6 +217,7 @@ interface IssueChatMessageContext {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
       | SuggestTasksInteraction
@@ -543,6 +544,7 @@ interface IssueChatThreadProps {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void> | void;
+  onRefreshInteraction?: () => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
       | SuggestTasksInteraction
@@ -2271,6 +2273,7 @@ function ExpiredRequestConfirmationActivity({
     currentUserId,
     userLabelMap,
     onAcceptInteraction,
+    onRefreshInteraction,
     onRejectInteraction,
     onCancelInteraction,
     onUploadImage,
@@ -2352,6 +2355,7 @@ function ExpiredRequestConfirmationActivity({
             currentUserId={currentUserId}
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
+            onRefreshInteraction={onRefreshInteraction}
             onRejectInteraction={onRejectInteraction}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
@@ -2873,6 +2877,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     currentUserId,
     userLabelMap,
     onAcceptInteraction,
+    onRefreshInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
@@ -2932,6 +2937,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             currentUserId={currentUserId}
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
+            onRefreshInteraction={onRefreshInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
@@ -4388,6 +4394,7 @@ export function IssueChatThread({
   stoppingRunId = null,
   onImageClick,
   onAcceptInteraction,
+  onRefreshInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
@@ -4922,6 +4929,7 @@ export function IssueChatThread({
   const stableOnDeleteComment = useStableEvent(onDeleteComment);
   const stableOnImageClick = useStableEvent(onImageClick);
   const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
+  const stableOnRefreshInteraction = useStableEvent(onRefreshInteraction);
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
   const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
   const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
@@ -4947,6 +4955,7 @@ export function IssueChatThread({
       onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
+      onRefreshInteraction: stableOnRefreshInteraction,
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,

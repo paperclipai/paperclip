@@ -1769,6 +1769,21 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("another company");
   });
 
+  it("allows a manager to mutate an issue assigned to a direct report", async () => {
+    const company = await createCompany(db, "ManagerIssueMutation");
+    const manager = await createAgent(db, company.id, { role: "manager" });
+    const report = await createAgent(db, company.id, { reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: report.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, assigneeAgentId: report.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");

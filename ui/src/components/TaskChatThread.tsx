@@ -100,6 +100,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     issueStatus,
     issueAssigneeAgentId = null,
     onAcceptInteraction,
+    onRefreshInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
@@ -396,6 +397,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
         onAcceptInteraction={onAcceptInteraction}
+        onRefreshInteraction={onRefreshInteraction}
         onRejectInteraction={onRejectInteraction}
         onSubmitInteractionAnswers={onSubmitInteractionAnswers}
         onCancelInteraction={onCancelInteraction}
@@ -409,6 +411,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       currentUserId,
       userLabelMap,
       onAcceptInteraction,
+      onRefreshInteraction,
       onRejectInteraction,
       onSubmitInteractionAnswers,
       onCancelInteraction,
