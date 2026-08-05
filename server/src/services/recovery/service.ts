@@ -408,7 +408,7 @@ function isVerifiedOperatorInterruptedRunForIssue(latestRun: LatestIssueRun, iss
 
   const result = parseObject(latestRun.resultJson);
   return (
-    asBoolean(result.operatorInterrupted) === true &&
+    asBoolean(result.operatorInterrupted, false) === true &&
     readNonEmptyString(result.interruptionSource) === "issue_comment_interrupt" &&
     readNonEmptyString(result.interruptedIssueId) === issueId
   );
@@ -2215,11 +2215,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // in excludeAgentIds so this resolves to the next leadership candidate.
     const cheapReviewerId = await resolveCheapRecoveryReviewerAgentId(db, input.run.companyId);
     if (cheapReviewerId && !excluded.has(cheapReviewerId)) candidateIds.push(cheapReviewerId);
-    if (input.sourceIssue?.assigneeAgentId) {
-      const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);
-      if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);
-    }
-    if (input.runningAgent.reportsTo) candidateIds.push(input.runningAgent.reportsTo);
+    // Leadership escalation is role-tiered, not a raw reportsTo hop. A
+    // paused primary CEO may remain the direct manager while an invokable CTO
+    // sister is available; selecting the manager first would both dead-letter
+    // the work and skip the CTO tier.
     const roleCandidates = await db
       .select()
       .from(agents)
@@ -3105,23 +3104,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (company?.strandedRecoveryOwnerAgentId) {
       candidateIds.push(company.strandedRecoveryOwnerAgentId);
     }
-    if (issue.assigneeAgentId) {
-      const assignee = await getAgent(issue.assigneeAgentId);
-      if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
-    }
-    if (issue.createdByAgentId) {
-      const creator = await getAgent(issue.createdByAgentId);
-      if (creator?.reportsTo) candidateIds.push(creator.reportsTo);
-      candidateIds.push(issue.createdByAgentId);
-    }
-
+    // Keep escalation at the CTO tier before CEO fallback. The direct manager
+    // can be a paused primary or a CEO, so it must not outrank role-tiered
+    // invokable candidates below.
     const roleCandidates = await db
       .select()
       .from(agents)
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
-    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
+    // Do not fall back to the source creator/assignee after leadership is
+    // exhausted. That would silently send an all-paused leadership topology
+    // back to the operator lane instead of producing the board escalation.
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {

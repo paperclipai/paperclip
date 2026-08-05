@@ -23,6 +23,7 @@ import {
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
+  resolveEscalationTarget,
   type AgentEligibilityAgent,
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
@@ -323,11 +324,12 @@ export function agentService(db: Db) {
     });
   }
 
-  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">): AgentEligibilityAgent {
+  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "role" | "status" | "reportsTo">): AgentEligibilityAgent {
     return {
       id: row.id,
       companyId: row.companyId,
       name: row.name,
+      role: row.role,
       status: row.status,
       reportsTo: row.reportsTo,
     };
@@ -352,7 +354,10 @@ export function agentService(db: Db) {
   }
 
   async function listCompanyAgentRows(companyId: string) {
-    return db.select().from(agents).where(eq(agents.companyId, companyId));
+    // Keep liveness-only sister selection reproducible without inferring a
+    // name-based primary. The oldest registered lane wins among equally live
+    // candidates, and a paused older lane is still recorded as skipped.
+    return db.select().from(agents).where(eq(agents.companyId, companyId)).orderBy(asc(agents.createdAt));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -1018,9 +1023,19 @@ export function agentService(db: Db) {
 
     getChainOfCommand: async (agentId: string) => {
       const chain: { id: string; name: string; role: string; title: string | null }[] = [];
-      const visited = new Set<string>([agentId]);
       const start = await getById(agentId);
-      let currentId = start?.reportsTo ?? null;
+      if (!start) return chain;
+
+      // Chain consumers use the first entry as their escalation target. Resolve
+      // that entry by role tier so an engineer reaches an invokable CTO before
+      // a CEO, and a paused primary falls through to its live sister.
+      const companyRows = await listCompanyAgentRows(start.companyId);
+      const receipt = resolveEscalationTarget({
+        source: toEligibilityAgent(start),
+        agents: companyRows.map(toEligibilityAgent),
+      });
+      const visited = new Set<string>([agentId]);
+      let currentId = receipt.selectedAgentId ?? start.reportsTo ?? null;
       while (currentId && !visited.has(currentId) && chain.length < 50) {
         visited.add(currentId);
         const mgr = await getById(currentId);

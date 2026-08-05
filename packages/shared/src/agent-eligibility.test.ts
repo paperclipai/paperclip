@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
+  findEscalationTopologyFindings,
   isAgentAssignableToWork,
   isAgentInvokable,
+  resolveEscalationTarget,
   type AgentEligibilityAgent,
 } from "./agent-eligibility.js";
 
@@ -232,5 +234,106 @@ describe("paused escalation path warning", () => {
 
     expect(result.orgChainHealth.status).toBe("invalid_org_chain");
     expect(result.orgChainHealth.pausedAncestors).toEqual([]);
+  });
+});
+
+describe("tiered escalation resolution", () => {
+  it("produces the engineer and CTO sister receipts for all eight company topologies", () => {
+    const companies = ["TSK", "DP", "TSR", "TSM", "TSB", "TSC", "TSBC", "TSMC"];
+
+    for (const prefix of companies) {
+      const companyAgents = [
+        agent({ id: `${prefix}-engineer`, companyId: prefix, name: `${prefix} Engineer`, role: "engineer", status: "idle", reportsTo: `${prefix}-cto-primary` }),
+        agent({ id: `${prefix}-cto-primary`, companyId: prefix, name: `${prefix} CTO`, role: "cto", status: "paused", reportsTo: `${prefix}-ceo-primary` }),
+        agent({ id: `${prefix}-cto-codex`, companyId: prefix, name: `${prefix} CTO-Codex`, role: "cto", status: "idle", reportsTo: null }),
+        agent({ id: `${prefix}-ceo-primary`, companyId: prefix, name: `${prefix} CEO`, role: "ceo", status: "paused", reportsTo: null }),
+        agent({ id: `${prefix}-ceo-codex`, companyId: prefix, name: `${prefix} CEO-Codex`, role: "ceo", status: "idle", reportsTo: null }),
+      ];
+      const [engineer, pausedCto, liveCto, pausedCeo, liveCeo] = companyAgents;
+
+      expect(resolveEscalationTarget({ source: engineer!, agents: companyAgents })).toMatchObject({
+        targetRole: "cto", selectedAgentId: liveCto!.id, skippedAgentIds: [pausedCto!.id],
+      });
+      expect(resolveEscalationTarget({ source: pausedCto!, agents: companyAgents })).toMatchObject({
+        targetRole: "ceo", selectedAgentId: liveCeo!.id, skippedAgentIds: [pausedCeo!.id],
+      });
+    }
+  });
+
+  it("skips a paused primary and selects its invokable sister in the same tier", () => {
+    const engineer = agent({ id: "engineer", name: "Engineer", role: "engineer", status: "active", reportsTo: "ceo-primary" });
+    const primary = agent({ id: "ceo-primary", name: "CEO Primary", role: "ceo", status: "paused", reportsTo: null });
+    const sister = agent({ id: "ceo-codex", name: "CEO Codex", role: "ceo", status: "idle", reportsTo: null });
+
+    const receipt = resolveEscalationTarget({ source: engineer, agents: [engineer, primary, sister] });
+
+    expect(receipt).toMatchObject({ targetRole: "ceo", selectedAgentId: "ceo-codex", skippedAgentIds: ["ceo-primary"] });
+    expect(receipt.message).toContain("CEO Primary (paused)");
+    expect(receipt.message).toContain("CEO Codex (ceo)");
+  });
+
+  it("keeps an engineer escalation at the CTO tier when a CTO is invokable", () => {
+    const engineer = agent({ id: "engineer", role: "engineer", status: "active", reportsTo: "ceo" });
+    const cto = agent({ id: "cto", name: "Active CTO", role: "cto", status: "idle", reportsTo: null });
+    const ceo = agent({ id: "ceo", name: "CEO", role: "ceo", status: "idle", reportsTo: null });
+
+    expect(resolveEscalationTarget({ source: engineer, agents: [engineer, cto, ceo] }))
+      .toMatchObject({ targetRole: "cto", selectedAgentId: "cto", skippedAgentIds: [] });
+  });
+
+  it("reaches the CEO tier only when no CTO is invokable", () => {
+    const engineer = agent({ id: "engineer", role: "engineer", status: "active", reportsTo: null });
+    const pausedCto = agent({ id: "cto-primary", role: "cto", status: "paused", reportsTo: null });
+    const ceo = agent({ id: "ceo-codex", role: "ceo", status: "idle", reportsTo: null });
+
+    expect(resolveEscalationTarget({ source: engineer, agents: [engineer, pausedCto, ceo] }))
+      .toMatchObject({ targetRole: "ceo", selectedAgentId: "ceo-codex", skippedAgentIds: ["cto-primary"] });
+  });
+
+  it("routes a CTO escalation to a live CEO sister and records the paused primary", () => {
+    const cto = agent({ id: "cto", role: "cto", status: "active", reportsTo: "ceo-primary" });
+    const pausedCeo = agent({ id: "ceo-primary", name: "CEO Primary", role: "ceo", status: "paused", reportsTo: null });
+    const liveCeoSister = agent({ id: "ceo-codex", name: "CEO Codex", role: "ceo", status: "idle", reportsTo: null });
+
+    const receipt = resolveEscalationTarget({ source: cto, agents: [cto, pausedCeo, liveCeoSister] });
+
+    expect(receipt).toMatchObject({ targetRole: "ceo", selectedAgentId: "ceo-codex", skippedAgentIds: ["ceo-primary"] });
+    expect(receipt.message).toContain("CEO Primary (paused)");
+  });
+
+  it("returns no agent target when every leadership tier is paused", () => {
+    const engineer = agent({ id: "engineer", role: "engineer", status: "active", reportsTo: null });
+    const pausedCto = agent({ id: "cto-primary", role: "cto", status: "paused", reportsTo: null });
+    const pausedCeo = agent({ id: "ceo-primary", role: "ceo", status: "paused", reportsTo: null });
+
+    const receipt = resolveEscalationTarget({ source: engineer, agents: [engineer, pausedCto, pausedCeo] });
+    expect(receipt)
+      .toMatchObject({ targetRole: null, selectedAgentId: null, skippedAgentIds: ["cto-primary", "ceo-primary"] });
+    expect(getAgentWorkEligibility({ agent: engineer, agents: [engineer, pausedCto, pausedCeo] }).orgChainHealth.escalationWarning)
+      .toContain("no invokable CTO or CEO target");
+    expect(getAgentWorkEligibility({ agent: engineer, agents: [engineer, pausedCto, pausedCeo] }).orgChainHealth.escalationTopologyFinding)
+      .toMatchObject({ sourceAgentId: "engineer", sourceRole: "engineer", receipt: { selectedAgentId: null } });
+  });
+
+  it("raises topology findings for every invokable tier with no live next-tier target", () => {
+    const engineer = agent({ id: "engineer", role: "engineer", status: "idle", reportsTo: null });
+    const cto = agent({ id: "cto", role: "cto", status: "idle", reportsTo: null });
+    const pausedCto = agent({ id: "cto-primary", role: "cto", status: "paused", reportsTo: null });
+    const pausedCeo = agent({ id: "ceo-primary", role: "ceo", status: "paused", reportsTo: null });
+
+    expect(findEscalationTopologyFindings({ companyId, agents: [engineer, pausedCto, pausedCeo] }))
+      .toMatchObject([{ sourceAgentId: "engineer", sourceRole: "engineer", receipt: { selectedAgentId: null } }]);
+    expect(findEscalationTopologyFindings({ companyId, agents: [cto, pausedCeo] }))
+      .toMatchObject([{ sourceAgentId: "cto", sourceRole: "cto", receipt: { selectedAgentId: null } }]);
+  });
+
+  it("clears the paused-route warning when a tiered target exists", () => {
+    const engineer = agent({ id: "engineer", role: "engineer", status: "active", reportsTo: "ceo-primary" });
+    const pausedPrimary = agent({ id: "ceo-primary", role: "ceo", status: "paused", reportsTo: null });
+    const ctoSister = agent({ id: "cto-codex", role: "cto", status: "idle", reportsTo: null });
+
+    const health = getAgentWorkEligibility({ agent: engineer, agents: [engineer, pausedPrimary, ctoSister] }).orgChainHealth;
+    expect(health.escalationWarning).toBeNull();
+    expect(health.escalationReceipt).toMatchObject({ targetRole: "cto", selectedAgentId: "cto-codex" });
   });
 });

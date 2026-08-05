@@ -13,8 +13,28 @@ export interface AgentEligibilityAgent {
   id: string;
   companyId: string;
   name: string;
+  /** Role is optional for compatibility with callers that only evaluate work eligibility. */
+  role?: string | null;
   status: AgentStatus | string;
   reportsTo?: string | null;
+}
+
+export type EscalationRole = "engineer" | "cto" | "ceo";
+
+export interface EscalationReceipt {
+  sourceAgentId: string;
+  sourceRole: EscalationRole;
+  targetRole: "cto" | "ceo" | null;
+  skippedAgentIds: string[];
+  selectedAgentId: string | null;
+  message: string;
+}
+
+/** A durable, machine-readable topology failure; board is the safe terminal route. */
+export interface EscalationTopologyFinding {
+  sourceAgentId: string;
+  sourceRole: "engineer" | "cto";
+  receipt: EscalationReceipt;
 }
 
 export interface AgentOrgChainEntry {
@@ -55,6 +75,10 @@ export interface AgentOrgChainHealth {
   pausedAncestors?: AgentInvalidOrgChainAncestor[];
   /** Human-readable warning when the escalation path routes to a paused agent. */
   escalationWarning?: string | null;
+  /** The invokable target selected by the tiered escalation resolver, when known. */
+  escalationReceipt?: EscalationReceipt | null;
+  /** Machine-readable finding when this live agent has no safe next-tier target. */
+  escalationTopologyFinding?: EscalationTopologyFinding | null;
 }
 
 export interface AgentWorkEligibility {
@@ -76,6 +100,98 @@ export function isAgentStatusAssignableToWork(status: AgentStatus | string): boo
 
 export function isAgentStatusInvokable(status: AgentStatus | string): boolean {
   return INVOKABLE_AGENT_STATUSES.has(status) && !NON_INVOKABLE_AGENT_STATUSES.has(status);
+}
+
+function escalationRole(value: string | null | undefined): EscalationRole | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "engineer" || normalized === "cto" || normalized === "ceo"
+    ? normalized
+    : null;
+}
+
+function escalationTiers(sourceRole: EscalationRole): Array<"cto" | "ceo"> {
+  if (sourceRole === "engineer") return ["cto", "ceo"];
+  if (sourceRole === "cto") return ["ceo"];
+  return [];
+}
+
+/**
+ * Resolves an escalation one organizational tier at a time. Each tier is
+ * scanned in its supplied order, so every non-invokable candidate is recorded
+ * before an invokable sister is selected. There is no name-derived "primary":
+ * liveness is the only selection rule. The resolver never skips an available CTO to
+ * send engineer work directly to a CEO.
+ */
+export function resolveEscalationTarget(input: {
+  source: AgentEligibilityAgent;
+  agents: AgentEligibilityAgent[];
+}): EscalationReceipt {
+  const sourceRole = escalationRole(input.source.role);
+  if (!sourceRole) {
+    return {
+      sourceAgentId: input.source.id,
+      sourceRole: "engineer",
+      targetRole: null,
+      skippedAgentIds: [],
+      selectedAgentId: null,
+      message: `Escalation receipt: ${input.source.name} has no supported escalation role.`,
+    };
+  }
+
+  const skipped: AgentEligibilityAgent[] = [];
+  for (const targetRole of escalationTiers(sourceRole)) {
+    const tier = input.agents.filter((agent) =>
+      agent.companyId === input.source.companyId && escalationRole(agent.role) === targetRole,
+    );
+    for (const candidate of tier) {
+      if (isAgentStatusInvokable(candidate.status)) {
+        const skippedNames = skipped.map((agent) => `${agent.name} (${agent.status})`);
+        return {
+          sourceAgentId: input.source.id,
+          sourceRole,
+          targetRole,
+          skippedAgentIds: skipped.map((agent) => agent.id),
+          selectedAgentId: candidate.id,
+          message: [
+            "Escalation receipt:",
+            skippedNames.length > 0 ? `skipped ${skippedNames.join(", ")};` : "no non-invokable target skipped;",
+            `selected ${candidate.name} (${targetRole}).`,
+          ].join(" "),
+        };
+      }
+      skipped.push(candidate);
+    }
+  }
+
+  return {
+    sourceAgentId: input.source.id,
+    sourceRole,
+    targetRole: null,
+    skippedAgentIds: skipped.map((agent) => agent.id),
+    selectedAgentId: null,
+    message: `Escalation receipt: no invokable CTO or CEO target; skipped ${skipped.map((agent) => `${agent.name} (${agent.status})`).join(", ") || "none"}.`,
+  };
+}
+
+/**
+ * Standing topology check. A live engineer or CTO must have an invokable
+ * next-tier target; otherwise recovery must raise a board finding rather than
+ * falling back to a source/operator lane.
+ */
+export function findEscalationTopologyFindings(input: {
+  companyId: string;
+  agents: AgentEligibilityAgent[];
+}): EscalationTopologyFinding[] {
+  return input.agents.flatMap((source) => {
+    const sourceRole = escalationRole(source.role);
+    if (
+      source.companyId !== input.companyId ||
+      (sourceRole !== "engineer" && sourceRole !== "cto") ||
+      !isAgentStatusInvokable(source.status)
+    ) return [];
+    const receipt = resolveEscalationTarget({ source, agents: input.agents });
+    return receipt.selectedAgentId ? [] : [{ sourceAgentId: source.id, sourceRole, receipt }];
+  });
 }
 
 function chainEntry(
@@ -197,10 +313,25 @@ export function getAgentOrgChainHealth(input: {
   // unrecognized statuses as workable and warn misleadingly.
   const agentCanWork = isAgentStatusInvokable(input.agent.status);
   const firstPausedAncestor = pausedAncestors[0] ?? null;
-  const escalationWarning = agentCanWork && firstPausedAncestor
+  const sourceEscalationRole = escalationRole(input.agent.role);
+  const escalationReceipt = agentCanWork && sourceEscalationRole
+    ? resolveEscalationTarget({ source: input.agent, agents: input.agents })
+    : null;
+  const pausedAncestorWarning = firstPausedAncestor
     ? `Escalations from ${input.agent.name} route to paused agent ${firstPausedAncestor.name}. ` +
       `Work assigned to a paused agent never runs; unpause ${firstPausedAncestor.name} or change who this agent reports to.`
     : null;
+  const escalationWarning = !agentCanWork
+    ? null
+    : !sourceEscalationRole
+      ? pausedAncestorWarning
+      : escalationReceipt?.selectedAgentId
+        ? null
+        : pausedAncestorWarning ?? `Escalations from ${input.agent.name} have no invokable CTO or CEO target. ${escalationReceipt?.message}`;
+  const escalationTopologyFinding =
+    agentCanWork && (sourceEscalationRole === "engineer" || sourceEscalationRole === "cto") && !escalationReceipt?.selectedAgentId
+      ? { sourceAgentId: input.agent.id, sourceRole: sourceEscalationRole, receipt: escalationReceipt! }
+      : null;
   return {
     status: firstInvalidAncestor ? "invalid_org_chain" : "healthy",
     reason: firstInvalidAncestor
@@ -218,6 +349,8 @@ export function getAgentOrgChainHealth(input: {
       : null,
     pausedAncestors,
     escalationWarning,
+    escalationReceipt,
+    escalationTopologyFinding,
   };
 }
 

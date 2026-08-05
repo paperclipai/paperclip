@@ -7108,6 +7108,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(pausedOwnerWakeups.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
   });
 
+  it("escalates an all-paused leadership topology to the board, never the source operator", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+    await db.update(agents).set({ role: "engineer", status: "paused" }).where(eq(agents.id, agentId));
+    await db.insert(agents).values([
+      {
+        id: randomUUID(), companyId, name: "Paused CTO", role: "cto", status: "paused",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      },
+      {
+        id: randomUUID(), companyId, name: "Paused CEO", role: "ceo", status: "paused",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      },
+    ]);
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    const action = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId)).then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({ ownerType: "board", ownerAgentId: null });
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",

@@ -47,6 +47,8 @@ export {
   isAgentInvokable,
   isAgentStatusAssignableToWork,
   isAgentStatusInvokable,
+  findEscalationTopologyFindings,
+  resolveEscalationTarget,
   type AgentEligibilityAgent,
   type AgentEligibilityLifecycleReason,
   type AgentInvalidOrgChainAncestor,
@@ -54,6 +56,9 @@ export {
   type AgentOrgChainHealth,
   type AgentOrgChainInvalidReason,
   type AgentWorkEligibility,
+  type EscalationReceipt,
+  type EscalationRole,
+  type EscalationTopologyFinding,
 } from "./agent-eligibility.js";
 export {
   computePipelineHealth,
