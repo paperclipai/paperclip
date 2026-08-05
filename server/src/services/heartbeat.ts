@@ -10319,6 +10319,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       else skippedRunIds.push(candidate.runId);
     };
 
+    const failClosedUnrecoverableChild = async (input: {
+      candidate: HotRestartIntentRun;
+      run: typeof heartbeatRuns.$inferSelect;
+      patch: Partial<HotRestartIntentRun>;
+      processPid: number | null;
+      processGroupId: number | null;
+      classificationReason: string;
+    }) => {
+      await terminateHeartbeatRunProcess({
+        pid: input.processPid,
+        processGroupId: input.processGroupId,
+      });
+      const message = "Hot restart found a live child without reconstructable completion plumbing; stopped without automatic retry";
+      const updateResult = await setRunStatusIfRunning(input.run.id, "failed", {
+        finishedAt: now,
+        error: message,
+        errorCode: "hot_restart_completion_unrecoverable",
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          hotRestart: {
+            reconciledAt: now.toISOString(),
+            previousServerPid: intent.previousServerPid,
+            newServerPid: process.pid,
+            processPid: input.processPid,
+            processGroupId: input.processGroupId,
+            retrySuppressed: true,
+            reason: "completion_plumbing_unrecoverable",
+          },
+        },
+      });
+
+      const updated = updateResult.run;
+      if (!updateResult.updated || !updated) {
+        const latest = updated ?? await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.run.id))
+          .then((rows) => rows[0] ?? null);
+        if (latest && latest.status !== "running") {
+          classify(input.candidate, "finalized_while_down", `run_status_${latest.status}`, input.patch);
+        } else {
+          classify(input.candidate, "lost", "safe_reconciliation_update_not_applied", input.patch);
+        }
+        return;
+      }
+
+      await setWakeupStatus(input.run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+      await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message,
+        payload: {
+          processPid: input.processPid,
+          processGroupId: input.processGroupId,
+          retrySuppressed: true,
+        },
+      });
+      await releaseIssueExecutionAndPromote(updated, { suppressImmediateRecovery: true });
+      classify(input.candidate, "lost", input.classificationReason, {
+        ...input.patch,
+        status: "failed",
+      });
+    };
+
     for (const runId of missingSnapshotRunIds) {
       const current = currentByRunId.get(runId);
       if (!current) {
@@ -10339,7 +10404,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (current.run.status !== "running") {
         classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
       } else {
-        classify(candidate, "lost", "missing_shutdown_snapshot");
+        const processPid = current.run.processPid ?? null;
+        const processGroupId = current.run.processGroupId ?? null;
+        if (
+          isTrackedLocalChildProcessAdapter(current.adapterType)
+          && (isProcessAlive(processPid) || isProcessGroupAlive(processGroupId))
+        ) {
+          await failClosedUnrecoverableChild({
+            candidate,
+            run: current.run,
+            patch: {
+              adapterType: current.adapterType,
+              processPid,
+              processGroupId,
+            },
+            processPid,
+            processGroupId,
+            classificationReason: "missing_shutdown_snapshot_completion_unrecoverable_retry_suppressed",
+          });
+        } else {
+          classify(candidate, "lost", "missing_shutdown_snapshot");
+        }
       }
     }
 
@@ -10410,53 +10495,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // or result promise. Never claim adoption from liveness alone: stop the
       // unobservable child and fail closed without an automatic retry, which
       // prevents a completed external side effect from being repeated.
-      await terminateHeartbeatRunProcess({ pid: processPid, processGroupId });
-      const message = "Hot restart found a live child without reconstructable completion plumbing; stopped without automatic retry";
-      const updateResult = await setRunStatusIfRunning(run.id, "failed", {
-        finishedAt: now,
-        error: message,
-        errorCode: "hot_restart_completion_unrecoverable",
-        resultJson: {
-          ...parseObject(run.resultJson),
-          hotRestart: {
-            reconciledAt: now.toISOString(),
-            previousServerPid: intent.previousServerPid,
-            newServerPid: process.pid,
-            processPid,
-            processGroupId,
-            retrySuppressed: true,
-            reason: "completion_plumbing_unrecoverable",
-          },
-        },
-      });
-
-      const updated = updateResult.run;
-      if (!updateResult.updated || !updated) {
-        const latest = updated ?? await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, run.id))
-          .then((rows) => rows[0] ?? null);
-        if (latest && latest.status !== "running") {
-          classify(candidate, "finalized_while_down", `run_status_${latest.status}`, patch);
-        } else {
-          classify(candidate, "lost", "safe_reconciliation_update_not_applied", patch);
-        }
-        continue;
-      }
-
-      await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
-      await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "error",
-        message,
-        payload: { processPid, processGroupId, retrySuppressed: true },
-      });
-      await releaseIssueExecutionAndPromote(updated, { suppressImmediateRecovery: true });
-      classify(candidate, "lost", "completion_plumbing_unrecoverable_retry_suppressed", {
-        ...patch,
-        status: "failed",
+      await failClosedUnrecoverableChild({
+        candidate,
+        run,
+        patch,
+        processPid,
+        processGroupId,
+        classificationReason: "completion_plumbing_unrecoverable_retry_suppressed",
       });
     }
 

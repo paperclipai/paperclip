@@ -31,6 +31,7 @@ const {
   issueThreadInteractionServiceFactoryMock,
   issueThreadInteractionServiceMock,
   loadConfigMock,
+  readEmbeddedPostgresProcessIdentityMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
@@ -109,6 +110,14 @@ const {
     close: vi.fn(),
   };
   const loadConfigMock = vi.fn();
+  const readEmbeddedPostgresProcessIdentityMock = vi.fn(async (dataDir: string) => ({
+    pid: 4242,
+    startedAtEpochSeconds: 1_700_000_000,
+    processStartedAtEpochMs: 1_700_000_000_000,
+    executablePath: process.platform === "win32" ? "C:\\PostgreSQL\\postgres.exe" : "/usr/bin/postgres",
+    dataDir,
+    port: 54329,
+  }));
 
   return {
     createAppMock,
@@ -132,6 +141,7 @@ const {
     issueThreadInteractionServiceFactoryMock,
     issueThreadInteractionServiceMock,
     loadConfigMock,
+    readEmbeddedPostgresProcessIdentityMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
@@ -216,6 +226,16 @@ vi.mock("embedded-postgres", () => ({
     adopt = vi.fn();
   },
 }));
+
+vi.mock("../services/hot-restart.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/hot-restart.js")>(
+    "../services/hot-restart.js",
+  );
+  return {
+    ...actual,
+    readEmbeddedPostgresProcessIdentity: readEmbeddedPostgresProcessIdentityMock,
+  };
+});
 
 vi.mock("../app.js", () => ({
   createApp: createAppMock,

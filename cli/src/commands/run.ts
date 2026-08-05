@@ -43,6 +43,7 @@ type WindowsRunSupervisorMessage = {
 };
 
 const WINDOWS_RUN_CHILD_ENV = "PAPERCLIP_WINDOWS_RUN_CHILD";
+const WINDOWS_RUN_SUPERVISOR_PID_ENV = "PAPERCLIP_WINDOWS_RUN_SUPERVISOR_PID";
 const WINDOWS_RUN_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGBREAK"] as const;
 let windowsRunShutdownListenerInstalled = false;
 let pendingWindowsRunShutdownSignal: WindowsRunShutdownSignal | null = null;
@@ -55,12 +56,45 @@ function isWindowsRunSupervisorMessage(message: unknown): message is WindowsRunS
     && WINDOWS_RUN_SHUTDOWN_SIGNALS.includes(record.signal as WindowsRunShutdownSignal);
 }
 
+export function monitorWindowsRunSupervisor(input: {
+  supervisorPid: string | undefined;
+  onExit: () => void;
+  isProcessAlive?: (pid: number) => boolean;
+}): () => void {
+  const supervisorPid = Number(input.supervisorPid);
+  if (!Number.isInteger(supervisorPid) || supervisorPid <= 0) return () => undefined;
+  const isProcessAlive = input.isProcessAlive ?? ((pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  });
+  const monitor = setInterval(() => {
+    if (isProcessAlive(supervisorPid)) return;
+    clearInterval(monitor);
+    input.onExit();
+  }, 250);
+  monitor.unref();
+  return () => clearInterval(monitor);
+}
+
 function installWindowsRunChildShutdownListener(): void {
   if (windowsRunShutdownListenerInstalled || process.env[WINDOWS_RUN_CHILD_ENV] !== "1") return;
   windowsRunShutdownListenerInstalled = true;
+  let shutdownRequested = false;
+  let stopSupervisorMonitor: () => void = () => undefined;
   const requestOrQueue = (signal: WindowsRunShutdownSignal) => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    stopSupervisorMonitor();
     if (!windowsRunShutdownRequest?.(signal)) pendingWindowsRunShutdownSignal = signal;
   };
+  stopSupervisorMonitor = monitorWindowsRunSupervisor({
+    supervisorPid: process.env[WINDOWS_RUN_SUPERVISOR_PID_ENV],
+    onExit: () => requestOrQueue("SIGBREAK"),
+  });
   process.on("message", (message: unknown) => {
     if (!isWindowsRunSupervisorMessage(message)) return;
     requestOrQueue(message.signal);
@@ -80,7 +114,7 @@ function attachWindowsRunShutdownRequest(request: (signal: WindowsRunShutdownSig
 
 type WindowsRunSupervisorProcess = Pick<
   NodeJS.Process,
-  "argv" | "execArgv" | "execPath" | "env" | "on" | "off"
+  "argv" | "execArgv" | "execPath" | "env" | "on" | "off" | "pid"
 >;
 
 export async function superviseWindowsRun(
@@ -97,7 +131,11 @@ export async function superviseWindowsRun(
     {
       detached: true,
       windowsHide: true,
-      env: { ...supervisorProcess.env, [WINDOWS_RUN_CHILD_ENV]: "1" },
+      env: {
+        ...supervisorProcess.env,
+        [WINDOWS_RUN_CHILD_ENV]: "1",
+        [WINDOWS_RUN_SUPERVISOR_PID_ENV]: String(supervisorProcess.pid),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     },
   );

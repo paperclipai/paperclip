@@ -145,7 +145,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -3538,13 +3538,6 @@ export function issueRoutes(
     return false;
   }
 
-  function actorCanAccessCompany(req: Request, companyId: string) {
-    if (req.actor.type === "none") return false;
-    if (req.actor.type === "agent") return req.actor.companyId === companyId;
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-    return (req.actor.companyIds ?? []).includes(companyId);
-  }
-
   type TaskAssignmentAuthorizationScope = {
     issueId?: string | null;
     projectId?: string | null;
@@ -3557,6 +3550,21 @@ export function issueRoutes(
 
   function hasTaskAssignmentPatch(body: Record<string, unknown>) {
     return [...taskAssignmentPatchFields].some((field) => Object.prototype.hasOwnProperty.call(body, field));
+  }
+
+  async function auditCrossTenantTaskAssignmentDenial(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (!hasTaskAssignmentPatch(req.body)) return;
+    await logTaskAssignmentAuthorizationDecision({
+      req,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      decision: "deny",
+      reason: "deny_company_boundary",
+      redactActor: true,
+    });
   }
 
   function isTaskAssignmentOnlyPatch(body: Record<string, unknown>) {
@@ -8294,22 +8302,13 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    const assignmentPatchRequested = hasTaskAssignmentPatch(req.body);
-    if (!actorCanAccessCompany(req, existing.companyId)) {
-      if (assignmentPatchRequested) {
-        await logTaskAssignmentAuthorizationDecision({
-          req,
-          companyId: existing.companyId,
-          issueId: existing.id,
-          decision: "deny",
-          reason: "deny_company_boundary",
-          redactActor: true,
-        });
-      }
-      res.status(403).json({ error: "Forbidden" });
+    if (!hasCompanyAccess(req, existing.companyId)) {
+      await auditCrossTenantTaskAssignmentDenial(req, existing);
+      res.status(404).json({ error: "Issue not found" });
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const assignmentPatchRequested = hasTaskAssignmentPatch(req.body);
     if (req.actor.type === "agent" && assignmentPatchRequested && existing.hiddenAt !== null) {
       await logTaskAssignmentAuthorizationDecision({
         req,
@@ -10799,7 +10798,7 @@ export function issueRoutes(
     }
     const includePayload = parseBooleanQuery(req.query.includePayload) || req.query.includePayload === undefined;
     const trace = await feedback.getFeedbackTraceById(traceId, includePayload);
-    if (!trace || !actorCanAccessCompany(req, trace.companyId)) {
+    if (!trace || !hasCompanyAccess(req, trace.companyId)) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }
@@ -10813,7 +10812,7 @@ export function issueRoutes(
       return;
     }
     const bundle = await feedback.getFeedbackTraceBundle(traceId);
-    if (!bundle || !actorCanAccessCompany(req, bundle.companyId)) {
+    if (!bundle || !hasCompanyAccess(req, bundle.companyId)) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }

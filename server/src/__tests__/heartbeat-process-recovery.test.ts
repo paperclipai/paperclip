@@ -1826,10 +1826,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("reports preflight live runs as lost when the shutdown snapshot is missing", async () => {
+  it("stops and terminalizes a preflight live child when the shutdown snapshot is missing", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
     const { runId } = await seedRunFixture({
       agentStatus: "running",
-      processPid: process.pid,
+      processPid: child.pid ?? null,
       processGroupId: null,
     });
 
@@ -1852,6 +1855,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         finalizedWhileDownRunIds: [],
         lostRunIds: [runId],
       });
+      await waitForPidExit(child.pid!);
+
+      const reconciled = await heartbeat.getRun(runId);
+      expect(reconciled).toMatchObject({
+        status: "failed",
+        errorCode: "hot_restart_completion_unrecoverable",
+      });
+      expect(reconciled?.resultJson).toMatchObject({
+        hotRestart: { retrySuppressed: true, reason: "completion_plumbing_unrecoverable" },
+      });
 
       const report = JSON.parse(
         await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
@@ -1860,6 +1873,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         adoptedRunIds: [],
         finalizedWhileDownRunIds: [],
         lostRunIds: [runId],
+      });
+      expect(report).toMatchObject({
+        runs: [expect.objectContaining({
+          runId,
+          status: "failed",
+          reason: "missing_shutdown_snapshot_completion_unrecoverable_retry_suppressed",
+        })],
       });
     });
   });

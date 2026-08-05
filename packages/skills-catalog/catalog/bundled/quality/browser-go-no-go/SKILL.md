@@ -1,6 +1,6 @@
 ---
 name: browser-go-no-go
-description: Run a deterministic Paperclip Browser GO/NO-GO review for UI-visible work. Use when QA must launch the isolated browser context, exercise user journeys, capture screenshot/DOM evidence, classify each journey pass/fail/quarantined, and emit a machine-readable verdict record for Security or release handoff.
+description: Run a deterministic Paperclip Browser GO/NO-GO review for UI-visible work. Use when QA must launch a browser context, exercise user journeys, capture screenshot/DOM evidence, classify each journey pass/fail/quarantined, and emit a machine-readable verdict record for Security or release handoff.
 key: paperclipai/bundled/quality/browser-go-no-go
 recommendedForRoles:
   - qa
