@@ -177,6 +177,52 @@ describe("ollama_local native client", () => {
     });
   });
 
+  it("advances after an ID-bearing completion clears an active ID-less call", async () => {
+    const response = new Response(
+      [
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-0", type: "function", function: { name: "one", arguments: "{\"x\":\"a" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-1", type: "function", function: { name: "two", arguments: "{\"y\":\"c" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, function: { arguments: "b" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-0", function: { arguments: "\"}" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, function: { arguments: "d\"}" } },
+          ] } }],
+        },
+      ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") +
+      "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+    const body = await readResponseBody(response, { stream: true });
+
+    const choice = (body.choices as Array<{ message: unknown }>)[0];
+    expect(choice.message).toEqual({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { index: 0, id: "call-0", type: "function", function: { name: "one", arguments: "{\"x\":\"ab\"}" } },
+        { index: 0, id: "call-1", type: "function", function: { name: "two", arguments: "{\"y\":\"cd\"}" } },
+      ],
+    });
+  });
+
   it.each([
     [401, "auth", "transient_upstream"],
     [429, "quota", "provider_quota"],

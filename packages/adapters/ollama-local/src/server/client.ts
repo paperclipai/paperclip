@@ -118,7 +118,8 @@ function mergeStreamToolCalls(
       },
     };
 
-    if (!callId && unidentifiedCandidates?.includes(index)) {
+    const activeCall = state.activeUnidentifiedByStreamIndex.get(streamIndex) === index;
+    if ((!callId && unidentifiedCandidates?.includes(index)) || (callId && activeCall)) {
       const argumentsValue = (merged[index] as JsonRecord).function as JsonRecord;
       const argumentsText = typeof argumentsValue.arguments === "string" ? argumentsValue.arguments : "";
       if (hasCompleteJsonArguments(argumentsText)) {
