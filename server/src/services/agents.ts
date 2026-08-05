@@ -728,8 +728,9 @@ export function agentService(db: Db) {
         );
         const companyAgents = await tx.select().from(agents).where(eq(agents.companyId, existing.companyId));
         const eligibilityAgents = companyAgents.map(toEligibilityAgent);
-        const manager = existing.reportsTo
-          ? companyAgents.find((candidate) => candidate.id === existing.reportsTo) ?? null
+        const sourceAgent = companyAgents.find((candidate) => candidate.id === id) ?? null;
+        const manager = sourceAgent?.reportsTo
+          ? companyAgents.find((candidate) => candidate.id === sourceAgent.reportsTo) ?? null
           : null;
         const replacementAssigneeId = manager && isAgentAssignableToWork({
           agent: toEligibilityAgent(manager),
