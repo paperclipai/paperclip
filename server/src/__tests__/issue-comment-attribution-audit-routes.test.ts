@@ -254,6 +254,10 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
       .send({ body: "Spoof attempt", onBehalfOfUserId: "someone-else" });
 
     expect(response.status).toBe(422);
+    // Plan §6: the refusal says the write itself was fine and names the fix.
+    expect(response.body.details.code).toBe("issue_write_attribution_spoof_rejected");
+    expect(response.body.details.sanctionedPath).toContain("onBehalfOfUserId");
+    expect(response.body.error).toContain("Who can act:");
     expect(await db.select().from(issueComments)).toHaveLength(0);
     const event = await db
       .select()

@@ -2777,6 +2777,162 @@ describe("daytona native file-sync hooks", () => {
     expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
   });
 
+  it("opens mkdir, guard, transfer, rename spans in call order for a file-mapping sync", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-order",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    expect(spans.map((span) => span.name)).toEqual(["mkdir", "guard", "transfer", "rename"]);
+    for (const span of spans) {
+      expect(span.ended).toBe(true);
+      expect(span.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+      // A per-round-trip span carries no `*.wall_ms` attribute; the native span
+      // width carries its time. Only `pack` and `transfer` keep a wall_ms value.
+      if (span.name !== "transfer") {
+        expect(span.attributes["paperclip.sandbox.startup.mkdir.wall_ms"]).toBeUndefined();
+        expect(span.attributes["paperclip.sandbox.startup.rename.wall_ms"]).toBeUndefined();
+        expect(span.attributes["paperclip.sandbox.startup.guard.wall_ms"]).toBeUndefined();
+      }
+    }
+  });
+
+  it("opens pack, mkdir, guard, transfer, extract spans in call order for a directory-mapping sync", async () => {
+    const hostDir = await makeHostDir();
+    const sourceDir = path.join(hostDir, "assets");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-dir-order",
+            files: [
+              { sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/.paperclip-runtime/assets`, kind: "directory" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    expect(spans.map((span) => span.name)).toEqual(["pack", "mkdir", "guard", "transfer", "extract"]);
+    for (const span of spans) {
+      expect(span.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+    }
+  });
+
+  it("records a pack span for a traced directory mapping", async () => {
+    const hostDir = await makeHostDir();
+    const sourceDir = path.join(hostDir, "assets");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-pack",
+            files: [
+              { sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/.paperclip-runtime/assets`, kind: "directory" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    const pack = spans.find((span) => span.name === "pack");
+    expect(pack).toBeDefined();
+    expect(pack!.ended).toBe(true);
+    expect(pack!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+  });
+
+  it("opens a guard span and a provision span in call order for a post-upload command with a working directory", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-post",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+            postUploadCommands: [{ command: "run-me", cwd: `${REMOTE_DIR}/sub` }],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    // The full order: the file mapping opens mkdir, guard, transfer, rename; the
+    // post-upload command then opens its own cwd guard and the provision span.
+    expect(spans.map((span) => span.name)).toEqual([
+      "mkdir",
+      "guard",
+      "transfer",
+      "rename",
+      "guard",
+      "provision",
+    ]);
+    const provision = spans.find((span) => span.name === "provision");
+    expect(provision!.ended).toBe(true);
+    expect(provision!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+  });
+
   it("syncIn tars a directory mapping host-side honoring excludes and the followSymlinks flag, then extracts it in-sandbox via a single quoted tar command", async () => {
     const hostDir = await makeHostDir();
     const sourceDir = path.join(hostDir, "assets");

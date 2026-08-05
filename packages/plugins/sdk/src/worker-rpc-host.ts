@@ -1406,6 +1406,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           const attributes: Record<string, string | number | boolean> = {
             ...(options?.attributes ?? {}),
           };
+          // Capture the real start time once when the span opens. The host uses
+          // it as the span start time, so the span shows its true native width.
+          const startTimeMs = Date.now();
           let status: { code: number; message?: string } | undefined;
           let ended = false;
           return {
@@ -1419,6 +1422,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
               if (ended) return;
               ended = true;
               if (!hasTraceContext) return;
+              // Capture the real end time once at the first end call. The host
+              // uses the pair to record the span with its true wall-clock width.
+              const endTimeMs = Date.now();
               // Send the finished span to the host once. The host re-clamps the
               // name and the attributes, mints the parentage from its own
               // invocation record, and records the span through the real tracer.
@@ -1427,6 +1433,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
                 name,
                 attributes,
                 ...(status ? { status } : {}),
+                startTimeMs,
+                endTimeMs,
               }).catch(() => undefined);
             },
           };

@@ -883,6 +883,20 @@ All endpoints are under `/api` and return JSON.
 - `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
 
+On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
+code `cloud_managed`; the trusted-header provisioning path and company import
+routes remain the only company-creation paths there.
+
+## 10.1.1 Cloud Stack Portfolio
+
+- `GET /cloud/stacks`
+
+The route exists only on a Cloud-managed instance, requires a trusted
+`cloud_tenant` actor, and proxies the current actor's user id plus the current
+stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
+never forwarded. Successful responses are cached briefly per user; self-hosted
+instances return `404`.
+
 ## 10.2 Goals
 
 - `GET /companies/:companyId/goals`

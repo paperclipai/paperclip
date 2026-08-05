@@ -9,12 +9,18 @@
  */
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
+import { resolveCommentAttribution } from "@/lib/comment-attribution";
 import type { TaskChatAuthorKind, TaskChatItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
   userLabelMap?: ReadonlyMap<string, string> | null;
   currentUserId?: string | null;
+  /**
+   * Task's current assignee. Agent comments from anyone else are cross-issue
+   * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
+   */
+  issueAssigneeAgentId?: string | null;
   /**
    * Capitalized mode chip for agent-authored bubbles ("Agent mode" / "Plan
    * mode" / "Ask mode") — resolved per comment, so each reply is tagged with
@@ -52,10 +58,17 @@ export function commentsToTaskChatItems(
     const kind = authorKind(comment);
     let authorName: string | undefined;
     let agentIcon: string | null | undefined;
+    let onBehalfOfUserName: string | undefined;
     if (kind === "agent") {
       const agentId = effectiveAgentId(comment);
       authorName = (agentId && ctx.agentMap?.get(agentId)?.name) || "Agent";
       agentIcon = agentId ? ctx.agentMap?.get(agentId)?.icon : undefined;
+      onBehalfOfUserName = resolveCommentAttribution({
+        authorAgentId: agentId,
+        onBehalfOfUserId: comment.onBehalfOfUserId ?? null,
+        issueAssigneeAgentId: ctx.issueAssigneeAgentId,
+        resolveUserLabel: (userId) => ctx.userLabelMap?.get(userId),
+      })?.userName;
     } else if (kind === "human") {
       authorName =
         (comment.authorUserId && ctx.userLabelMap?.get(comment.authorUserId)) || undefined;
@@ -75,6 +88,7 @@ export function commentsToTaskChatItems(
       timestamp: formatTaskChatTimestamp(comment.createdAt),
       optimistic,
       agentIcon,
+      onBehalfOfUserName,
       modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,
     });
   }

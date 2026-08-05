@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
+import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
   Attachment,
   AttachmentContent,
@@ -75,6 +76,12 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
             )}
           </Avatar>
           <span className="text-sm font-semibold text-foreground">{item.authorName}</span>
+          {item.onBehalfOfUserName ? (
+            <CommentAttributionChip
+              agentName={item.authorName}
+              userName={item.onBehalfOfUserName}
+            />
+          ) : null}
           {item.modeLabel ? (
             <span className="rounded-full border border-border px-2 py-px text-(length:--text-micro) font-medium text-muted-foreground">
               {item.modeLabel}

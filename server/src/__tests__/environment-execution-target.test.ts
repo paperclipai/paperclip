@@ -59,6 +59,42 @@ function createRecordingTrace() {
   return { tracer, contextWithSpan, spans };
 }
 
+// A fake tracer that records the third `startSpan` argument — the parent-context
+// token — for each span, keyed by the span name. `contextWithSpan` wraps a span
+// in a token and keeps that token, so a test asserts the exact token identity,
+// not a rebuilt copy. The exec seam reads the parent-context token from the
+// active step store and passes it as the third `startSpan` argument. This helper
+// holds the parent assertion in one place for reuse.
+function recordParentContext() {
+  const calls: Array<{ name: string; parentContext: unknown; span: unknown }> = [];
+  const tokens = new Map<unknown, unknown>();
+  const tracer = {
+    startSpan(name: string, _options?: unknown, parentContext?: unknown) {
+      const span = {
+        name,
+        setAttribute(_key: string, _value: unknown) {},
+        setStatus(_status: { code: number; message?: string }) {},
+        end() {},
+      };
+      calls.push({ name, parentContext, span });
+      return span;
+    },
+  };
+  const contextWithSpan = (span: unknown) => {
+    const token = { span };
+    tokens.set(span, token);
+    return token;
+  };
+  // The span object recorded for a given span name.
+  const spanNamed = (name: string) => calls.find((call) => call.name === name)?.span;
+  // The parent-context token that `startSpan` received for a given span name.
+  const parentContextFor = (name: string) =>
+    calls.find((call) => call.name === name)?.parentContext;
+  // The parent-context token that `contextWithSpan` returned for a given span.
+  const tokenForSpan = (span: unknown) => tokens.get(span);
+  return { tracer, contextWithSpan, calls, spanNamed, parentContextFor, tokenForSpan };
+}
+
 describe("resolveEnvironmentExecutionTarget", () => {
   beforeEach(() => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
@@ -754,6 +790,68 @@ describe("resolveEnvironmentExecutionTarget", () => {
     const execSpan = spans.find((span) => span.name === "sandbox.exec");
     expect(execSpan).toBeTruthy();
     expect(execSpan!.parent).toBeNull();
+  });
+
+  // The three baseline tests below record the third `startSpan` argument — the
+  // parent-context token — and assert its identity. They pin the current exec
+  // parenting so a later phase that re-points the exec parent has a fixed
+  // reference point.
+  it("test_exec_inside_measured_step_parents_to_step_context", async () => {
+    const rec = recordParentContext();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer: rec.tracer,
+    });
+
+    // Run the seam `execute` inside one measured step. The step publishes its
+    // child context to the active step store, so the seam reads it and passes it
+    // as the third `startSpan` argument for the exec span.
+    await measureStartupStep({}, () => 0, "stage.sync", () => runner.execute({ command: "echo" }), {
+      tracer: rec.tracer,
+      contextWithSpan: rec.contextWithSpan,
+    });
+
+    const stepSpan = rec.spanNamed("stage.sync");
+    expect(stepSpan).toBeTruthy();
+    // The exec span parents to the step span. The third `startSpan` argument is
+    // the exact parent-context token that `contextWithSpan` built for the step
+    // span, not a rebuilt copy.
+    expect(rec.parentContextFor("sandbox.exec")).toBe(rec.tokenForSpan(stepSpan));
+  });
+
+  it("test_exec_in_root_region_is_unparented_today", async () => {
+    const rec = recordParentContext();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer: rec.tracer,
+    });
+
+    // No measured step wraps the exec, so the active step store is empty. The
+    // seam reads no parent and passes `undefined` as the third `startSpan`
+    // argument. The exec span opens unparented today.
+    await runner.execute({ command: "echo" });
+
+    expect(rec.spanNamed("sandbox.exec")).toBeTruthy();
+    expect(rec.parentContextFor("sandbox.exec")).toBeUndefined();
+  });
+
+  it("test_exec_on_runWithoutActiveStep_is_unparented_today", async () => {
+    const rec = recordParentContext();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer: rec.tracer,
+    });
+
+    // `runWithoutActiveStep` empties the active step store for the wrapped work.
+    // The seam reads no parent and passes `undefined` as the third `startSpan`
+    // argument. The exec span opens unparented today.
+    await runWithoutActiveStep(() => runner.execute({ command: "echo" }));
+
+    expect(rec.spanNamed("sandbox.exec")).toBeTruthy();
+    expect(rec.parentContextFor("sandbox.exec")).toBeUndefined();
   });
 
   it("opens the exec span before the provider await so the span wraps the execution", async () => {

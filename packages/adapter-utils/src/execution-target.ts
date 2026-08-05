@@ -46,7 +46,10 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
-import { runWithoutActiveStep } from "./acpx-engine/startup-timing.js";
+import {
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
@@ -1367,6 +1370,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   env: Record<string, string> | (() => Promise<Record<string, string>>);
   timeoutSec?: number | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  // Return the current-run parent-context token. The socket handlers and the
+  // poll timer read it per unit of work and run under it, so their run-time
+  // `sandbox.exec` spans parent to the live run span (`agent.turn` during the
+  // turn, `task.run` otherwise). When it is absent, the work runs with an empty
+  // store, exactly like the earlier `runWithoutActiveStep` behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
@@ -1489,10 +1498,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   };
 
   const liveSockets = new Set<net.Socket>();
-  // Register the per-connection socket handlers outside the measured bridge step
-  // store. A stdin write from a socket handler is a run-time exec, not startup
-  // work, so its `sandbox.exec` span must not parent to the ended bridge step.
-  const server = net.createServer((nextSocket) => runWithoutActiveStep(() => {
+  // Register the per-connection socket handlers with no run parent context.
+  // A stdin write from a socket handler is a run-time exec, not startup work.
+  // The connection can open under `task.run` and receive stdin later, during an
+  // `agent.turn`. So the handler must read the current-run parent at send time,
+  // not at connect time. A connect-time read captures the parent that was live
+  // when the socket opened, and every later exec span parents to that stale
+  // parent. The `data` handler below reads the getter per message instead.
+  const server = net.createServer((nextSocket) => {
     liveSockets.add(nextSocket);
     nextSocket.setEncoding("utf8");
     nextSocket.on("error", () => undefined);
@@ -1535,23 +1548,29 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           socket = nextSocket;
           flushPendingRemoteEvents();
         }
-        void (async () => {
-          if (message.type === "stdin" && typeof message.data === "string") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
-          } else if (message.type === "stdinEnd") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
-          }
-        })().catch((error) => {
-          nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-          nextSocket.destroy();
+        // Read the current-run parent now, at send time. The live parent
+        // switches to `agent.turn` during the turn and back to `task.run`
+        // after it. With no getter the store stays empty, exactly like the
+        // earlier unparented behavior.
+        runWithRuntimeParent(input.getRuntimeParentContext?.(), () => {
+          void (async () => {
+            if (message.type === "stdin" && typeof message.data === "string") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
+            } else if (message.type === "stdinEnd") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
+            }
+          })().catch((error) => {
+            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+            nextSocket.destroy();
+          });
         });
       }
     });
-  }));
+  });
 
   const poll = async () => {
     if (stopping) return;
@@ -1581,13 +1600,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
 
-  // Schedule the long-lived poll timer outside the measured bridge step store.
+  // Schedule the long-lived poll timer under the current-run parent context.
   // The poll loop reads remote event files with run-time execs, not startup
-  // work, so a poll `sandbox.exec` span must not parent to the ended bridge step.
-  // `runWithoutActiveStep` also empties the store for the re-arm timer that the
-  // poll body schedules, so every later tick stays unparented too.
+  // work, so a poll `sandbox.exec` span parents to the live run span, not to the
+  // ended bridge step. Read the getter per tick, because the re-arm timer that
+  // the poll body schedules reads it again: the live parent switches to
+  // `agent.turn` during the turn and back to `task.run` after it. With no getter
+  // the store stays empty, exactly like the earlier unparented behavior.
   const schedulePoll = () => {
-    pollTimer = setTimeout(() => runWithoutActiveStep(() => void poll()), 100);
+    pollTimer = setTimeout(() => runWithRuntimeParent(input.getRuntimeParentContext?.(), () => void poll()), 100);
     pollTimer.unref?.();
   };
 
@@ -1738,6 +1759,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
+  // Return the current-run parent-context token. The factory threads it into the
+  // callback bridge worker, which reads it per request so each request
+  // `sandbox.exec` span parents to the live run span. When it is absent, the
+  // request work runs with an empty store, exactly like the earlier behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -1800,14 +1826,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // environments.
     const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
-    // setup on the active `bridge.paperclip` step, and resets the store only
-    // for its long-lived poll loop (see `runWithoutActiveStep` inside that
-    // function). So the startup `mkdir` execs stay parented and every later
-    // loop `sandbox.exec` span stays unparented with no stale `criticalPath`.
+    // setup on the active `bridge.paperclip` step, and runs each request under
+    // the run parent context (see `runWithRuntimeParent` inside that function).
+    // So the startup `mkdir` execs stay parented to the step, and every later
+    // request `sandbox.exec` span parents to the live run span.
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
+      getRuntimeParentContext: input.getRuntimeParentContext,
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {

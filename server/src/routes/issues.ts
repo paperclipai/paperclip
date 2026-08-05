@@ -95,6 +95,10 @@ import {
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
   type WorkspaceRuntimeService,
+  issueWriteDenialCodeForResponsibleUserDenial,
+  issueWriteDenialResponse,
+  type IssueWriteDenialCode,
+  type IssueWriteDenialContext,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -2785,7 +2789,14 @@ export function issueRoutes(
     });
     if (!decision || decision.allowed) return true;
 
-    res.status(429).json(crossIssueInfluenceLimitError(decision));
+    const labels = await issueWriteDenialLabels(req, {
+      identifier: issue.identifier ?? null,
+      assigneeAgentId: null,
+    });
+    res.status(429).json(crossIssueInfluenceLimitError(decision, {
+      actorLabel: labels.actorLabel,
+      issueIdentifier: labels.issueIdentifier,
+    }));
     return false;
   }
 
@@ -3713,6 +3724,73 @@ export function issueRoutes(
     });
   }
 
+  /**
+   * Map an authorization denial onto the issue-write copy contract (plan §6).
+   *
+   * The two responsible-user ceiling codes are the most specific signal, so they
+   * win. Actor-class walls (low-trust, skill-test, task-bridge scopes) stay shut
+   * by design and get their own copy. Everything else reaching a write channel is
+   * a visibility denial, because the default-open rule puts `issue:read` structurally
+   * upstream of every standard-trust write.
+   */
+  function issueWriteDenialCodeForDecision(
+    decision: Awaited<ReturnType<typeof decideIssueAccess>>,
+  ): IssueWriteDenialCode {
+    if (decision.code) return issueWriteDenialCodeForResponsibleUserDenial(decision.code);
+    if (decision.reason === "deny_low_trust_boundary" || decision.reason === "deny_policy_restricted") {
+      return "issue_write_actor_class_excluded";
+    }
+    return "issue_write_not_visible";
+  }
+
+  /**
+   * Best-effort display names for denial copy. Denials are rare, so one extra
+   * query buys an error that names who can act instead of printing raw uuids.
+   * Any failure degrades to the copy contract's generic nouns.
+   */
+  async function issueWriteDenialLabels(
+    req: Request,
+    issue: { identifier?: string | null; assigneeAgentId: string | null },
+  ): Promise<IssueWriteDenialContext> {
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+    const ids = [actorAgentId, issue.assigneeAgentId].filter((id): id is string => Boolean(id));
+    const nameById = new Map<string, string>();
+    if (ids.length > 0) {
+      try {
+        const rows = await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(inArray(agents.id, ids));
+        for (const row of rows) if (row.name) nameById.set(row.id, row.name);
+      } catch (err) {
+        logger.warn({ err }, "failed to resolve agent names for issue write denial copy");
+      }
+    }
+    return {
+      actorLabel: actorAgentId ? nameById.get(actorAgentId) ?? null : null,
+      assigneeLabel: issue.assigneeAgentId ? nameById.get(issue.assigneeAgentId) ?? null : null,
+      issueIdentifier: issue.identifier ?? null,
+      responsibleUserName: null,
+    };
+  }
+
+  /** Respond to a denied issue write with copy that names boundary, who, and path. */
+  async function denyIssueWrite(
+    req: Request,
+    res: Response,
+    issue: { identifier?: string | null; assigneeAgentId: string | null },
+    code: IssueWriteDenialCode,
+    extraDetails: Record<string, unknown> = {},
+  ) {
+    const labels = await issueWriteDenialLabels(req, issue);
+    const { status, body } = issueWriteDenialResponse(code, labels);
+    res.status(status).json({
+      error: body.error,
+      details: { ...body.details, ...extraDetails },
+    });
+    return false as const;
+  }
+
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
@@ -3732,8 +3810,7 @@ export function issueRoutes(
     if ((await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none") return true;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-    return false;
+    return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(decision));
   }
 
   async function assertAgentIssueCommentAllowed(
@@ -3747,6 +3824,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      /** Used only to name the task in denial copy (plan §6). */
+      identifier?: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3772,8 +3851,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-      return false;
+      return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
     return boundaryDecision;
   }
@@ -3836,6 +3914,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      /** Used only to name the task in denial copy (plan §6). */
+      identifier?: string | null;
     },
     options: { allowVisibleIssueWrite?: boolean } = {},
   ) {
@@ -3870,8 +3950,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-      return false;
+      return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -3881,15 +3960,17 @@ export function issueRoutes(
         return true;
       }
       if (issue.status === "in_progress") {
-        res.status(409).json({
-          error: "Issue is checked out by another agent",
-          details: {
-            issueId: issue.id,
-            assigneeAgentId: issue.assigneeAgentId,
-            actorAgentId,
-          },
+        // Run/checkout ownership stays assignee-scoped even though writes are
+        // open, so this lock clears on its own — the copy routes to comments.
+        return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorAgentId,
         });
-      } else if (!options.allowVisibleIssueWrite) {
+      }
+      // Past the run lock the issue is idle, so only channels that have not
+      // adopted the default-open rule still refuse another agent's issue.
+      if (!options.allowVisibleIssueWrite) {
         res.status(403).json({
           error: "Agent cannot mutate another agent's issue",
           details: {
@@ -3900,8 +3981,9 @@ export function issueRoutes(
             securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
           },
         });
+        return false;
       }
-      return issue.status !== "in_progress" && options.allowVisibleIssueWrite === true;
+      return true;
     }
     if (issue.status !== "in_progress") {
       return true;
@@ -5275,7 +5357,7 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
+      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
@@ -5467,7 +5549,7 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
+      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
@@ -8374,7 +8456,7 @@ export function issueRoutes(
         surface: "issue.patch.comment",
         requestedValue: readNonEmptyString(req.body.onBehalfOfUserId),
       });
-      res.status(422).json({ error: "Agent comments cannot set onBehalfOfUserId" });
+      await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
     const issueMutationAuthorizationReason = isTaskAssignmentOnlyPatch(req.body)
@@ -10831,7 +10913,7 @@ export function issueRoutes(
         surface: "issue.comment.create",
         requestedValue: readNonEmptyString(req.body.onBehalfOfUserId),
       });
-      res.status(422).json({ error: "Agent comments cannot set onBehalfOfUserId" });
+      await denyIssueWrite(req, res, issue, "issue_write_attribution_spoof_rejected");
       return;
     }
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);

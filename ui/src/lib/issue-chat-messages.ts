@@ -512,6 +512,8 @@ function createCommentMessage(args: {
     authorType: effectiveCommentAuthorType(comment),
     authorAgentId,
     authorUserId: comment.authorUserId,
+    // Responsible user this agent comment rode the authority of (the open cross-task write design (attribution)).
+    onBehalfOfUserId: comment.onBehalfOfUserId ?? null,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
     runId: effectiveCommentRunId(comment),

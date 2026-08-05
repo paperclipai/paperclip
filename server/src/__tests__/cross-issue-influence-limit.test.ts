@@ -86,16 +86,24 @@ describe("cross-issue influence limit rollout", () => {
       count: 21,
       cap: 20,
     });
-    expect(crossIssueInfluenceLimitError(rejected)).toEqual({
-      error: "Cross-issue influence cap exceeded: this run is limited to 20 cross-issue comments or updates",
-      details: {
-        code: "cross_issue_influence_cap_exceeded",
-        cap: 20,
-        count: 21,
-        mode: "enforce",
-        enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
-      },
+    const capError = crossIssueInfluenceLimitError(rejected, {
+      actorLabel: "Fable",
+      issueIdentifier: "TASK-482",
     });
+    expect(capError.details).toMatchObject({
+      code: "cross_issue_influence_cap_exceeded",
+      cap: 20,
+      count: 21,
+      mode: "enforce",
+      enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
+    });
+    // Plan §6: the 429 names the boundary, who can act, and the way forward.
+    expect(capError.error).toContain("20");
+    expect(capError.error).toContain("Who can act:");
+    expect(capError.error).toContain("Try this:");
+    expect(capError.error).toContain("next heartbeat");
+    expect(capError.details.boundary).toContain("20");
+    expect(capError.details.whoCanAct).toContain("Fable");
   });
 
   it("uses one durable counter for cross-issue comments and PATCH updates", async () => {

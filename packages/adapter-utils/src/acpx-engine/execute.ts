@@ -88,6 +88,7 @@ import {
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
+  runWithRuntimeParent,
   setSandboxRootSpanAttributes,
   type SandboxRootSpanContext,
   type StartupSpan,
@@ -136,6 +137,11 @@ type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
 
 type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
+  // Return the current-run parent-context token. It is the `task.run` token
+  // during startup and after the turn, and the `agent.turn` token during the
+  // turn. A detached exec reads this getter to parent to the live run span. The
+  // real `createAcpRuntime` ignores this optional field.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 };
 
 type AcpxProcessIdentitySink = {
@@ -1355,6 +1361,12 @@ async function buildRuntime(input: {
   // executor opens, and each step publishes its own child context for an inner
   // exec span to parent to.
   spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext" | "contextWithSpan">;
+  // Return the current-run parent-context token. `buildRuntime` threads it into
+  // the two remote bridge factories, so a run-time exec from a bridge parents to
+  // the live run span (`agent.turn` during the turn, `task.run` otherwise). The
+  // run closure passes the run-scoped getter here; when it is absent, each
+  // bridge site keeps its earlier unparented run-time behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1950,6 +1962,7 @@ async function buildRuntime(input: {
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
           onLog: input.ctx.onLog,
+          getRuntimeParentContext: input.getRuntimeParentContext,
         }),
         concurrentBridgeStepMetrics,
       );
@@ -1980,6 +1993,7 @@ async function buildRuntime(input: {
           env: finalizeLaunchEnv,
           timeoutSec,
           onLog: input.ctx.onLog,
+          getRuntimeParentContext: input.getRuntimeParentContext,
         }),
         concurrentBridgeStepMetrics,
       );
@@ -2865,16 +2879,20 @@ const STARTUP_BRIDGE_BATCH = "bridge";
 
 /**
  * Open the one root span for a sandbox bring-up and return its parent-context
- * token plus a guarded `end`. The span parents every startup boundary span:
- * the engine forwards `parentContext` to each `measureStartupStep` call. The
- * `end` closure runs at most once (bring-up complete OR a bring-up failure) and
- * swallows every tracer error, so observability never changes startup control
- * flow. With no injected trace context, the tracer is a no-op and the span is
- * a no-op.
+ * token plus a guarded `end`. The span parents to the run root span through
+ * `runParentContext`, so `sandbox.startup` becomes a child of `task.run`. The
+ * span then parents every startup boundary span in turn: the engine forwards
+ * `parentContext` to each `measureStartupStep` call. The `end` closure runs at
+ * most once (bring-up complete OR a bring-up failure) and swallows every tracer
+ * error, so observability never changes startup control flow. With no injected
+ * trace context, the tracer is a no-op and the span is a no-op.
  */
 function openStartupRootSpan(
   tracing: StartupTraceContext,
   nowMs: () => number,
+  // The run root span parent context. `sandbox.startup` opens as a child of it,
+  // so the whole bring-up parents to `task.run`. It is an opaque token here.
+  runParentContext: StartupSpanContext,
   // Return the final root-span numbers and context at end time. The work sum
   // and the cold-start flag are known only after the bring-up runs, so the
   // caller reads them lazily here.
@@ -2885,7 +2903,7 @@ function openStartupRootSpan(
 } {
   let span: StartupSpan;
   try {
-    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME);
+    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME, undefined, runParentContext);
   } catch {
     span = NOOP_STARTUP_SPAN;
   }
@@ -2920,6 +2938,146 @@ function openStartupRootSpan(
   };
 }
 
+/** The stable name of the one root span for a whole run. It is a fixed
+ * low-cardinality constant, never derived from run or user data. */
+const RUN_ROOT_SPAN_NAME = "task.run";
+
+/** The stable name of the one span for the agent turn. It is a fixed
+ * low-cardinality constant, never derived from run or user data. The turn span
+ * is a child of the run root span. */
+const TURN_SPAN_NAME = "agent.turn";
+
+/** The attribute prefix for the run root span. It groups the run-level span
+ * attributes under one namespace, the same shape as the sandbox startup
+ * prefix. */
+const RUN_ROOT_SPAN_ATTR_PREFIX = "paperclip.task.run.";
+
+/** The attribute prefix for the agent turn span. It groups the turn-level span
+ * attributes under one namespace, the same shape as the run root prefix. */
+const TURN_SPAN_ATTR_PREFIX = "paperclip.agent.turn.";
+
+/** Map a run id to a non-reversible 12-hex hash for a span attribute. The raw
+ * run id never rides a span; only this hash does. This mirrors the id-hash rule
+ * that `clampSpanLabel` uses for the startup ids. */
+function hashRunId(runId: string): string {
+  return createHash("sha256").update(runId).digest("hex").slice(0, 12);
+}
+
+/**
+ * Open the one root span for a whole run and return its parent-context token
+ * plus a guarded `end`. The run root span is the trace root: the sandbox
+ * bring-up span (`sandbox.startup`) parents to it, so the engine forwards
+ * `parentContext` into `openStartupRootSpan`. The `end` closure runs at most
+ * once and swallows every tracer error, so observability never changes run
+ * control flow. With no injected trace context the tracer is a no-op and the
+ * span is a no-op.
+ *
+ * The span carries only a bounded, non-reversible run-id hash and its own wall
+ * time. It never carries the prompt, the command, or any user text, so no raw
+ * run text rides the span. This follows the same allowlist rule as
+ * `openStartupRootSpan`.
+ */
+function openRunRootSpan(
+  tracing: StartupTraceContext,
+  nowMs: () => number,
+  runId: string,
+): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(RUN_ROOT_SPAN_NAME);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  const startedAtMs = nowMs();
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // The run id rides only as a non-reversible short hash, never as the raw
+        // id. The wall time is a plain duration. No raw run text rides the span.
+        span.setAttribute(`${RUN_ROOT_SPAN_ATTR_PREFIX}run_id`, hashRunId(runId));
+        span.setAttribute(`${RUN_ROOT_SPAN_ATTR_PREFIX}wall_ms`, nowMs() - startedAtMs);
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change run control flow.
+      }
+    },
+  };
+}
+
+/**
+ * Open the one span for the agent turn and return its parent-context token plus
+ * a guarded `end`. The span parents to the run root span through
+ * `runParentContext`, so `agent.turn` becomes a child of `task.run`. The
+ * executor holds the returned `parentContext` for later exec parenting. The
+ * `end` closure runs at most once and swallows every tracer error, so
+ * observability never changes turn control flow. With no injected trace context
+ * the tracer is a no-op and the span is a no-op.
+ *
+ * The span carries only its own wall time. It never carries the prompt, the
+ * command, or any user text, so no raw run text rides the span. This follows the
+ * same allowlist rule as `openStartupRootSpan`.
+ */
+function openTurnSpan(
+  tracing: StartupTraceContext,
+  nowMs: () => number,
+  // The run root span parent context. `agent.turn` opens as a child of it, so
+  // the turn parents to `task.run`. It is an opaque token here.
+  runParentContext: StartupSpanContext,
+): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(TURN_SPAN_NAME, undefined, runParentContext);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  const startedAtMs = nowMs();
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // The wall time is a plain duration. No raw run text rides the span.
+        span.setAttribute(`${TURN_SPAN_ATTR_PREFIX}wall_ms`, nowMs() - startedAtMs);
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change turn control flow.
+      }
+    },
+  };
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -2941,20 +3099,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
     };
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
-    // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
-    // consults the staged cache to decide whether a compatible resume may reuse
-    // an already-staged runtime — an expired entry must not be reused.
-    await cleanupIdleStagedRuntimes({
-      handles: stagedRuntimes,
-      locks: stagingLocks,
-      now,
-      idleMs: warmIdleMs,
-    });
-    // The `sandbox.startup` span names a sandbox bring-up. It must not cover a
-    // local or SSH run: those runs have no sandbox, so they stay out of sandbox
-    // telemetry. Open the real root span only when the target is a remote
-    // sandbox; every other target forces the no-op trace context, so the whole
-    // startup span path stays inert regardless of the injected context.
+    // The `task.run` and `sandbox.startup` spans must not cover a local or SSH
+    // run: those runs have no sandbox, so they stay out of sandbox telemetry.
+    // Open a real root span only when the target is a remote sandbox and the
+    // server injected a trace context; every other target forces the no-op
+    // trace context, so the whole span path stays inert.
     const startupExecutionTarget = readAdapterExecutionTarget({
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -2964,583 +3113,640 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? startupExecutionTarget
         : null;
     const targetsRemoteSandbox = sandboxTarget !== null;
-    // Open the one root span for this bring-up. It spans `buildRuntime` through
-    // `acp.handshake`, so every startup boundary span parents to it. `spanParent`
-    // carries the injected tracer + the root parent-context token into each
-    // `measureStartupStep` call. With no injected trace context the whole path
-    // is a no-op. `endRootSpan` runs exactly once — at bring-up completion or on
-    // a bring-up failure.
     const tracing =
       targetsRemoteSandbox && ctx.startupTraceContext
         ? ctx.startupTraceContext
         : NOOP_STARTUP_TRACE_CONTEXT;
-    // The sum of the step wall times. The root span records it as `root.work_ms`
-    // and the difference from its own wall time as `root.diff_ms` (the overlap
-    // the parallel steps saved). Every step reports its wall time through
-    // `onWallMs`; a skipped step adds zero.
-    let stepWallSumMs = 0;
-    // Whether this bring-up is a cold start (no warm handle). Set once the warm-
-    // handle lookup runs below; it stays undefined on an early build failure, so
-    // the root span omits the attribute (fail open).
-    let coldStart: boolean | undefined;
-    const rootSpan = openStartupRootSpan(tracing, now, () => ({
-      workMs: stepWallSumMs,
-      context: {
-        coldStart,
-        // The provider key and the lease id are the only low-cardinality
-        // context values this provider-agnostic layer holds. The region, the
-        // image id, and the sandbox id are not threaded here, so the root span
-        // omits them (fail open). The lease id rides only as a hash.
-        provider: sandboxTarget?.providerKey ?? undefined,
-        leaseId: sandboxTarget?.leaseId ?? undefined,
-      },
-    }));
-    const spanParent: Pick<
-      StartupStepMeasureOptions,
-      "tracer" | "parentContext" | "contextWithSpan" | "onWallMs"
-    > = {
-      tracer: tracing.tracer,
-      parentContext: rootSpan.parentContext,
-      // Each step uses this to publish its own child context, so an inner exec
-      // span parents to the step span, not to the root.
-      contextWithSpan: (span) => tracing.contextWithSpan(span),
-      // Accumulate each step wall time into the root work sum.
-      onWallMs: (wallMs) => {
-        stepWallSumMs += wallMs;
-      },
-    };
-    let prepared: AcpxPreparedRuntime;
+    // Open the one run root span at the engine first line, before any bring-up
+    // work. It is the trace root for the whole run: the sandbox bring-up and the
+    // agent turn parent to it. The engine forwards its parent context into the
+    // startup span. `runRootSpan.end` runs exactly once, in the `finally` below,
+    // on every return and on a throw.
+    const runRootSpan = openRunRootSpan(tracing, now, ctx.runId);
+    // Hold the current-run parent-context token for the whole run. It starts as
+    // the `task.run` token, switches to the `agent.turn` token during the turn,
+    // and switches back to the `task.run` token after the turn. It is never
+    // `undefined` while the run is live. The holder is a run-scoped local, so two
+    // concurrent runs in one host process keep separate tokens. A detached exec
+    // reads it through `getRuntimeParentContext` to parent to the live span.
+    let currentRunParentContext: StartupSpanContext | undefined = runRootSpan.parentContext;
+    const getRuntimeParentContext = (): StartupSpanContext | undefined => currentRunParentContext;
+    // `runFailed` marks the run root span status at end time. It stays `true`
+    // until the run reaches a clean completed turn, so every failure and every
+    // early exit closes the span with error status.
+    let runFailed = true;
     try {
-      prepared = await buildRuntime({ ctx, engine, deps, spanParent });
-    } catch (err) {
-      rootSpan.end(true);
-      throw err;
-    }
-    // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
-    // server on the run result. A referenced project that failed to stage into the sandbox is a
-    // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
-    // list is empty on a local target, on a transport that does not stage referenced projects, or
-    // when every staged referenced project succeeded, so the spread adds the field only when there
-    // is a failure to report.
-    const referencedProjectStagingFailures = (
-      prepared.stagedRuntime?.additionalSourceFailures ?? []
-    ).map((failure) => ({ projectId: failure.projectId }));
-    const referencedProjectStagingFailuresField =
-      referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
-    // State the effective wall-clock timeout and its source up front so a
-    // later timeout is diagnosable from the run log alone. Goes to stderr:
-    // the acpx stdout log stream carries JSON acpx.* event payloads and must
-    // stay machine-parseable line by line.
-    await ctx.onLog(
-      "stderr",
-      `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
-    );
-    await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
-
-    const previousParams = parseObject(ctx.runtime.sessionParams);
-    const canResume = isCompatibleSession(previousParams, prepared);
-    const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
-    const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
-    const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
-    const processIdentitySink = cached?.processIdentitySink ?? {
-      current: ctx.onSpawn,
-      latest: null,
-    };
-    // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
-    // target mutable so a later agent respawn records identity on the current
-    // heartbeat instead of the run that originally created the runtime.
-    processIdentitySink.current = ctx.onSpawn;
-    flushChildStderr(childStderrState);
-    childStderrState.logPath = prepared.childStderrLogPath;
-    const runtimeOptions: PaperclipAcpRuntimeOptions = {
-      cwd: prepared.cwd,
-      // Host-only spawn cwd for the relay proxy on the remote process-session
-      // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
-      // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
-      // fingerprint / compat key are unaffected — this redirects ONLY the host
-      // `spawn()` `chdir`, not the in-sandbox data path.
-      spawnCwd: prepared.hostSpawnCwd,
-      sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
-      agentRegistry: prepared.agentRegistry,
-      permissionMode: prepared.permissionMode,
-      nonInteractivePermissions: prepared.nonInteractivePermissions,
-      mcpServers: prepared.mcpServers,
-      timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
-      // Scope ACPX runtime verbose logs to the claude agent only. Codex
-      // and custom agents already emit their own per-tool output and don't
-      // benefit from doubling the log volume.
-      verbose: prepared.acpxAgent === "claude",
-      onAgentStderr: prepared.childStderrLogPath
-        ? (chunk) => routeChildStderr(childStderrState, chunk)
-        : undefined,
-      onAgentSpawn: async (meta) => {
-        processIdentitySink.latest = meta;
-        await processIdentitySink.current?.({
-          pid: meta.pid,
-          processGroupId: null,
-          startedAt: meta.startedAt,
-        });
-      },
-    };
-    // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
-    // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
-    // establishment envelope (`ensureSession`). The patched spawn lifecycle
-    // hook records process identity, but the finer spawn/`initialize`/
-    // `session/new` timing split still lives inside external `acpx`.
-    // `createRuntime` runs once and only on a cold start; a warm-handle hit
-    // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
-    // split reports nothing for it.
-    let createRuntimeMs: number | undefined;
-    let runtime: AcpRuntime;
-    // A warm handle reuses the running ACP runtime; a miss constructs one. The
-    // root span records this as `cold_start`.
-    coldStart = !cached?.runtime;
-    if (cached?.runtime) {
-      runtime = cached.runtime;
-    } else {
-      const createRuntimeStart = now();
-      runtime = createRuntime(runtimeOptions);
-      createRuntimeMs = now() - createRuntimeStart;
-    }
-    if (cached) clearWarmHandleTimer(cached);
-    if (!canResume && asString(previousParams.runtimeSessionName, "")) {
+      // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
+      // consults the staged cache to decide whether a compatible resume may reuse
+      // an already-staged runtime — an expired entry must not be reused.
+      await cleanupIdleStagedRuntimes({
+        handles: stagedRuntimes,
+        locks: stagingLocks,
+        now,
+        idleMs: warmIdleMs,
+      });
+      // The sum of the step wall times. The root span records it as `root.work_ms`
+      // and the difference from its own wall time as `root.diff_ms` (the overlap
+      // the parallel steps saved). Every step reports its wall time through
+      // `onWallMs`; a skipped step adds zero.
+      let stepWallSumMs = 0;
+      // Whether this bring-up is a cold start (no warm handle). Set once the warm-
+      // handle lookup runs below; it stays undefined on an early build failure, so
+      // the root span omits the attribute (fail open).
+      let coldStart: boolean | undefined;
+      const rootSpan = openStartupRootSpan(tracing, now, runRootSpan.parentContext, () => ({
+        workMs: stepWallSumMs,
+        context: {
+          coldStart,
+          // The provider key and the lease id are the only low-cardinality
+          // context values this provider-agnostic layer holds. The region, the
+          // image id, and the sandbox id are not threaded here, so the root span
+          // omits them (fail open). The lease id rides only as a hash.
+          provider: sandboxTarget?.providerKey ?? undefined,
+          leaseId: sandboxTarget?.leaseId ?? undefined,
+        },
+      }));
+      const spanParent: Pick<
+        StartupStepMeasureOptions,
+        "tracer" | "parentContext" | "contextWithSpan" | "onWallMs"
+      > = {
+        tracer: tracing.tracer,
+        parentContext: rootSpan.parentContext,
+        // Each step uses this to publish its own child context, so an inner exec
+        // span parents to the step span, not to the root.
+        contextWithSpan: (span) => tracing.contextWithSpan(span),
+        // Accumulate each step wall time into the root work sum.
+        onWallMs: (wallMs) => {
+          stepWallSumMs += wallMs;
+        },
+      };
+      let prepared: AcpxPreparedRuntime;
+      try {
+        // Publish the `sandbox.startup` context to the runtime-parent store for
+        // the whole bring-up. A startup-body exec that runs outside a measured
+        // step reads this token and parents its span to `sandbox.startup`, not to
+        // a detached root. A measured step nests its own `activeStepContextStorage`
+        // run inside this wrap and overrides the store, so an in-step exec still
+        // parents to its step span. On a local or SSH target
+        // `spanParent.parentContext` is a no-op token, so the wrap is inert.
+        prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
+          buildRuntime({ ctx, engine, deps, spanParent, getRuntimeParentContext }),
+        );
+      } catch (err) {
+        rootSpan.end(true);
+        throw err;
+      }
+      // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
+      // server on the run result. A referenced project that failed to stage into the sandbox is a
+      // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
+      // list is empty on a local target, on a transport that does not stage referenced projects, or
+      // when every staged referenced project succeeded, so the spread adds the field only when there
+      // is a failure to report.
+      const referencedProjectStagingFailures = (
+        prepared.stagedRuntime?.additionalSourceFailures ?? []
+      ).map((failure) => ({ projectId: failure.projectId }));
+      const referencedProjectStagingFailuresField =
+        referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
+      // State the effective wall-clock timeout and its source up front so a
+      // later timeout is diagnosable from the run log alone. Goes to stderr:
+      // the acpx stdout log stream carries JSON acpx.* event payloads and must
+      // stay machine-parseable line by line.
       await ctx.onLog(
-        "stdout",
-        `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+        "stderr",
+        `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
       );
-    }
+      await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
-    let handle = cached?.handle ?? null;
-    let resumedSession = Boolean(handle ?? resumeSessionId);
-    let clearSession = false;
-
-    try {
-      if (!handle) {
-        try {
-          // Step 7 — acp.handshake: ACP session establishment (session/new or
-          // resume). A throwing handshake still reports its duration before the
-          // resume-retry path below runs. The createRuntime/ensureSession
-          // sub-split rides the step span as fixed, closed keys (Open Q2).
-          let ensureSessionMs: number | undefined;
-          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
-            const ensureSessionStart = now();
-            const established = await runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-              resumeSessionId,
-              sessionOptions: { env: prepared.env },
-            });
-            ensureSessionMs = now() - ensureSessionStart;
-            return established;
-          }, {
-            ...prepared.stepMetrics,
-            // The two sub-times ride the span as fixed, closed keys.
-            spanWallTimes: () => ({
-              createRuntime: createRuntimeMs,
-              ensureSession: ensureSessionMs,
-            }),
-          });
-        } catch (err) {
-          if (!resumeSessionId || !isResumeFailure(err)) throw err;
-          clearSession = true;
-          resumedSession = false;
-          await ctx.onLog(
-            "stdout",
-            `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
-          );
-          // Fresh-session retry: the runtime was already constructed on the
-          // first attempt (never re-created), so this event reports only its
-          // own `ensureSessionMs` — no `createRuntimeMs`.
-          let retryEnsureSessionMs: number | undefined;
-          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
-            const ensureSessionStart = now();
-            const established = await runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-              sessionOptions: { env: prepared.env },
-            });
-            retryEnsureSessionMs = now() - ensureSessionStart;
-            return established;
-          }, {
-            ...prepared.stepMetrics,
-            // The retry reuses the runtime from the first attempt, so it reports
-            // only its own ensure-session sub-time on the span.
-            spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
-          });
-        }
-      } else {
-        // Warm-handle hit: a compatible cached handle reuses the running ACP
-        // agent, so the `acp.handshake` step does no work. Emit a step span and
-        // event with `outcome = skipped` and a zero wall time, so the trace and
-        // the run log show the skip as a distinct outcome, never a misleading
-        // zero-work `ok` step.
-        await emitSkippedStartupStep(ctx, "acp.handshake", {
-          tracer: prepared.stepMetrics.tracer,
-          parentContext: prepared.stepMetrics.parentContext,
-        });
-      }
-      // A compatible warm handle reuses the already-running ACP agent and does
-      // not emit another spawn event. Persist its known identity on this run
-      // before the next prompt starts so every running heartbeat is adoptable.
-      if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
-        await ctx.onSpawn({
-          pid: processIdentitySink.latest.pid,
-          processGroupId: null,
-          startedAt: processIdentitySink.latest.startedAt,
-        });
-      }
-    } catch (err) {
-      // Bring-up failed at the handshake — close the root span with error status.
-      rootSpan.end(true);
-      const { classified, message } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "ensure_session",
-      });
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      await cleanupRemoteBridges(prepared);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: message,
-        ...classified,
-        ...billingFields,
-        ...referencedProjectStagingFailuresField,
-        model: prepared.requestedModel || null,
-        clearSession,
-        resultJson: { phase: "ensure_session" },
-        summary: message,
+      const previousParams = parseObject(ctx.runtime.sessionParams);
+      const canResume = isCompatibleSession(previousParams, prepared);
+      const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
+      const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+      const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+      const processIdentitySink = cached?.processIdentitySink ?? {
+        current: ctx.onSpawn,
+        latest: null,
       };
-    }
-
-    if (!handle) {
-      // Bring-up produced no session handle — close the root span with error status.
-      rootSpan.end(true);
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      await cleanupRemoteBridges(prepared);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: "ACPX did not return a runtime session handle.",
-        errorCode: "acpx_runtime_error",
-        ...billingFields,
-        ...referencedProjectStagingFailuresField,
-        model: prepared.requestedModel || null,
-        resultJson: { phase: "ensure_session" },
-        summary: "ACPX did not return a runtime session handle.",
-      };
-    }
-    // Bring-up is complete: the session handle is established. Close the root
-    // span here, so it covers `buildRuntime` through `acp.handshake` and no
-    // further. The agent turn runs after and is out of the startup root's scope.
-    rootSpan.end(false);
-    const sessionHandle = handle;
-    try {
-      await applySessionConfigOptions({
-        runtime,
-        handle: sessionHandle,
-        prepared,
-        onLog: ctx.onLog,
-      });
-    } catch (err) {
-      const { classified, message } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "configure_session",
-      });
-      await runtime.close({
-        handle: sessionHandle,
-        reason: "paperclip config cleanup",
-        discardPersistentState: false,
-      }).catch(() => {});
-      const existing = warmHandles.get(prepared.sessionKey);
-      if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-        clearWarmHandleTimer(existing);
-        warmHandles.delete(prepared.sessionKey);
-      }
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      await cleanupRemoteBridges(prepared);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: message,
-        ...classified,
-        ...billingFields,
-        ...referencedProjectStagingFailuresField,
-        model: prepared.requestedModel || null,
-        clearSession,
-        resultJson: {
-          phase: "configure_session",
-          agent: prepared.acpxAgent,
-          requestedModel: prepared.requestedModel || null,
-          requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-          fastMode: prepared.fastMode,
-        },
-        summary: message,
-      };
-    }
-    const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
-    const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
-    await emitAcpxLog(ctx, {
-      type: "acpx.session",
-      agent: prepared.acpxAgent,
-      sessionId: sessionHandle.backendSessionId,
-      acpSessionId: sessionHandle.backendSessionId,
-      agentSessionId: sessionHandle.agentSessionId,
-      runtimeSessionName: sessionHandle.runtimeSessionName,
-      mode: prepared.mode,
-      permissionMode: prepared.permissionMode,
-      model: prepared.requestedModel || null,
-      thinkingEffort: prepared.requestedThinkingEffort || null,
-      fastMode: prepared.fastMode,
-    });
-    if (ctx.onMeta) {
-      await ctx.onMeta({
-        adapterType: engine.adapterType,
-        command: prepared.agentCommand ?? prepared.acpxAgent,
+      // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
+      // target mutable so a later agent respawn records identity on the current
+      // heartbeat instead of the run that originally created the runtime.
+      processIdentitySink.current = ctx.onSpawn;
+      flushChildStderr(childStderrState);
+      childStderrState.logPath = prepared.childStderrLogPath;
+      const runtimeOptions: PaperclipAcpRuntimeOptions = {
         cwd: prepared.cwd,
-        commandNotes: [
-          `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
-          `Effective ACPX permission mode: ${prepared.permissionMode}.`,
-          ...(prepared.requestedModel
-            ? [
-                prepared.acpxAgent === "claude"
-                  ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
-                  : prepared.acpxAgent === "codex"
-                    ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
-                  : `Requested ACPX model: ${prepared.requestedModel}.`,
-              ]
-            : []),
-          ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
-          ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
-          ...(Array.isArray(prepared.skillsIdentity.commandNotes)
-            ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
-            : []),
-          ...commandNotes,
-        ],
-        env: prepared.loggedEnv,
-        prompt: runPrompt,
-        promptMetrics,
-        context: ctx.context,
-      });
-    }
-
-    let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
-    let controller: AbortController | null = null;
-    let timeout: NodeJS.Timeout | null = null;
-    let timedOut = false;
-    const textParts: string[] = [];
-    let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
-    let eventCostUsd: number | null = null;
-    try {
-      // Snapshot pre-turn usage so cumulative agent-reported cost can be
-      // attributed to this run alone.
-      const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
-      const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
-      controller = new AbortController();
-      if (timeoutMs) {
-        timeout = setTimeout(() => {
-          timedOut = true;
-          controller?.abort();
-          void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
-        }, timeoutMs);
-      }
-      const turn = runtime.startTurn({
-        handle: sessionHandle,
-        text: runPrompt,
-        mode: "prompt",
-        requestId: ctx.runId,
-        timeoutMs,
-        signal: controller?.signal,
-      });
-      cancelActiveTurn = async (reason: string) => {
-        await turn.cancel({ reason });
-      };
-      const toolTitles = new Map<string, string>();
-      for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
-        if (event.type === "status" && event.tag === "usage_update") {
-          eventBreakdown = event.breakdown ?? eventBreakdown;
-          eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-        }
-        await emitRuntimeEvent(ctx, event, toolTitles);
-      }
-      const terminal = await turn.result;
-      if (timeout) clearTimeout(timeout);
-      // Read usage before the close/warm-handle paths below can discard state.
-      const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
-      const turnUsage = summarizeAcpxTurnUsage({
-        preStatus: preTurnStatus,
-        postStatus: postTurnStatus,
-        eventBreakdown,
-        eventCostUsd,
-      });
-      if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-          await closeWarmHandle({
-            handles: warmHandles,
-            key: prepared.sessionKey,
-            entry: existing,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
+        // Host-only spawn cwd for the relay proxy on the remote process-session
+        // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
+        // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
+        // fingerprint / compat key are unaffected — this redirects ONLY the host
+        // `spawn()` `chdir`, not the in-sandbox data path.
+        spawnCwd: prepared.hostSpawnCwd,
+        sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
+        agentRegistry: prepared.agentRegistry,
+        permissionMode: prepared.permissionMode,
+        nonInteractivePermissions: prepared.nonInteractivePermissions,
+        mcpServers: prepared.mcpServers,
+        timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+        // Scope ACPX runtime verbose logs to the claude agent only. Codex
+        // and custom agents already emit their own per-tool output and don't
+        // benefit from doubling the log volume.
+        verbose: prepared.acpxAgent === "claude",
+        onAgentStderr: prepared.childStderrLogPath
+          ? (chunk) => routeChildStderr(childStderrState, chunk)
+          : undefined,
+        onAgentSpawn: async (meta) => {
+          processIdentitySink.latest = meta;
+          await processIdentitySink.current?.({
+            pid: meta.pid,
+            processGroupId: null,
+            startedAt: meta.startedAt,
           });
-        } else {
-          await runtime.close({
-            handle: sessionHandle,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
-          }).catch(() => {});
-        }
-      } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
-          await runtime.close({
-            handle: sessionHandle,
-            reason: "paperclip duplicate warm handle cleanup",
-            discardPersistentState: false,
-          }).catch(() => {});
-        } else {
-          const entry: RuntimeCacheEntry = {
-            runtime,
-            handle: sessionHandle,
-            childStderrState,
-            processIdentitySink,
-            fingerprint: prepared.fingerprint,
-            lastUsedAt: now(),
-          };
-          warmHandles.set(prepared.sessionKey, entry);
-          scheduleIdleHandleCleanup({
-            handles: warmHandles,
-            key: prepared.sessionKey,
-            entry,
-            idleMs: warmIdleMs,
-            now,
-          });
-        }
-      } else {
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-          await closeWarmHandle({
-            handles: warmHandles,
-            key: prepared.sessionKey,
-            entry: existing,
-            reason: "paperclip completed turn cleanup",
-          });
-        } else {
-          await runtime.close({
-            handle: sessionHandle,
-            reason: "paperclip completed turn cleanup",
-            discardPersistentState: false,
-          }).catch(() => {});
-        }
-      }
-
-      // PR 3: keep the staged runtime warm for the next compatible resume only
-      // after a clean turn; a failed/cancelled/timed-out turn discards it so the
-      // next run stages fresh instead of reusing a torn-down session's staged
-      // credentials. Copy-back still fires for every outcome via
-      // `cleanupRemoteBridges` below (unchanged from PR 2).
-      if (terminal.status === "completed" && !timedOut) {
-        saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
-      } else {
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      }
-
-      const errorMessage = timedOut
-        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-        : resultErrorMessage(terminal);
-      const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
-      await emitAcpxLog(ctx, {
-        type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
-        summary: terminal.status,
-        stopReason: terminalStopReason,
-        message: errorMessage,
-      });
-      await cleanupRemoteBridges(prepared);
-      flushChildStderr(childStderrState);
-      return {
-        exitCode: terminal.status === "completed" ? 0 : 1,
-        signal: timedOut ? "SIGTERM" : null,
-        timedOut,
-        errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
-        sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
-        sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
-        sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
-        ...billingFields,
-        ...referencedProjectStagingFailuresField,
-        model: prepared.requestedModel || null,
-        ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
-        costUsd: turnUsage.costUsd,
-        resultJson: {
-          status: terminal.status,
-          stopReason: terminalStopReason,
-          permissionMode: prepared.permissionMode,
-          mode: prepared.mode,
-          requestedModel: prepared.requestedModel || null,
-          requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-          fastMode: prepared.fastMode,
-          ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
-          ...(turnUsage.cumulativeCostUsd != null
-            ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
-            : {}),
         },
-        summary: textParts.join("").trim() || terminalStopReason || terminal.status,
-        clearSession,
+        getRuntimeParentContext,
       };
-    } catch (err) {
-      if (timeout) clearTimeout(timeout);
-      const messageOverride = timedOut
-        ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-        : undefined;
-      const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
-      const preEmitMessage =
-        messageOverride ?? (err instanceof Error ? err.message : String(err));
-      if (cancel) await cancel(preEmitMessage).catch(() => {});
-      await runtime.close({
-        handle: sessionHandle,
-        reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
-        discardPersistentState: timedOut,
-      }).catch(() => {});
-      const existing = warmHandles.get(prepared.sessionKey);
-      if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-        clearWarmHandleTimer(existing);
-        warmHandles.delete(prepared.sessionKey);
+      // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
+      // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
+      // establishment envelope (`ensureSession`). The patched spawn lifecycle
+      // hook records process identity, but the finer spawn/`initialize`/
+      // `session/new` timing split still lives inside external `acpx`.
+      // `createRuntime` runs once and only on a cold start; a warm-handle hit
+      // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
+      // split reports nothing for it.
+      let createRuntimeMs: number | undefined;
+      let runtime: AcpRuntime;
+      // A warm handle reuses the running ACP runtime; a miss constructs one. The
+      // root span records this as `cold_start`.
+      coldStart = !cached?.runtime;
+      if (cached?.runtime) {
+        runtime = cached.runtime;
+      } else {
+        const createRuntimeStart = now();
+        runtime = createRuntime(runtimeOptions);
+        createRuntimeMs = now() - createRuntimeStart;
       }
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      const { classified, message } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "turn",
-        messageOverride,
-      });
-      await cleanupRemoteBridges(prepared);
-      flushChildStderr(childStderrState);
-      return {
-        exitCode: 1,
-        signal: timedOut ? "SIGTERM" : null,
-        timedOut,
-        errorMessage: message,
-        errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
-        errorMeta: classified.errorMeta,
-        ...billingFields,
-        ...referencedProjectStagingFailuresField,
+      if (cached) clearWarmHandleTimer(cached);
+      if (!canResume && asString(previousParams.runtimeSessionName, "")) {
+        await ctx.onLog(
+          "stdout",
+          `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+        );
+      }
+
+      let handle = cached?.handle ?? null;
+      let resumedSession = Boolean(handle ?? resumeSessionId);
+      let clearSession = false;
+
+      try {
+        if (!handle) {
+          try {
+            // Step 7 — acp.handshake: ACP session establishment (session/new or
+            // resume). A throwing handshake still reports its duration before the
+            // resume-retry path below runs. The createRuntime/ensureSession
+            // sub-split rides the step span as fixed, closed keys (Open Q2).
+            let ensureSessionMs: number | undefined;
+            handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+              const ensureSessionStart = now();
+              const established = await runtime.ensureSession({
+                sessionKey: prepared.sessionKey,
+                agent: prepared.acpxAgent,
+                mode: prepared.mode,
+                cwd: prepared.cwd,
+                resumeSessionId,
+                sessionOptions: { env: prepared.env },
+              });
+              ensureSessionMs = now() - ensureSessionStart;
+              return established;
+            }, {
+              ...prepared.stepMetrics,
+              // The two sub-times ride the span as fixed, closed keys.
+              spanWallTimes: () => ({
+                createRuntime: createRuntimeMs,
+                ensureSession: ensureSessionMs,
+              }),
+            });
+          } catch (err) {
+            if (!resumeSessionId || !isResumeFailure(err)) throw err;
+            clearSession = true;
+            resumedSession = false;
+            await ctx.onLog(
+              "stdout",
+              `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+            );
+            // Fresh-session retry: the runtime was already constructed on the
+            // first attempt (never re-created), so this event reports only its
+            // own `ensureSessionMs` — no `createRuntimeMs`.
+            let retryEnsureSessionMs: number | undefined;
+            handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+              const ensureSessionStart = now();
+              const established = await runtime.ensureSession({
+                sessionKey: prepared.sessionKey,
+                agent: prepared.acpxAgent,
+                mode: prepared.mode,
+                cwd: prepared.cwd,
+                sessionOptions: { env: prepared.env },
+              });
+              retryEnsureSessionMs = now() - ensureSessionStart;
+              return established;
+            }, {
+              ...prepared.stepMetrics,
+              // The retry reuses the runtime from the first attempt, so it reports
+              // only its own ensure-session sub-time on the span.
+              spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
+            });
+          }
+        } else {
+          // Warm-handle hit: a compatible cached handle reuses the running ACP
+          // agent, so the `acp.handshake` step does no work. Emit a step span and
+          // event with `outcome = skipped` and a zero wall time, so the trace and
+          // the run log show the skip as a distinct outcome, never a misleading
+          // zero-work `ok` step.
+          await emitSkippedStartupStep(ctx, "acp.handshake", {
+            tracer: prepared.stepMetrics.tracer,
+            parentContext: prepared.stepMetrics.parentContext,
+          });
+        }
+        // A compatible warm handle reuses the already-running ACP agent and does
+        // not emit another spawn event. Persist its known identity on this run
+        // before the next prompt starts so every running heartbeat is adoptable.
+        if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
+          await ctx.onSpawn({
+            pid: processIdentitySink.latest.pid,
+            processGroupId: null,
+            startedAt: processIdentitySink.latest.startedAt,
+          });
+        }
+      } catch (err) {
+        // Bring-up failed at the handshake — close the root span with error status.
+        rootSpan.end(true);
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "ensure_session",
+        });
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        await cleanupRemoteBridges(prepared);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+          ...classified,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession,
+          resultJson: { phase: "ensure_session" },
+          summary: message,
+        };
+      }
+
+      if (!handle) {
+        // Bring-up produced no session handle — close the root span with error status.
+        rootSpan.end(true);
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        await cleanupRemoteBridges(prepared);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "ACPX did not return a runtime session handle.",
+          errorCode: "acpx_runtime_error",
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          resultJson: { phase: "ensure_session" },
+          summary: "ACPX did not return a runtime session handle.",
+        };
+      }
+      // Bring-up is complete: the session handle is established. Close the root
+      // span here, so it covers `buildRuntime` through `acp.handshake` and no
+      // further. The agent turn runs after and is out of the startup root's scope.
+      rootSpan.end(false);
+      const sessionHandle = handle;
+      try {
+        await applySessionConfigOptions({
+          runtime,
+          handle: sessionHandle,
+          prepared,
+          onLog: ctx.onLog,
+        });
+      } catch (err) {
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "configure_session",
+        });
+        await runtime.close({
+          handle: sessionHandle,
+          reason: "paperclip config cleanup",
+          discardPersistentState: false,
+        }).catch(() => {});
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+          clearWarmHandleTimer(existing);
+          warmHandles.delete(prepared.sessionKey);
+        }
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        await cleanupRemoteBridges(prepared);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+          ...classified,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession,
+          resultJson: {
+            phase: "configure_session",
+            agent: prepared.acpxAgent,
+            requestedModel: prepared.requestedModel || null,
+            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+            fastMode: prepared.fastMode,
+          },
+          summary: message,
+        };
+      }
+      const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
+      const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
+      await emitAcpxLog(ctx, {
+        type: "acpx.session",
+        agent: prepared.acpxAgent,
+        sessionId: sessionHandle.backendSessionId,
+        acpSessionId: sessionHandle.backendSessionId,
+        agentSessionId: sessionHandle.agentSessionId,
+        runtimeSessionName: sessionHandle.runtimeSessionName,
+        mode: prepared.mode,
+        permissionMode: prepared.permissionMode,
         model: prepared.requestedModel || null,
-        clearSession: clearSession || timedOut,
-        resultJson: { phase: "turn" },
-        summary: message,
-      };
+        thinkingEffort: prepared.requestedThinkingEffort || null,
+        fastMode: prepared.fastMode,
+      });
+      if (ctx.onMeta) {
+        await ctx.onMeta({
+          adapterType: engine.adapterType,
+          command: prepared.agentCommand ?? prepared.acpxAgent,
+          cwd: prepared.cwd,
+          commandNotes: [
+            `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
+            `Effective ACPX permission mode: ${prepared.permissionMode}.`,
+            ...(prepared.requestedModel
+              ? [
+                  prepared.acpxAgent === "claude"
+                    ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                    : prepared.acpxAgent === "codex"
+                      ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
+                    : `Requested ACPX model: ${prepared.requestedModel}.`,
+                ]
+              : []),
+            ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
+            ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
+            ...(Array.isArray(prepared.skillsIdentity.commandNotes)
+              ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
+              : []),
+            ...commandNotes,
+          ],
+          env: prepared.loggedEnv,
+          prompt: runPrompt,
+          promptMetrics,
+          context: ctx.context,
+        });
+      }
+
+      let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
+      let controller: AbortController | null = null;
+      let timeout: NodeJS.Timeout | null = null;
+      let timedOut = false;
+      const textParts: string[] = [];
+      let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
+      let eventCostUsd: number | null = null;
+      // Open the agent turn span as a child of the run root span. It wraps the
+      // whole turn: the executor holds `turnSpan.parentContext` for later exec
+      // parenting, and the `finally` below ends the span once on every path. The
+      // span is declared before the `try` so the `finally` can reach it.
+      const turnSpan = openTurnSpan(tracing, now, runRootSpan.parentContext);
+      // Switch the current-run holder to the `agent.turn` token for the turn, so
+      // a detached exec during the turn parents to `agent.turn`. The turn
+      // `finally` resets the holder to the `task.run` token.
+      currentRunParentContext = turnSpan.parentContext;
+      try {
+        // Snapshot pre-turn usage so cumulative agent-reported cost can be
+        // attributed to this run alone.
+        const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
+        controller = new AbortController();
+        if (timeoutMs) {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            controller?.abort();
+            void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
+          }, timeoutMs);
+        }
+        const turn = runtime.startTurn({
+          handle: sessionHandle,
+          text: runPrompt,
+          mode: "prompt",
+          requestId: ctx.runId,
+          timeoutMs,
+          signal: controller?.signal,
+        });
+        cancelActiveTurn = async (reason: string) => {
+          await turn.cancel({ reason });
+        };
+        const toolTitles = new Map<string, string>();
+        for await (const event of turn.events) {
+          if (event.type === "text_delta") textParts.push(event.text);
+          if (event.type === "status" && event.tag === "usage_update") {
+            eventBreakdown = event.breakdown ?? eventBreakdown;
+            eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+          }
+          await emitRuntimeEvent(ctx, event, toolTitles);
+        }
+        const terminal = await turn.result;
+        if (timeout) clearTimeout(timeout);
+        // Read usage before the close/warm-handle paths below can discard state.
+        const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        const turnUsage = summarizeAcpxTurnUsage({
+          preStatus: preTurnStatus,
+          postStatus: postTurnStatus,
+          eventBreakdown,
+          eventCostUsd,
+        });
+        if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+            await closeWarmHandle({
+              handles: warmHandles,
+              key: prepared.sessionKey,
+              entry: existing,
+              reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+              discardPersistentState: terminal.status === "cancelled" || timedOut,
+            });
+          } else {
+            await runtime.close({
+              handle: sessionHandle,
+              reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+              discardPersistentState: terminal.status === "cancelled" || timedOut,
+            }).catch(() => {});
+          }
+        } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
+            await runtime.close({
+              handle: sessionHandle,
+              reason: "paperclip duplicate warm handle cleanup",
+              discardPersistentState: false,
+            }).catch(() => {});
+          } else {
+            const entry: RuntimeCacheEntry = {
+              runtime,
+              handle: sessionHandle,
+              childStderrState,
+              processIdentitySink,
+              fingerprint: prepared.fingerprint,
+              lastUsedAt: now(),
+            };
+            warmHandles.set(prepared.sessionKey, entry);
+            scheduleIdleHandleCleanup({
+              handles: warmHandles,
+              key: prepared.sessionKey,
+              entry,
+              idleMs: warmIdleMs,
+              now,
+            });
+          }
+        } else {
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+            await closeWarmHandle({
+              handles: warmHandles,
+              key: prepared.sessionKey,
+              entry: existing,
+              reason: "paperclip completed turn cleanup",
+            });
+          } else {
+            await runtime.close({
+              handle: sessionHandle,
+              reason: "paperclip completed turn cleanup",
+              discardPersistentState: false,
+            }).catch(() => {});
+          }
+        }
+
+        // PR 3: keep the staged runtime warm for the next compatible resume only
+        // after a clean turn; a failed/cancelled/timed-out turn discards it so the
+        // next run stages fresh instead of reusing a torn-down session's staged
+        // credentials. Copy-back still fires for every outcome via
+        // `cleanupRemoteBridges` below (unchanged from PR 2).
+        if (terminal.status === "completed" && !timedOut) {
+          saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
+        } else {
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        }
+
+        const errorMessage = timedOut
+          ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+          : resultErrorMessage(terminal);
+        const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        await emitAcpxLog(ctx, {
+          type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
+          summary: terminal.status,
+          stopReason: terminalStopReason,
+          message: errorMessage,
+        });
+        await cleanupRemoteBridges(prepared);
+        flushChildStderr(childStderrState);
+        // The one clean-completion path clears the run failure flag; every other
+        // path keeps it set, so the run root span closes with error status.
+        runFailed = terminal.status === "completed" && !timedOut ? false : true;
+        return {
+          exitCode: terminal.status === "completed" ? 0 : 1,
+          signal: timedOut ? "SIGTERM" : null,
+          timedOut,
+          errorMessage,
+          errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+          sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
+          sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
+          sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
+          costUsd: turnUsage.costUsd,
+          resultJson: {
+            status: terminal.status,
+            stopReason: terminalStopReason,
+            permissionMode: prepared.permissionMode,
+            mode: prepared.mode,
+            requestedModel: prepared.requestedModel || null,
+            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+            fastMode: prepared.fastMode,
+            ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
+            ...(turnUsage.cumulativeCostUsd != null
+              ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
+              : {}),
+          },
+          summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+          clearSession,
+        };
+      } catch (err) {
+        if (timeout) clearTimeout(timeout);
+        const messageOverride = timedOut
+          ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+          : undefined;
+        const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
+        const preEmitMessage =
+          messageOverride ?? (err instanceof Error ? err.message : String(err));
+        if (cancel) await cancel(preEmitMessage).catch(() => {});
+        await runtime.close({
+          handle: sessionHandle,
+          reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
+          discardPersistentState: timedOut,
+        }).catch(() => {});
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+          clearWarmHandleTimer(existing);
+          warmHandles.delete(prepared.sessionKey);
+        }
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "turn",
+          messageOverride,
+        });
+        await cleanupRemoteBridges(prepared);
+        flushChildStderr(childStderrState);
+        return {
+          exitCode: 1,
+          signal: timedOut ? "SIGTERM" : null,
+          timedOut,
+          errorMessage: message,
+          errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
+          errorMeta: classified.errorMeta,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession: clearSession || timedOut,
+          resultJson: { phase: "turn" },
+          summary: message,
+        };
+      } finally {
+        // End the agent turn span exactly once, on every return and on a throw.
+        // `runFailed` is `false` only on a completed, non-timed-out turn, so the
+        // span status is correct for success, error, and timeout.
+        turnSpan.end(runFailed);
+        // Reset the current-run holder to the `task.run` token after the turn.
+        // The run stays live here, so the holder is never `undefined`. A detached
+        // exec after the turn parents to `task.run`.
+        currentRunParentContext = runRootSpan.parentContext;
+      }
+    } finally {
+      // End the run root span exactly once, on every return and on a throw.
+      runRootSpan.end(runFailed);
     }
   };
 }

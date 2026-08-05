@@ -1,8 +1,12 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import { actorMiddleware } from "../middleware/auth.js";
+import { activityLog, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import {
+  actorMiddleware,
+  humanizeCloudStackSlug,
+  isKnownBadCloudCompanyName,
+} from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 
@@ -96,7 +100,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      select: vi.fn(),
+      select: vi.fn(() => createSelectChain([])),
     } as any;
     const app = express();
     app.use(
@@ -117,6 +121,7 @@ describe("actorMiddleware authenticated session profile", () => {
       .set("x-paperclip-cloud-user-name", "Stack Owner")
       .set("x-paperclip-cloud-stack-id", "stack-alpha")
       .set("x-paperclip-cloud-paperclip-company-id", "paperclip-stack-alpha")
+      .set("x-paperclip-cloud-paperclip-company-name", "Purple Rain")
       .set("x-paperclip-cloud-stack-role", "owner");
 
     expect(res.status).toBe(200);
@@ -130,13 +135,16 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    // authUsers, companies, companyMemberships, and the role-default
-    // principalPermissionGrants seeded in place of instance-admin elevation.
-    expect(inserts).toHaveLength(4);
+    // authUsers, companies, companyMemberships, the role-default
+    // principalPermissionGrants, and the lazily initialized instance setting.
+    expect(inserts).toHaveLength(5);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
       emailVerified: true,
+    });
+    expect(inserts[1]?.values).toMatchObject({
+      name: "Purple Rain",
     });
   });
 
@@ -217,6 +225,103 @@ describe("actorMiddleware authenticated session profile", () => {
     expect(denied.status).toBe(403);
   });
 
+  it("repairs a legacy machine company name from the trusted human-name header", async () => {
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
+    const updates: Array<Record<string, unknown>> = [];
+    const activities: Array<Record<string, unknown>> = [];
+    const insertChain = {
+      values() {
+        return insertChain;
+      },
+      onConflictDoUpdate() {
+        return insertChain;
+      },
+      onConflictDoNothing() {
+        return insertChain;
+      },
+      returning() {
+        return Promise.resolve([
+          { companyId: "company-1", membershipRole: "owner", status: "active" },
+        ]);
+      },
+      then(resolve: (value: unknown) => unknown) {
+        return Promise.resolve(undefined).then(resolve);
+      },
+    };
+    const db = {
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: () =>
+            Promise.resolve(
+              table === companies
+                ? [{ name: "paperclip-stack-purple-rain" }]
+                : [],
+            ),
+        }),
+      })),
+      insert: vi.fn((table: unknown) => {
+        if (table !== activityLog) return insertChain;
+        return {
+          values(values: Record<string, unknown>) {
+            activities.push(values);
+            return Promise.resolve(undefined);
+          },
+        };
+      }),
+      update: vi.fn(() => ({
+        set(values: Record<string, unknown>) {
+          updates.push(values);
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([{ id: "company-1" }]),
+            }),
+          };
+        },
+      })),
+      delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
+    } as any;
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "authenticated",
+        resolveSession: async () => null,
+      }),
+    );
+    app.get("/actor", (req, res) => res.json(req.actor));
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-cloud-tenant-token", "tenant-token")
+      .set("x-paperclip-cloud-user-id", "global-user-1")
+      .set("x-paperclip-cloud-user-email", "owner@example.com")
+      .set("x-paperclip-cloud-stack-id", "stack-purple-rain")
+      .set(
+        "x-paperclip-cloud-paperclip-company-id",
+        "paperclip-stack-purple-rain",
+      )
+      .set("x-paperclip-cloud-paperclip-company-name", "Purple Rain")
+      .set("x-paperclip-cloud-stack-role", "owner");
+
+    expect(res.status).toBe(200);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ name: "Purple Rain" });
+    expect(activities).toEqual([
+      expect.objectContaining({
+        companyId: expect.any(String),
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        details: expect.objectContaining({
+          reason: "legacy_machine_name_repair",
+          previousName: "paperclip-stack-purple-rain",
+          name: "Purple Rain",
+        }),
+      }),
+    ]);
+  });
+
   it("purges a stale instance_admin row so the session path stops elevating the cloud-tenant user", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     // Simulates a deployment that previously ran the pre-hardening cloud_tenant
@@ -293,5 +398,35 @@ describe("actorMiddleware authenticated session profile", () => {
       userId: "global-user-1",
       isInstanceAdmin: false,
     });
+  });
+});
+
+describe("Cloud tenant company naming", () => {
+  const ids = {
+    companyId: "11111111-1111-4111-8111-111111111111",
+    paperclipCompanyId: "paperclip-stack-purple-rain",
+  };
+
+  it.each([
+    "paperclip-stack-purple-rain",
+    "stack-purple-rain Paperclip",
+    ids.companyId,
+  ])("repairs the known-bad machine name %s", (name) => {
+    expect(isKnownBadCloudCompanyName(name, ids)).toBe(true);
+  });
+
+  it.each([
+    "Purple Rain",
+    "Paperclip Stack Purple Rain",
+    "The Purple Rain Paperclip",
+  ])("preserves the genuine company name %s", (name) => {
+    expect(isKnownBadCloudCompanyName(name, ids)).toBe(false);
+  });
+
+  it("humanizes the stack slug for old harnesses without a name header", () => {
+    expect(humanizeCloudStackSlug("stack-purple-rain")).toBe("Purple Rain");
+    expect(humanizeCloudStackSlug("paperclip-stack-purple-rain")).toBe(
+      "Purple Rain",
+    );
   });
 });

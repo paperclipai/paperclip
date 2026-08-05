@@ -6,8 +6,10 @@ import {
   emitSkippedStartupStep,
   getActiveStepContext,
   measureStartupStep,
+  NOOP_STARTUP_SPAN,
   normalizeProviderFamily,
   runWithoutActiveStep,
+  runWithRuntimeParent,
   SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
   SANDBOX_STARTUP_SPAN_ATTRS,
   setSandboxRootSpanAttributes,
@@ -575,6 +577,41 @@ describe("getActiveStepContext", () => {
     const value = runWithoutActiveStep(() => "value");
     expect(value).toBe("value");
     expect(getActiveStepContext()).toBeNull();
+  });
+});
+
+describe("runWithRuntimeParent", () => {
+  it("sets the parent context so inner code parents to the given token", () => {
+    // The server builds an opaque parent-context token from a run-time span. The
+    // helper publishes it, so inner code reads it through the getter and parents
+    // a child span to that token. Model the token as a plain object; the helper
+    // forwards it opaque.
+    const token = { span: "runtime-parent" };
+    const seen = runWithRuntimeParent(token, () => getActiveStepContext());
+
+    expect(seen).not.toBeNull();
+    // The published parent token is the given token, unchanged.
+    expect(seen!.parentContext).toBe(token);
+    // The helper stores the no-op span, not a real step span.
+    expect(seen!.span).toBe(NOOP_STARTUP_SPAN);
+    // A run-time exec is not on the startup critical path.
+    expect(seen!.criticalPath).toBe(false);
+    // The context clears once the work settles.
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("empties the store when the token is undefined, like runWithoutActiveStep", () => {
+    // A missing token means no run-time parent. The helper then empties the
+    // store, so inner code reads no active step and opens an unparented span.
+    const seen = runWithRuntimeParent(undefined, () => getActiveStepContext());
+
+    expect(seen).toBeNull();
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("returns the work result", () => {
+    const value = runWithRuntimeParent({ span: "runtime-parent" }, () => "value");
+    expect(value).toBe("value");
   });
 });
 

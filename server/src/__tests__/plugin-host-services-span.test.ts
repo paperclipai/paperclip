@@ -125,6 +125,100 @@ describe("plugin provider span host handler", () => {
     );
   });
 
+  it("admits each per-round-trip span name to sandbox.provider.<name>", async () => {
+    const services = servicesFor();
+    for (const name of ["mkdir", "guard", "rename", "extract", "provision"]) {
+      await services.tracer.record(
+        { name },
+        { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+      );
+    }
+    const recorded = mockRecordSpan.mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(recorded).toEqual([
+      "sandbox.provider.mkdir",
+      "sandbox.provider.guard",
+      "sandbox.provider.rename",
+      "sandbox.provider.extract",
+      "sandbox.provider.provision",
+    ]);
+  });
+
+  it("forwards a valid start-time and end-time pair to the recorder", async () => {
+    const services = servicesFor();
+    const startTimeMs = Date.now() - 4500;
+    const endTimeMs = startTimeMs + 4500;
+    await services.tracer.record(
+      { name: "mkdir", startTimeMs, endTimeMs },
+      { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+    );
+    const call = mockRecordSpan.mock.calls[0]![0] as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(call.startTimeMs).toBe(startTimeMs);
+    expect(call.endTimeMs).toBe(endTimeMs);
+  });
+
+  it("accepts a pair whose end is a small skew ahead of the host clock", async () => {
+    const services = servicesFor();
+    // The worker clock leads the host clock by a few seconds. This small skew
+    // is within the allowed bound, so the host keeps the native width.
+    const startTimeMs = Date.now() + 5000;
+    const endTimeMs = startTimeMs + 1000;
+    await services.tracer.record(
+      { name: "mkdir", startTimeMs, endTimeMs },
+      { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+    );
+    const call = mockRecordSpan.mock.calls[0]![0] as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(call.startTimeMs).toBe(startTimeMs);
+    expect(call.endTimeMs).toBe(endTimeMs);
+  });
+
+  it("drops an invalid timestamp pair so the synchronous path runs", async () => {
+    const services = servicesFor();
+    const now = Date.now();
+    const invalidPairs: Array<{ startTimeMs?: unknown; endTimeMs?: unknown; why: string }> = [
+      { startTimeMs: now, endTimeMs: now - 1000, why: "reversed order" },
+      { startTimeMs: Number.NaN, endTimeMs: now, why: "non-finite start" },
+      { startTimeMs: now, endTimeMs: Number.POSITIVE_INFINITY, why: "non-finite end" },
+      { startTimeMs: now, endTimeMs: now + 11 * 60 * 1000, why: "over-ceiling duration" },
+      { startTimeMs: now - 2 * 60 * 60 * 1000, endTimeMs: now - 2 * 60 * 60 * 1000 + 10, why: "over-age start" },
+      { startTimeMs: now, endTimeMs: now + 2 * 60 * 1000, why: "end far in the future" },
+      { startTimeMs: now + 5 * 60 * 1000, endTimeMs: now + 5 * 60 * 1000 + 10, why: "start and end in the future" },
+    ];
+    for (const pair of invalidPairs) {
+      mockRecordSpan.mockReset();
+      await services.tracer.record(
+        { name: "mkdir", startTimeMs: pair.startTimeMs, endTimeMs: pair.endTimeMs } as never,
+        { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+      );
+      // The span still records (the synchronous path), but without a timestamp.
+      const call = mockRecordSpan.mock.calls[0]![0] as {
+        startTimeMs?: number;
+        endTimeMs?: number;
+      };
+      expect(call.startTimeMs, pair.why).toBeUndefined();
+      expect(call.endTimeMs, pair.why).toBeUndefined();
+    }
+  });
+
+  it("records the synchronous path when the timestamp pair is absent", async () => {
+    const services = servicesFor();
+    await services.tracer.record(
+      { name: "pack" },
+      { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+    );
+    const call = mockRecordSpan.mock.calls[0]![0] as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(call.startTimeMs).toBeUndefined();
+    expect(call.endTimeMs).toBeUndefined();
+  });
+
   it("rejects a malformed traceparent — no span is recorded", async () => {
     const services = servicesFor();
     for (const bad of [

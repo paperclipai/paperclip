@@ -28,7 +28,7 @@ import {
   type UpdateEnvironment,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;

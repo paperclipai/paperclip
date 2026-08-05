@@ -507,8 +507,19 @@ const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
 const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
 
-/** The closed set of provider span names a plugin may emit. */
-const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set(["pack", "transfer"]);
+/** The closed set of provider span names a plugin may emit. `pack` and
+ * `transfer` are the host-local build and the byte upload. `mkdir`, `guard`,
+ * `rename`, `extract`, and `provision` are the per-round-trip command spans in
+ * the inbound sync path. */
+const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
+  "pack",
+  "transfer",
+  "mkdir",
+  "guard",
+  "rename",
+  "extract",
+  "provision",
+]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
  * `sandbox.provider.<name>`; any other value maps to `sandbox.provider.other`,
@@ -593,24 +604,76 @@ function clampSpanStatus(
   return { code: status.code };
 }
 
+/** The largest span duration the host accepts as a real wall-clock width. A
+ * larger difference means a skewed or wrong clock, so the host drops the pair. */
+const MAX_PROVIDER_SPAN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+/** The largest age the host accepts for a span start time relative to its own
+ * clock. An older start means a stale or wrong clock, so the host drops the
+ * pair. A small negative skew (a start slightly ahead of the host clock) is
+ * allowed, because the host and the worker clocks can differ. */
+const MAX_PROVIDER_SPAN_START_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+/** The largest amount by which the end time may be ahead of the host clock. A
+ * larger lead means a wrong or skewed clock, so the host drops the pair. This
+ * upper bound rejects a timestamp pair that is far in the future. It still
+ * allows a small clock skew between the host and the worker. */
+const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
+
+/**
+ * Validate the worker-sent start-time and end-time pair at the trust boundary.
+ * Return the pair only when it passes the clock-safety policy:
+ * - both values are finite numbers;
+ * - the start time is less than or equal to the end time;
+ * - the duration is not larger than a bounded ceiling;
+ * - the start time is not older than a bounded age relative to the host clock;
+ * - the end time is not ahead of the host clock by more than a bounded skew.
+ * Return `undefined` when any check fails, so the host falls back to the
+ * synchronous open-and-end path.
+ */
+function validateProviderSpanTimes(
+  startTimeMs: unknown,
+  endTimeMs: unknown,
+): { startTimeMs: number; endTimeMs: number } | undefined {
+  if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
+  if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
+  if (startTimeMs > endTimeMs) return undefined;
+  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
+  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
+  return { startTimeMs, endTimeMs };
+}
+
 /**
  * Record a worker-sent provider span through the real tracer. This is the host
  * trust boundary: it validates the host-minted `traceparent`, re-clamps the span
  * name and every attribute, mints the parentage host-side, and drops a status
- * message. It rejects a span with a missing or malformed `traceparent`. It never
- * throws — observability must not change control flow.
+ * message. It validates the optional start-time and end-time pair with a
+ * clock-safety policy; a valid pair gives the span its true native width, and an
+ * absent or invalid pair falls back to the synchronous open-and-end path. It
+ * rejects a span with a missing or malformed `traceparent`. It never throws —
+ * observability must not change control flow.
  */
 export function recordWorkerProviderSpan(
-  params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown; message?: unknown } },
+  params: {
+    name: string;
+    attributes?: Record<string, unknown>;
+    status?: { code?: unknown; message?: unknown };
+    startTimeMs?: unknown;
+    endTimeMs?: unknown;
+  },
   context: WorkerHostCallContext | undefined,
 ): void {
   const parent = parseTraceparent(context?.traceparent);
   if (!parent) return; // reject a missing or malformed traceparent
+  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
+  const status = clampSpanStatus(params.status);
   recordProviderPluginSpan({
     name: clampProviderSpanName(params.name),
     parent,
     attributes: clampProviderSpanAttributes(params.attributes),
-    ...(clampSpanStatus(params.status) ? { status: clampSpanStatus(params.status) } : {}),
+    ...(status ? { status } : {}),
+    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
   });
 }
 

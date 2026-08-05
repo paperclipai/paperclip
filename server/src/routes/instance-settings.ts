@@ -7,7 +7,7 @@ import {
   patchInstanceGeneralSettingsSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";

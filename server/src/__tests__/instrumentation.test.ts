@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRequire } from "node:module";
 
 /**
  * Tests for the opt-in OpenTelemetry bootstrap. The @opentelemetry/* packages
@@ -144,5 +145,86 @@ describe("shutdownInstrumentation", () => {
     const { shutdownInstrumentation } = await importFreshInstrumentation();
 
     await expect(shutdownInstrumentation()).resolves.toBeUndefined();
+  });
+});
+
+// The `@opentelemetry/*` packages are optional. When they are absent,
+// `recordProviderPluginSpan` is a no-op by contract, so a native-duration test
+// cannot run. Resolve the SDK first and skip the test when it is not installed.
+const otelSdk = (() => {
+  try {
+    const require = createRequire(import.meta.url);
+    return {
+      api: require("@opentelemetry/api") as typeof import("@opentelemetry/api"),
+      sdk: require("@opentelemetry/sdk-trace-base") as typeof import("@opentelemetry/sdk-trace-base"),
+    };
+  } catch {
+    return null;
+  }
+})();
+
+const hrTimeToMs = (time: [number, number]): number => time[0] * 1000 + time[1] / 1e6;
+
+describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
+  it("opens the span at the true start time and ends it at the true end time", async () => {
+    const { api, sdk } = otelSdk!;
+    const exporter = new sdk.InMemorySpanExporter();
+    const provider = new sdk.BasicTracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    });
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const { recordProviderPluginSpan } = await import("../instrumentation.js");
+      const startTimeMs = Date.now() - 4500;
+      const endTimeMs = startTimeMs + 4500;
+      recordProviderPluginSpan({
+        name: "sandbox.provider.mkdir",
+        parent: {
+          traceId: "0af7651916cd43dd8448eb211c80319c",
+          spanId: "b7ad6b7169203331",
+          traceFlags: 1,
+        },
+        attributes: { provider: "daytona" },
+        startTimeMs,
+        endTimeMs,
+      });
+      const finished = exporter.getFinishedSpans();
+      expect(finished).toHaveLength(1);
+      const span = finished[0]!;
+      expect(span.name).toBe("sandbox.provider.mkdir");
+      expect(Math.round(hrTimeToMs(span.startTime as [number, number]))).toBe(startTimeMs);
+      expect(Math.round(hrTimeToMs(span.endTime as [number, number]))).toBe(endTimeMs);
+      // The native width equals the true wall-clock difference, not near zero.
+      expect(Math.round(hrTimeToMs(span.duration as [number, number]))).toBe(4500);
+    } finally {
+      api.trace.disable();
+    }
+  });
+
+  it("opens and ends the span now when the timestamp pair is absent", async () => {
+    const { api, sdk } = otelSdk!;
+    const exporter = new sdk.InMemorySpanExporter();
+    const provider = new sdk.BasicTracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    });
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const { recordProviderPluginSpan } = await import("../instrumentation.js");
+      recordProviderPluginSpan({
+        name: "sandbox.provider.pack",
+        parent: {
+          traceId: "0af7651916cd43dd8448eb211c80319c",
+          spanId: "b7ad6b7169203331",
+          traceFlags: 1,
+        },
+        attributes: { provider: "daytona" },
+      });
+      const finished = exporter.getFinishedSpans();
+      expect(finished).toHaveLength(1);
+      // The synchronous open-and-end path yields a near-zero native width.
+      expect(hrTimeToMs(finished[0]!.duration as [number, number])).toBeLessThan(1000);
+    } finally {
+      api.trace.disable();
+    }
   });
 });

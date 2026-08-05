@@ -5,6 +5,12 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
+  ensureCodexAuthCacheEntryDir,
+  isCodexAuthCacheEnabled,
+  resolveCodexAuthCacheEntryPath,
+  selectVendCredential,
+} from "./codex-auth-cache.js";
+import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -619,6 +625,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredHomeIsManaged =
     configuredCodexHome != null &&
     isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome);
+  // Identity-anchored cache vend (host to sandbox). Before the managed home is
+  // seeded from the shared source `auth.json`, refresh the shared credential with
+  // a strictly-newer cached copy of the SAME identity. The vend reads the host
+  // identity first and resolves only that identity's cache slot; when the host
+  // holds no credential it does nothing (no random pick). This keeps the change
+  // additive: the managed home still symlinks the shared `auth.json`, now at its
+  // freshest same-identity copy. The off-switch (default on) skips the vend.
+  if (isCodexAuthCacheEnabled(process.env)) {
+    const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    await selectVendCredential(
+      sharedHomeAuthPath,
+      (accountId) => resolveCodexAuthCacheEntryPath(process.env, accountId, agent.companyId),
+      (line) => onLog("stdout", `${line}\n`),
+    ).catch(async (error) => {
+      // The vend is best-effort and additive. A vend failure must never block a
+      // run: log and fall through to seed from the unrefreshed shared credential.
+      await onLog(
+        "stderr",
+        `[paperclip] Codex auth cache: vend skipped after an error; using the shared credential as-is.\n`,
+      );
+      void error;
+    });
+  }
   if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
@@ -771,6 +800,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
+                    // Additive cache write (sandbox to host): also cache the
+                    // sandbox subscription credential in its per-identity slot,
+                    // keyed by the real `account_id`. Company-scoped root; the
+                    // helper ensures the slot directory private and containment-
+                    // guarded. The off-switch (default on) is read inside.
+                    resolveCacheEntryPath: (accountId) =>
+                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
+                    env: process.env,
                   })),
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
@@ -1470,11 +1507,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await paperclipBridge.stop();
       }
       if (restoreRemoteWorkspace) {
-        await onLog(
-          "stdout",
-          `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        await restoreRemoteWorkspace();
+        // This teardown runs in a `finally`, so a throw here replaces the
+        // already-computed run result (`return toResult(...)`) and turns a
+        // successful Codex run into a failure. The workspace restore — and the
+        // host credential copy-back inside it — is a best-effort teardown step.
+        // Keep it rejection-safe: log a fault loudly and keep the pending
+        // result. The host copy-back installs the credential on disk before any
+        // diagnostic log runs, so it is already durable when this block returns.
+        try {
+          await onLog(
+            "stdout",
+            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          );
+          await restoreRemoteWorkspace();
+        } catch (error) {
+          await Promise.resolve(
+            onLog(
+              "stderr",
+              `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                executionTarget,
+              )}: ${error instanceof Error ? error.message : String(error)}\n`,
+            ),
+          ).catch(() => undefined);
+        }
       }
     }
   } finally {

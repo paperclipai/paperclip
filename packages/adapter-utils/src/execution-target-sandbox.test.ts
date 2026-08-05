@@ -23,6 +23,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
+import { getActiveStepContext } from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
@@ -244,6 +245,238 @@ describe("sandbox adapter execution targets", () => {
       );
       expect(launchExecs.length).toBe(1);
     } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("test_process_session_poll_exec_parents_to_run_context", async () => {
+    // The poll timer runs run-time execs for the whole run. Its `sandbox.exec`
+    // span must parent to the live run span, not to the ended startup step. The
+    // bridge reads `getRuntimeParentContext` per tick and runs the poll under
+    // that token. This test drives the bridge with a getter that returns a known
+    // token, lets the first poll tick fire, and proves the poll exec reads that
+    // token from the active step store.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-parent-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const runParentToken = { marker: "process-session-run-parent" };
+    let bridgeStarted = false;
+    let pollStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        // Record the active step for the first exec that runs after the bridge
+        // start resolves. The setup execs run during the measured start; the
+        // poll timer fires later, under the run parent context.
+        if (bridgeStarted && pollStep === "unset") {
+          pollStep = getActiveStepContext();
+          resolvePoll();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-parent",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      getRuntimeParentContext: () => runParentToken,
+    });
+    expect(bridge).not.toBeNull();
+    bridgeStarted = true;
+
+    try {
+      await pollObserved;
+      // The poll exec ran under the run parent context, so its exec span parents
+      // to the run token, not to a detached root or an ended startup step.
+      expect(pollStep).not.toBe("unset");
+      expect(pollStep).not.toBeNull();
+      expect((pollStep as { parentContext?: unknown }).parentContext).toBe(runParentToken);
+      expect((pollStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("test_process_session_poll_exec_stays_unparented_without_getter", async () => {
+    // With no `getRuntimeParentContext`, the poll tick runs with an empty active
+    // step store, exactly like the earlier `runWithoutActiveStep` behavior. So a
+    // poll `sandbox.exec` span opens unparented with no stale startup flag.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-nogetter-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    let bridgeStarted = false;
+    let pollStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        if (bridgeStarted && pollStep === "unset") {
+          pollStep = getActiveStepContext();
+          resolvePoll();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-nogetter",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+    bridgeStarted = true;
+
+    try {
+      await pollObserved;
+      expect(pollStep).toBeNull();
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("test_process_session_stdin_exec_reads_send_time_run_parent", async () => {
+    // A persistent socket can open under one run parent and receive stdin later,
+    // under a different parent. The stdin-write `sandbox.exec` span must parent
+    // to the parent that is live at send time, not to the parent that was live
+    // when the socket opened. The bridge reads `getRuntimeParentContext` per
+    // message in the `data` handler, not once at connect time. This test opens a
+    // socket while `connectParent` is live, switches the getter to `turnParent`,
+    // sends one stdin line, and proves the stdin write ran under `turnParent`.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stdin-parent-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const connectParent = { marker: "process-session-connect-parent" };
+    const turnParent = { marker: "process-session-turn-parent" };
+    let currentParent: unknown = connectParent;
+
+    let stdinWriteStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolveStdinWrite: () => void = () => {};
+    const stdinWriteObserved = new Promise<void>((resolve) => {
+      resolveStdinWrite = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        // Record the active step for the first exec that writes the stdin file.
+        // The `.paperclip-upload` temp path under the `stdin` directory is unique
+        // to the stdin-write path; the poll loop reads the `events` directory.
+        const script = (input.args ?? []).join("\n");
+        if (stdinWriteStep === "unset" && /\/stdin\/[^\s']*paperclip-upload/.test(script)) {
+          stdinWriteStep = getActiveStepContext();
+          resolveStdinWrite();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-stdin-parent",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      getRuntimeParentContext: () => currentParent as never,
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      expect(Number.isFinite(port)).toBe(true);
+      expect(typeof tokenLiteral).toBe("string");
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      // Open the socket while `connectParent` is the live run parent.
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+      // Let the server accept the connection and register the `data` handler
+      // under the connect-time parent before the getter switches.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // The run enters an agent turn: the live run parent switches.
+      currentParent = turnParent;
+
+      // Send one stdin line. The first token-bearing message authenticates and
+      // writes the stdin file. That write must read `turnParent` at send time.
+      peerSocket.write(`${JSON.stringify({ token, type: "stdin", data: Buffer.from("hi").toString("base64") })}\n`);
+
+      await stdinWriteObserved;
+      // The stdin write ran under the send-time parent, not the connect-time
+      // parent captured when the socket opened.
+      expect(stdinWriteStep).not.toBe("unset");
+      expect(stdinWriteStep).not.toBeNull();
+      expect((stdinWriteStep as { parentContext?: unknown }).parentContext).toBe(turnParent);
+      expect((stdinWriteStep as { parentContext?: unknown }).parentContext).not.toBe(connectParent);
+      expect((stdinWriteStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+    } finally {
+      peer?.destroy();
       await bridge?.stop();
     }
   });

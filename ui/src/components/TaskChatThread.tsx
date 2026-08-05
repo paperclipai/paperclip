@@ -98,6 +98,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     reassignOptions,
     currentAssigneeValue,
     issueStatus,
+    issueAssigneeAgentId = null,
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
@@ -128,8 +129,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [linkedRunMetaById, workModeChanges, issueWorkMode],
   );
   const commentItems = useMemo(
-    () => commentsToTaskChatItems(comments, { agentMap, userLabelMap, currentUserId, agentModeLabelFor }),
-    [comments, agentMap, userLabelMap, currentUserId, agentModeLabelFor],
+    () => commentsToTaskChatItems(comments, {
+      agentMap,
+      userLabelMap,
+      currentUserId,
+      issueAssigneeAgentId,
+      agentModeLabelFor,
+    }),
+    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId, agentModeLabelFor],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
