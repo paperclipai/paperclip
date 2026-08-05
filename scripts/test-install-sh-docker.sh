@@ -229,6 +229,27 @@ assert_contains "$RESULTS_DIR/path-zsh-home/.zshrc" 'export PATH="/results/path-
   exit 1
 }
 
+echo "==> update_path: zsh home with only .zprofile still creates .zshrc"
+mkdir -p "$RESULTS_DIR/path-zprof-home"
+printf 'umask 022\n' >"$RESULTS_DIR/path-zprof-home/.zprofile"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-zprof-home \
+  -e SHELL=/bin/zsh \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-zprof.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+# .zprofile is login-only; interactive non-login zsh reads .zshrc, so .zshrc
+# must be created even though .zprofile already exists and was patched.
+[ -f "$RESULTS_DIR/path-zprof-home/.zshrc" ] || {
+  echo "Expected .zshrc created alongside an existing .zprofile" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-zprof-home/.zshrc" 'export PATH="/results/path-zprof-home/.local/bin:'
+assert_contains "$RESULTS_DIR/path-zprof-home/.zprofile" 'export PATH="/results/path-zprof-home/.local/bin:'
+
 echo "==> update_path: existing export is not duplicated"
 mkdir -p "$RESULTS_DIR/path-idem-home"
 # shellcheck disable=SC2016  # seed the exact export line install.sh would write

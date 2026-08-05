@@ -271,12 +271,14 @@ update_path() {
     # Ensure a startup file the user's default shell actually reads exists,
     # otherwise fresh shells won't see the PATH. POSIX/bash/dash login shells read
     # the first of .bash_profile/.bash_login/.profile; interactive zsh shells
-    # (including login) read .zshrc. zsh does NOT read .profile, so pick the file
-    # matching $SHELL and create it only when none is already present (the loop
-    # above already added the export to any existing one).
+    # (including login) read .zshrc, which is login-only for .zprofile. Create the
+    # matching file only when none is already present (the loop above already
+    # added the export to any existing one).
     local ensure_file=""
     if [[ "${SHELL:-}" == */zsh ]]; then
-      { [ -f "${HOME}/.zshrc" ] || [ -f "${HOME}/.zprofile" ]; } || ensure_file="${HOME}/.zshrc"
+      # Key interactive coverage off .zshrc: a login-only .zprofile must not
+      # suppress it, or non-login interactive zsh shells miss the PATH.
+      [ -f "${HOME}/.zshrc" ] || ensure_file="${HOME}/.zshrc"
     else
       { [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.bash_login" ] || [ -f "${HOME}/.profile" ]; } || ensure_file="${HOME}/.profile"
     fi
