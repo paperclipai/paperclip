@@ -44,6 +44,22 @@ unset DATABASE_URL
 ROOT="$HOME/paperclip"
 cd "$ROOT"
 
+# A marker left behind by a terminated process is the boot-time signal that the
+# preceding server died before its launchd wrapper could complete a clean
+# shutdown. The server's startup reconciliation runs before scheduler ticks;
+# exporting this fact makes the unclean-restart cause explicit in its logs and
+# gives the external launcher an auditable recovery boundary.
+LIVENESS_MARKER="${PAPERCLIP_LIVENESS_MARKER:-$ROOT/.devlogs/paperclip-source.liveness}"
+mkdir -p "$(dirname "$LIVENESS_MARKER")"
+if [ -e "$LIVENESS_MARKER" ]; then
+  export PAPERCLIP_UNCLEAN_SHUTDOWN=1
+  log() { echo "[launchd-start $(date '+%H:%M:%S')] $*" >&2; }
+  log "UNCLEAN_SHUTDOWN_DETECTED: previous liveness marker remains at $LIVENESS_MARKER"
+  rm -f "$LIVENESS_MARKER"
+else
+  export PAPERCLIP_UNCLEAN_SHUTDOWN=0
+fi
+
 # --- Coexist mode (TSMC-10172 follow-up). The LIVE fleet (:3100 + runtime :13100)
 # is served from a pinned DEPLOY worktree; THIS launchd job runs the source/dev
 # server ALONGSIDE it on a dedicated port. Pinning PORT keeps the source server off
@@ -64,6 +80,7 @@ if [ "${PAPERCLIP_STARTUP_GATE:-1}" = "1" ]; then
   log "startup gate: checking source graph before supervisor handoff"
   if ! node "$ROOT/server/scripts/dev-watch-gate.mjs"; then
     log "STARTUP_GATE_FAILURE: source graph/load smoke rejected; refusing boot"
+    "$ROOT/scripts/paperclip-crash-loop-alert.sh" || true
     exit 78
   fi
 fi
@@ -152,7 +169,33 @@ if [ -d "$PC_DEPS" ]; then
   done
 fi
 
-log "cleanup complete; starting source server (lock held by pid $$ for server lifetime)"
-# Foreground: launchd manages this process directly (KeepAlive restarts it).
-# exec replaces this shell in place, so $$ (and thus the lock) now belongs to the server.
-exec pnpm dev
+printf 'pid=%s startedAt=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LIVENESS_MARKER"
+clean_shutdown=0
+child_pid=""
+
+shutdown_cleanly() {
+  clean_shutdown=1
+  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+  fi
+  rm -f "$LIVENESS_MARKER"
+  exit 0
+}
+trap shutdown_cleanly INT TERM
+
+log "cleanup complete; starting source server (liveness marker $LIVENESS_MARKER)"
+# Keep this wrapper in the foreground so launchd continues to supervise it.
+# On INT/TERM the trap removes the marker only after relaying shutdown to the
+# dev runner; an unexpected exit deliberately leaves the marker for next boot.
+pnpm dev &
+child_pid=$!
+set +e
+wait "$child_pid"
+exit_status=$?
+set -e
+if [ "$clean_shutdown" != "1" ]; then
+  log "UNEXPECTED_SERVER_EXIT: code $exit_status; preserving liveness marker"
+  "$ROOT/scripts/paperclip-crash-loop-alert.sh" || true
+fi
+exit "$exit_status"
