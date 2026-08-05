@@ -7055,7 +7055,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
-  let resumeQueuedRunsInFlight: Promise<void> | null = null;
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {

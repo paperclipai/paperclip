@@ -2733,6 +2733,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       status: "blocked",
       priority: routine.priority,
       assigneeAgentId: routine.assigneeAgentId,
+      executionPolicy: {
+        externalWait: {
+          owner: "board operator",
+          action: "fixture gate for blocked routine execution",
+          nextCheckAt: "2026-03-21T12:00:00.000Z",
+          monitorOwner: "routine fixture",
+        },
+      },
       originKind: "routine_execution",
       originId: routine.id,
       originRunId: randomUUID(),
@@ -2772,6 +2780,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       status: "blocked",
       priority: routine.priority,
       assigneeAgentId: routine.assigneeAgentId,
+      executionPolicy: {
+        externalWait: {
+          owner: "board operator",
+          action: "fixture gate for blocked routine execution",
+          nextCheckAt: "2026-03-21T12:00:00.000Z",
+          monitorOwner: "routine fixture",
+        },
+      },
       originKind: "routine_execution",
       originId: routine.id,
       originRunId: randomUUID(),
