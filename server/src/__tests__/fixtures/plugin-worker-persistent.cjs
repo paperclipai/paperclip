@@ -12,8 +12,16 @@
 
 const readline = require("node:readline");
 
-/** How long the worker waits after acking `shutdown` before exiting. */
-const SHUTDOWN_EXIT_DELAY_MS = 300;
+// How long the worker waits after acking `shutdown` before exiting.
+//
+// This has to sit inside the host's post-ack grace period: stopInternal()
+// races the shutdown RPC (which resolves as soon as this ack lands) and then
+// waits only 500ms more before escalating to SIGTERM. A delay close to that
+// ceiling makes the negative-control test a timing race against a real process
+// exit on a loaded CI runner, so keep the margin wide. The test does not
+// depend on this window being long — it kills the pipe from a write hook the
+// moment the shutdown is flushed, not after a poll.
+const SHUTDOWN_EXIT_DELAY_MS = 100;
 
 /** Hard ceiling so a fixture never outlives the test run that spawned it. */
 const MAX_LIFETIME_MS = 30_000;

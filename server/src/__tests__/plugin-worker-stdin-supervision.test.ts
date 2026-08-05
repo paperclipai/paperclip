@@ -86,6 +86,55 @@ function exitWithin(child: ChildProcess, timeoutMs: number): Promise<Exit | null
   ]);
 }
 
+/**
+ * Destroy the command channel at the instant the host's `shutdown` RPC has
+ * been flushed to the worker.
+ *
+ * This is hooked rather than polled on purpose. Waiting for status
+ * `"stopping"` via vi.waitFor puts the destroy an unbounded number of
+ * milliseconds after the ack, which then has to beat the fixture's own
+ * deferred exit — and the fixture in turn has to beat the host's 500ms
+ * post-ack SIGTERM escalation. Those two deadlines squeeze from opposite
+ * sides, and on a loaded runner one of them eventually loses. Hooking the
+ * write removes both races: the destroy lands immediately after the shutdown
+ * reaches the worker, so the fixture still has its whole exit window left.
+ *
+ * It is also a stronger precondition than polling for status. `sendMessage`
+ * is only reached for `shutdown` from inside stopInternal(), which sets
+ * `intentionalStop` before it writes — so firing here proves we are inside the
+ * intentional-stop window rather than inferring it from an observable status.
+ *
+ * Resolves with whether the child was still alive when the pipe was killed.
+ * If it had already exited, the test never exercised the guard at all, and the
+ * assertion on this value turns that vacuous pass into a failure.
+ */
+function destroyStdinOnShutdown(child: ChildProcess): Promise<{ aliveAtDestroy: boolean }> {
+  const stdin = child.stdin;
+  if (!stdin) throw new Error("expected the forked child to have a stdin pipe");
+
+  return new Promise((resolve) => {
+    const originalWrite = stdin.write.bind(stdin) as typeof stdin.write;
+    let fired = false;
+
+    stdin.write = ((chunk: unknown, ...rest: unknown[]) => {
+      const accepted = (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+
+      if (!fired && typeof chunk === "string" && chunk.includes('"shutdown"')) {
+        fired = true;
+        // Let the manager's own write callback run first, so the shutdown is
+        // fully handed off before the pipe dies.
+        setImmediate(() => {
+          const aliveAtDestroy = child.exitCode === null && child.signalCode === null;
+          stdin.destroy(epipe());
+          resolve({ aliveAtDestroy });
+        });
+      }
+
+      return accepted;
+    }) as typeof stdin.write;
+  });
+}
+
 async function startPersistentWorker() {
   const before = forkedChildren.length;
   const handle = createPluginWorkerHandle("test.plugin", {
@@ -182,20 +231,18 @@ describe("plugin worker stdin command-channel supervision", () => {
     handle.on("crash", (payload) => crashes.push(payload));
 
     const exited = nextExit(child);
-    const stopping = handle.stop();
-
-    // stopInternal() sets intentionalStop before it writes the shutdown RPC.
-    await vi.waitFor(() => {
-      expect(handle.status).toBe("stopping");
-      // ...and the shutdown must have drained out of the host before the pipe
-      // is killed, or this would be testing a dropped shutdown instead.
-      expect(child.stdin?.writableLength ?? 0).toBe(0);
-    });
 
     // Kill the command channel mid-stop, while the fixture is still inside its
     // deferred-exit window. Without the intentionalStop guard this SIGKILLs a
     // worker that was already shutting down cleanly.
-    child.stdin?.destroy(epipe());
+    const destroyed = destroyStdinOnShutdown(child);
+    const stopping = handle.stop();
+
+    const { aliveAtDestroy } = await destroyed;
+    expect(
+      aliveAtDestroy,
+      "fixture exited before the command channel was killed — the guard was never exercised",
+    ).toBe(true);
 
     await stopping;
     const { code, signal } = await exited;
