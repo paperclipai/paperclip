@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TOKEN_WEIGHTS,
+  budgetIsEnforceable,
   budgetLabel,
   formatTokenBreakdown,
   hasTokenUsage,
@@ -150,5 +151,37 @@ describe("budgetLabel", () => {
     expect(budgetLabel({ budgetCents: undefined, subscriptionOnlyBilling: true, formatCents })).toBe(
       "Budget not enforceable on subscription billing",
     );
+  });
+});
+
+describe("budgetIsEnforceable", () => {
+  it("is false on subscription billing even with a positive budget", () => {
+    // Regression: utilization, the progress bar, the pace notch, and the
+    // threshold colour must all gate on this rather than on the amount alone.
+    // Spend is structurally 0 there, so they would read a permanent healthy 0%
+    // directly beneath a "not enforceable" label.
+    expect(budgetIsEnforceable({ budgetCents: 250_000, subscriptionOnlyBilling: true })).toBe(false);
+  });
+
+  it("is true only for a positive budget on metered billing", () => {
+    expect(budgetIsEnforceable({ budgetCents: 250_000, subscriptionOnlyBilling: false })).toBe(true);
+    expect(budgetIsEnforceable({ budgetCents: 0, subscriptionOnlyBilling: false })).toBe(false);
+  });
+
+  it("treats a missing budget as not enforceable", () => {
+    expect(budgetIsEnforceable({ budgetCents: null, subscriptionOnlyBilling: false })).toBe(false);
+    expect(budgetIsEnforceable({ budgetCents: undefined, subscriptionOnlyBilling: false })).toBe(false);
+  });
+
+  it("agrees with budgetLabel — no state warns yet shows an active budget", () => {
+    const formatCents = (c: number) => `$${(c / 100).toFixed(2)}`;
+    for (const budgetCents of [0, 250_000, null, undefined]) {
+      for (const subscriptionOnlyBilling of [true, false]) {
+        const label = budgetLabel({ budgetCents, subscriptionOnlyBilling, formatCents });
+        if (label.includes("not enforceable")) {
+          expect(budgetIsEnforceable({ budgetCents, subscriptionOnlyBilling })).toBe(false);
+        }
+      }
+    }
   });
 });

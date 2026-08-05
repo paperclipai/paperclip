@@ -29,7 +29,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
-import { budgetLabel } from "../lib/token-usage";
+import { budgetIsEnforceable, budgetLabel } from "../lib/token-usage";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -416,7 +416,9 @@ export function Costs() {
     const map = new Map<string, boolean>();
     if (preset !== "mtd") return map;
     const budget = spendData?.summary.budgetCents ?? 0;
-    if (budget <= 0) return map;
+    // Pace against a budget that cannot be consumed is meaningless: spend is
+    // always 0 on subscription billing, so every provider reads "under pace".
+    if (budget <= 0 || subscriptionOnlyBilling) return map;
     const totalSpend = spendData?.summary.spendCents ?? 0;
     const now = new Date();
     const daysElapsed = now.getDate();
@@ -529,6 +531,15 @@ export function Costs() {
     return rows.length > 0 && rows.every((row) => row.billingType === "subscription_included");
   }, [spendData?.byAgentModel]);
 
+  // Utilization, pace, and threshold colours are only meaningful when the budget
+  // can actually be consumed. On subscription-only billing spend is always 0, so
+  // every one of those would read a permanent healthy 0% and contradict the
+  // "not enforceable" label next to them.
+  const budgetEnforceable = budgetIsEnforceable({
+    budgetCents: spendData?.summary.budgetCents,
+    subscriptionOnlyBilling,
+  });
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -600,16 +611,20 @@ export function Costs() {
             <MetricTile
               label="Budget"
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
-                spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                  ? `${spendData.summary.utilizationPercent}%`
-                  : "Open"
+                budgetEnforceable
+                  ? `${spendData?.summary.utilizationPercent}%`
+                  : subscriptionOnlyBilling
+                    ? "n/a"
+                    : "Open"
               )}
               subtitle={
                 activeBudgetIncidents.length > 0
                   ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
-                  : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                    ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
-                    : "No monthly cap configured"
+                  : budgetEnforceable
+                    ? `${formatCents(spendData?.summary.spendCents ?? 0)} of ${formatCents(spendData?.summary.budgetCents ?? 0)}`
+                    : subscriptionOnlyBilling
+                      ? "Not enforceable on subscription billing"
+                      : "No monthly cap configured"
               }
               icon={Coins}
             />
@@ -694,7 +709,7 @@ export function Costs() {
                         </div>
                       </div>
                     </div>
-                    {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
+                    {budgetEnforceable && spendData ? (
                       <div className="space-y-2">
                         <div className="h-2 overflow-hidden bg-muted">
                           <div

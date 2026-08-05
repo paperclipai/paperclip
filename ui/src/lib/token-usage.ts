@@ -77,3 +77,21 @@ export function budgetLabel(input: {
   }
   return hasBudget ? `Budget ${input.formatCents(input.budgetCents as number)}` : "Unlimited budget";
 }
+
+/**
+ * Whether a cents budget can actually be enforced.
+ *
+ * A budget needs both a positive amount and a billing mode that produces
+ * non-zero `costCents`. On subscription-only billing the spend it measures is
+ * structurally zero, so utilization is always 0% and every threshold reads
+ * healthy forever. Any UI that shows utilization, a progress bar, a
+ * "$X of $Y" pace, or a threshold colour must gate on this rather than on the
+ * budget amount alone, or it contradicts the "not enforceable" label.
+ */
+export function budgetIsEnforceable(input: {
+  budgetCents: number | null | undefined;
+  subscriptionOnlyBilling: boolean;
+}): boolean {
+  if (input.subscriptionOnlyBilling) return false;
+  return typeof input.budgetCents === "number" && input.budgetCents > 0;
+}
