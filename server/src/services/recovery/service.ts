@@ -461,6 +461,9 @@ const STANDING_EXEMPT_RECOVERY_ACTION_KINDS = new Set<string>(["missing_disposit
 // actions with no outstanding work — the lane could not DELIVER a disposition, so re-dispatching
 // could never converge. Repeated identical failure is an escalation, not a retry.
 const MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND = 3;
+// Rolling window for the cap count — see countPriorRecoveryActionsForIssue. Loops burn the cap
+// within hours; legitimate repeated recoveries on a long-lived issue are spaced far wider.
+const RECOVERY_LOOP_CAP_WINDOW_MS = 72 * 60 * 60 * 1000;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -3535,6 +3538,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const workspaceValidation = input.recoveryCause === "workspace_validation_failed"
       ? readWorkspaceValidationPayload(input.latestRun)
       : null;
+    // DELIVERY-FAULT PROVENANCE (2026-08-05, TSMC-19765). If the control plane restarted after
+    // the run began, the run-scoped bridge dropped and any disposition/status write the agent
+    // attempted may have been lost — 31% of steady-state missing_disposition issues carried
+    // explicit bridge-failure evidence in-thread. Record the overlap so a delivery fault is
+    // never silently indistinguishable from a silent agent. Evidence-only: routing is unchanged,
+    // but the flag surfaces on the action and in board escalations.
+    const controlPlaneBootedAt = new Date(Date.now() - process.uptime() * 1000);
+    const latestRunStartedAt = input.latestRun?.startedAt ? new Date(input.latestRun.startedAt) : null;
+    const controlPlaneRestartedSinceRunStart =
+      latestRunStartedAt !== null && latestRunStartedAt < controlPlaneBootedAt;
     return {
       sourceIssueId: input.issue.id,
       sourceIdentifier: input.issue.identifier,
@@ -3553,6 +3566,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       closeEvidenceMeasuredCount: input.closeEvidenceMeasurement?.measuredCount ?? null,
       closeEvidenceTargetCount: input.closeEvidenceMeasurement?.targetCount ?? null,
       closeEvidencePath: input.closeEvidenceMeasurement?.closeContract.evidencePath ?? null,
+      controlPlaneRestartedSinceRunStart,
       ...(workspaceValidation ? { workspaceValidation } : {}),
     };
   }
@@ -3560,11 +3574,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // How many recovery actions this issue has already burned for this cause, in any state. Counts
   // resolved ones deliberately: a resolved-but-ineffective action is exactly the loop we are
   // bounding — the action closed, the issue stayed stuck, and a fresh action was spawned.
+  //
+  // WINDOWED (2026-08-05): the count is bounded to a rolling window. A loop, whatever its
+  // outcome shape, burns its cap within hours (the TSMC-19481 class took 8 actions in ~2 days;
+  // the 07-27 churn took 3 in 3 minutes). A long-lived issue that legitimately recovered a few
+  // times over weeks or months is NOT a loop, and a lifetime count would eventually board-escalate
+  // its next unrelated recovery. Window >> loop cadence, window << legitimate-recovery spacing.
   async function countPriorRecoveryActionsForIssue(input: {
     companyId: string;
     sourceIssueId: string;
     kind: string;
   }) {
+    const windowStart = new Date(Date.now() - RECOVERY_LOOP_CAP_WINDOW_MS);
     const [row] = await db
       .select({ count: sql<number>`count(*)` })
       .from(issueRecoveryActions)
@@ -3573,6 +3594,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRecoveryActions.companyId, input.companyId),
           eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
           eq(issueRecoveryActions.kind, input.kind),
+          gte(issueRecoveryActions.createdAt, windowStart),
         ),
       );
     return Number(row?.count ?? 0);
@@ -3917,6 +3939,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return true;
     }
 
+    // LATCH GUARD (2026-08-05, TSMC-19765). A board-owned missing-disposition action is a
+    // terminal automatic-recovery state: the wake path is exhausted and a durable board card
+    // (recovery_loop_cap escalation) carries the request. Keep it latched — the unique
+    // active-per-source index is what prevents the detector from re-creating actions, so this
+    // row must stay active until the source issue changes state (folded above) or the board
+    // resolves it. Without this guard the sweep would fall through to
+    // escalateStrandedAssignedIssue and re-upsert every tick.
+    if (action.ownerType === "board") {
+      return true;
+    }
+
     if (hasEventDrivenHubIdlePath(input.issue)) {
       await foldActiveRecoveryAction({
         companyId: input.issue.companyId,
@@ -3929,13 +3962,53 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     if (action.maxAttempts !== null && action.attemptCount >= action.maxAttempts) {
-      await foldActiveRecoveryAction({
+      // ROOT CAUSE OF THE 07-27..07-31 RUNAWAY (8,679 actions across 8 issues) AND THE
+      // TSMC-19481 CLASS. This branch used to FOLD the exhausted action as `false_positive`.
+      // Resolving it released the one-active-action-per-source unique index, the next 1-minute
+      // sweep saw no active action for a still-eligible issue and minted a fresh one, and the
+      // create→fold cycle ran once per minute for as long as the issue stayed `in_progress`
+      // (verified: flat 60/hr per issue, p50 action lifetime 30s, churn ending exactly at
+      // issue completion). Exhaustion means the wake path CANNOT converge — so keep the SAME
+      // row latched and convert it to a board-owned escalation in place. No recreation cycle
+      // can exist while the row stays active.
+      const escalationIssue = await ensureRecoveryLoopCapEscalationIssue({
+        issue: input.issue,
+        kind: action.kind,
+        recoveryCause: action.cause as StrandedRecoveryCause,
+        priorActionCount: action.attemptCount,
+      });
+      await recoveryActionsSvc.upsertSourceScoped({
         companyId: input.issue.companyId,
         sourceIssueId: input.issue.id,
-        actionId: action.id,
-        outcome: "false_positive",
-        resolutionNote: "Missing-disposition recovery reached its finite attempt bound; the status-only recovery wake cannot produce the demanded disposition.",
+        recoveryIssueId: escalationIssue.id,
+        kind: action.kind,
+        ownerType: "board",
+        ownerAgentId: null,
+        previousOwnerAgentId: action.ownerAgentId ?? action.previousOwnerAgentId,
+        returnOwnerAgentId: action.returnOwnerAgentId,
+        cause: action.cause,
+        fingerprint: action.fingerprint,
+        evidence: {
+          ...(action.evidence ?? {}),
+          latchEscalatedAt: new Date().toISOString(),
+          latchEscalationReason: "missing_disposition_wake_exhausted",
+        },
+        nextAction:
+          "Board: choose a concrete disposition for the source issue or assign an owner for the underlying delivery fault. Automatic status-only wakes are exhausted and will not be retried.",
+        wakePolicy: { type: "board_escalation", reason: "recovery_loop_cap" },
+        maxAttempts: null,
       });
+      logger.warn(
+        {
+          service: "recovery",
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          issueIdentifier: input.issue.identifier,
+          actionId: action.id,
+          escalationIssueId: escalationIssue.id,
+        },
+        "missing-disposition wake exhausted; latched the action as a board escalation instead of folding it",
+      );
       return true;
     }
 

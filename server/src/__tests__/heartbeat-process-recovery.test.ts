@@ -4779,7 +4779,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  it("folds missing-disposition recovery instead of refiring after the finite attempt bound", async () => {
+  it("latches missing-disposition recovery as a board escalation after the finite attempt bound", async () => {
+    // TSMC-19765: folding the exhausted action as false_positive released the
+    // one-active-action-per-source unique index and the next sweep recreated it —
+    // the create→fold churn ran once per minute per eligible issue (07-27..07-31
+    // runaway). Exhaustion must keep the SAME row latched, board-owned, with a
+    // linked recovery_loop_cap escalation issue, and never fire another wake.
     const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
@@ -4829,14 +4834,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(action).toMatchObject({
-      status: "resolved",
-      outcome: "false_positive",
-      attemptCount: 1,
-      maxAttempts: 1,
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      outcome: null,
+      maxAttempts: null,
     });
-    expect(action?.resolutionNote).toContain("finite attempt bound");
+    expect(action?.recoveryIssueId).toBeTruthy();
+    expect((action?.evidence as Record<string, unknown> | null)?.latchEscalationReason)
+      .toBe("missing_disposition_wake_exhausted");
+    const [escalationIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, action!.recoveryIssueId!));
+    expect(escalationIssue?.title).toContain("Recovery loop cap reached");
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
+
+    // Idempotence: a second sweep must not mint a second action, escalation issue, or wake.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.skipped).toBe(1);
+    const actionsAfter = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actionsAfter).toHaveLength(1);
+    expect(actionsAfter[0]).toMatchObject({ status: "active", ownerType: "board" });
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "recovery_loop_cap_escalation")));
+    expect(escalations).toHaveLength(1);
   });
 
   it("keeps active missing-disposition recovery when the source becomes blocked", async () => {

@@ -9542,6 +9542,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
+    // POPULATION FIX (2026-08-05, TSMC-19765). Shell-handler runs execute scripts — they cannot
+    // state a disposition, answer a corrective re-wake, or read a handoff notice. They were 59%
+    // of all "no disposition stated" runs (14,872 of ~25k over two weeks) and produced a steady
+    // trickle of unactionable missing_disposition recovery actions. The disposition contract is
+    // for conversational lanes; system runs are exempt at the source. Genuinely stranded issues
+    // assigned to shell handlers are still covered by the stranded-issue sweep.
+    if (agent.adapterType === "paperclip_shell_handler") return;
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
@@ -9806,39 +9813,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       statedDisposition && typeof statedDisposition.reviewer === "string" && statedDisposition.reviewer.trim()
         ? statedDisposition.reviewer.trim()
         : null;
-    const dispositionForceDisabled = process.env.PAPERCLIP_DISPOSITION_ENFORCE === "0";
-    const dispositionForceEnabled = process.env.PAPERCLIP_DISPOSITION_ENFORCE === "1";
-    const enforceDisposition =
-      !dispositionForceDisabled &&
-      (dispositionForceEnabled || Boolean(statedStatus));
+    // RETIRED (2026-08-05, TSMC-19765): the PAPERCLIP_DISPOSITION_ENFORCE flag and the
+    // issue.disposition_shadow measurement. Seven weeks of shadow data (54,625 records)
+    // answered the question: stated dispositions are applied cleanly (361 applies, zero
+    // incidents) and are already enforced whenever present, while force-enabling changed
+    // behaviour for zero runs — with no stated status the apply block below has nothing to
+    // act on and falls through to the corrective re-wake regardless. A stated disposition
+    // is simply applied; nothing else is logged per-run.
+    //
     // Isolated harness companies (e.g. the agentic-bench company) exercise the disposition
-    // workflow on fixtures, which floods the shadow measurement and would trigger spurious
-    // enforcement. Skip both for them; the corrective re-wake below still runs unchanged.
+    // workflow on fixtures; skip applying for them. The corrective re-wake still runs.
     // Comma-separated company ids; defaults to the bench company.
     const dispositionExcluded = (process.env.PAPERCLIP_DISPOSITION_EXCLUDE_COMPANY_IDS
       ?? "e212ce50-b524-408c-b3d4-0c6108d8c2e2")
       .split(",").map((s) => s.trim()).filter(Boolean).includes(issue.companyId);
-    if (!dispositionExcluded) {
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: "system",
-        actorId: "heartbeat",
-        agentId: run.agentId,
-        runId: run.id,
-        action: "issue.disposition_shadow",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          label: "Disposition enforcement",
-          mode: enforceDisposition ? "enforce" : "shadow",
-          tokenPresent: Boolean(statedStatus),
-          statedStatus: statedStatus ?? null,
-          hasBlocker: statedDisposition?.hasBlocker === true,
-          sourceRunId: run.id,
-        },
-      });
-    }
-    if (enforceDisposition && !dispositionExcluded) {
+    if (Boolean(statedStatus) && !dispositionExcluded) {
       try {
         let appliedStatus: string | null = null;
         let createdBlockerId: string | null = null;
