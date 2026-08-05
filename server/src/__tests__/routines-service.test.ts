@@ -1616,6 +1616,85 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBeTruthy();
   });
 
+  it("absorbs handshake and liveness-only courier traffic without creating a destination issue", async () => {
+    const { routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { kind: "handshake", sourceIssue: "TSMC-18772" },
+    });
+
+    expect(run).toMatchObject({ status: "skipped", linkedIssueId: null, deliveryReceipt: null });
+    expect(run.failureReason).toBe("machine_handshake");
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(0);
+  });
+
+  it("creates one receipted destination for the Phorest courier retry", async () => {
+    const { routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const payload = {
+      kind: "portfolio_directive",
+      ask: "Create the corrected TSR-4927 route.",
+      sourceIssue: "TSMC-18772",
+    };
+
+    const first = await svc.firePublicTrigger(trigger.publicId!, {
+      idempotencyKey: "phorest-TSMC-18772",
+      payload,
+    });
+    const retry = await svc.firePublicTrigger(trigger.publicId!, {
+      idempotencyKey: "phorest-TSMC-18772",
+      payload,
+    });
+
+    expect(first).toMatchObject({ status: "issue_created", linkedIssueId: expect.any(String) });
+    expect(first.deliveryReceipt).toMatchObject({
+      idempotencyKey: "phorest-TSMC-18772",
+      destinationIssueId: first.linkedIssueId,
+      createReceipt: { destinationIssueId: first.linkedIssueId },
+    });
+    expect(retry.deliveryReceipt).toEqual(first.deliveryReceipt);
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(1);
+  });
+
+  it("derives a stable courier key and leaves a failed receipt delivery retryable", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const payload = { kind: "portfolio_directive", ask: "Deliver TSR-4927.", sourceIssue: "TSMC-18772" };
+
+    const first = await svc.firePublicTrigger(trigger.publicId!, { payload });
+    const reordered = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { sourceIssue: "TSMC-18772", ask: "Deliver TSR-4927.", kind: "portfolio_directive" },
+    });
+    expect(first.idempotencyKey).toMatch(/^courier:[0-9a-f]{64}$/);
+    expect(reordered.idempotencyKey).toBe(first.idempotencyKey);
+
+    // Give the receipt-return recovery its own destination lifecycle; the
+    // preceding derived-key assertion intentionally left its task live.
+    await db
+      .update(issues)
+      .set({ status: "done", executionRunId: null, executionLockedAt: null, completedAt: new Date() })
+      .where(eq(issues.id, first.linkedIssueId!));
+
+    const retryKey = "TSR-4927-receipt-retry";
+    await db.insert(routineRuns).values({
+      companyId,
+      routineId: routine.id,
+      triggerId: trigger.id,
+      source: "webhook",
+      status: "failed",
+      idempotencyKey: retryKey,
+      failureReason: "receipt callback unavailable",
+    });
+    const recovered = await svc.firePublicTrigger(trigger.publicId!, { idempotencyKey: retryKey, payload });
+    expect(recovered).toMatchObject({ status: "issue_created", failureReason: null });
+    expect(recovered.deliveryReceipt).toMatchObject({ idempotencyKey: retryKey, destinationIssueId: recovered.linkedIssueId });
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(2);
+  });
+
   it("uses the configured provider for generated webhook trigger secrets", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const originalGetSecretProvider = providerRegistry.getSecretProvider;

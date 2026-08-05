@@ -73,6 +73,7 @@ import {
 } from "./instance-settings.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { classifyNonActionableWebhookPayload, type NonActionableWebhookPayloadKind } from "./non-actionable-webhook-payload.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -132,6 +133,60 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+
+type CourierDeliveryReceipt = {
+  version: 1;
+  idempotencyKey: string;
+  destinationIssueId: string;
+  destinationIssueIdentifier: string;
+  createReceipt: {
+    routineRunId: string;
+    destinationIssueId: string;
+    destinationIssueIdentifier: string;
+  };
+};
+
+function makeCourierDeliveryReceipt(input: {
+  runId: string;
+  idempotencyKey: string;
+  issue: { id: string; identifier: string | null };
+}): CourierDeliveryReceipt {
+  const destinationIssueIdentifier = input.issue.identifier ?? input.issue.id;
+  return {
+    version: 1,
+    idempotencyKey: input.idempotencyKey,
+    destinationIssueId: input.issue.id,
+    destinationIssueIdentifier,
+    createReceipt: {
+      routineRunId: input.runId,
+      destinationIssueId: input.issue.id,
+      destinationIssueIdentifier,
+    },
+  };
+}
+
+function isCourierDeliveryPayload(raw: Record<string, unknown> | null | undefined) {
+  if (!raw) return false;
+  const labels = [raw.kind, raw.type]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().toLowerCase());
+  return labels.some((value) => value === "portfolio_directive" || value === "courier_delivery")
+    && typeof raw.sourceIssue === "string"
+    && raw.sourceIssue.trim().length > 0;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function deriveCourierIdempotencyKey(payload: Record<string, unknown> | null | undefined) {
+  return `courier:${crypto.createHash("sha256").update(stableStringify(payload ?? null)).digest("hex")}`;
+}
 
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 
@@ -990,6 +1045,7 @@ export function routineService(
         dispatchFingerprint: routineRuns.dispatchFingerprint,
         routineRevisionId: routineRuns.routineRevisionId,
         linkedIssueId: routineRuns.linkedIssueId,
+        deliveryReceipt: routineRuns.deliveryReceipt,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
         failureReason: routineRuns.failureReason,
         completedAt: routineRuns.completedAt,
@@ -1024,6 +1080,7 @@ export function routineService(
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
+        deliveryReceipt: row.deliveryReceipt,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,
@@ -1248,6 +1305,43 @@ export function routineService(
     }
 
     return run;
+  }
+
+  async function recordIgnoredWebhookRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    payload: Record<string, unknown> | null;
+    reason: NonActionableWebhookPayloadKind;
+  }) {
+    const triggeredAt = new Date();
+    const run = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "webhook",
+          status: "skipped",
+          triggeredAt,
+          triggerPayload: input.payload,
+          failureReason: input.reason,
+          completedAt: triggeredAt,
+          linkedIssueId: null,
+          routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
+        })
+        .returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger.id,
+        triggeredAt,
+        status: "skipped",
+      }, txDb);
+      return createdRun;
+    });
+    return withLegacyRoutineRunIssueId(run);
   }
 
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
@@ -1477,6 +1571,7 @@ export function routineService(
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
+    courierDelivery?: boolean;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
@@ -1537,6 +1632,13 @@ export function routineService(
       title,
       description,
     });
+    // The current issue-create contract has no external idempotency field; its
+    // durable origin fingerprint is the destination-create guard. Keep the
+    // courier key in that fingerprint so retries converge even if a receipt
+    // callback is retried after the destination was created.
+    const destinationFingerprint = input.courierDelivery && input.idempotencyKey
+      ? `courier:${input.routine.id}:${input.idempotencyKey}`
+      : dispatchFingerprint;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -1559,7 +1661,9 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        // Failed courier runs must retry; issue creation is independently
+        // idempotent, so the later attempt cannot duplicate the destination.
+        if (existing && existing.status !== "failed") return existing;
       }
 
       const triggeredAt = new Date();
@@ -1607,7 +1711,7 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, destinationFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
@@ -1656,7 +1760,7 @@ export function routineService(
             originKind: issueOriginKind,
             originId: issueOriginId,
             originRunId: createdRun.id,
-            originFingerprint: dispatchFingerprint,
+            originFingerprint: destinationFingerprint,
             billingCode: issueBillingCode,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
@@ -1674,7 +1778,7 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, destinationFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
@@ -1715,9 +1819,17 @@ export function routineService(
           requestedByActorType: input.source === "schedule" ? "system" : undefined,
           rethrowOnError: true,
         });
+        const deliveryReceipt = input.courierDelivery && input.idempotencyKey
+          ? makeCourierDeliveryReceipt({
+              runId: createdRun.id,
+              idempotencyKey: input.idempotencyKey,
+              issue: createdIssue,
+            })
+          : null;
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
+          deliveryReceipt,
         }, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,
@@ -1851,6 +1963,7 @@ export function routineService(
             dispatchFingerprint: routineRuns.dispatchFingerprint,
             routineRevisionId: routineRuns.routineRevisionId,
             linkedIssueId: routineRuns.linkedIssueId,
+            deliveryReceipt: routineRuns.deliveryReceipt,
             coalescedIntoRunId: routineRuns.coalescedIntoRunId,
             failureReason: routineRuns.failureReason,
             completedAt: routineRuns.completedAt,
@@ -1884,6 +1997,7 @@ export function routineService(
               dispatchFingerprint: run.dispatchFingerprint,
               routineRevisionId: run.routineRevisionId,
               linkedIssueId: run.linkedIssueId,
+              deliveryReceipt: run.deliveryReceipt,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
               completedAt: run.completedAt,
@@ -2679,6 +2793,20 @@ export function routineService(
         if (!valid) throw unauthorized();
       }
 
+      const ignoredKind = classifyNonActionableWebhookPayload(input.payload ?? null);
+      if (ignoredKind) {
+        return recordIgnoredWebhookRun({
+          routine,
+          trigger,
+          payload: input.payload ?? null,
+          reason: ignoredKind,
+        });
+      }
+
+      const courierDelivery = isCourierDeliveryPayload(input.payload);
+      const effectiveIdempotencyKey = input.idempotencyKey?.trim()
+        || (courierDelivery ? deriveCourierIdempotencyKey(input.payload) : input.idempotencyKey);
+
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
       if (!eligibility.eligible) {
         return recordSuppressedAutomaticRun({
@@ -2697,7 +2825,8 @@ export function routineService(
         variables: isPlainRecord(input.payload) && isPlainRecord(input.payload.variables)
           ? input.payload.variables
           : null,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: effectiveIdempotencyKey,
+        courierDelivery,
       });
     },
 
@@ -2717,6 +2846,7 @@ export function routineService(
           dispatchFingerprint: routineRuns.dispatchFingerprint,
           routineRevisionId: routineRuns.routineRevisionId,
           linkedIssueId: routineRuns.linkedIssueId,
+          deliveryReceipt: routineRuns.deliveryReceipt,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
           failureReason: routineRuns.failureReason,
           completedAt: routineRuns.completedAt,
@@ -2750,6 +2880,7 @@ export function routineService(
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
+        deliveryReceipt: row.deliveryReceipt,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,

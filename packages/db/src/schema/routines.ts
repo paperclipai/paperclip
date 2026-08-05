@@ -149,6 +149,7 @@ export const routineRuns = pgTable(
     triggerPayload: jsonb("trigger_payload").$type<Record<string, unknown>>(),
     dispatchFingerprint: text("dispatch_fingerprint"),
     linkedIssueId: uuid("linked_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    deliveryReceipt: jsonb("delivery_receipt").$type<Record<string, unknown>>(),
     coalescedIntoRunId: uuid("coalesced_into_run_id"),
     failureReason: text("failure_reason"),
     completedAt: timestamp("completed_at", { withTimezone: true }),
