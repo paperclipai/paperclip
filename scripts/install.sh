@@ -364,18 +364,14 @@ elif [ -n "$VERSION" ]; then
   PACKAGE_SPEC="$PAPERCLIP_PACKAGE@$VERSION"
 fi
 
-INSTALL_ARGS=(install)
-[ "$CANARY" = "1" ] && INSTALL_ARGS+=(--canary)
-[ -n "$VERSION" ] && INSTALL_ARGS+=(--version "$VERSION")
-[ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--yes)
 ensure_temp_dir
 NPM_USERCONFIG="$TEMP_DIR/npmrc"
 printf 'registry=%s\n@paperclipai:registry=%s\n' "$PUBLIC_NPM_REGISTRY" "$PUBLIC_NPM_REGISTRY" >"$NPM_USERCONFIG"
 chmod 600 "$NPM_USERCONFIG"
 NPM_ENV=(env "NPM_CONFIG_REGISTRY=$PUBLIC_NPM_REGISTRY" "npm_config_registry=$PUBLIC_NPM_REGISTRY" "NPM_CONFIG_USERCONFIG=$NPM_USERCONFIG" "npm_config_userconfig=$NPM_USERCONFIG")
-INSTALL_COMMAND=("${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
+INSTALL_COMMAND=("${NPM_ENV[@]}" npm install -g --prefix "${HOME}/.local" "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC")
 
-log "Delegating to the Paperclip CLI"
+log "Installing the Paperclip CLI to ~/.local/bin"
 if [ "$DRY_RUN" = "1" ]; then
   print_command "${INSTALL_COMMAND[@]}"
   exit 0
