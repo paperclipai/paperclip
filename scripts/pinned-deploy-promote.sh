@@ -318,22 +318,40 @@ cmd_promote_pointer() {
   fi
   mv "$staging" "$DEPLOY_ROOT"
 
-  # Point current receipt at promoted SHA
+  # Finalize transition metadata on the working receipt FIRST, then write the
+  # durable immutable copy so the receipt that lands under receipts/ includes
+  # deployPointerMutated / promotedAt / paths (TSMC-19814 finding 2).
+  node - "$(working_receipt_path)" "$CURRENT_RECEIPT" <<'NODE'
+const fs = require("fs");
+const [working, current] = process.argv.slice(2);
+const r = JSON.parse(fs.readFileSync(working, "utf8"));
+r.deployPointerMutated = true;
+r.liveCutover = true;
+r.promotedAt = new Date().toISOString();
+r.currentReceiptPath = current;
+// durable path filled after finalize_receipt_copy
+fs.writeFileSync(working, JSON.stringify(r, null, 2) + "\n");
+NODE
+
   local durable
   durable="$(finalize_receipt_copy)"
   node - "$(working_receipt_path)" "$CURRENT_RECEIPT" "$durable" <<'NODE'
 const fs = require("fs");
 const [working, current, durable] = process.argv.slice(2);
 const r = JSON.parse(fs.readFileSync(working, "utf8"));
-r.deployPointerMutated = true;
-r.liveCutover = true;
-r.promotedAt = new Date().toISOString();
-r.currentReceiptPath = current;
 r.durableReceiptPath = durable;
-fs.writeFileSync(working, JSON.stringify(r, null, 2) + "\n");
-fs.writeFileSync(current, JSON.stringify(r, null, 2) + "\n");
+// Postcondition: transition metadata must be present before any durable copy is trusted.
+if (r.deployPointerMutated !== true || !r.promotedAt) {
+  console.error("receipt postcondition failed: missing transition metadata");
+  process.exit(1);
+}
+const body = JSON.stringify(r, null, 2) + "\n";
+fs.writeFileSync(working, body);
+fs.writeFileSync(current, body);
+// Rewrite the durable receipt so it matches the final postcondition (same content).
+fs.writeFileSync(durable, body);
 NODE
-  log "PROMOTION COMPLETE deployRoot=$DEPLOY_ROOT receipt=$CURRENT_RECEIPT"
+  log "PROMOTION COMPLETE deployRoot=$DEPLOY_ROOT receipt=$CURRENT_RECEIPT durable=$durable"
   log "NOTE: launchd install/reload is intentionally NOT performed by this script"
 }
 

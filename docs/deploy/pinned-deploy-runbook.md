@@ -1,6 +1,6 @@
 # Pinned deploy worktree — operator runbook
 
-Issue: TSMC-19813 / parent TSMC-19809  
+Issue: TSMC-19813 / remediation TSMC-19815 / parent TSMC-19809  
 KB: TSKB0362, TSKB0019, TSKB0268
 
 ## Goal
@@ -27,11 +27,12 @@ the live database.
 - `scripts/pinned-deploy-promote.sh` — fail-closed promotion + receipt
 - `scripts/pinned-deploy-start.sh` — deploy launcher (not `launchd-start.sh`)
 - `scripts/pinned-deploy-verify.sh` — `plutil` lint + port ownership report
-- `scripts/pinned-deploy-snapshot-smoke.sh` — disposable DB / UQ fixture smoke
+- `scripts/pinned-deploy-snapshot-smoke.sh` — disposable DB, UQ fixture, and
+  isolated disposable-port boot + `/api/health` + authenticated issue create/read
 - Templates: `docs/launchd/ie.thinkstack.paperclip-deploy.plist.template`,
   `docs/launchd/ie.thinkstack.paperclip-source-coexist.plist.template`
 
-## Mandatory gates (all must be green)
+## Mandatory gates (all must be green before pointer flip)
 
 1. Candidate SHA is a committed object and ancestor of the approved branch (`live`).
 2. `plutil -lint` on rendered deploy + source coexist plists.
@@ -39,10 +40,21 @@ the live database.
    (`uq-fixture`).
 4. `server/scripts/dev-watch-gate.mjs` in the candidate worktree.
 5. `pnpm --filter @paperclipai/server typecheck` in the candidate worktree.
-6. (Window) snapshot restore + migrate + boot + `/api/health` on disposable DB/port
-   via `restore-migrate` when a dump path is provided.
+6. **Window snapshot smoke** (when a dump is provided): restore into a disposable
+   DB only → candidate migrate → migration-status → boot candidate on a
+   **disposable port** (never `:3100`/`:3101`/`:13100`/`:13101`) → `GET /api/health`
+   → authenticated issue create/read against that isolated candidate → drop
+   **only** the disposable DB. Implemented by
+   `./scripts/pinned-deploy-snapshot-smoke.sh restore-migrate`.
 
 Failed gate ⇒ **no** deploy pointer change (`promote-pointer` refuses).
+
+### Receipt ordering (promotion)
+
+`promote-pointer` writes transition metadata (`deployPointerMutated`,
+`liveCutover`, `promotedAt`, receipt paths) onto the working receipt **before**
+the durable receipt copy is finalized. The durable `receipt-<sha>-*.json` and
+`current-receipt.json` both include the completed pointer-transition fields.
 
 ## Dry-run (safe anytime)
 
@@ -51,6 +63,10 @@ cd ~/paperclip
 ./scripts/pinned-deploy-verify.sh lint
 ./scripts/pinned-deploy-snapshot-smoke.sh uq-fixture
 ./scripts/pinned-deploy-promote.sh rollback-drill
+
+# Optional: boot/API harness self-check with HTTP stub (no live ports, no dump)
+PAPERCLIP_PINNED_DEPLOY_BOOT_STUB=1 \
+  ./scripts/pinned-deploy-snapshot-smoke.sh boot-api
 
 # Full dry-run against a committed SHA (creates candidate worktree; no live pointer):
 ./scripts/pinned-deploy-promote.sh full-dry-run <committed-sha>
@@ -66,13 +82,17 @@ export PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE=1   # dual control with CLI flag
 # 1. Prepare + gates
 ./scripts/pinned-deploy-promote.sh full-dry-run <sha>
 
-# 2. Optional production snapshot smoke (read-only dump + disposable restore)
+# 2. Production snapshot smoke (read-only dump + disposable restore + boot/API)
 export PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT=$HOME/paperclip-deploy.candidate
 export PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE_DUMP=1   # or set DUMP_PATH to existing -Fc
+# Optional: PAPERCLIP_PINNED_DEPLOY_SMOKE_PORT=<free high port>
 ./scripts/pinned-deploy-snapshot-smoke.sh restore-migrate
+# Expect receipts under ~/.paperclip/deploy/receipts/:
+#   last-restore-migrate.json, last-boot-api-smoke.json, last-migration-status.json
 
 # 3. Pointer only (still does NOT install launchd)
 ./scripts/pinned-deploy-promote.sh promote-pointer --allow-live-pointer
+# Confirm durable receipt has deployPointerMutated=true and promotedAt set
 
 # 4. Install/reload plists manually from rendered templates
 ./scripts/pinned-deploy-verify.sh lint
@@ -86,6 +106,18 @@ curl -fsS http://127.0.0.1:3100/api/health
 ./scripts/pinned-deploy-verify.sh ports
 # Confirm receipt SHA == deploy HEAD == health version field when exposed
 ```
+
+### Snapshot smoke details (step 2)
+
+| Step | Behavior |
+| --- | --- |
+| DB name | `paperclip_promote_smoke_<ts>_<pid>` only |
+| Dump | `PAPERCLIP_PINNED_DEPLOY_DUMP_PATH` or read-only `pg_dump` of live name when `ALLOW_LIVE_DUMP=1` |
+| Migrate | candidate `packages/db` migrate + migration-status against disposable DB URL only |
+| Boot | isolated `PAPERCLIP_HOME` + disposable `PORT`; banned live ports |
+| Health | `GET /api/health` until `status=ok` or timeout |
+| API | local_trusted board actor (or cookie session if deploymentMode=authenticated): create issue + read back |
+| Cleanup | terminate smoke server; `DROP DATABASE` only for the disposable name; never `paperclip` |
 
 ## Rollback
 
@@ -111,8 +143,21 @@ Non-production rehearsal:
 - No candidate migration against live DB name `paperclip`.
 - No `PAPERCLIP_RECLAIM_PRIMARY` on the post-cutover source plist.
 - Deploy launcher must refuse boot when HEAD ≠ receipt SHA.
+- Snapshot smoke must never bind or kill `:3100`/`:3101`/runtime pair.
+
+## Tests
+
+```bash
+cd ~/paperclip
+node --test scripts/__tests__/pinned-deploy-promote.test.mjs
+```
+
+Covers: plist lint, fail-closed promote, successful temporary-pointer durable
+receipt metadata, rollback drill, UQ fixture, missing-dump refusal, disposable
+boot/API smoke (stub), restore-migrate+boot path (stub), cleanup safety contract.
 
 ## Independent audit
 
-TSMC-19814 audits implementation + rollback drill evidence without performing
-cutover.
+TSMC-19814 audited the initial implementation and requested the boot/API smoke
+and receipt-ordering hardening delivered under TSMC-19815. Cutover remains a
+separate CTO-authorized window on parent TSMC-19809.
