@@ -28,6 +28,9 @@ export type TaskWatchdogMutationScope =
       watchedIssueId: string;
       watchdogIssueId: string | null;
       stopFingerprint: string | null;
+      capabilities: {
+        resolveEligibleRequestConfirmationPlanInteractions: boolean;
+      };
     };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -42,9 +45,16 @@ function readTaskWatchdogContext(contextSnapshot: unknown) {
   const context = isPlainRecord(contextSnapshot) ? contextSnapshot : null;
   const taskWatchdog = isPlainRecord(context?.taskWatchdog) ? context.taskWatchdog : null;
   if (!taskWatchdog && context?.taskWatchdog !== true) return null;
+  const capabilities = isPlainRecord(taskWatchdog?.capabilities) ? taskWatchdog.capabilities : null;
+  const operations = Array.isArray(capabilities?.operations) ? capabilities.operations : [];
   return {
     watchedIssueId: readString(taskWatchdog?.watchedIssueId) ?? readString(context?.watchedIssueId),
     stopFingerprint: readString(taskWatchdog?.stopFingerprint) ?? readString(context?.stopFingerprint),
+    capabilities: {
+      resolveEligibleRequestConfirmationPlanInteractions: operations.includes(
+        "resolve_eligible_request_confirmation_plan_interactions",
+      ),
+    },
   };
 }
 
@@ -118,6 +128,7 @@ export async function resolveTaskWatchdogMutationScope(
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
     stopFingerprint: taskWatchdog.stopFingerprint,
+    capabilities: taskWatchdog.capabilities,
   };
 }
 

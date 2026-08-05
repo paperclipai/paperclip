@@ -797,6 +797,9 @@ describe.sequential("issue thread interaction routes", () => {
       watchedIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       watchdogIssueId: null,
       stopFingerprint: "stop-1",
+      capabilities: {
+        resolveEligibleRequestConfirmationPlanInteractions: false,
+      },
     });
     const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-watchdog" });
     const res = await request(app)
@@ -1787,6 +1790,9 @@ describe.sequential("issue thread interaction routes", () => {
       watchedIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       watchdogIssueId: null,
       stopFingerprint: "stop-1",
+      capabilities: {
+        resolveEligibleRequestConfirmationPlanInteractions: false,
+      },
     });
     const watchdogApp = await createApp(actor);
     const watchdog = await request(watchdogApp)

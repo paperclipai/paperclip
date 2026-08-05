@@ -155,12 +155,12 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     return row;
   }
 
-  function createService() {
+  function createService(wakeupRunId?: string) {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> | undefined }> = [];
     const service = taskWatchdogService(db, {
       enqueueWakeup: async (agentId, opts) => {
         wakes.push({ agentId, opts });
-        return { id: randomUUID() };
+        return { id: wakeupRunId ?? randomUUID() };
       },
     });
     return { service, wakes };
@@ -798,5 +798,40 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
 
     expect(result).toMatchObject({ checked: 0, triggered: 0 });
+  });
+
+  it("persists task-watchdog scope and capabilities on the returned heartbeat run", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-RUN", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "queued",
+      contextSnapshot: { existingContext: "preserved" },
+    });
+    const { service } = createService(runId);
+
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(run?.contextSnapshot).toMatchObject({
+      existingContext: "preserved",
+      wakeReason: "task_watchdog_stopped_subtree",
+      taskWatchdog: {
+        watchedIssueId: sourceId,
+        capabilities: {
+          operations: expect.arrayContaining([
+            "resolve_eligible_request_confirmation_plan_interactions",
+          ]),
+        },
+      },
+    });
   });
 });

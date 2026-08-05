@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -19,6 +19,7 @@ import {
   type PipelineCaseOutputItem,
   type PipelineCaseOutputContextSummary,
   type PipelineCaseOutputContextSummaryItem,
+  type PipelineCaseBoardOutputSummary,
   type PipelineCaseOutputSource,
   type PipelineCaseOutputSourceRole,
   type PipelineCaseOutputsResponse,
@@ -265,6 +266,110 @@ function sourceFromRow(row: SourceRow): PipelineCaseOutputSource {
 
 export function pipelineCaseOutputsService(db: Db) {
   return {
+    loadBoardOutputSummaries: async (
+      companyId: string,
+      caseIds: string[],
+    ): Promise<Map<string, PipelineCaseBoardOutputSummary>> => {
+      const uniqueCaseIds = [...new Set(caseIds)];
+      if (uniqueCaseIds.length === 0) return new Map();
+      const summaries = new Map<string, PipelineCaseBoardOutputSummary>();
+
+      const applyRows = (rows: Array<{ caseId: string; outputCount: number | string | null; latestOutputAt: Date | string | null }>) => {
+        for (const row of rows) {
+          const current = summaries.get(row.caseId) ?? { outputCount: 0, latestOutputAt: null };
+          current.outputCount += Number(row.outputCount ?? 0);
+          if (row.latestOutputAt) {
+            const latestOutputAt = row.latestOutputAt instanceof Date
+              ? row.latestOutputAt.toISOString()
+              : new Date(row.latestOutputAt).toISOString();
+            const nextTime = Date.parse(latestOutputAt);
+            const currentTime = current.latestOutputAt ? Date.parse(current.latestOutputAt) : Number.NEGATIVE_INFINITY;
+            if (Number.isFinite(nextTime) && nextTime > currentTime) {
+              current.latestOutputAt = latestOutputAt;
+            }
+          }
+          summaries.set(row.caseId, current);
+        }
+      };
+
+      const sourceFilter = and(
+        eq(pipelineCaseIssueLinks.companyId, companyId),
+        inArray(pipelineCaseIssueLinks.caseId, uniqueCaseIds),
+        isNull(pipelineCaseIssueLinks.retiredAt),
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        isNull(issues.cancelledAt),
+        ne(issues.status, "cancelled"),
+      );
+
+      const [documentRows, workProductRows, attachmentRows] = await Promise.all([
+        db
+          .select({
+            caseId: pipelineCaseIssueLinks.caseId,
+            outputCount: sql<number>`count(${documents.id})::int`,
+            latestOutputAt: sql<Date | null>`max(${documents.updatedAt})`,
+          })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
+          .innerJoin(issueDocuments, and(
+            eq(issueDocuments.companyId, companyId),
+            eq(issueDocuments.issueId, issues.id),
+          ))
+          .innerJoin(documents, and(
+            eq(issueDocuments.documentId, documents.id),
+            eq(documents.companyId, companyId),
+          ))
+          .where(and(
+            sourceFilter,
+            notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
+          ))
+          .groupBy(pipelineCaseIssueLinks.caseId),
+        db
+          .select({
+            caseId: pipelineCaseIssueLinks.caseId,
+            outputCount: sql<number>`count(${issueWorkProducts.id})::int`,
+            latestOutputAt: sql<Date | null>`max(${issueWorkProducts.updatedAt})`,
+          })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
+          .innerJoin(issueWorkProducts, and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.issueId, issues.id),
+          ))
+          .where(sourceFilter)
+          .groupBy(pipelineCaseIssueLinks.caseId),
+        db
+          .select({
+            caseId: pipelineCaseIssueLinks.caseId,
+            outputCount: sql<number>`count(${issueAttachments.id})::int`,
+            latestOutputAt: sql<Date | null>`max(${issueAttachments.updatedAt})`,
+          })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
+          .innerJoin(issueAttachments, and(
+            eq(issueAttachments.companyId, companyId),
+            eq(issueAttachments.issueId, issues.id),
+          ))
+          .innerJoin(assets, and(
+            eq(assets.id, issueAttachments.assetId),
+            eq(assets.companyId, companyId),
+          ))
+          .where(sourceFilter)
+          .groupBy(pipelineCaseIssueLinks.caseId),
+      ]);
+
+      applyRows(documentRows);
+      applyRows(workProductRows);
+      applyRows(attachmentRows);
+
+      return new Map(
+        uniqueCaseIds.map((caseId) => {
+          const summary = summaries.get(caseId) ?? { outputCount: 0, latestOutputAt: null };
+          return [caseId, summary];
+        }),
+      );
+    },
+
     listCaseOutputs: async (companyId: string, caseId: string): Promise<PipelineCaseOutputsResponse> => {
       const [caseRow, company] = await Promise.all([
         db

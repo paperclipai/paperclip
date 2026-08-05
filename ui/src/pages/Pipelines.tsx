@@ -20,7 +20,7 @@ import type {
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpDown, ArrowUpRight, BookOpenText, Check, ChevronDown, ChevronRight, ChevronUp, CircleDot, Download, ExternalLink, FileText, GitBranch, Hexagon, Image as ImageIcon, Info, Layers, List, ListTree, Loader2, MessageSquare, MoreHorizontal, Package, Paperclip, Plus, Search, Settings, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, ArrowUpRight, BookOpenText, Check, ChevronDown, ChevronRight, ChevronUp, CircleDot, Download, ExternalLink, FileText, GitBranch, Hexagon, Image as ImageIcon, Info, Layers, List, ListTree, Loader2, MessageSquare, MoreHorizontal, Package, Paperclip, Pencil, Plus, Search, Settings, Trash2, X } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -65,6 +65,7 @@ import {
   type PipelineBatchIngestResult,
   type PipelineCase,
   type PipelineCaseActiveWork,
+  type PipelineCaseChildRow,
   type PipelineCaseDetail,
   type PipelineCaseEvent,
   type PipelineCaseParentSummary,
@@ -113,7 +114,13 @@ import { extractWorkReferences, referenceFieldKeys } from "../lib/pipeline-refer
 import { pieceNounPlural, readStageBreakdown } from "../lib/pipeline-breakdown";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { formatLearningEvent, groupLearningEventsByDay } from "../lib/pipeline-learnings";
-import { getPipelineStageColumnTone, pipelineStageAutomationSettingsHref } from "../lib/pipeline-stage-presentation";
+import {
+  buildPipelineBoardPresentation,
+  derivePipelineItemDetailActions,
+  getPipelineBoardStateChip,
+  getPipelineStageColumnTone,
+  pipelineStageAutomationSettingsHref,
+} from "../lib/pipeline-stage-presentation";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -1011,6 +1018,9 @@ type BoardCase = PipelineCase & {
   activeWork?: PipelineCaseActiveWork | null;
   descendantActiveWorkCount?: number | null;
   parentCase?: PipelineCaseParentSummary | null;
+  outputSummary?: PipelineCaseChildRow["outputSummary"];
+  boardNeedsAttention?: boolean;
+  boardStage?: PipelineStage | null;
 };
 
 type PipelineTransitionEdge = { fromStageId: string; toStageId: string; label?: string | null };
@@ -1207,6 +1217,47 @@ export function groupCasesByBuiltFor(cases: BoardCase[]) {
   return [...groups.values()];
 }
 
+export function pipelineBoardStateChipClass(tone: ReturnType<typeof getPipelineBoardStateChip>["tone"]) {
+  switch (tone) {
+    case "active":
+      return "pipeline-state-chip--active";
+    case "ready":
+      return "pipeline-state-chip--ready";
+    case "review":
+      return "pipeline-state-chip--review";
+    case "waiting":
+      return "pipeline-state-chip--waiting";
+    case "attention":
+      return "pipeline-state-chip--attention";
+    case "done":
+      return "pipeline-state-chip--done";
+    case "muted":
+      return "pipeline-state-chip--muted";
+    case "neutral":
+    default:
+      return "pipeline-state-chip--neutral";
+  }
+}
+
+function PipelineBoardStateChip({ caseItem }: { caseItem: BoardCase }) {
+  const chip = getPipelineBoardStateChip({
+    caseItem,
+    stage: caseItem.boardStage,
+    hiddenActionFallback: caseItem.boardNeedsAttention,
+  });
+  return (
+    <span className={cn(
+      "pipeline-state-chip status-chip inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-medium",
+      pipelineBoardStateChipClass(chip.tone),
+    )}>
+      {chip.key === "running" ? (
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden="true" />
+      ) : null}
+      {chip.label}
+    </span>
+  );
+}
+
 function PipelineCaseCard({
   caseItem,
   isOverlay = false,
@@ -1215,12 +1266,10 @@ function PipelineCaseCard({
   isOverlay?: boolean;
 }) {
   const title = getCaseTitle(caseItem);
-  const isWorking = isWorkingCase(caseItem);
-  const blockerCount = getOpenBlockerCount(caseItem);
-  const hasNeedsAttention = blockerCount > 0;
   const hasChangedNotice = hasThisChanged(caseItem);
   const childrenSummary = getChildrenSummaryCount(caseItem);
   const liveDownstreamCount = descendantActiveWorkCount(caseItem);
+  const outputCount = caseItem.outputSummary?.outputCount ?? 0;
   const {
     attributes,
     listeners,
@@ -1254,17 +1303,7 @@ function PipelineCaseCard({
       >
         <p className="font-medium leading-snug text-foreground">{title}</p>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {isWorking ? (
-            <Badge variant="outline" className="relative border-emerald-400/40 bg-emerald-50 text-(length:--text-nano) text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
-              <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-500"></span>
-              Working
-            </Badge>
-          ) : null}
-          {hasNeedsAttention ? (
-            <Badge variant="outline" className="border-amber-400/40 bg-amber-50 text-(length:--text-nano) text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
-              Needs attention
-            </Badge>
-          ) : null}
+          <PipelineBoardStateChip caseItem={caseItem} />
           {hasChangedNotice ? (
             <Badge variant="outline" className="border-indigo-400/40 bg-indigo-50 text-(length:--text-nano) text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
               This changed
@@ -1280,6 +1319,11 @@ function PipelineCaseCard({
         {childrenSummary != null ? (
           <p className="mt-1.5 text-xs text-muted-foreground">
             Built from {formatNumber(childrenSummary)} {childrenSummary === 1 ? "item" : "items"}
+          </p>
+        ) : null}
+        {outputCount > 0 ? (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            {formatNumber(outputCount)} output{outputCount === 1 ? "" : "s"}
           </p>
         ) : null}
       </Link>
@@ -1383,11 +1427,11 @@ function PipelineBoardColumn({
         ref={setNodeRef}
         className={cn(
           "min-h-(--sz-160px) flex-1 space-y-2 rounded-b-md px-2 py-2 transition-colors",
-          isBlockedDropTarget ? "bg-red-50 dark:bg-red-950/30" : isOver ? tone.bodyOver : tone.body,
+          isBlockedDropTarget ? "pipeline-drop-blocked-target" : isOver ? tone.bodyOver : tone.body,
         )}
       >
         {isBlockedDropTarget ? (
-          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-(length:--text-micro) text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
+          <p className="pipeline-drop-blocked-notice rounded border px-3 py-2 text-(length:--text-micro)">
             This move skips the normal flow
           </p>
         ) : null}
@@ -1427,6 +1471,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [activeOverId, setActiveOverId] = useState<string | null>(null);
   const [groupByState, setGroupByState] = useState<{ pipelineId: string; value: PipelineBoardGroupBy }>(() => ({
@@ -1475,12 +1520,17 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
   });
 
   const pipeline = pipelineQuery.data;
+  const configuredView = useMemo(
+    () => new URLSearchParams(location.search).get("view") === "configured",
+    [location.search],
+  );
   const cases = useMemo<BoardCase[]>(
     () => (casesQuery.data ?? []).map((row) => ({
       ...row.case,
       parentCase: row.parentCase ?? null,
       activeWork: row.activeWork ?? null,
       descendantActiveWorkCount: row.descendantActiveWorkCount ?? 0,
+      outputSummary: row.outputSummary,
     })),
     [casesQuery.data],
   );
@@ -1494,42 +1544,39 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     [healthQuery.data?.warnings],
   );
 
-  const stageIds = useMemo(() => new Set(orderedStages.map((stage) => stage.id)), [orderedStages]);
-
-  const boardColumns = useMemo(() => {
-    const byStage = new Map<string, BoardCase[]>();
-    const caseToColumn = new Map<string, string>();
-    const caseById = new Map<string, BoardCase>();
-
-    for (const stage of orderedStages) {
-      byStage.set(stage.id, []);
-    }
-
-    const unassigned: BoardCase[] = [];
-    for (const caseItem of cases) {
-      const stageId = caseItem.stageId && stageIds.has(caseItem.stageId) ? caseItem.stageId : UNASSIGNED_STAGE_ID;
-      if (stageId === UNASSIGNED_STAGE_ID) {
-        unassigned.push(caseItem);
-      } else {
-        byStage.get(stageId)!.push(caseItem);
-      }
-      caseToColumn.set(caseItem.id, stageId);
-      caseById.set(caseItem.id, caseItem);
-    }
-
-    const columns = [...orderedStages];
-    if (unassigned.length > 0) {
-      byStage.set(UNASSIGNED_STAGE_ID, unassigned);
-      columns.push(createUnassignedStage(pipelineId));
-    }
-
-    return { columns, byStage, caseToColumn, caseById };
-  }, [orderedStages, cases, stageIds, pipelineId]);
+  const stagesById = useMemo(() => new Map(orderedStages.map((stage) => [stage.id, stage])), [orderedStages]);
 
   const transitions = useMemo<PipelineTransitionEdge[]>(
     () => pipeline?.transitions ?? [],
     [pipeline?.transitions],
   );
+  const boardColumns = useMemo(() => {
+    const presentation = buildPipelineBoardPresentation({
+      orderedStages,
+      cases,
+      transitions,
+      configuredView,
+      unassignedStage: createUnassignedStage(pipelineId),
+    });
+    const decoratedByStage = new Map<string, BoardCase[]>();
+    const decoratedCaseById = new Map<string, BoardCase>();
+    for (const [stageId, stageCases] of presentation.byStage.entries()) {
+      const stage = stagesById.get(stageId) ?? null;
+      const decoratedCases = stageCases.map((caseItem) => ({
+        ...caseItem,
+        boardStage: caseItem.stageId ? stagesById.get(caseItem.stageId) ?? stage : stage,
+        boardNeedsAttention: presentation.attentionCaseIds.has(caseItem.id),
+      })) as BoardCase[];
+      decoratedByStage.set(stageId, decoratedCases);
+      for (const caseItem of decoratedCases) decoratedCaseById.set(caseItem.id, caseItem);
+    }
+    return {
+      ...presentation,
+      byStage: decoratedByStage,
+      caseById: decoratedCaseById,
+    };
+  }, [orderedStages, cases, transitions, configuredView, pipelineId, stagesById]);
+
   const guardrailsActive = Boolean(pipeline?.enforceTransitions);
   const columnsById = useMemo(() => new Set(boardColumns.columns.map((stage) => stage.id)), [boardColumns.columns]);
 
@@ -1663,7 +1710,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     const activeCase = boardColumns.caseById.get(activeCaseIdValue);
     if (!activeCase) return;
 
-    const sourceStageId = boardColumns.caseToColumn.get(activeCaseIdValue) ?? null;
+    const sourceStageId = activeCase.stageId ?? null;
     const targetStageId = resolvePipelineTargetStageId(
       over.id as string,
       columnsById,
@@ -1760,6 +1807,12 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
               <SelectItem value="builtFor">Built for</SelectItem>
             </SelectContent>
           </Select>
+          <Button variant={configuredView ? "default" : "outline"} asChild>
+            <Link to={configuredView ? `/pipelines/${pipelineId}` : `/pipelines/${pipelineId}?view=configured`}>
+              <GitBranch className="mr-2 h-4 w-4" />
+              {configuredView ? "Default board" : "Configured stages"}
+            </Link>
+          </Button>
           <Button asChild>
             <Link to={`/pipelines/${pipelineId}/add`}>
               <Plus className="mr-2 h-4 w-4" />
@@ -1779,6 +1832,20 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         onSelectStage={(stageId) => navigate(`/pipelines/${pipelineId}/settings?stage=${stageId}`)}
       />
 
+      {!configuredView && boardColumns.terminalRails.some((rail) => rail.cases.length > 0) ? (
+        <div className="flex flex-wrap gap-2 border-y border-border bg-muted/20 px-3 py-2 text-sm">
+          {boardColumns.terminalRails.map((rail) => rail.cases.length > 0 ? (
+            <div
+              key={rail.key}
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-muted-foreground"
+            >
+              <span className="font-medium text-foreground">{rail.label}</span>
+              <span>{rail.cases.length} item{rail.cases.length === 1 ? "" : "s"}</span>
+            </div>
+          ) : null)}
+        </div>
+      ) : null}
+
       <DndContext
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
@@ -1789,7 +1856,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
           <div className="flex items-start gap-3 pb-3">
             {boardColumns.columns.map((stage) => {
               const items = boardColumns.byStage.get(stage.id) ?? [];
-              const activeSourceStageId = activeCaseId ? boardColumns.caseToColumn.get(activeCaseId) ?? null : null;
+              const activeSourceStageId = activeCaseId ? boardColumns.caseById.get(activeCaseId)?.stageId ?? null : null;
               const activeTargetStageId = activeOverId
                 ? resolvePipelineTargetStageId(activeOverId, columnsById, boardColumns.caseToColumn)
                 : null;
@@ -2758,7 +2825,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const changedNotice = itemHasChangedNotice(detail.case) ?? changedNoticeFromEvents(eventRows);
   const primaryAction = conversationIssue
     ? (
-        <Button asChild>
+        <Button variant="outline" asChild>
           <Link to={conversationIssuePath!} state={conversationIssueState} issuePrefetch={conversationIssueDetail.data ?? null}>
             <MessageSquare className="mr-2 h-4 w-4" />
             Open conversation
@@ -2766,7 +2833,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </Button>
       )
     : (
-        <Button onClick={() => startConversation.mutate()} disabled={startConversation.isPending}>
+        <Button variant="outline" onClick={() => startConversation.mutate()} disabled={startConversation.isPending}>
           <MessageSquare className="mr-2 h-4 w-4" />
           {startConversation.isPending ? "Starting..." : "Start a conversation"}
         </Button>
@@ -2783,6 +2850,20 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       onDecide={(decision) => decideReview.mutate({ decision })}
     />
   ) : null;
+  const detailActions = derivePipelineItemDetailActions({
+    hasStageAutomation: Boolean(stageAutomation),
+    rerunPending: rerunCurrentStageAutomation.isPending,
+    rerunBlockedByPermission,
+    stageKind: detail.stage.kind,
+    hasActiveWork: Boolean(activeWork),
+    previousRetryAllowed: Boolean(previousRetryPlan?.allowed),
+    retryPending: retryStageAutomation.isPending,
+    canCancel: Boolean(removeStage),
+    cancelPending: removeItem.isPending,
+  });
+  const childRollupText = childRows.length > 0
+    ? `${pieceCountDone} of ${pieceCountTotal} ${pieceLabel(pieceCountTotal)} finished`
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -2832,8 +2913,22 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             </p>
           ) : null}
         </div>
-        <div className="flex w-full flex-col gap-5">
-          <div className="flex items-center gap-2 lg:justify-end">
+        <div className="flex w-full flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <Button variant="outline" asChild>
+              <Link to={`${location.pathname}#pipeline-item-body`}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit
+              </Link>
+            </Button>
+            <Button
+              variant="outline"
+              disabled={detailActions.cancel.disabled}
+              onClick={() => setRemoveDialogOpen(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Cancel
+            </Button>
             {primaryAction}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2843,8 +2938,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  disabled={!stageAutomation || rerunCurrentStageAutomation.isPending || rerunBlockedByPermission}
-                  title={rerunBlockedByPermission ? "Permission still missing — request access first" : undefined}
+                  disabled={detailActions.run.disabled}
+                  title={detailActions.run.reason ?? undefined}
                   onSelect={(event) => {
                     event.preventDefault();
                     setRetryTargetStageId(null);
@@ -2860,7 +2955,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 </DropdownMenuItem>
                 {previousRetryPlan?.allowed ? (
                   <DropdownMenuItem
-                    disabled={retryStageAutomation.isPending}
+                    disabled={detailActions.redo.disabled}
                     onSelect={(event) => {
                       event.preventDefault();
                       setRetryTargetStageId(null);
@@ -2900,6 +2995,15 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+          {childRollupText ? (
+            <Link
+              to={`${location.pathname}#children`}
+              className="inline-flex items-center gap-2 self-start text-sm font-medium text-muted-foreground hover:text-foreground hover:underline lg:self-end"
+            >
+              <ListTree className="h-4 w-4" />
+              {childRollupText}
+            </Link>
+          ) : null}
         </div>
       </div>
 
@@ -3215,7 +3319,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       ) : null}
 
       {(childrenGate || (breakdown?.waitForPieces ?? false)) && waitingChildren.length > 0 ? (
-        <section aria-label="Waiting child items" className="mb-5 border-y border-border px-4 py-4">
+        <section id="children" aria-label="Waiting child items" className="mb-5 scroll-mt-20 border-y border-border px-4 py-4">
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <ListTree className="h-4 w-4 text-muted-foreground" />
@@ -3234,20 +3338,22 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 
       <div className="grid gap-8 lg:grid-cols-(--gtc-45)">
         <main className="min-w-0 space-y-8">
-          <PipelineItemBodyDocument
-            caseId={caseId}
-            legacySummary={detail.case.summary ?? null}
-            hasLegacyLongFields={mainPaneFields.length > 0}
-            conversationIssueId={conversationIssueId}
-            conversationIssue={activeConversationIssue ?? null}
-            agentMap={agentMap}
-            userProfileMap={userProfileMap}
-            mentions={mentionOptions}
-            imageUploadHandler={conversationIssueId ? handleConversationImageUpload : undefined}
-            locationHash={location.hash}
-            onStartConversation={startConversationForBody}
-            onAfterChange={invalidateItem}
-          />
+          <section id="pipeline-item-body" className="scroll-mt-20">
+            <PipelineItemBodyDocument
+              caseId={caseId}
+              legacySummary={detail.case.summary ?? null}
+              hasLegacyLongFields={mainPaneFields.length > 0}
+              conversationIssueId={conversationIssueId}
+              conversationIssue={activeConversationIssue ?? null}
+              agentMap={agentMap}
+              userProfileMap={userProfileMap}
+              mentions={mentionOptions}
+              imageUploadHandler={conversationIssueId ? handleConversationImageUpload : undefined}
+              locationHash={location.hash}
+              onStartConversation={startConversationForBody}
+              onAfterChange={invalidateItem}
+            />
+          </section>
 
           {mainPaneFields.length > 0 ? (
             <details className="group rounded-md border border-border">

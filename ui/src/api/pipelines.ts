@@ -3,6 +3,7 @@ import type {
   PipelineAutomationRetryCleanupOptions,
   PipelineAutomationRetryPlan,
   PipelineAutomationRetryScope,
+  PipelineCaseBoardOutputSummary,
   PipelineCaseConversationSource,
   PipelineCaseDocumentPayload,
   PipelineCaseDocumentRevision,
@@ -441,6 +442,7 @@ export interface PipelineCaseChildRow {
   parentCase?: PipelineCaseParentSummary | null;
   activeWork?: PipelineCaseActiveWork | null;
   descendantActiveWorkCount?: number;
+  outputSummary?: PipelineCaseBoardOutputSummary;
 }
 
 export type PipelineCaseChildrenResponse = PipelineCaseChildRow[];

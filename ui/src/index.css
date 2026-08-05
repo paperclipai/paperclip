@@ -163,6 +163,17 @@
   --status-task-done: #22c55e;
   --status-task-blocked: #dc2626;
   --status-task-cancelled: #a8aeb2;
+  --pipeline-state-active: #10b981;
+  --pipeline-state-ready: var(--status-task-in_progress);
+  --pipeline-state-review: var(--status-task-in_review);
+  --pipeline-state-waiting: var(--status-task-todo);
+  --pipeline-state-attention: var(--status-task-blocked);
+  --pipeline-state-done: var(--status-task-done);
+  --pipeline-state-muted: var(--status-task-backlog);
+  --pipeline-state-neutral: var(--status-task-backlog);
+  --pipeline-drop-blocked-surface: color-mix(in srgb, var(--status-task-blocked) 8%, var(--background));
+  --pipeline-drop-blocked-border: color-mix(in srgb, var(--status-task-blocked) 24%, var(--border));
+  --pipeline-drop-blocked-foreground: color-mix(in srgb, var(--status-task-blocked) 82%, var(--foreground));
 
   /* Task status ICON hues (PAP-238 3b) — AA-tuned (every glyph ≥ 3:1 against
      its surface, WCAG 2.1 AA, both modes). Distinct from the
@@ -1856,6 +1867,21 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 .status-fill {
   background-color: var(--sc);
+}
+
+.pipeline-state-chip--active { --sc: var(--pipeline-state-active); }
+.pipeline-state-chip--ready { --sc: var(--pipeline-state-ready); }
+.pipeline-state-chip--review { --sc: var(--pipeline-state-review); }
+.pipeline-state-chip--waiting { --sc: var(--pipeline-state-waiting); }
+.pipeline-state-chip--attention { --sc: var(--pipeline-state-attention); }
+.pipeline-state-chip--done { --sc: var(--pipeline-state-done); }
+.pipeline-state-chip--muted { --sc: var(--pipeline-state-muted); }
+.pipeline-state-chip--neutral { --sc: var(--pipeline-state-neutral); }
+.pipeline-drop-blocked-target { background-color: var(--pipeline-drop-blocked-surface); }
+.pipeline-drop-blocked-notice {
+  background-color: var(--pipeline-drop-blocked-surface);
+  border-color: var(--pipeline-drop-blocked-border);
+  color: var(--pipeline-drop-blocked-foreground);
 }
 
 /* ── Extracted verbatim tokens (Phase 2, design/token-extraction) ── */

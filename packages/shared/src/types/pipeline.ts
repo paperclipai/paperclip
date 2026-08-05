@@ -291,6 +291,11 @@ export interface PipelineCaseOutputsResponse {
   };
 }
 
+export interface PipelineCaseBoardOutputSummary {
+  outputCount: number;
+  latestOutputAt: string | null;
+}
+
 export interface PipelineCaseOutputContextSummaryItem {
   id: string;
   kind: PipelineCaseOutputKind;

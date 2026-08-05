@@ -12,10 +12,14 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issueRelations,
+  issueThreadInteractions,
   issueWatchdogs,
   issues,
   principalPermissionGrants,
@@ -24,8 +28,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { errorHandler } from "../middleware/index.js";
 import { runningProcesses } from "../adapters/index.ts";
+import { actorMiddleware } from "../middleware/auth.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -67,8 +73,11 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("issue watchdog routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "issue-watchdogs-routes-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-watchdogs-routes-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -78,6 +87,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     runningProcesses.clear();
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(activityLog);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -85,6 +95,9 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     await db.delete(agentRuntimeState);
     await db.delete(issueRelations);
     await db.delete(issueWatchdogs);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companySkills);
@@ -95,6 +108,8 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousJwtSecret;
   });
 
   function createApp(companyId: string, actor?: Record<string, unknown>) {
@@ -111,6 +126,15 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       };
       next();
     });
+    app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null }));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createAuthenticatedApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
     app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null }));
     app.use(errorHandler);
     return app;
@@ -190,11 +214,42 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     return id;
   }
 
+  async function seedPlanDocument(companyId: string, issueId: string) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan\n\n- Create concrete follow-up work\n- Verify acceptance criteria",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan\n\n- Create concrete follow-up work\n- Verify acceptance criteria",
+    });
+    return { documentId, revisionId };
+  }
+
   async function seedWatchdogRun(input: {
     companyId: string;
     watchdogAgentId: string;
     watchedIssueId: string;
     watchdogIssueId: string;
+    includePlanConfirmationCapability?: boolean;
   }) {
     await db.insert(issueWatchdogs).values({
       companyId: input.companyId,
@@ -221,6 +276,19 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
           watchedIssueIdentifier: "WDOG-ROOT",
           watchedIssueTitle: "Watched root",
           stopFingerprint: watchdog?.lastObservedFingerprint,
+          capabilities: {
+            operations: [
+              "comment_on_watched_subtree_issues",
+              "transition_watched_subtree_issue_status",
+              "reassign_watched_subtree_issues",
+              "create_child_issues_under_non_watchdog_watched_subtree",
+              "create_product_bug_followups_outside_watched_subtree",
+              ...(input.includePlanConfirmationCapability === false
+                ? []
+                : ["resolve_eligible_request_confirmation_plan_interactions"]),
+              "update_reusable_watchdog_issue",
+            ],
+          },
         },
       },
     });
@@ -625,6 +693,439 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
+  });
+
+  it("allows watchdogs to accept eligible plan confirmation interactions in the watched subtree", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Plan Confirmation Watchdog" });
+    const workerAgentId = await seedAgent(companyId, { name: "Plan Author" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Child awaiting plan approval",
+      parentId: watchedRootId,
+      status: "in_review",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const { documentId, revisionId } = await seedPlanDocument(companyId, watchedChildId);
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    });
+    const toolActionInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: toolActionInteractionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval with tool action",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan and tool action?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+        toolAction: {
+          version: 1,
+          actionRequestId: randomUUID(),
+          invocationId: randomUUID(),
+          toolName: "send_email",
+          toolDisplayName: "Send email",
+          connectionId: null,
+          applicationId: null,
+          appDisplayName: "Mail",
+          risk: "write",
+          previewMarkdown: "Send an email to the reviewed recipient.",
+          argumentsSummaryJson: '{"to":"recipient@example.com"}',
+          argumentsHash: "reviewed-arguments-hash",
+          expiresAt: "2026-08-06T16:00:00.000Z",
+        },
+      },
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const toolActionRes = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${toolActionInteractionId}/accept`)
+      .send({});
+
+    expect(toolActionRes.status, JSON.stringify(toolActionRes.body)).toBe(403);
+    expect(toolActionRes.body.error).toBe("Tool-action confirmations are always board-only");
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/accept`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: interactionId,
+      kind: "request_confirmation",
+      status: "accepted",
+      resolvedByAgentId: watchdogAgentId,
+    });
+
+    const [stored] = await db
+      .select({
+        status: issueThreadInteractions.status,
+        resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+      })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(stored).toEqual({
+      status: "accepted",
+      resolvedByAgentId: watchdogAgentId,
+    });
+  });
+
+  it("allows agent-key watchdog route actors to accept eligible plan confirmation interactions", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Plan Confirmation Watchdog" });
+    const workerAgentId = await seedAgent(companyId, { name: "Plan Author" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Child awaiting plan approval",
+      parentId: watchedRootId,
+      status: "in_review",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const { documentId, revisionId } = await seedPlanDocument(companyId, watchedChildId);
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/accept`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: interactionId,
+      kind: "request_confirmation",
+      status: "accepted",
+      resolvedByAgentId: watchdogAgentId,
+    });
+  });
+
+  it("rejects a watchdog request when the run header conflicts with the signed JWT run claim", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "JWT Plan Confirmation Watchdog" });
+    const workerAgentId = await seedAgent(companyId, { name: "Plan Author" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-JWT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Child awaiting plan approval",
+      parentId: watchedRootId,
+      status: "in_review",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const { documentId, revisionId } = await seedPlanDocument(companyId, watchedChildId);
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const token = createLocalAgentJwt(watchdogAgentId, companyId, "codex_local", runId);
+    expect(token).toBeTruthy();
+
+    const res = await request(createAuthenticatedApp())
+      .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/accept`)
+      .set("authorization", `Bearer ${token}`)
+      .set("x-paperclip-run-id", randomUUID())
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({
+      code: "agent_jwt_run_id_mismatch",
+      details: {
+        claimRunId: runId,
+      },
+    });
+  });
+
+  it("keeps non-watchdog agents forbidden from resolving board-only interactions", async () => {
+    const companyId = await seedCompany();
+    const workerAgentId = await seedAgent(companyId, { name: "Plan Author" });
+    const issueId = await seedIssue(companyId, {
+      title: "Child awaiting plan approval",
+      status: "in_review",
+    });
+    const { documentId, revisionId } = await seedPlanDocument(companyId, issueId);
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: workerAgentId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/interactions/${interactionId}/accept`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("This issue-thread interaction is board-only");
+  });
+
+  it("rejects watchdog attempts to reject eligible plan confirmation interactions", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Plan Confirmation Watchdog" });
+    const workerAgentId = await seedAgent(companyId, { name: "Plan Author" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Child awaiting plan approval",
+      parentId: watchedRootId,
+      status: "in_review",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const { documentId, revisionId } = await seedPlanDocument(companyId, watchedChildId);
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+      },
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/reject`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Task-watchdog runs can only accept eligible request_confirmation plan interactions.");
+
+    const [stored] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(stored?.status).toBe("pending");
+  });
+
+  it("rejects watchdog interaction resolution for non-plan-confirmation interactions in the watched subtree", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Narrow Interaction Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-ROOT" });
+    const watchedChildId = await seedIssue(companyId, {
+      title: "Child with non-plan confirmation",
+      parentId: watchedRootId,
+      status: "in_review",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Choose follow-ups",
+      payload: {
+        version: 1,
+        prompt: "Pick follow-up tasks.",
+        options: [{ id: "qa", label: "QA review" }],
+      },
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/accept`)
+      .send({ selectedOptionIds: ["qa"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Task-watchdog runs can only resolve eligible request_confirmation plan interactions.");
+
+    const [stored] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(stored?.status).toBe("pending");
   });
 
   it("rejects cross-company watched issues and watchdog agents", async () => {

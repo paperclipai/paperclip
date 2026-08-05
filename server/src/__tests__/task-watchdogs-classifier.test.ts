@@ -278,6 +278,85 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("keeps stopped fingerprints stable when only leaf presentation timestamps change", () => {
+    const stopped = classify({
+      issues: [issue({ status: "blocked" })],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const reviewed = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          identifier: "PAP-1-RENAMED",
+          title: "Renamed source",
+          status: "blocked",
+          updatedAt: new Date("2026-07-06T21:13:00.001Z"),
+        }),
+      ],
+    });
+
+    expect(reviewed).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: stopped.stopFingerprint,
+    });
+  });
+
+  it("changes stopped fingerprints for real stopped-state changes", () => {
+    const stopped = classify({
+      issues: [issue({ status: "blocked" })],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const cases = [
+      {
+        name: "leaf status",
+        input: { issues: [issue({ status: "in_review" })] },
+      },
+      {
+        name: "assignee",
+        input: { issues: [issue({ status: "blocked", assigneeAgentId: "agent-2" })] },
+      },
+      {
+        name: "blocker",
+        input: {
+          issues: [issue({ status: "blocked" })],
+          blockers: [{ companyId, blockerIssueId: "blocker-1", blockedIssueId: sourceId }],
+        },
+      },
+      {
+        name: "pending interaction",
+        input: {
+          issues: [issue({ status: "blocked" })],
+          pendingInteractions: [{ companyId, issueId: sourceId, id: "interaction-1", status: "pending" }],
+        },
+      },
+      {
+        name: "pending approval",
+        input: {
+          issues: [issue({ status: "blocked" })],
+          pendingApprovals: [{ companyId, issueId: sourceId, id: "approval-1", status: "pending" }],
+        },
+      },
+    ] satisfies Array<{
+      name: string;
+      input: Partial<Parameters<typeof classifyTaskWatchdogSubtree>[0]>;
+    }>;
+
+    for (const testCase of cases) {
+      const changed = classify(testCase.input);
+      expect(changed.state, testCase.name).toBe("stopped");
+      if (changed.state !== "stopped") continue;
+      expect(changed.stopFingerprint, testCase.name).not.toBe(stopped.stopFingerprint);
+    }
+  });
+
   it("excludes task-watchdog issues and their descendants from watched subtree scans", () => {
     const result = classify({
       issues: [

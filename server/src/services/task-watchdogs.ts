@@ -74,6 +74,11 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorLastTriggeredAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
+  monitorNotes?: string | null;
+  monitorScheduledBy?: string | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -118,6 +123,11 @@ export type TaskWatchdogStoppedLeaf = {
   latestCommentAt: string | null;
   latestDocumentAt: string | null;
   latestWorkProductAt: string | null;
+  monitorNextCheckAt: string | null;
+  monitorLastTriggeredAt: string | null;
+  monitorAttemptCount: number | null;
+  monitorNotes: string | null;
+  monitorScheduledBy: string | null;
 };
 
 export type TaskWatchdogMaterialLeaf = Pick<
@@ -502,6 +512,11 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestCommentAt: optionalIso(issue.latestCommentAt),
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
+      monitorNextCheckAt: optionalIso(issue.monitorNextCheckAt),
+      monitorLastTriggeredAt: optionalIso(issue.monitorLastTriggeredAt),
+      monitorAttemptCount: typeof issue.monitorAttemptCount === "number" ? issue.monitorAttemptCount : null,
+      monitorNotes: issue.monitorNotes ?? null,
+      monitorScheduledBy: issue.monitorScheduledBy ?? null,
     }));
   const materialLeaves = leaves.map(materialLeaf);
   const stopFingerprint = stableStopFingerprint({
@@ -875,6 +890,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          monitor_next_check_at,
+          monitor_last_triggered_at,
+          monitor_attempt_count,
+          monitor_notes,
+          monitor_scheduled_by,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -894,6 +914,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.monitor_next_check_at,
+          child.monitor_last_triggered_at,
+          child.monitor_attempt_count,
+          child.monitor_notes,
+          child.monitor_scheduled_by,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -914,7 +939,12 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        monitor_next_check_at AS "monitorNextCheckAt",
+        monitor_last_triggered_at AS "monitorLastTriggeredAt",
+        monitor_attempt_count AS "monitorAttemptCount",
+        monitor_notes AS "monitorNotes",
+        monitor_scheduled_by AS "monitorScheduledBy"
       FROM watched_issues
     `);
 
@@ -1558,6 +1588,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         requestedByActorId: null,
       })
       : null;
+    if (wake?.id) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify(context)}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(heartbeatRuns.id, wake.id),
+          eq(heartbeatRuns.companyId, watchdog.companyId),
+          eq(heartbeatRuns.agentId, watchdog.watchdogAgentId),
+        ));
+    }
 
     return {
       state: "triggered" as const,

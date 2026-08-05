@@ -1540,9 +1540,10 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       ))
       .orderBy(asc(pipelineCases.createdAt));
     const caseIds = rows.map((row) => row.case.id);
-    const [activeWork, descendantActiveWorkCounts] = await Promise.all([
+    const [activeWork, descendantActiveWorkCounts, outputSummaries] = await Promise.all([
       loadActiveWorkForCases(db, companyId, caseIds),
       loadDescendantActiveWorkCountsForCases(db, companyId, caseIds),
+      outputsSvc.loadBoardOutputSummaries(companyId, caseIds),
     ]);
     res.json(rows.map((row) => ({
       case: row.case,
@@ -1555,6 +1556,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         : null,
       activeWork: activeWork.get(row.case.id) ?? null,
       descendantActiveWorkCount: descendantActiveWorkCounts.get(row.case.id) ?? 0,
+      outputSummary: outputSummaries.get(row.case.id) ?? { outputCount: 0, latestOutputAt: null },
     })));
   });
 

@@ -179,6 +179,7 @@ export type {
   PipelineCaseDocumentRevision,
   PipelineCaseLiveness,
   PipelineCaseLivenessState,
+  PipelineCaseBoardOutputSummary,
   PipelineCaseOutputContextSummary,
   PipelineCaseOutputContextSummaryItem,
   PipelineCaseOutputItem,

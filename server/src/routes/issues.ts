@@ -4040,11 +4040,74 @@ export function issueRoutes(
     return true;
   }
 
+  type TaskWatchdogInteractionPreflight = "not_watchdog" | "watchdog";
+  type IssueThreadInteractionResolutionAccess = "default" | "task_watchdog";
+
+  async function assertTaskWatchdogInteractionResolutionPreflight(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    resolutionAction: "accept" | "reject" | "respond" | "verdicts",
+  ): Promise<TaskWatchdogInteractionPreflight | false> {
+    if (req.actor.type !== "agent") return "not_watchdog";
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind === "none") return "not_watchdog";
+    if (watchdogScope.kind === "invalid") {
+      res.status(403).json({
+        error: watchdogScope.detail,
+        details: {
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    if (!watchdogScope.capabilities.resolveEligibleRequestConfirmationPlanInteractions) {
+      res.status(403).json({
+        error: "Task-watchdog run is not allowed to resolve eligible request_confirmation plan interactions.",
+        details: {
+          action: resolutionAction,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    const scopeResult = await taskWatchdogScopeAllowsIssueMutation(
+      db,
+      watchdogScope,
+      issue,
+      { allowWatchdogIssue: false },
+    );
+    if (scopeResult.kind === "invalid") {
+      res.status(403).json({
+        error: scopeResult.detail,
+        details: {
+          issueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    if (!(await assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue))) return false;
+    if (resolutionAction !== "accept") {
+      res.status(403).json({
+        error: "Task-watchdog runs can only accept eligible request_confirmation plan interactions.",
+        details: {
+          action: resolutionAction,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    return "watchdog";
+  }
+
   async function assertIssueThreadInteractionResolutionAllowed(
     req: Request,
     res: Response,
     issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
     interaction: {
+      id: string;
+      status: string;
       createdByAgentId?: string | null;
       sourceRunId?: string | null;
       effectiveResolverPolicy: string;
@@ -4052,18 +4115,53 @@ export function issueRoutes(
       kind: string;
       payload?: unknown;
     },
-  ) {
+    resolutionAction: "accept" | "reject" | "respond" | "verdicts",
+    watchdogPreflight: TaskWatchdogInteractionPreflight,
+  ): Promise<IssueThreadInteractionResolutionAccess | false> {
     if (req.actor.type !== "agent") {
       assertBoard(req);
-      return true;
+      return "default";
     }
     const actorAgentId = req.actor.agentId;
     const runId = requireAgentRunId(req, res);
     if (!actorAgentId || !runId) return false;
-    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (watchdogScope.kind !== "none") {
-      res.status(403).json({ error: "Task-watchdog runs cannot resolve issue-thread interactions" });
-      return false;
+    if (watchdogPreflight === "watchdog") {
+      const payload = interaction.payload && typeof interaction.payload === "object"
+        ? interaction.payload as { toolAction?: unknown }
+        : null;
+      if (payload?.toolAction !== undefined) {
+        res.status(403).json({ error: "Tool-action confirmations are always board-only" });
+        return false;
+      }
+      const target = interaction.kind === "request_confirmation"
+        ? readAcceptedPlanConfirmationTarget(interaction.payload)
+        : null;
+      const isCurrentPlanTarget = target?.issueId === issue.id
+        && target.key === "plan"
+        && await db
+          .select({ id: issueDocuments.id })
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .where(and(
+            eq(issueDocuments.companyId, issue.companyId),
+            eq(issueDocuments.issueId, issue.id),
+            eq(issueDocuments.key, "plan"),
+            eq(documents.latestRevisionId, target.revisionId),
+          ))
+          .then((rows) => rows.length > 0);
+      if (interaction.status !== "pending" || !isCurrentPlanTarget) {
+        res.status(403).json({
+          error: "Task-watchdog runs can only resolve eligible request_confirmation plan interactions.",
+          details: {
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return false;
+      }
+      return "task_watchdog";
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
@@ -4090,7 +4188,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Tool-action confirmations are always board-only" });
       return false;
     }
-    return true;
+    return "default";
   }
 
   async function assertIssueThreadInteractionWithdrawalAllowed(
@@ -4595,6 +4693,11 @@ export function issueRoutes(
       });
       return false;
     }
+    if (issue.status === "cancelled") {
+      const watchdogCancelledRestoreAccess = await resolveTaskWatchdogCancelledRestoreAccess(req, res, issue);
+      if (watchdogCancelledRestoreAccess === "allowed") return true;
+      if (watchdogCancelledRestoreAccess === "handled") return false;
+    }
 
     if (!isExplicitResumeCapableStatus(issue.status)) {
       res.status(409).json({
@@ -4662,6 +4765,50 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function resolveTaskWatchdogCancelledRestoreAccess(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ): Promise<"allowed" | "not_watchdog" | "handled"> {
+    if (req.actor.type !== "agent") return "not_watchdog";
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind === "none") return "not_watchdog";
+    if (scope.kind === "invalid") {
+      res.status(403).json({
+        error: scope.detail,
+        details: {
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return "handled";
+    }
+    // Keep the watchdog grant self-contained: callers must not be able to
+    // bypass explicit restore intent if this helper is reused or reordered.
+    if (req.body.resume !== true) {
+      res.status(409).json({
+        error: "Cancelled issues require explicit resume intent before task-watchdog restoration",
+        details: {
+          issueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Secure Defaults", "Complete Mediation"],
+        },
+      });
+      return "handled";
+    }
+
+    const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue, { allowWatchdogIssue: false });
+    if (scopeResult.kind === "invalid") {
+      res.status(403).json({
+        error: scopeResult.detail,
+        details: {
+          issueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return "handled";
+    }
+    return await assertFreshTaskWatchdogSourceMutation(res, scope, issue) ? "allowed" : "handled";
   }
 
   async function assertRecoveryActionAuthority(
@@ -10115,16 +10262,28 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
+      const watchdogPreflight = await assertTaskWatchdogInteractionResolutionPreflight(req, res, issue, "accept");
+      if (!watchdogPreflight) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      const resolutionAccess = await assertIssueThreadInteractionResolutionAllowed(
+        req,
+        res,
+        issue,
+        current,
+        "accept",
+        watchdogPreflight,
+      );
+      if (!resolutionAccess) return;
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        resolutionGrant: resolutionAccess === "task_watchdog"
+          ? "task_watchdog_plan_confirmation"
+          : undefined,
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
@@ -10267,10 +10426,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
+      const watchdogPreflight = await assertTaskWatchdogInteractionResolutionPreflight(req, res, issue, "reject");
+      if (!watchdogPreflight) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      if (!(await assertIssueThreadInteractionResolutionAllowed(
+        req,
+        res,
+        issue,
+        current,
+        "reject",
+        watchdogPreflight,
+      ))) return;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
@@ -10328,10 +10495,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
+      const watchdogPreflight = await assertTaskWatchdogInteractionResolutionPreflight(req, res, issue, "respond");
+      if (!watchdogPreflight) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      if (!(await assertIssueThreadInteractionResolutionAllowed(
+        req,
+        res,
+        issue,
+        current,
+        "respond",
+        watchdogPreflight,
+      ))) return;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
@@ -10385,10 +10560,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
+      const watchdogPreflight = await assertTaskWatchdogInteractionResolutionPreflight(req, res, issue, "verdicts");
+      if (!watchdogPreflight) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      if (!(await assertIssueThreadInteractionResolutionAllowed(
+        req,
+        res,
+        issue,
+        current,
+        "verdicts",
+        watchdogPreflight,
+      ))) return;
 
       const actor = getActorInfo(req);
       const { interaction, newlyResolvedItemIds } = await interactionSvc.submitItemVerdicts(

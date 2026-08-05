@@ -64,6 +64,7 @@ type InteractionActor = {
   agentId?: string | null;
   runId?: string | null;
   userId?: string | null;
+  resolutionGrant?: "task_watchdog_plan_confirmation";
 };
 
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
@@ -112,7 +113,10 @@ export function resolveInteractionPolicy(args: {
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (!actor.agentId) return;
   if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
-  if (current.effectiveResolverPolicy !== "board_or_agents") {
+  if (
+    current.effectiveResolverPolicy !== "board_or_agents"
+    && actor.resolutionGrant !== "task_watchdog_plan_confirmation"
+  ) {
     throw forbidden("This issue-thread interaction is board-only");
   }
   if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {

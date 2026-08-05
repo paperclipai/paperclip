@@ -538,11 +538,17 @@ test.describe("Pipelines tutorial UI flow", () => {
     await expect(page.getByRole("button", { name: "Submit 3 items" })).toBeEnabled();
     await page.getByRole("button", { name: "Submit 3 items" }).click();
 
+    const defaultAssetsColumn = page.getByLabel("Assets column");
+    await expect(defaultAssetsColumn.getByText("Launch blog post")).toBeVisible();
+    await expect(defaultAssetsColumn.getByText("Changelog entry")).toBeVisible();
+    await expect(defaultAssetsColumn.getByText("Launch tweet")).toBeVisible();
+    await expectProsumerVocabulary(page);
+
+    await page.getByRole("link", { name: "Configured stages" }).click();
     const draftingColumn = page.getByLabel("Drafting column");
     await expect(draftingColumn.getByText("Launch blog post")).toBeVisible();
     await expect(draftingColumn.getByText("Changelog entry")).toBeVisible();
     await expect(draftingColumn.getByText("Launch tweet")).toBeVisible();
-    await expectProsumerVocabulary(page);
 
     const items = await listItems(board, pipeline.id);
     const blog = items.find((row) => row.case.title === "Launch blog post")?.case;

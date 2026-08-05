@@ -1947,6 +1947,54 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status: "in_review" }));
     });
 
+    it("lets a watchdog run restore a cancelled watched issue through explicit resume intent", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "cancelled", assigneeAgentId: ownerAgentId }));
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue({ status: "cancelled", assigneeAgentId: ownerAgentId }),
+        ...patch,
+      }));
+      mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{ status: "pending" }] as never);
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          status: "in_review",
+          resume: true,
+          comment: "Restoring the cancelled watched leaf for review.",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ status: "in_review" }),
+      );
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        issueId,
+        "Restoring the cancelled watched leaf for review.",
+        expect.any(Object),
+        expect.objectContaining({ sourceTrust: null }),
+      );
+    });
+
+    it("requires explicit resume intent before a watchdog can restore a cancelled watched issue", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "cancelled", assigneeAgentId: ownerAgentId }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          status: "in_review",
+          comment: "Attempting to restore the cancelled watched leaf without explicit intent.",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error).toContain("dedicated restore flow");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
     it("rejects stale watchdog source mutations when revalidation finds a live path", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));

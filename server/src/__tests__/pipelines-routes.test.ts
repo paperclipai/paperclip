@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  assets,
   companies,
   companyMemberships,
   createDb,
@@ -14,8 +15,11 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueAttachments,
   issueComments,
+  issueDocuments,
   issues,
+  issueWorkProducts,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
   pipelineCaseEvents,
@@ -75,11 +79,14 @@ describeEmbeddedPostgres("pipeline routes", () => {
     await db.delete(pipelineDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
+    await db.delete(issueWorkProducts);
     await db.delete(activityLog);
     await db.delete(routineRuns);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(assets);
     await db.delete(executionWorkspaces);
     await db.delete(pipelines);
     await db.delete(routines);
@@ -332,6 +339,145 @@ describeEmbeddedPostgres("pipeline routes", () => {
     const events = await db.select().from(pipelineCaseEvents).where(eq(pipelineCaseEvents.caseId, created.body.case.id));
     expect(events.map((event) => event.type)).toEqual(["ingested", "updated"]);
     expect(events[1]!.payload).toMatchObject({ materialChanged: true, workspaceRefChanged: true });
+  });
+
+  it("returns batched output summaries for visible pipeline cases with company isolation", async () => {
+    const company = await seedCompany();
+    const otherCompany = await seedCompany("Other Pipeline Co");
+    const http = request(app(boardActor));
+    const pipeline = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({ key: "outputs", name: "Outputs" })
+      .expect(201);
+    const withOutputs = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "with-outputs", title: "With outputs" })
+      .expect(201);
+    const withoutOutputs = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "without-outputs", title: "Without outputs" })
+      .expect(201);
+    const retiredLink = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "retired-link", title: "Retired link" })
+      .expect(201);
+    const crossCompany = await http
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "cross-company", title: "Cross-company" })
+      .expect(201);
+
+    const [sourceIssue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Output source",
+      status: "done",
+      priority: "medium",
+    }).returning();
+    const [document] = await db.insert(documents).values({
+      companyId: company.id,
+      title: "Summary",
+      latestBody: "Useful output",
+      updatedAt: new Date("2026-01-01T10:00:00.000Z"),
+    }).returning();
+    await db.insert(issueDocuments).values({
+      companyId: company.id,
+      issueId: sourceIssue!.id,
+      documentId: document!.id,
+      key: "summary",
+      updatedAt: new Date("2026-01-01T10:00:00.000Z"),
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId: company.id,
+      issueId: sourceIssue!.id,
+      type: "report",
+      provider: "test",
+      title: "Report",
+      status: "ready",
+      reviewState: "none",
+      updatedAt: new Date("2026-01-03T12:00:00.000Z"),
+    });
+    const [asset] = await db.insert(assets).values({
+      companyId: company.id,
+      provider: "local_disk",
+      objectKey: `test/${randomUUID()}`,
+      contentType: "text/plain",
+      byteSize: 12,
+      sha256: "abc123",
+      originalFilename: "output.txt",
+      updatedAt: new Date("2026-01-02T11:00:00.000Z"),
+    }).returning();
+    await db.insert(issueAttachments).values({
+      companyId: company.id,
+      issueId: sourceIssue!.id,
+      assetId: asset!.id,
+      updatedAt: new Date("2026-01-02T11:00:00.000Z"),
+    });
+    await db.insert(pipelineCaseIssueLinks).values({
+      companyId: company.id,
+      caseId: withOutputs.body.case.id,
+      issueId: sourceIssue!.id,
+      role: "work",
+    });
+
+    const [retiredIssue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Retired output source",
+      status: "done",
+      priority: "medium",
+    }).returning();
+    const [retiredDocument] = await db.insert(documents).values({
+      companyId: company.id,
+      title: "Retired summary",
+      latestBody: "Old output",
+    }).returning();
+    await db.insert(issueDocuments).values({
+      companyId: company.id,
+      issueId: retiredIssue!.id,
+      documentId: retiredDocument!.id,
+      key: "summary",
+    });
+    await db.insert(pipelineCaseIssueLinks).values({
+      companyId: company.id,
+      caseId: retiredLink.body.case.id,
+      issueId: retiredIssue!.id,
+      role: "work",
+      retiredAt: new Date("2026-01-04T00:00:00.000Z"),
+      retiredReason: "retry",
+    });
+
+    const [otherIssue] = await db.insert(issues).values({
+      companyId: otherCompany.id,
+      title: "Other company source",
+      status: "done",
+      priority: "medium",
+    }).returning();
+    const [otherDocument] = await db.insert(documents).values({
+      companyId: otherCompany.id,
+      title: "Other summary",
+      latestBody: "Should not leak",
+    }).returning();
+    await db.insert(issueDocuments).values({
+      companyId: otherCompany.id,
+      issueId: otherIssue!.id,
+      documentId: otherDocument!.id,
+      key: "summary",
+    });
+    await db.insert(pipelineCaseIssueLinks).values({
+      companyId: company.id,
+      caseId: crossCompany.body.case.id,
+      issueId: otherIssue!.id,
+      role: "work",
+    });
+
+    const listed = await http.get(`/api/pipelines/${pipeline.body.id}/cases`).expect(200);
+    const byKey = new Map(listed.body.map((row: { case: { caseKey: string } }) => [row.case.caseKey, row]));
+
+    expect(byKey.get("with-outputs")?.outputSummary).toEqual({
+      outputCount: 3,
+      latestOutputAt: "2026-01-03T12:00:00.000Z",
+    });
+    expect(byKey.get("without-outputs")?.outputSummary).toEqual({ outputCount: 0, latestOutputAt: null });
+    expect(byKey.get("retired-link")?.outputSummary).toEqual({ outputCount: 0, latestOutputAt: null });
+    expect(byKey.get("cross-company")?.outputSummary).toEqual({ outputCount: 0, latestOutputAt: null });
   });
 
   it("hides retired children from the flat case children route", async () => {
