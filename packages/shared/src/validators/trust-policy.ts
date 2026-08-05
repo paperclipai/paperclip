@@ -42,7 +42,7 @@ export const protectedAgentAuthorizationPolicySchema = z.object({
   blockReason: z.string().trim().min(1).optional(),
   // Legacy compatibility only. These fields do not create an approval.
   requiresApproval: z.boolean().optional(),
-  approvalReason: z.string().trim().min(1).optional(),
+  approvalReason: z.string().optional(),
 }).catchall(z.unknown());
 
 export const trustAuthorizationPolicySchema = z.object({
