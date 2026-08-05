@@ -253,17 +253,41 @@ update_path() {
   local target="${HOME}/.local/bin"
   if [[ ":$PATH:" != *":$target:"* ]]; then
     log "Adding $target to PATH in shell startup files"
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile"; do
-      if [ -f "$rc" ]; then
-        if ! grep -qF "$target" "$rc"; then
-          if [ "$DRY_RUN" != "1" ]; then
-            printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
-          else
-            log "[dry-run] would append export PATH to $rc"
-          fi
+
+    # Patch every existing shell startup file that lacks the export so both
+    # interactive (.bashrc/.zshrc) and login shells pick up the CLI.
+    local rc
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
+      if [ -f "$rc" ] && ! grep -qF "$target" "$rc"; then
+        if [ "$DRY_RUN" != "1" ]; then
+          # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
+          printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
+        else
+          log "[dry-run] would append export PATH to $rc"
         fi
       fi
     done
+
+    # Bash login shells read the first existing file among .bash_profile,
+    # .bash_login, .profile; zsh login shells read .zprofile. When none of those
+    # login files exist, no login shell would see the PATH and fresh shells report
+    # 'paperclipai: command not found'. The loop above already added the export to
+    # any login file that exists, so only create .profile when none was present.
+    local login_present=0
+    for rc in "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
+      if [ -f "$rc" ]; then
+        login_present=1
+        break
+      fi
+    done
+    if [ "$login_present" = "0" ]; then
+      if [ "$DRY_RUN" != "1" ]; then
+        # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
+        printf '\nexport PATH="%s:$PATH"\n' "$target" >> "${HOME}/.profile"
+      else
+        log "[dry-run] would create ${HOME}/.profile with export PATH"
+      fi
+    fi
   fi
 }
 

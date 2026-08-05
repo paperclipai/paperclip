@@ -60,6 +60,16 @@ assert_no_line() {
   fi
 }
 
+assert_contains() {
+  local file="$1"
+  local needle="$2"
+  grep -qF -- "$needle" "$file" >/dev/null || {
+    printf 'Expected to find %q in %s\n' "$needle" "$file" >&2
+    cat "$file" >&2
+    exit 1
+  }
+}
+
 echo "==> shellcheck"
 run_shellcheck
 
@@ -161,6 +171,59 @@ node_major="${node_version#v}"
 node_major="${node_major%%.*}"
 [ "$node_major" -ge 20 ] || {
   printf 'Expected Node >= 20, got %s\n' "$node_version" >&2
+  exit 1
+}
+
+echo "==> update_path: empty home creates .profile for login shells"
+mkdir -p "$RESULTS_DIR/path-empty-home"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-empty-home \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-empty.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+[ -f "$RESULTS_DIR/path-empty-home/.profile" ] || {
+  echo "Expected .profile created for fresh login shells" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-empty-home/.profile" 'export PATH="/results/path-empty-home/.local/bin:'
+
+echo "==> update_path: bashrc-only home still creates a login file"
+mkdir -p "$RESULTS_DIR/path-bashrc-home"
+printf 'alias ll=ls\n' >"$RESULTS_DIR/path-bashrc-home/.bashrc"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-bashrc-home \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-bashrc.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+assert_contains "$RESULTS_DIR/path-bashrc-home/.bashrc" 'export PATH="/results/path-bashrc-home/.local/bin:'
+[ -f "$RESULTS_DIR/path-bashrc-home/.profile" ] || {
+  echo "Expected a login startup file (.profile) alongside .bashrc" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-bashrc-home/.profile" 'export PATH="/results/path-bashrc-home/.local/bin:'
+
+echo "==> update_path: existing export is not duplicated"
+mkdir -p "$RESULTS_DIR/path-idem-home"
+# shellcheck disable=SC2016  # seed the exact export line install.sh would write
+printf 'export PATH="/results/path-idem-home/.local/bin:$PATH"\n' >"$RESULTS_DIR/path-idem-home/.profile"
+dup_before="$(grep -cF '/results/path-idem-home/.local/bin' "$RESULTS_DIR/path-idem-home/.profile")"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-idem-home \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-idem.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+dup_after="$(grep -cF '/results/path-idem-home/.local/bin' "$RESULTS_DIR/path-idem-home/.profile")"
+[ "$dup_after" = "$dup_before" ] || {
+  printf 'Expected no duplicate export lines, got %s before / %s after\n' "$dup_before" "$dup_after" >&2
   exit 1
 }
 
