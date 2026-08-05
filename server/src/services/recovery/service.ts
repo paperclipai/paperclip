@@ -3578,6 +3578,64 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Number(row?.count ?? 0);
   }
 
+  const RECOVERY_LOOP_CAP_ESCALATION_ORIGIN = "recovery_loop_cap_escalation";
+
+  async function ensureRecoveryLoopCapEscalationIssue(input: {
+    issue: typeof issues.$inferSelect;
+    kind: string;
+    recoveryCause: StrandedRecoveryCause;
+    priorActionCount: number;
+  }) {
+    const originId = `${input.kind}:${input.recoveryCause}`;
+    const existing = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.issue.companyId),
+        eq(issues.originKind, RECOVERY_LOOP_CAP_ESCALATION_ORIGIN),
+        eq(issues.originId, originId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    return issuesSvc.create(input.issue.companyId, {
+      title: `BOARD ACTION REQUIRED: Recovery loop cap reached — ${input.recoveryCause}`,
+      description: [
+        "Automatic recovery has stopped after the same exit signature repeatedly failed.",
+        "",
+        "## Root signature",
+        "",
+        `- Recovery kind: \`${input.kind}\``,
+        `- Recovery cause: \`${input.recoveryCause}\``,
+        `- Cap: ${MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND} prior actions`,
+        `- First source observed: ${issueUiLink(input.issue, prefix)}`,
+        `- Prior actions on that source: ${input.priorActionCount}`,
+        "",
+        "## Required board action",
+        "",
+        "- Assign an invokable owner for the underlying runtime/exit-path defect, or record an intentional manual resolution.",
+        "- This is a single root escalation; additional capped sources with the same signature link here rather than creating more board cards.",
+      ].join("\n"),
+      status: "todo",
+      priority: "critical",
+      projectId: input.issue.projectId,
+      goalId: input.issue.goalId,
+      assigneeAgentId: null,
+      originKind: RECOVERY_LOOP_CAP_ESCALATION_ORIGIN,
+      originId,
+      originFingerprint: [
+        RECOVERY_LOOP_CAP_ESCALATION_ORIGIN,
+        input.issue.companyId,
+        originId,
+      ].join(":"),
+      billingCode: input.issue.billingCode,
+    });
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -3619,6 +3677,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const recoveryLoopCapExceeded = priorActionCount >= MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND;
     const ownerAgentId = recoveryLoopCapExceeded ? null : routing.ownerAgentId;
+    const recoveryIssueId = recoveryLoopCapExceeded
+      ? (await ensureRecoveryLoopCapEscalationIssue({
+        issue: input.issue,
+        kind: strandedRecoveryActionKind(recoveryCause),
+        recoveryCause,
+        priorActionCount,
+      })).id
+      : null;
     if (recoveryLoopCapExceeded) {
       logger.warn(
         {
@@ -3638,6 +3704,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
+      recoveryIssueId,
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: recoveryCause === "provider_quota" && !ownerAgentId ? "system" : ownerAgentId ? "agent" : "board",
       ownerAgentId,
@@ -3707,7 +3774,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         : {
           type: "board_escalation",
-          reason: "no_invokable_recovery_owner",
+          reason: recoveryLoopCapExceeded ? "recovery_loop_cap" : "no_invokable_recovery_owner",
         },
       monitorPolicy: recoveryCause === "provider_quota" && !ownerAgentId
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
@@ -4644,13 +4711,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     // Restore call to ensure the visible stranded-recovery card (lost during source-scoped refactor).
     // This was the sole creator of originKind=STRANDED_ISSUE_RECOVERY_ORIGIN_KIND cards.
-    await ensureStrandedIssueRecoveryIssue({
-      issue: input.issue,
-      latestRun: input.latestRun,
-      previousStatus: input.previousStatus,
-      recoveryCause,
-      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-    });
+    // A capped action is already linked to the single board-visible root
+    // escalation. Do not create a per-source wrapper that would reintroduce
+    // the very noise the cap exists to stop.
+    if (!recoveryAction.recoveryIssueId) {
+      await ensureStrandedIssueRecoveryIssue({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+    }
 
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4663,7 +4735,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const blockerIds = [...new Set([
+      ...await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id),
+      // The root escalation is the source issue's durable wait path as well
+      // as the recovery action's receipt. This keeps the source visible in
+      // dependency views while the board-visible root is unresolved.
+      ...(recoveryAction.recoveryIssueId ? [recoveryAction.recoveryIssueId] : []),
+    ])];
     const strandedBlockedGate = strandedBlockedGatePatch({ issue: input.issue, blockerIds });
     const queuedAssigneeIds: string[] = [];
     const attemptedAssigneeIds = new Set<string>();

@@ -64,6 +64,22 @@ function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issueRecoveryActionService", () => {
+  it("rejects a board-owned action without a durable recovery issue", async () => {
+    const fakeDb = {};
+
+    await expect(issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
+      companyId: "company-1",
+      sourceIssueId: "source-1",
+      kind: "missing_disposition",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:board-without-artifact",
+      nextAction: "Manual intervention required.",
+      wakePolicy: { type: "board_escalation", reason: "recovery_loop_cap" },
+    })).rejects.toThrow("requires a linked recovery issue");
+  });
+
   it("does not reactivate an action resolved between the active read and update", async () => {
     const existingRow = makeRecoveryActionRow({ id: "existing-action", attemptCount: 1 });
     const createdRow = makeRecoveryActionRow({ id: "new-action", attemptCount: 1 });
@@ -2291,6 +2307,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "resolved",
       outcome: "false_positive",
       resolutionNote: "Recovery signal was stale; return to review.",
+    });
+  });
+
+  it("links capped recovery actions to one board-visible root escalation", async () => {
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const now = new Date("2026-08-05T12:00:00.000Z");
+    for (let index = 0; index < 3; index += 1) {
+      await db.insert(issueRecoveryActions).values({
+        companyId, sourceIssueId: sourceIssue.id, kind: "missing_disposition", status: "resolved",
+        ownerType: "agent", ownerAgentId: managerId, previousOwnerAgentId: coderId,
+        cause: "successful_run_missing_state", fingerprint: `prior:${index}`, evidence: {},
+        nextAction: "Choose a valid issue disposition.", attemptCount: 1, outcome: "restored",
+        resolvedAt: now, lastAttemptAt: now,
+      });
+    }
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(), agentId: coderId, status: "succeeded", error: null, errorCode: null,
+        contextSnapshot: { retryReason: "successful_run_missing_state" }, livenessState: null,
+      },
+      recoveryCause: "successful_run_missing_state",
+    });
+
+    const action = await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssue.id);
+    expect(action).toMatchObject({ ownerType: "board", ownerAgentId: null });
+    expect(action?.recoveryIssueId).toBeTruthy();
+    const [root] = await db.select().from(issues).where(eq(issues.id, action!.recoveryIssueId!));
+    expect(root).toMatchObject({
+      status: "todo", originKind: "recovery_loop_cap_escalation",
+      title: expect.stringContaining("BOARD ACTION REQUIRED"),
     });
   });
 

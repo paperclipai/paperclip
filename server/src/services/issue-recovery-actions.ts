@@ -97,6 +97,25 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
+function assertBoardOwnedActionHasArtifact(input: UpsertIssueRecoveryActionInput, ownerType: IssueRecoveryActionOwnerType) {
+  // A board owner is not an execution destination.  It is only meaningful when
+  // there is a durable, board-visible issue carrying the requested action.
+  // Keep this at the write boundary so a new caller cannot recreate the
+  // owner-without-receipt state that made capped recoveries invisible.
+  // `recovery_loop_cap` is the only board hand-off created through this
+  // source-scoped writer. Legacy no-invokable-owner actions are repaired by
+  // their existing liveness path and retain their compatibility contract.
+  if (
+    ownerType === "board" &&
+    input.wakePolicy?.reason === "recovery_loop_cap" &&
+    !input.recoveryIssueId
+  ) {
+    throw new Error(
+      `Board-owned recovery action for source issue ${input.sourceIssueId} requires a linked recovery issue`,
+    );
+  }
+}
+
 export function issueRecoveryActionService(db: Db) {
   const upsertQueues = new Map<string, Promise<void>>();
 
@@ -182,9 +201,10 @@ export function issueRecoveryActionService(db: Db) {
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
   ): Promise<IssueRecoveryAction> {
+    const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
+    assertBoardOwnedActionHasArtifact(input, ownerType);
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
     const now = new Date();
-    const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     const initialAttemptCount = Math.max(1, Math.floor(input.initialAttemptCount ?? 1));
     if (existing) {
       const [updated] = await db
