@@ -310,6 +310,13 @@ export const issueExecutionMonitorPolicySchema = z.object({
 
 const gitCommitRefSchema = z.string().trim().regex(/^[0-9a-fA-F]{7,40}$/, "Commit must be a 7-40 character hex SHA");
 
+export const issueExternalWaitSchema = z.object({
+  owner: z.string().trim().min(1).max(200),
+  action: z.string().trim().min(1).max(500),
+  nextCheckAt: z.string().datetime(),
+  monitorOwner: z.string().trim().min(1).max(200),
+}).strict();
+
 export const issueVerificationRefSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("attachment"),
