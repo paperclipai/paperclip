@@ -1303,6 +1303,15 @@ export interface WorkerToHostMethods {
       attributes?: Record<string, string | number | boolean>;
       /** The optional span status. */
       status?: { code: number; message?: string };
+      /** The optional span start time as epoch milliseconds (`Date.now()`).
+       * The worker captures it when it opens the span. The host validates the
+       * pair and records the span with its true native width. An omitted value
+       * makes the host fall back to a synchronous open-and-end. */
+      startTimeMs?: number;
+      /** The optional span end time as epoch milliseconds (`Date.now()`). The
+       * worker captures it when it ends the span. The host uses it as the span
+       * end time when the pair passes the clock-safety check. */
+      endTimeMs?: number;
     },
     result: void,
   ];

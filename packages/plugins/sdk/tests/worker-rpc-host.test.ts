@@ -606,6 +606,22 @@ describe("worker provider tracer", () => {
     });
   });
 
+  it("sends a finite startTimeMs and endTimeMs with endTimeMs >= startTimeMs", async () => {
+    const spanRecords = await runSpanProbe({
+      id: "invocation-a",
+      scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    });
+    expect(spanRecords).toHaveLength(1);
+    const params = spanRecords[0]!.params as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(Number.isFinite(params.startTimeMs)).toBe(true);
+    expect(Number.isFinite(params.endTimeMs)).toBe(true);
+    expect(params.endTimeMs!).toBeGreaterThanOrEqual(params.startTimeMs!);
+  });
+
   it("emits no span.record when the invocation carries no traceparent (tracing off)", async () => {
     const spanRecords = await runSpanProbe({
       id: "invocation-a",
