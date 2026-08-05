@@ -519,6 +519,15 @@ export function Costs() {
       0,
     );
 
+  // Every metered run being `subscription_included` means `costCents` is forced
+  // to 0 at write time, so a cents budget cannot be enforced on this deployment
+  // and must not be presented as one. Derived from `byAgentModel` because it is
+  // always loaded here, unlike the provider/biller queries.
+  const subscriptionOnlyBilling = useMemo(() => {
+    const rows = spendData?.byAgentModel ?? [];
+    return rows.length > 0 && rows.every((row) => row.billingType === "subscription_included");
+  }, [spendData?.byAgentModel]);
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -672,7 +681,12 @@ export function Costs() {
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                             ? `Budget ${formatCents(spendData.summary.budgetCents)}`
-                            : "Unlimited budget"}
+                            : subscriptionOnlyBilling
+                              // A cents budget cannot be enforced when every run is
+                              // subscription-billed and `costCents` is always 0, so
+                              // saying "Unlimited" would read as a deliberate choice.
+                              ? "Budget not enforceable on subscription billing"
+                              : "Unlimited budget"}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
