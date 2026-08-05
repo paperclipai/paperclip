@@ -2,8 +2,8 @@
   "query_only": 1,
   "read_uri": "file:/home/gus-pinsoneault/Desktop/sage_extract.db?mode=ro",
   "read_window_utc": {
-    "finished": "2026-08-05T22:58:11.217586+00:00",
-    "started": "2026-08-05T22:57:57.851956+00:00"
+    "finished": "2026-08-05T23:01:25.150887+00:00",
+    "started": "2026-08-05T23:01:11.786354+00:00"
   },
   "source_sha256_after": "2c48aa6c32108f468e071577afbca70c56854db7055dc1a3cfeeb067befadb43",
   "source_sha256_before": "2c48aa6c32108f468e071577afbca70c56854db7055dc1a3cfeeb067befadb43",

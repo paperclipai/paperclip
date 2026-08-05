@@ -447,7 +447,7 @@ def refresh_target_negative_controls() -> None:
     conn = sqlite3.connect(SOURCE_URI, uri=True)
     try:
         conn.execute("PRAGMA query_only=ON")
-        targets = tuple(sorted({row[0] for row in d840_costs()}))
+        targets = TARGETS
         target_values = ",".join("?" for _ in targets)
         target_predicate = f"TRIM(CAST(p.DealerSKU AS TEXT)) IN ({target_values})"
         source_sql = "FROM ORD_ROProduct p JOIN ORD_RetailOrder o ON o.RetailOrderID=p.RetailOrderID JOIN COM_Company d ON d.CompanyID=o.DealerCompanyID WHERE d.SalesChannelID=2 AND " + target_predicate
