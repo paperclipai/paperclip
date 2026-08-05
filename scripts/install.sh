@@ -249,6 +249,24 @@ ensure_temp_dir() {
   fi
 }
 
+update_path() {
+  local target="${HOME}/.local/bin"
+  if [[ ":$PATH:" != *":$target:"* ]]; then
+    log "Adding $target to PATH in shell startup files"
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile"; do
+      if [ -f "$rc" ]; then
+        if ! grep -qF "$target" "$rc"; then
+          if [ "$DRY_RUN" != "1" ]; then
+            printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
+          else
+            log "[dry-run] would append export PATH to $rc"
+          fi
+        fi
+      fi
+    done
+  fi
+}
+
 download_checked_script() {
   local url="$1"
   local destination="$2"
@@ -379,6 +397,8 @@ fi
 
 print_command "${INSTALL_COMMAND[@]}"
 "${INSTALL_COMMAND[@]}"
+
+update_path
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
   log "Installing the Paperclip service"

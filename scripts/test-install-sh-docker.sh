@@ -25,7 +25,7 @@ run_shellcheck() {
     -v "$REPO_ROOT:/work:ro" \
     -w /work \
     koalaman/shellcheck:stable \
-    scripts/install.sh scripts/test-install-sh-docker.sh scripts/install-sh-fixtures/npx
+    scripts/install.sh scripts/test-install-sh-docker.sh scripts/install-sh-fixtures/npx scripts/install-sh-fixtures/npm
 }
 
 run_with_node() {
