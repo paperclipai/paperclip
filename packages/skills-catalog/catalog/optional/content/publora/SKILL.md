@@ -130,13 +130,23 @@ For an ordinary "post this?" decision, use an issue-thread confirmation:
 
 ```
 POST /api/issues/{issueId}/interactions
-{ "kind": "request_confirmation", ... }
+{
+  "kind": "request_confirmation",
+  "continuationPolicy": "wake_assignee_on_accept",
+  ...
+}
 ```
 
-Bind it to the revision of the copy you are about to send, use an idempotency
-key such as `confirmation:${issueId}:publish:${revisionId}`, and set
-`supersedeOnUserComment: true` so later edits expire a stale request. Wait for
-the accepted confirmation before calling `create_post`.
+Set `continuationPolicy` explicitly. `request_confirmation` defaults it to
+`none`, and with `none` an acceptance does not wake you — the approved post
+then sits forever. Bind the request to the revision of the copy you are about
+to send, use an idempotency key such as
+`confirmation:${issueId}:publish:${revisionId}`, and set
+`supersedeOnUserComment: true` so later edits expire a stale request.
+
+Then stop. Publish only from the wake that the acceptance triggers, or, if the
+company runs a policy that suppresses wakes, from an explicit check of the
+interaction status. Never publish from the same run that raised the request.
 
 Escalate to a formal approval (`POST /api/companies/{companyId}/approvals`)
 instead when the company's execution policy treats external publication as a

@@ -68,16 +68,19 @@ complete_media  ...
 company in `ISSUE-4120`, and the media path was exercised by the upload calls
 themselves, which succeeded.
 
-**Step 4 — confirmation.** Raised on the issue, bound to the caption revision:
+**Step 4 — confirmation.** Raised on the issue, bound to the caption revision,
+with `continuationPolicy: wake_assignee_on_accept` so the acceptance wakes the
+agent:
 
-> Publish to **@exampleinc** (TikTok), immediately on approval.
+> Publish to **@exampleinc** (TikTok) on **2026-08-06T15:00:00Z** — 17:00
+> Berlin, the next slot in the content calendar.
 > Caption: "Four accounts, one schedule. 40 seconds."
 > Media: `demo-4137-scheduling.mp4` (attached, 40s).
 > YouTube skipped — not connected.
 
-Accepted.
+Accepted. The agent wakes on the acceptance and continues from there.
 
-**Step 5 — send.** The draft flips to scheduled:
+**Step 5 — send.** The draft flips to the confirmed time, not to any other:
 
 ```
 update_post  pst_77c103  status: "scheduled"  scheduledTime: "2026-08-06T15:00:00Z"

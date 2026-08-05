@@ -52,14 +52,16 @@ Acknowledged and discarded. Nothing was published.
 
 **Step 4 — confirmation.** Thursday 09:00 in Berlin is `07:00Z` in August.
 A confirmation card is raised on the issue, bound to `rev_8f21`, with
-idempotency key `confirmation:issue-4120:publish:rev_8f21`:
+idempotency key `confirmation:issue-4120:publish:rev_8f21` and
+`continuationPolicy: wake_assignee_on_accept`:
 
 > Publish this text to **Example Inc.** (LinkedIn) and **@exampleinc** (X) on
 > **2026-08-13T07:00:00Z** — 09:00 Berlin. No media attached.
 >
 > <the approved copy>
 
-The board member accepts. Nothing was sent before that.
+The board member accepts, which wakes the agent. Nothing was sent before that,
+and the scheduled time below is the one on the card.
 
 **Step 5 — schedule.**
 
