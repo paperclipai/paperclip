@@ -93,6 +93,8 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   AGENT_REVIEWER_ROLES,
+  isAgentStatusInvokable,
+  type IssueMonitorScheduledBy,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -426,12 +428,31 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
  * happened. A handoff that silently does nothing is worse than one that fails.
  */
 function rejectIgnoredAssigneeKey(req: Request, _res: Response, next: () => void) {
-  if (req.body && typeof req.body === "object" && !Array.isArray(req.body) && "assigneeId" in req.body) {
-    throw badRequest("assigneeId is not a valid field. Use assigneeAgentId for an agent or assigneeUserId for a human.", {
-      code: "unknown_field",
-      field: "assigneeId",
-      validFields: ["assigneeAgentId", "assigneeUserId"],
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return next();
+  // Plan decompositions carry the same issue payload one level down, per child.
+  const payloads: Array<{ value: Record<string, unknown>; field: string }> = [
+    { value: body as Record<string, unknown>, field: "assigneeId" },
+  ];
+  const children = (body as Record<string, unknown>).children;
+  if (Array.isArray(children)) {
+    children.forEach((child, index) => {
+      if (child && typeof child === "object" && !Array.isArray(child)) {
+        payloads.push({ value: child as Record<string, unknown>, field: `children[${index}].assigneeId` });
+      }
     });
+  }
+  for (const payload of payloads) {
+    if ("assigneeId" in payload.value) {
+      throw badRequest(
+        `${payload.field} is not a valid field. Use assigneeAgentId for an agent or assigneeUserId for a human.`,
+        {
+          code: "unknown_field",
+          field: payload.field,
+          validFields: ["assigneeAgentId", "assigneeUserId"],
+        },
+      );
+    }
   }
   next();
 }
@@ -1736,6 +1757,9 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
  * agent without scheduling one itself, so an unanswered review cannot die silently.
  */
 const REVIEWER_AGENT_FALLBACK_MONITOR_MS = 24 * 60 * 60 * 1000;
+const REVIEWER_AGENT_FALLBACK_MONITOR_NOTES =
+  "Automatic fallback monitor: this issue was handed to a reviewer agent without a monitor of its own. " +
+  "If the review has not landed, chase the reviewer or take the issue back.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -3763,6 +3787,11 @@ export function issueRoutes(
     if (!reviewer || reviewer.companyId !== input.existing.companyId) return false;
     const role = typeof reviewer.role === "string" ? reviewer.role.trim().toLowerCase() : "";
     if (!AGENT_REVIEWER_ROLES.includes(role as (typeof AGENT_REVIEWER_ROLES)[number])) return false;
+    // A reviewer that cannot be invoked owns nothing: the issue would sit in_review
+    // waiting on an agent that will never wake. Same reasoning as the paused-assignee
+    // guard on assignment — a silent dead letter is the failure this validator exists
+    // to prevent, and it does not become acceptable just because the assignee is unchanged.
+    if (!isAgentStatusInvokable(reviewer.status)) return false;
 
     if (
       input.applyReviewerFallbackMonitor
@@ -3773,6 +3802,9 @@ export function issueRoutes(
       })
     ) {
       input.updateFields.monitorNextCheckAt = new Date(Date.now() + REVIEWER_AGENT_FALLBACK_MONITOR_MS);
+      // Without these the wake carries no explanation of why it fired.
+      input.updateFields.monitorNotes = REVIEWER_AGENT_FALLBACK_MONITOR_NOTES;
+      input.updateFields.monitorScheduledBy = "board" satisfies IssueMonitorScheduledBy;
     }
     return true;
   }
@@ -9621,7 +9653,7 @@ export function issueRoutes(
     res.json(decompositions);
   });
 
-  router.post("/issues/:id/accepted-plan-decompositions", validateIssueMutationBody(createAcceptedPlanDecompositionSchema), async (req, res) => {
+  router.post("/issues/:id/accepted-plan-decompositions", rejectIgnoredAssigneeKey, validateIssueMutationBody(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
