@@ -738,6 +738,68 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
   });
 
+  it("ignores the requesting run's own queued wakeups and their spawned runs when revalidating a watchdog source mutation", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SELF-WAKE", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+
+    const watchdogRunId = randomUUID();
+    const ownWakeupId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: ownWakeupId,
+      companyId,
+      agentId,
+      status: "queued",
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: sourceId },
+      requestedByRunId: watchdogRunId,
+    });
+
+    // A heartbeat run spawned from the same run's own wakeup should also be ignored.
+    const spawnedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: spawnedRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: sourceId },
+      wakeupRequestId: ownWakeupId,
+    });
+
+    const unrevalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+    });
+    expect(unrevalidated.allowed).toBe(false);
+    expect(unrevalidated.classification?.state).toBe("live");
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: originalFingerprint,
+      runId: watchdogRunId,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
+    expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
+  });
+
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);

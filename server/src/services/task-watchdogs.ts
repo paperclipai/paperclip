@@ -969,7 +969,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`, subtreeIssueIds),
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, subtreeIssueIds),
           ),
-          ...(opts.excludeRunId ? [ne(heartbeatRuns.id, opts.excludeRunId)] : []),
+          ...(opts.excludeRunId ? [
+            ne(heartbeatRuns.id, opts.excludeRunId),
+            sql`not exists (
+              select 1 from ${agentWakeupRequests}
+              where ${agentWakeupRequests.id} = ${heartbeatRuns.wakeupRequestId}
+                and ${agentWakeupRequests.companyId} = ${companyId}
+                and ${agentWakeupRequests.requestedByRunId} = ${opts.excludeRunId}
+            )`,
+          ] : []),
         )),
       db
         .select({
@@ -998,6 +1006,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, [...TASK_WATCHDOG_WAKE_REQUEST_STATUSES]),
+          ...(opts.excludeRunId
+            ? [sql`${agentWakeupRequests.requestedByRunId} is distinct from ${opts.excludeRunId}`]
+            : []),
           or(
             inArray(sql`${agentWakeupRequests.payload}->>'issueId'`, subtreeIssueIds),
             inArray(sql`${agentWakeupRequests.payload}->>'taskId'`, subtreeIssueIds),
