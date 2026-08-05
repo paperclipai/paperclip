@@ -614,13 +614,20 @@ const MAX_PROVIDER_SPAN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  * allowed, because the host and the worker clocks can differ. */
 const MAX_PROVIDER_SPAN_START_AGE_MS = 60 * 60 * 1000; // 1 hour
 
+/** The largest amount by which the end time may be ahead of the host clock. A
+ * larger lead means a wrong or skewed clock, so the host drops the pair. This
+ * upper bound rejects a timestamp pair that is far in the future. It still
+ * allows a small clock skew between the host and the worker. */
+const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
+
 /**
  * Validate the worker-sent start-time and end-time pair at the trust boundary.
  * Return the pair only when it passes the clock-safety policy:
  * - both values are finite numbers;
  * - the start time is less than or equal to the end time;
  * - the duration is not larger than a bounded ceiling;
- * - the start time is not older than a bounded age relative to the host clock.
+ * - the start time is not older than a bounded age relative to the host clock;
+ * - the end time is not ahead of the host clock by more than a bounded skew.
  * Return `undefined` when any check fails, so the host falls back to the
  * synchronous open-and-end path.
  */
@@ -633,6 +640,7 @@ function validateProviderSpanTimes(
   if (startTimeMs > endTimeMs) return undefined;
   if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
   if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
   return { startTimeMs, endTimeMs };
 }
 

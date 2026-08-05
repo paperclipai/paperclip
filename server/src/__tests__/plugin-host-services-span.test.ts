@@ -159,6 +159,24 @@ describe("plugin provider span host handler", () => {
     expect(call.endTimeMs).toBe(endTimeMs);
   });
 
+  it("accepts a pair whose end is a small skew ahead of the host clock", async () => {
+    const services = servicesFor();
+    // The worker clock leads the host clock by a few seconds. This small skew
+    // is within the allowed bound, so the host keeps the native width.
+    const startTimeMs = Date.now() + 5000;
+    const endTimeMs = startTimeMs + 1000;
+    await services.tracer.record(
+      { name: "mkdir", startTimeMs, endTimeMs },
+      { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+    );
+    const call = mockRecordSpan.mock.calls[0]![0] as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(call.startTimeMs).toBe(startTimeMs);
+    expect(call.endTimeMs).toBe(endTimeMs);
+  });
+
   it("drops an invalid timestamp pair so the synchronous path runs", async () => {
     const services = servicesFor();
     const now = Date.now();
@@ -168,6 +186,8 @@ describe("plugin provider span host handler", () => {
       { startTimeMs: now, endTimeMs: Number.POSITIVE_INFINITY, why: "non-finite end" },
       { startTimeMs: now, endTimeMs: now + 11 * 60 * 1000, why: "over-ceiling duration" },
       { startTimeMs: now - 2 * 60 * 60 * 1000, endTimeMs: now - 2 * 60 * 60 * 1000 + 10, why: "over-age start" },
+      { startTimeMs: now, endTimeMs: now + 2 * 60 * 1000, why: "end far in the future" },
+      { startTimeMs: now + 5 * 60 * 1000, endTimeMs: now + 5 * 60 * 1000 + 10, why: "start and end in the future" },
     ];
     for (const pair of invalidPairs) {
       mockRecordSpan.mockReset();
