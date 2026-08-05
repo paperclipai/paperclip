@@ -150,13 +150,31 @@ describe("board route roots stay in sync with the router", () => {
     fileURLToPath(new URL("../App.tsx", import.meta.url)),
     "utf8",
   );
-  // Global routes (auth, invite, instance, ...) are intentionally never
-  // prefixed, so they are excluded rather than asserted on.
+  // Match any `path="..."` attribute rather than only one that directly follows
+  // `<Route`, so the sweep still covers a route whose attributes are reordered
+  // or split across lines. A guard that silently stops covering a route is worse
+  // than no guard, because it keeps passing while the drift it exists to catch
+  // goes unnoticed.
+  //
+  // Nested paths ("company/settings", "agents/:id") contribute their first
+  // segment, which is what the prefix logic keys on. Global routes (auth,
+  // invite, instance, ...) are intentionally never prefixed and are excluded
+  // rather than asserted on.
   const registeredRoots = Array.from(
     new Set(
-      Array.from(appSource.matchAll(/<Route\s+path="([a-z0-9-]+)"/g)).map((m) => m[1]!),
+      Array.from(appSource.matchAll(/path="([^"]+)"/g))
+        .map((m) => m[1]!.split("/").filter(Boolean)[0])
+        .filter((root): root is string => Boolean(root) && /^[a-z0-9-]+$/.test(root)),
     ),
-  ).filter((root) => !isGlobalPath(`/${root}`));
+  )
+    .filter((root) => !isGlobalPath(`/${root}`))
+    // Not company-scoped, so intentionally never prefixed:
+    //   ux-lab  — registered only in the global tree, beside invite/cli-auth
+    //   tests   — DEV-only, and also registered in the global tree
+    //   dev     — DEV-only scaffolding (dev/task-chat-lab)
+    // Listed explicitly rather than narrowing the regex, so an exclusion is
+    // visible in review instead of hidden in a pattern.
+    .filter((root) => !["ux-lab", "tests", "dev"].includes(root));
 
   it("finds routes to check", () => {
     expect(registeredRoots.length).toBeGreaterThan(20);
