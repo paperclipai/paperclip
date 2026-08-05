@@ -79,7 +79,7 @@ export function CalendarToolbar({
               title={`${VIEW_LABELS[candidate]} (${VIEW_SHORTCUTS[candidate]})`}
               onClick={() => onModeChange(candidate)}
               className={cn(
-                "px-2.5 py-1 text-[12px] transition-colors",
+                "px-2.5 py-1 text-xs transition-colors",
                 mode === candidate
                   ? "bg-foreground text-background"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground",

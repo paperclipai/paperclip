@@ -45,8 +45,22 @@ const MAX_WINDOW_MS = 92 * 24 * 60 * 60 * 1000;
 const PER_SERIES_LIMIT = 500;
 /** Total events returned, across every kind. */
 const GLOBAL_LIMIT = 3_000;
-/** Row ceiling per historical source query, so one busy company cannot OOM. */
+/** Row ceiling per source query, so one busy company cannot exhaust memory. */
 const MAX_SOURCE_ROWS = 2_000;
+
+/**
+ * Read one row past the ceiling so hitting it is detectable.
+ *
+ * A silently-truncated source is the worst failure this endpoint has: the
+ * calendar would look complete while missing entries, with nothing in the
+ * response to say so. Every source therefore asks for `MAX_SOURCE_ROWS + 1`
+ * rows and reports the overflow instead of swallowing it.
+ */
+function takeWithinCap<T>(rows: T[]): { rows: T[]; capped: boolean } {
+  return rows.length > MAX_SOURCE_ROWS
+    ? { rows: rows.slice(0, MAX_SOURCE_ROWS), capped: true }
+    : { rows, capped: false };
+}
 
 export interface CalendarQuery {
   companyId: string;
@@ -171,7 +185,7 @@ export function calendarService(db: Db) {
     if (query.projectId) conditions.push(eq(routines.projectId, query.projectId));
     if (query.agentId) conditions.push(eq(routines.assigneeAgentId, query.agentId));
 
-    const rows = await db
+    const scheduleRows = await db
       .select({
         triggerId: routineTriggers.id,
         cronExpression: routineTriggers.cronExpression,
@@ -186,7 +200,12 @@ export function calendarService(db: Db) {
       .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
       .leftJoin(agents, eq(routines.assigneeAgentId, agents.id))
       .where(and(...conditions))
-      .limit(MAX_SOURCE_ROWS);
+      // Deterministic order. Without it the rows that survive the ceiling are
+      // whatever the planner happened to return, so two identical requests
+      // could project different schedules.
+      .orderBy(asc(routines.title), asc(routineTriggers.id))
+      .limit(MAX_SOURCE_ROWS + 1);
+    const { rows, capped } = takeWithinCap(scheduleRows);
 
     // Only the future is projected. The past half of the window is served by
     // `routine_run` records, which are what actually happened — overlaying
@@ -254,7 +273,7 @@ export function calendarService(db: Db) {
       }
     }
 
-    return { series, truncatedSeries, unschedulable };
+    return { series, truncatedSeries, unschedulable, capped };
   }
 
   async function loadRoutineRuns(query: CalendarQuery, window: { from: Date; to: Date }) {
@@ -267,7 +286,7 @@ export function calendarService(db: Db) {
     if (query.projectId) conditions.push(eq(routines.projectId, query.projectId));
     if (query.agentId) conditions.push(eq(routines.assigneeAgentId, query.agentId));
 
-    const rows = await db
+    const runRows = await db
       .select({
         id: routineRuns.id,
         status: routineRuns.status,
@@ -285,10 +304,11 @@ export function calendarService(db: Db) {
       .innerJoin(routines, eq(routineRuns.routineId, routines.id))
       .leftJoin(agents, eq(routines.assigneeAgentId, agents.id))
       .where(and(...conditions))
-      .orderBy(desc(routineRuns.triggeredAt))
-      .limit(MAX_SOURCE_ROWS);
+      .orderBy(desc(routineRuns.triggeredAt), asc(routineRuns.id))
+      .limit(MAX_SOURCE_ROWS + 1);
+    const { rows, capped } = takeWithinCap(runRows);
 
-    return rows.map<CalendarEvent>((row) => ({
+    const events = rows.map<CalendarEvent>((row) => ({
       id: `routine_run:${row.id}`,
       kind: "routine_run",
       tense: "actual",
@@ -307,6 +327,7 @@ export function calendarService(db: Db) {
       cronExpression: null,
       href: `/routines/${row.routineId}`,
     }));
+    return { events, capped };
   }
 
   async function loadTaskMonitors(query: CalendarQuery, window: { from: Date; to: Date }) {
@@ -319,7 +340,7 @@ export function calendarService(db: Db) {
     if (query.projectId) conditions.push(eq(issues.projectId, query.projectId));
     if (query.agentId) conditions.push(eq(issues.assigneeAgentId, query.agentId));
 
-    const rows = await db
+    const monitorRows = await db
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -332,10 +353,11 @@ export function calendarService(db: Db) {
       .from(issues)
       .leftJoin(agents, eq(issues.assigneeAgentId, agents.id))
       .where(and(...conditions))
-      .orderBy(asc(issues.monitorNextCheckAt))
-      .limit(MAX_SOURCE_ROWS);
+      .orderBy(asc(issues.monitorNextCheckAt), asc(issues.id))
+      .limit(MAX_SOURCE_ROWS + 1);
+    const { rows, capped } = takeWithinCap(monitorRows);
 
-    return rows.map<CalendarEvent>((row) => ({
+    const events = rows.map<CalendarEvent>((row) => ({
       id: `task_monitor:${row.id}`,
       kind: "task_monitor",
       tense: "projected",
@@ -354,6 +376,7 @@ export function calendarService(db: Db) {
       cronExpression: null,
       href: issueHref(row.identifier, row.id),
     }));
+    return { events, capped };
   }
 
   /**
@@ -372,7 +395,7 @@ export function calendarService(db: Db) {
     if (query.projectId) conditions.push(eq(issues.projectId, query.projectId));
     if (query.agentId) conditions.push(eq(issues.assigneeAgentId, query.agentId));
 
-    const rows = await db
+    const activityRows = await db
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -387,8 +410,9 @@ export function calendarService(db: Db) {
       .from(issues)
       .leftJoin(agents, eq(issues.assigneeAgentId, agents.id))
       .where(and(...conditions))
-      .orderBy(desc(issues.updatedAt))
-      .limit(MAX_SOURCE_ROWS);
+      .orderBy(desc(issues.updatedAt), asc(issues.id))
+      .limit(MAX_SOURCE_ROWS + 1);
+    const { rows, capped } = takeWithinCap(activityRows);
 
     const events: CalendarEvent[] = [];
     for (const row of rows) {
@@ -423,7 +447,7 @@ export function calendarService(db: Db) {
         href: issueHref(row.identifier, row.id),
       });
     }
-    return events;
+    return { events, capped };
   }
 
   async function loadAgentRuns(query: CalendarQuery, window: { from: Date; to: Date }) {
@@ -435,7 +459,7 @@ export function calendarService(db: Db) {
     ];
     if (query.agentId) conditions.push(eq(heartbeatRuns.agentId, query.agentId));
 
-    const rows = await db
+    const agentRunRows = await db
       .select({
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
@@ -447,10 +471,11 @@ export function calendarService(db: Db) {
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(and(...conditions))
-      .orderBy(desc(heartbeatRuns.startedAt))
-      .limit(MAX_SOURCE_ROWS);
+      .orderBy(desc(heartbeatRuns.startedAt), asc(heartbeatRuns.id))
+      .limit(MAX_SOURCE_ROWS + 1);
+    const { rows, capped } = takeWithinCap(agentRunRows);
 
-    return rows.map<CalendarEvent>((row) => ({
+    const events = rows.map<CalendarEvent>((row) => ({
       id: `agent_run:${row.id}`,
       kind: "agent_run",
       tense: "actual",
@@ -469,6 +494,7 @@ export function calendarService(db: Db) {
       cronExpression: null,
       href: `/agents/${row.agentId}`,
     }));
+    return { events, capped };
   }
 
   return {
@@ -488,32 +514,46 @@ export function calendarService(db: Db) {
 
       let truncatedSeries: CalendarTruncatedSeries[] = [];
       let unschedulable: CalendarResult["unschedulable"] = [];
+      // Kinds whose source query hit its row ceiling. Tracked separately from
+      // the projection and allocation caps because it happens earlier, and
+      // because leaving it unreported is what would make a partial calendar
+      // look complete.
+      const cappedSources: CalendarEventKind[] = [];
 
       if (kinds.has("routine_scheduled")) {
         const projected = await projectRoutineSchedules(query, window, now);
         truncatedSeries = projected.truncatedSeries;
         unschedulable = projected.unschedulable;
+        if (projected.capped) cappedSources.push("routine_scheduled");
         for (const [triggerId, events] of projected.series) {
           groups.set(`routine_scheduled:${triggerId}`, events);
         }
       }
       if (kinds.has("routine_run")) {
-        for (const event of await loadRoutineRuns(query, window)) {
+        const loaded = await loadRoutineRuns(query, window);
+        if (loaded.capped) cappedSources.push("routine_run");
+        for (const event of loaded.events) {
           addToGroup(`routine_run:${event.routineId}`, event);
         }
       }
       if (kinds.has("task_monitor")) {
-        for (const event of await loadTaskMonitors(query, window)) {
+        const loaded = await loadTaskMonitors(query, window);
+        if (loaded.capped) cappedSources.push("task_monitor");
+        for (const event of loaded.events) {
           addToGroup("task_monitor", event);
         }
       }
       if (kinds.has("task_activity")) {
-        for (const event of await loadTaskActivity(query, window)) {
+        const loaded = await loadTaskActivity(query, window);
+        if (loaded.capped) cappedSources.push("task_activity");
+        for (const event of loaded.events) {
           addToGroup("task_activity", event);
         }
       }
       if (kinds.has("agent_run")) {
-        for (const event of await loadAgentRuns(query, window)) {
+        const loaded = await loadAgentRuns(query, window);
+        if (loaded.capped) cappedSources.push("agent_run");
+        for (const event of loaded.events) {
           addToGroup(`agent_run:${event.agentId}`, event);
         }
       }
@@ -539,8 +579,12 @@ export function calendarService(db: Db) {
         },
         counts,
         truncated:
-          truncatedSeries.length > 0 || allocated.dropped > 0
-            ? { series: truncatedSeries, droppedEvents: allocated.dropped }
+          truncatedSeries.length > 0 || allocated.dropped > 0 || cappedSources.length > 0
+            ? {
+                series: truncatedSeries,
+                droppedEvents: allocated.dropped,
+                sources: cappedSources,
+              }
             : null,
         unschedulable,
       };

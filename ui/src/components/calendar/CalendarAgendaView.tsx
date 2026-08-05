@@ -79,11 +79,11 @@ export function CalendarAgendaView({
                       className="h-6 w-0.5 shrink-0 status-fill"
                       style={{ "--sc": eventHue(event) } as React.CSSProperties}
                     />
-                    <span className="w-[4.5rem] shrink-0 text-[12px] tabular-nums text-muted-foreground">
+                    <span className="w-[4.5rem] shrink-0 text-xs tabular-nums text-muted-foreground">
                       {formatTime(new Date(event.at))}
                     </span>
                     <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
                       {event.title}
                       {cluster.count > 1 ? (
                         <span className="ml-1.5 text-[11px] text-muted-foreground">

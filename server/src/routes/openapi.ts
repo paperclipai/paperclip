@@ -663,6 +663,7 @@ const calendarResponseSchema = z.object({
       returned: z.number().int(),
     }).strict()),
     droppedEvents: z.number().int(),
+    sources: z.array(calendarEventKindSchema),
   }).strict().nullable(),
   unschedulable: z.array(z.object({
     routineId: z.string(),

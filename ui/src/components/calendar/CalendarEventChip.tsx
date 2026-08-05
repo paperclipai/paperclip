@@ -25,6 +25,13 @@ interface CalendarEventChipProps {
 /**
  * One occurrence.
  *
+ * The chip label uses an 11px size rather than the `text-xs` step. A month cell
+ * has to fit three chips plus an overflow line inside ~96px of height, and a
+ * week column has to fit a time and a title inside ~95px of width; at
+ * `text-xs` the title truncates to a stub in both. This matches the existing
+ * dense-list idiom in the sidebar and agent lists rather than inventing a new
+ * one. Every *colour* comes from the semantic `--status-*` tokens.
+ *
  * Projected and actual entries are told apart *structurally* — a projected chip
  * is a dashed outline with no fill, an actual chip is filled — rather than by
  * hue alone, so the distinction survives a monochrome display and does not

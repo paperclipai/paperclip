@@ -102,12 +102,18 @@ export interface CalendarResult {
   };
   counts: Record<CalendarEventKind, number>;
   /**
-   * Present when output was capped. `series` names the schedules that hit the
-   * per-series cap; `droppedEvents` counts entries dropped by the global cap.
+   * Present when output was capped, for any reason. The UI says so out loud
+   * rather than rendering a partial window as if it were whole.
+   *
+   * `series` names the schedules that hit the per-series projection cap.
+   * `droppedEvents` counts entries the global cap discarded.
+   * `sources` names the kinds whose *database query* hit its row ceiling, which
+   * happens before any of the above and would otherwise be invisible.
    */
   truncated: {
     series: CalendarTruncatedSeries[];
     droppedEvents: number;
+    sources: CalendarEventKind[];
   } | null;
   /**
    * Schedules that could not be projected — an unparseable cron expression or

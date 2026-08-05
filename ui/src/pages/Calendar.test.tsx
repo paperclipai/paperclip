@@ -299,6 +299,7 @@ describe("Calendar page", () => {
             },
           ],
           droppedEvents: 0,
+          sources: [],
         },
       }),
     );
@@ -308,6 +309,24 @@ describe("Calendar page", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Every five minutes");
       expect(container.textContent).toContain("too often to draw in full");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("says when a source held more rows than it loads at once", async () => {
+    calendarApiMock.get.mockResolvedValue(
+      result({
+        events: [event({ id: "a", at: new Date(2026, 7, 6, 9, 0).toISOString() })],
+        truncated: { series: [], droppedEvents: 0, sources: ["agent_run"] },
+      }),
+    );
+
+    const { root } = renderCalendar(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("more agent runs");
+      expect(container.textContent).toContain("Narrow the window");
     });
 
     act(() => root.unmount());

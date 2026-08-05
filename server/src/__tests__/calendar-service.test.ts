@@ -213,6 +213,64 @@ describeEmbeddedPostgres("calendar service", () => {
     expect(result.events.some((event) => event.title === "Healthy")).toBe(true);
   });
 
+  it("reports a source that hit its row ceiling instead of hiding the loss", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const { routineId } = await seedRoutine(companyId, agentId);
+    // MAX_SOURCE_ROWS is 2000; 2001 rows must trip the ceiling and be reported.
+    await db.insert(routineRuns).values(
+      Array.from({ length: 2001 }, (_, index) => ({
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date(WINDOW.from.getTime() + index * 60_000),
+      })),
+    );
+
+    const result = await calendarService(db).getCalendar(
+      { companyId, ...WINDOW, kinds: ["routine_run"] },
+      NOW,
+    );
+
+    expect(result.truncated).not.toBeNull();
+    expect(result.truncated!.sources).toEqual(["routine_run"]);
+  });
+
+  it("does not claim truncation when a source sits exactly on the ceiling", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const { routineId } = await seedRoutine(companyId, agentId);
+    await db.insert(routineRuns).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date(WINDOW.from.getTime() + index * 60_000),
+      })),
+    );
+
+    const result = await calendarService(db).getCalendar(
+      { companyId, ...WINDOW, kinds: ["routine_run"] },
+      NOW,
+    );
+
+    expect(result.truncated).toBeNull();
+  });
+
+  it("projects the same schedules on every identical request", async () => {
+    const { companyId, agentId } = await seedCompany();
+    for (const title of ["Alpha", "Bravo", "Charlie"]) {
+      await seedRoutine(companyId, agentId, { title });
+    }
+
+    const first = await calendarService(db).getCalendar({ companyId, ...WINDOW }, NOW);
+    const second = await calendarService(db).getCalendar({ companyId, ...WINDOW }, NOW);
+
+    // Deterministic ordering on the schedule query: without it the rows kept
+    // under the ceiling would be whatever the planner returned that time.
+    expect(second.events.map((event) => event.id)).toEqual(first.events.map((event) => event.id));
+  });
+
   it("caps a dense schedule and says so", async () => {
     const { companyId, agentId } = await seedCompany();
     await seedRoutine(companyId, agentId, { title: "Every five", cronExpression: "*/5 * * * *" });
@@ -222,6 +280,7 @@ describeEmbeddedPostgres("calendar service", () => {
     expect(result.truncated).not.toBeNull();
     expect(result.truncated!.series).toHaveLength(1);
     expect(result.truncated!.series[0]!.routineTitle).toBe("Every five");
+    expect(result.truncated!.sources).toEqual([]);
     expect(result.events.filter((event) => event.kind === "routine_scheduled")).toHaveLength(500);
   });
 

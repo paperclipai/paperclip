@@ -185,7 +185,7 @@ export function Calendar() {
     <div className="space-y-4">
       <div className="flex items-baseline gap-3">
         <h1 className="text-lg font-semibold text-foreground">Calendar</h1>
-        <p className="text-[12px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {upcomingCount > 0
             ? `${upcomingCount} scheduled ahead · times in ${timeZone}`
             : `Times in ${timeZone}`}
@@ -203,7 +203,7 @@ export function Calendar() {
       />
 
       {data?.unschedulable && data.unschedulable.length > 0 ? (
-        <div className="flex items-start gap-2 border border-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+        <div className="flex items-start gap-2 border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <p>
             {data.unschedulable.length} routine
@@ -215,16 +215,32 @@ export function Calendar() {
       ) : null}
 
       {data?.truncated ? (
-        <div className="flex items-start gap-2 border border-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+        <div className="flex items-start gap-2 border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <p>
-            Some schedules run too often to draw in full. Showing the earliest occurrences for{" "}
-            {data.truncated.series.map((entry) => entry.routineTitle).join(", ") || "this window"}
-            {data.truncated.droppedEvents > 0
-              ? `, and ${data.truncated.droppedEvents} further entries are hidden`
-              : ""}
-            .
-          </p>
+          <div className="space-y-1">
+            {data.truncated.series.length > 0 ? (
+              <p>
+                Some schedules run too often to draw in full. Showing the earliest occurrences for{" "}
+                {data.truncated.series.map((entry) => entry.routineTitle).join(", ")}
+                {data.truncated.droppedEvents > 0
+                  ? `, and ${data.truncated.droppedEvents} further entries are hidden`
+                  : ""}
+                .
+              </p>
+            ) : data.truncated.droppedEvents > 0 ? (
+              <p>{data.truncated.droppedEvents} entries are hidden in this window.</p>
+            ) : null}
+            {data.truncated.sources.length > 0 ? (
+              <p>
+                This window holds more{" "}
+                {data.truncated.sources
+                  .map((kind) => CALENDAR_KIND_META[kind].label.toLowerCase())
+                  .join(" and ")}{" "}
+                than the calendar loads at once. Narrow the window or use the filters to see the
+                rest.
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
