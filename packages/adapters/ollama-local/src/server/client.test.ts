@@ -136,6 +136,47 @@ describe("ollama_local native client", () => {
     });
   });
 
+  it("keeps multiple ID-less fragments on the active duplicate-index call", async () => {
+    const response = new Response(
+      [
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-0", type: "function", function: { name: "one", arguments: "{\"x\":\"a" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-1", type: "function", function: { name: "two", arguments: "{\"y\":2}" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, function: { arguments: "b" } },
+          ] } }],
+        },
+        {
+          choices: [{ delta: { tool_calls: [
+            { index: 0, function: { arguments: "\"}" } },
+          ] } }],
+        },
+      ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") +
+      "data: [DONE]\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+    const body = await readResponseBody(response, { stream: true });
+
+    const choice = (body.choices as Array<{ message: unknown }>)[0];
+    expect(choice.message).toEqual({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { index: 0, id: "call-0", type: "function", function: { name: "one", arguments: "{\"x\":\"ab\"}" } },
+        { index: 0, id: "call-1", type: "function", function: { name: "two", arguments: "{\"y\":2}" } },
+      ],
+    });
+  });
+
   it.each([
     [401, "auth", "transient_upstream"],
     [429, "quota", "provider_quota"],

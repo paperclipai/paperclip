@@ -16,7 +16,18 @@ function mergeStreamArguments(previous: string, incoming: string): string {
 
 type StreamToolCallMergeState = {
   nextUnidentifiedByStreamIndex: Map<number, number>;
+  activeUnidentifiedByStreamIndex: Map<number, number>;
 };
+
+function hasCompleteJsonArguments(value: string): boolean {
+  if (!value) return false;
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function streamToolCallIndex(call: JsonRecord, position: number): number {
   return typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
@@ -35,6 +46,7 @@ function mergeStreamToolCalls(
     const call = rawCall as JsonRecord;
     const streamIndex = streamToolCallIndex(call, position);
     const callId = typeof call.id === "string" && call.id ? call.id : null;
+    let unidentifiedCandidates: number[] | null = null;
     let index = callId
       ? merged.findIndex((existingCall) => (
         typeof existingCall === "object" && existingCall !== null && !Array.isArray(existingCall) &&
@@ -61,9 +73,14 @@ function mergeStreamToolCalls(
         return streamToolCallIndex(existingRecord, existingPosition) === streamIndex ? [existingPosition] : [];
       });
       if (candidates.length > 0) {
-        const cursor = state.nextUnidentifiedByStreamIndex.get(streamIndex) ?? candidates[0];
-        index = candidates.find((candidate) => candidate >= cursor) ?? candidates[0];
-        state.nextUnidentifiedByStreamIndex.set(streamIndex, index + 1);
+        unidentifiedCandidates = candidates;
+        const active = state.activeUnidentifiedByStreamIndex.get(streamIndex);
+        if (active !== undefined && candidates.includes(active)) {
+          index = active;
+        } else {
+          const cursor = state.nextUnidentifiedByStreamIndex.get(streamIndex) ?? candidates[0];
+          index = candidates.find((candidate) => candidate >= cursor) ?? candidates[0];
+        }
       }
     }
 
@@ -100,6 +117,17 @@ function mergeStreamToolCalls(
           : previousFunction.arguments ? { arguments: previousFunction.arguments } : {}),
       },
     };
+
+    if (!callId && unidentifiedCandidates?.includes(index)) {
+      const argumentsValue = (merged[index] as JsonRecord).function as JsonRecord;
+      const argumentsText = typeof argumentsValue.arguments === "string" ? argumentsValue.arguments : "";
+      if (hasCompleteJsonArguments(argumentsText)) {
+        state.activeUnidentifiedByStreamIndex.delete(streamIndex);
+        state.nextUnidentifiedByStreamIndex.set(streamIndex, index + 1);
+      } else {
+        state.activeUnidentifiedByStreamIndex.set(streamIndex, index);
+      }
+    }
   }
 
   return merged.filter((call) => call !== undefined);
@@ -185,6 +213,7 @@ export async function readResponseBody(
   const nativeMode = response.headers.get("content-type")?.includes("ndjson") ?? false;
   const toolCallMergeState: StreamToolCallMergeState = {
     nextUnidentifiedByStreamIndex: new Map(),
+    activeUnidentifiedByStreamIndex: new Map(),
   };
   let pending = "";
   let final: JsonRecord = {};
