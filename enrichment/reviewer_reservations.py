@@ -132,6 +132,20 @@ def _find_existing(cur, company_id: str, queue_row_id: str, request_key: str):
     return cur.fetchone()
 
 
+def _queue_belongs_to_company(cur, company_id: str, queue_row_id: str) -> bool:
+    """Verify the queue row and reservation company share one tenant boundary."""
+    cur.execute(
+        """
+        SELECT 1
+        FROM enrichment_queue
+        WHERE id = %s AND company_id = %s
+        FOR KEY SHARE
+        """,
+        (str(queue_row_id), str(company_id)),
+    )
+    return cur.fetchone() is not None
+
+
 def reserve(
     conn,
     company_id: str,
@@ -149,6 +163,19 @@ def reserve(
     try:
         with conn.cursor() as cur:
             _advisory_lock(cur, company_id)
+
+            # The two scalar foreign keys on reservations only prove that the
+            # company and queue row exist independently. Keep this ownership
+            # check in the advisory-locked transaction before any insert.
+            if not _queue_belongs_to_company(cur, company_id, queue_row_id):
+                conn.rollback()
+                return ReservationResult(
+                    outcome=OUTCOME_NOT_FOUND_OR_FOREIGN,
+                    reservation_id=None,
+                    state=None,
+                    reserved_cents=reserved_cents,
+                    committed_reserved_cents=0,
+                )
 
             existing = _find_existing(cur, company_id, queue_row_id, request_key)
             if existing is not None:
@@ -254,6 +281,18 @@ def enqueue_cap_pause_event(conn, company_id: str, queue_row_id: str, amount_cen
     try:
         with conn.cursor() as cur:
             _advisory_lock(cur, company_id)
+            # The queue-row FK alone cannot prove tenant ownership because
+            # PostgreSQL permits the two scalar FKs to reference different
+            # companies. Validate the pair before creating the outbox row.
+            cur.execute(
+                """
+                SELECT 1 FROM enrichment_queue
+                WHERE id = %s AND company_id = %s
+                """,
+                (str(queue_row_id), str(company_id)),
+            )
+            if cur.fetchone() is None:
+                raise ValueError("queue row not found or belongs to another company")
             cur.execute(
                 """
                 INSERT INTO enrichment_cap_pause_events

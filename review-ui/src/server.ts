@@ -22,6 +22,23 @@ type CoreStagingRow = {
   validatorResult: unknown;
 };
 
+type CoreBatch = {
+  batchId: string;
+  rowCount: number;
+  flaggedCount: number;
+  approvedCount: number;
+};
+
+/** Reshape a core batch summary into the field names used by the browser UI. */
+function toReviewBatch(batch: CoreBatch) {
+  return {
+    batch_id: batch.batchId,
+    row_count: batch.rowCount,
+    flagged_count: batch.flaggedCount,
+    approved_count: batch.approvedCount,
+  };
+}
+
 /** Reshape a core (camelCase) staging row into the shape the static UI expects. */
 function toReviewRow(row: CoreStagingRow) {
   const score = row.anomalyScore == null ? null : Number(row.anomalyScore);
@@ -71,8 +88,8 @@ export function createApp(): Hono<{ Variables: Variables }> {
   // GET /api/batches — batch summaries for the caller's company.
   app.get('/api/batches', async (c) => {
     const res = await coreFetch(c, `${enrichmentBase(c)}/batches`);
-    const body = (await res.json()) as { batches?: unknown };
-    return c.json({ batches: body.batches ?? [] }, res.ok ? 200 : (res.status as 400));
+    const body = (await res.json()) as { batches?: CoreBatch[] };
+    return c.json({ batches: (body.batches ?? []).map(toReviewBatch) }, res.ok ? 200 : (res.status as 400));
   });
 
   // GET /api/staging?batch_id=<uuid>[&flagged=true]

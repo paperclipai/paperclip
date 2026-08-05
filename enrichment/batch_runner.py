@@ -516,8 +516,6 @@ async def _run_batch() -> "tuple[int, dict]":
     Inner batch execution, called only when the run lock is held.
     Returns (exit_code, summary). summary["terminal_state"] is always set.
     """
-    cfg = DispatcherConfig.from_env()
-
     api_url = os.environ.get("PAPERCLIP_API_URL", "")
     api_key = os.environ.get("PAPERCLIP_API_KEY", "")
     run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
@@ -528,14 +526,23 @@ async def _run_batch() -> "tuple[int, dict]":
     exit_code = 0
     error_class = None
 
-    # Enabled OpenShell is a fresh, single-use sandbox; no undocumented pool,
-    # host mount, gRPC, or macOS fallback participates in execution.
-    shim = None
-    if _OPENSH_AVAILABLE:
-        shim_cfg = ShimConfig.from_env()
-        shim = OpenShellShim(shim_cfg)
-
+    # Configuration construction is part of the guarded execution path. A
+    # malformed runtime environment must still produce the one terminal
+    # record and issue disposition below.
     try:
+        cfg = DispatcherConfig.from_env()
+        # Enabled OpenShell is a fresh, single-use sandbox; no undocumented
+        # pool, host mount, gRPC, or macOS fallback participates in execution.
+        shim = None
+        opensh_enabled = os.environ.get("OPENSH_SANDBOX_ENABLED", "0") == "1"
+        if opensh_enabled and not _OPENSH_AVAILABLE:
+            raise RuntimeError(
+                "OpenShell is enabled but the OpenShell shim is unavailable; "
+                "refusing to fall back to in-process execution"
+            )
+        if _OPENSH_AVAILABLE:
+            shim_cfg = ShimConfig.from_env()
+            shim = OpenShellShim(shim_cfg)
         if shim is not None:
             summary = await _run_dispatcher(shim, cfg)
         else:

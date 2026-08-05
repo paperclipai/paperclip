@@ -88,12 +88,26 @@ describe('review-ui server', () => {
   });
 
   describe('company scoping and forwarding', () => {
+    it('normalizes the core camelCase batch response for the browser UI', async () => {
+      stubFetch({
+        onCore: () => ({
+          status: 200,
+          body: { batches: [{ batchId: 'batch-1', rowCount: 12, flaggedCount: 3, approvedCount: 5 }] },
+        }),
+      });
+      const app = createApp();
+      const res = await app.fetch(bearerReq('/api/batches'));
+      expect(await res.json()).toEqual({
+        batches: [{ batch_id: 'batch-1', row_count: 12, flagged_count: 3, approved_count: 5 }],
+      });
+    });
+
     it('derives companyId from the agent and forwards the bearer token', async () => {
-      const calls = stubFetch({ onCore: () => ({ status: 200, body: { batches: [{ batch_id: 'b1' }] } }) });
+      const calls = stubFetch({ onCore: () => ({ status: 200, body: { batches: [{ batchId: 'b1', rowCount: 0, flaggedCount: 0, approvedCount: 0 }] } }) });
       const app = createApp();
       const res = await app.fetch(bearerReq('/api/batches'));
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ batches: [{ batch_id: 'b1' }] });
+      expect(await res.json()).toEqual({ batches: [{ batch_id: 'b1', row_count: 0, flagged_count: 0, approved_count: 0 }] });
 
       const coreCall = calls.find((c) => c.url.includes('/enrichment/batches'));
       expect(coreCall?.url).toBe(`${CORE}/api/companies/${COMPANY_ID}/enrichment/batches`);

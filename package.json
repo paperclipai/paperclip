@@ -41,6 +41,7 @@
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
+    "check:public-portability": "node scripts/check-public-portability.mjs origin/master...HEAD",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:install-sh-docker": "./scripts/test-install-sh-docker.sh",
     "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs",

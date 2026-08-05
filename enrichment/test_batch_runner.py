@@ -126,6 +126,20 @@ class TestRunFunction(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(code, 0)
 
+    async def test_enabled_mode_fails_closed_when_shim_is_unavailable(self):
+        with patch.dict(
+            os.environ,
+            self._env(OPENSH_SANDBOX_ENABLED="1", OPENSH_SANDBOX_IMAGE="registry/image:1"),
+            clear=False,
+        ), patch.object(batch_runner, "_OPENSH_AVAILABLE", False), \
+             patch("batch_runner.EnrichmentDispatcher") as MockDisp, \
+             patch("batch_runner._mark_issue_blocked", new=AsyncMock(return_value=True)), \
+             patch("batch_runner._emit_terminal_record"):
+            code = await run()
+
+        self.assertEqual(code, 1)
+        MockDisp.assert_not_called()
+
     async def test_dispatcher_exception_returns_one(self):
         with patch.dict(os.environ, self._env(), clear=False), \
              patch("batch_runner.EnrichmentDispatcher") as MockDisp, \
@@ -513,6 +527,18 @@ class TestErrorClassInRecord(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_error_class(self):
         rec = await self._run_exc(RuntimeError("something completely unexpected"))
         self.assertEqual(rec["error_class"], "unknown")
+
+    async def test_runtime_config_error_still_terminalizes_once(self):
+        captured: list[dict] = []
+        with patch.dict(os.environ, self._env(), clear=False), \
+             patch("batch_runner.DispatcherConfig.from_env", side_effect=ValueError("missing sandbox image")), \
+             patch("batch_runner._mark_issue_blocked", new=AsyncMock(return_value=False)), \
+             patch("batch_runner._emit_terminal_record", side_effect=captured.append):
+            code = await run()
+        self.assertEqual(code, 1)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["terminal_state"], "DISPATCHER_ERROR")
+        self.assertEqual(captured[0]["error_class"], "unknown")
 
     async def test_comment_posted_false_when_mark_fails(self):
         rec = await self._run_exc(RuntimeError("whoops"))

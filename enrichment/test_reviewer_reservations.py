@@ -70,8 +70,9 @@ class TestCapDecision(unittest.TestCase):
 
 class TestReserve(unittest.TestCase):
     def test_fresh_reservation_under_cap_inserts_and_commits(self):
-        # fetchone order: find_existing -> None, current sum -> 1000, insert id
-        conn = FakeConn([None, {"total_cents": 1000}, {"id": "res-1"}])
+        # fetchone order: queue ownership -> true, find_existing -> None,
+        # current sum -> 1000, insert id
+        conn = FakeConn([{"?column?": 1}, None, {"total_cents": 1000}, {"id": "res-1"}])
         res = rr.reserve(conn, COMPANY, QUEUE, "req-a", 500)
         self.assertEqual(res.outcome, rr.OUTCOME_RESERVED)
         self.assertTrue(res.ok)
@@ -86,7 +87,7 @@ class TestReserve(unittest.TestCase):
         self.assertNotIn("staging_row_id", conn.sql_log())
 
     def test_cap_exceeded_does_not_insert_and_rolls_back(self):
-        conn = FakeConn([None, {"total_cents": 4800}])  # 4800 + 500 = 5300 > 5000
+        conn = FakeConn([{"?column?": 1}, None, {"total_cents": 4800}])  # 4800 + 500 = 5300 > 5000
         res = rr.reserve(conn, COMPANY, QUEUE, "req-b", 500)
         self.assertEqual(res.outcome, rr.OUTCOME_CAP_EXCEEDED)
         self.assertFalse(res.ok)
@@ -97,14 +98,14 @@ class TestReserve(unittest.TestCase):
         self.assertNotIn("INSERT INTO", conn.sql_log())
 
     def test_exact_boundary_reserves(self):
-        conn = FakeConn([None, {"total_cents": 4500}, {"id": "res-x"}])  # +500 == 5000
+        conn = FakeConn([{"?column?": 1}, None, {"total_cents": 4500}, {"id": "res-x"}])  # +500 == 5000
         res = rr.reserve(conn, COMPANY, QUEUE, "req-edge", 500)
         self.assertEqual(res.outcome, rr.OUTCOME_RESERVED)
         self.assertEqual(res.committed_reserved_cents, 5000)
 
     def test_idempotent_existing_request_key_does_not_reinsert(self):
         existing = {"id": "res-1", "state": "reserved", "reserved_cents": 500, "actual_cents": None}
-        conn = FakeConn([existing, {"total_cents": 1500}])
+        conn = FakeConn([{"?column?": 1}, existing, {"total_cents": 1500}])
         res = rr.reserve(conn, COMPANY, QUEUE, "req-a", 500)
         self.assertEqual(res.outcome, rr.OUTCOME_EXISTS)
         self.assertTrue(res.ok)
@@ -117,19 +118,27 @@ class TestReserve(unittest.TestCase):
         with self.assertRaises(ValueError):
             rr.reserve(conn, COMPANY, QUEUE, "req", -1)
 
+    def test_foreign_queue_row_is_rejected_before_cap_or_insert(self):
+        conn = FakeConn([None])
+        result = rr.reserve(conn, COMPANY, "queue-owned-by-other-company", "req", 500)
+        self.assertEqual(result.outcome, rr.OUTCOME_NOT_FOUND_OR_FOREIGN)
+        self.assertNotIn("INSERT INTO", conn.sql_log())
+        self.assertEqual(conn.rollbacks, 1)
+        self.assertIn("FROM enrichment_queue", conn.sql_log())
+
     def test_tuple_cursor_rows_supported(self):
         # RETURNING/SUM as positional tuples rather than dict rows
-        conn = FakeConn([None, (1000,), ("res-9",)])
+        conn = FakeConn([{0: 1}, None, (1000,), ("res-9",)])
         res = rr.reserve(conn, COMPANY, QUEUE, "req-t", 500)
         self.assertEqual(res.reservation_id, "res-9")
         self.assertEqual(res.committed_reserved_cents, 1500)
 
     def test_concurrent_second_reserve_sees_updated_total_and_is_capped(self):
         # Simulate serialization: first reserve commits 4800, second reads 4800.
-        c1 = FakeConn([None, {"total_cents": 4500}, {"id": "r1"}])
+        c1 = FakeConn([{"?column?": 1}, None, {"total_cents": 4500}, {"id": "r1"}])
         r1 = rr.reserve(c1, COMPANY, QUEUE, "k1", 300)  # -> 4800
         self.assertTrue(r1.ok)
-        c2 = FakeConn([None, {"total_cents": 4800}])       # second txn, post-lock read
+        c2 = FakeConn([{"?column?": 1}, None, {"total_cents": 4800}])       # second txn, post-lock read
         r2 = rr.reserve(c2, COMPANY, QUEUE, "k2", 300)   # 4800 + 300 = 5100 > cap
         self.assertEqual(r2.outcome, rr.OUTCOME_CAP_EXCEEDED)
 
@@ -202,7 +211,7 @@ class TestSpendQuery(unittest.TestCase):
 
 class TestCapPauseOutbox(unittest.TestCase):
     def test_enqueue_is_company_scoped_idempotent_and_commits_without_reservation(self):
-        conn = FakeConn([{"id": "event-1"}])
+        conn = FakeConn([{"?column?": 1}, {"id": "event-1"}])
         event_id = rr.enqueue_cap_pause_event(conn, COMPANY, QUEUE, 5000)
         self.assertEqual(event_id, "event-1")
         self.assertEqual(conn.commits, 1)
@@ -210,10 +219,18 @@ class TestCapPauseOutbox(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock", conn.sql_log())
 
     def test_concurrent_duplicate_reads_existing_event(self):
-        conn = FakeConn([None, {"id": "event-1"}])
+        conn = FakeConn([{"?column?": 1}, None, {"id": "event-1"}])
         event_id = rr.enqueue_cap_pause_event(conn, COMPANY, QUEUE, 5000)
         self.assertEqual(event_id, "event-1")
         self.assertIn("SELECT id FROM enrichment_cap_pause_events", conn.sql_log())
+
+    def test_enqueue_rejects_queue_row_from_another_company(self):
+        conn = FakeConn([None])
+        with self.assertRaises(ValueError):
+            rr.enqueue_cap_pause_event(conn, COMPANY, "foreign-queue", 5000)
+        self.assertEqual(conn.commits, 0)
+        self.assertEqual(conn.rollbacks, 1)
+        self.assertNotIn("INSERT INTO enrichment_cap_pause_events", conn.sql_log())
 
     def test_claim_allows_exactly_one_pending_to_attempted_transition(self):
         claimed = FakeConn([{"id": "event-1"}])
