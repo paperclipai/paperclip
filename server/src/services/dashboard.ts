@@ -12,6 +12,7 @@ import {
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { isPlatformSelfMaintenanceOriginKind } from "./recovery/origins.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -50,10 +51,10 @@ export function dashboardService(db: Db) {
         .groupBy(agents.status);
 
       const taskRows = await db
-        .select({ status: issues.status, count: sql<number>`count(*)` })
+        .select({ status: issues.status, originKind: issues.originKind, count: sql<number>`count(*)` })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), visibleIssueCondition()))
-        .groupBy(issues.status);
+        .groupBy(issues.status, issues.originKind);
 
       const pendingApprovals = await db
         .select({ count: sql<number>`count(*)` })
@@ -95,12 +96,21 @@ export function dashboardService(db: Db) {
         open: 0,
         inProgress: 0,
         blocked: 0,
+        blockedProduct: 0,
+        blockedPlatformMaintenance: 0,
         done: 0,
       };
       for (const row of taskRows) {
         const count = Number(row.count);
         if (row.status === "in_progress") taskCounts.inProgress += count;
-        if (row.status === "blocked") taskCounts.blocked += count;
+        if (row.status === "blocked") {
+          taskCounts.blocked += count;
+          if (isPlatformSelfMaintenanceOriginKind(row.originKind)) {
+            taskCounts.blockedPlatformMaintenance += count;
+          } else {
+            taskCounts.blockedProduct += count;
+          }
+        }
         if (row.status === "done") taskCounts.done += count;
         if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
       }

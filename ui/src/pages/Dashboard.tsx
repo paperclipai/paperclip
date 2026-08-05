@@ -350,7 +350,10 @@ export function Dashboard() {
               description={
                 <span>
                   {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                  {data.tasks.blockedProduct} product blocked
+                  {data.tasks.blockedPlatformMaintenance > 0
+                    ? ` (${data.tasks.blockedPlatformMaintenance} platform)`
+                    : ""}
                 </span>
               }
             />

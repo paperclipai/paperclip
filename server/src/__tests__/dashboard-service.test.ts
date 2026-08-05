@@ -286,4 +286,78 @@ describeEmbeddedPostgres("dashboard service", () => {
     // process_lost kills that recovered must not leak into the failed breakdown.
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
+
+  it("splits blocked count into product work vs platform self-maintenance", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Product feature blocked on vendor",
+        status: "blocked",
+        priority: "high",
+        originKind: "manual",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Another product blocked item",
+        status: "blocked",
+        priority: "medium",
+        originKind: "routine_execution",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Recover stalled issue X",
+        status: "blocked",
+        priority: "high",
+        originKind: "stranded_issue_recovery",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Unblock liveness incident for Y",
+        status: "blocked",
+        priority: "high",
+        originKind: "harness_liveness_escalation",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "In progress product work",
+        status: "in_progress",
+        priority: "medium",
+        originKind: "manual",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Done recovery wrapper",
+        status: "done",
+        priority: "low",
+        originKind: "stranded_issue_recovery",
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    expect(summary.tasks).toMatchObject({
+      blocked: 4,
+      blockedProduct: 2,
+      blockedPlatformMaintenance: 2,
+      inProgress: 1,
+      done: 1,
+    });
+    // Product number is the stable week-to-week metric.
+    expect(summary.tasks.blockedProduct + summary.tasks.blockedPlatformMaintenance).toBe(
+      summary.tasks.blocked,
+    );
+  });
 });

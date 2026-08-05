@@ -2621,6 +2621,12 @@ export function routineService(
     });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
+    // Moved down from above the `title` declaration (2026-08-05): it read `title` before the
+    // const was initialised, which is a temporal-dead-zone error -- `tsc` flagged TS2448/TS2454 and
+    // it would have thrown at runtime on every routine execution. Only consumed further below
+    // (allowDuplicate), so evaluating it here is equivalent and safe.
+    const isFallbackMonitorExecution =
+      title.trim().replace(/\s+/g, " ").toLowerCase() === "fallback-monitor";
     const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
@@ -2884,6 +2890,7 @@ export function routineService(
         }
 
         if (!executionIssue) {
+          let deduplicatedFallbackMonitorCreate = false;
           try {
             // Unlike issueSvc.update, issueSvc.create takes no tx handle: it runs on the
             // pool. That is load-bearing here — the 23505 recovery below keeps querying
@@ -2913,6 +2920,14 @@ export function routineService(
               originKind: issueOriginKind,
               originId: issueOriginId,
               originRunId: createdRun.id,
+              // The DB guard is portfolio-facing, but service callers bypass
+              // the HTTP route's default `allowDuplicate: false`. Preserve the
+              // existing open monitor as the coalesced target rather than
+              // falling through to a unique-index failure on a scheduled fire.
+              allowDuplicate: isFallbackMonitorExecution ? false : undefined,
+              onDeduplicated: () => {
+                deduplicatedFallbackMonitorCreate = true;
+              },
               // Tie an actionable public courier to the platform's durable
               // issue-create idempotency guard.  A retry after a receipt
               // persistence/callback failure therefore recovers the same
@@ -2933,6 +2948,9 @@ export function routineService(
               executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
             });
             executionIssue = createdIssue;
+            if (deduplicatedFallbackMonitorCreate) {
+              dispatchStatus = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            }
           } catch (error) {
             const isOpenExecutionConflict =
               !!error &&

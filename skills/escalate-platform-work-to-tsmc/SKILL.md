@@ -24,3 +24,15 @@ or directive to TSMC and link exactly what you need) rather than changing the pl
 - Create **company-specific** skills for your own domain (`company/<id>/<slug>`).
 
 Rule of thumb: building *on* Paperclip is yours; changing *Paperclip* is TSMC's.
+
+<!-- FLEET-CLASS-FIX-2026-08-05 -->
+## Fleet-class fixes: local fix + TSMC card, by default (operator ruling 2026-08-05)
+
+The scope rule above says do not MODIFY the platform. This rule is its twin for defects you
+fix inside your own company: if the defect's CLASS plausibly exists in other OpCos (shared
+adapter failure modes, static-assignee dispatch configs, guard behaviours, poller patterns,
+platform-surface quirks), filing a TSMC card is PART OF YOUR FIX — same session, not later.
+Describe the class (not just your instance), attach your local fix as the template, and the
+card MUST carry an assignee (an unowned backlog card is invisible — proven same day).
+TSMC dedupes overlapping cards and standardises the fix portfolio-wide. Reference the TSMC
+card id in your closing comment. Canonical process: TSKB0385.

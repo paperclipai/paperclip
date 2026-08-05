@@ -35,7 +35,19 @@ export interface DashboardSummary {
   tasks: {
     open: number;
     inProgress: number;
+    /**
+     * Total blocked issues (product + platform self-maintenance).
+     * Prefer `blockedProduct` for week-to-week product health tracking.
+     */
     blocked: number;
+    /**
+     * Blocked product work only — excludes platform self-maintenance origins
+     * (stranded recovery, liveness escalations, productivity review, etc.).
+     * Stable metric for week-to-week tracking (TSMC-19763 / TSMC-19784).
+     */
+    blockedProduct: number;
+    /** Blocked issues that exist only to repair the platform itself. */
+    blockedPlatformMaintenance: number;
     done: number;
   };
   costs: {

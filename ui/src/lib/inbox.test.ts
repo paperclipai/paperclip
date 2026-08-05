@@ -290,6 +290,8 @@ const dashboard: DashboardSummary = {
     open: 1,
     inProgress: 0,
     blocked: 0,
+    blockedProduct: 0,
+    blockedPlatformMaintenance: 0,
     done: 0,
   },
   costs: {
