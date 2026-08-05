@@ -17,7 +17,12 @@ export interface CostEvent {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Prompt tokens billed at a cache-write premium; NOT included in inputTokens. */
+  cacheWriteTokens: number;
+  /** Cash actually billed. 0 for subscription_included. Feeds budget enforcement. */
   costCents: number;
+  /** Notional tokens x list-price figure. Not an invoice; not budget input. */
+  rateCardCents: number;
   occurredAt: Date;
   createdAt: Date;
 }
@@ -37,6 +42,8 @@ export interface IssueCostSummary {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
   /** number of distinct heartbeat runs aggregated across the issue tree */
   runCount: number;
   /** sum of wall-clock duration of each run in the tree (ms);
@@ -52,11 +59,16 @@ export interface CostByAgent {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
   apiRunCount: number;
   subscriptionRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  subscriptionCacheWriteTokens: number;
+  /** What subscription-included runs would have cost at list price. */
+  subscriptionRateCardCents: number;
 }
 
 export interface CostByProviderModel {
@@ -68,11 +80,16 @@ export interface CostByProviderModel {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
   apiRunCount: number;
   subscriptionRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  subscriptionCacheWriteTokens: number;
+  /** What subscription-included runs would have cost at list price. */
+  subscriptionRateCardCents: number;
 }
 
 export interface CostByBiller {
@@ -81,11 +98,16 @@ export interface CostByBiller {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
   apiRunCount: number;
   subscriptionRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  subscriptionCacheWriteTokens: number;
+  /** What subscription-included runs would have cost at list price. */
+  subscriptionRateCardCents: number;
   providerCount: number;
   modelCount: number;
 }
@@ -102,6 +124,8 @@ export interface CostByAgentModel {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
 }
 
 /** spend per provider for a fixed rolling time window */
@@ -116,6 +140,8 @@ export interface CostWindowSpendRow {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
 }
 
 /** cost attributed to a project via heartbeat run → activity log → issue → project chain */
@@ -126,4 +152,8 @@ export interface CostByProject {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  cacheWriteTokens: number;
+  rateCardCents: number;
+  /** What subscription-included runs would have cost at list price. */
+  subscriptionRateCardCents: number;
 }

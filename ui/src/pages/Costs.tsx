@@ -23,10 +23,12 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
+import { RateCardEquivalent } from "../components/RateCardEquivalent";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
+import { agentModelShare, agentShareBasis } from "../lib/agent-model-share";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -728,6 +730,7 @@ export function Costs() {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
                         const isExpanded = expandedAgents.has(row.agentId);
                         const hasBreakdown = modelRows.length > 0;
+                        const shareBasis = agentShareBasis(row);
                         return (
                           <div key={row.agentId} className="border border-border px-4 py-3">
                             <div
@@ -746,7 +749,10 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="font-medium">
+                                  {formatCents(row.costCents)}
+                                  <RateCardEquivalent cents={row.subscriptionRateCardCents} className="ml-1 text-xs" />
+                                </div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -765,7 +771,7 @@ export function Costs() {
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
-                                  const sharePct = row.costCents > 0 ? Math.round((modelRow.costCents / row.costCents) * 100) : 0;
+                                  const { rateCardTagCents, sharePct } = agentModelShare(modelRow, shareBasis);
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
@@ -784,6 +790,7 @@ export function Costs() {
                                       <div className="text-right tabular-nums">
                                         <div className="font-medium">
                                           {formatCents(modelRow.costCents)}
+                                          <RateCardEquivalent cents={rateCardTagCents} className="ml-1" />
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
@@ -818,7 +825,10 @@ export function Costs() {
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <span className="font-medium tabular-nums">
+                              {formatCents(row.costCents)}
+                              <RateCardEquivalent cents={row.subscriptionRateCardCents} className="ml-1 text-xs" />
+                            </span>
                           </div>
                         ))
                       )}
