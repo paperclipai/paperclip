@@ -183,7 +183,6 @@ import {
 } from "./issue-continuation-summary.js";
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
@@ -233,6 +232,8 @@ import {
   findExistingRunLivenessContinuationWake,
   isSuccessfulRunHandoffValidPathSkip,
   LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,
+  SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -617,6 +618,35 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
   }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+// Referenced by the queued-run admission path but never defined — the reference shipped in an
+// incomplete change and threw `readQueuedRunRetryNotBefore is not defined` at runtime, which
+// killed EVERY routine execution fleet-wide (sprint reports, deltas, monitors, all companies)
+// until it was fixed on 2026-08-05.
+//
+// A queued run may carry a retry-not-before deferral in either of two places: on the run itself
+// (`resultJson.retryNotBefore` / `transientRetryNotBefore`, written when a transient upstream or
+// quota failure defers a retry) or on the wake context that queued it. Honour whichever is later,
+// so a deferral recorded in either place is respected rather than silently dropped.
+function readQueuedRunRetryNotBefore(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
+  context: Record<string, unknown> | null | undefined,
+) {
+  const fromRun = readTransientRetryNotBeforeFromRun(run);
+  const contextRecord = parseObject(context);
+  const rawContextValue = contextRecord.retryNotBefore ?? contextRecord.transientRetryNotBefore;
+  const fromContext =
+    typeof rawContextValue === "string"
+    || typeof rawContextValue === "number"
+    || rawContextValue instanceof Date
+      ? new Date(rawContextValue)
+      : null;
+  const contextDate = fromContext && !Number.isNaN(fromContext.getTime()) ? fromContext : null;
+  if (fromRun && contextDate) {
+    return fromRun.getTime() >= contextDate.getTime() ? fromRun : contextDate;
+  }
+  return fromRun ?? contextDate;
 }
 
 function readTransientRecoveryContractFromRun(
@@ -9459,6 +9489,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         acceptLabel: "Resume after review",
         rejectLabel: "Keep blocked",
         rejectRequiresReason: true,
+        // Required for the payload union to discriminate to request_confirmation. It defaults to
+        // true in requestConfirmationPayloadSchema, so this is explicit, not a behaviour change —
+        // without it TypeScript tries to match request_checkbox_confirmation and fails.
+        allowDeclineReason: true,
         supersedeOnUserComment: false,
         detailsMarkdown:
           `Paperclip stopped automatic retries after ${input.repeatedNoticeCount} identical missing-disposition notices on this issue. `

@@ -1876,62 +1876,6 @@ export function routineService(
     return withLegacyRoutineRunIssueId(run);
   }
 
-  async function recordIgnoredWebhookRun(input: {
-    routine: typeof routines.$inferSelect;
-    trigger: typeof routineTriggers.$inferSelect;
-    payload: Record<string, unknown> | null;
-    reason: NonActionableWebhookPayloadKind;
-  }) {
-    const triggeredAt = new Date();
-    const run = await db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const [createdRun] = await txDb
-        .insert(routineRuns)
-        .values({
-          companyId: input.routine.companyId,
-          routineId: input.routine.id,
-          triggerId: input.trigger.id,
-          source: "webhook",
-          status: "skipped",
-          triggeredAt,
-          triggerPayload: input.payload,
-          failureReason: input.reason,
-          completedAt: triggeredAt,
-          linkedIssueId: null,
-          routineRevisionId: input.routine.latestRevisionId,
-        })
-        .returning();
-      await updateRoutineTouchedState({
-        routineId: input.routine.id,
-        triggerId: input.trigger.id,
-        triggeredAt,
-        status: "skipped_ignored",
-      }, txDb);
-      return createdRun;
-    });
-
-    try {
-      await logActivity(db, {
-        companyId: input.routine.companyId,
-        actorType: "system",
-        actorId: "routine-webhook",
-        action: "routine.run_skipped",
-        entityType: "routine_run",
-        entityId: run.id,
-        details: {
-          routineId: input.routine.id,
-          triggerId: input.trigger.id,
-          source: "webhook",
-          status: "skipped",
-          reason: input.reason,
-        },
-      });
-    } catch (err) {
-      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log ignored webhook routine run");
-    }
-
-    return withLegacyRoutineRunIssueId(run);
-  }
 
   async function recordIgnoredWebhookRun(input: {
     routine: typeof routines.$inferSelect;
