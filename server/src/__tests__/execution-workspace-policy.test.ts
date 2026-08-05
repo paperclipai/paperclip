@@ -3,6 +3,7 @@ import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
+  isolatePlatformSourceWorkspace,
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
@@ -10,10 +11,57 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  resolvePlatformSourceRoot,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it("derives the platform checkout root when the server runs from its package directory", () => {
+    expect(resolvePlatformSourceRoot("/Users/glad0s/paperclip/server")).toBe("/Users/glad0s/paperclip");
+    expect(resolvePlatformSourceRoot("/Users/glad0s/paperclip")).toBe("/Users/glad0s/paperclip");
+  });
+
+  it("isolates platform-source issue runs in a worktree outside the served checkout", () => {
+    const result = isolatePlatformSourceWorkspace({
+      issueId: "issue-1",
+      baseCwd: "/Users/glad0s/paperclip",
+      platformSourceRoot: "/Users/glad0s/paperclip",
+      config: { workspaceStrategy: { type: "project_primary", branchTemplate: "{{issue.identifier}}" } },
+      worktreeParentDir: "/private/tmp/paperclip-platform-worktrees",
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      mode: "isolated_workspace",
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}",
+          worktreeParentDir: "/private/tmp/paperclip-platform-worktrees",
+        },
+      },
+    });
+  });
+
+  it("does not override a non-platform project workspace", () => {
+    const config = { workspaceStrategy: { type: "project_primary" } };
+    expect(isolatePlatformSourceWorkspace({
+      issueId: "issue-1",
+      baseCwd: "/Users/glad0s/customer-project",
+      platformSourceRoot: "/Users/glad0s/paperclip",
+      config,
+    })).toEqual({ applied: false, mode: null, config });
+  });
+
+  it("does not apply without an issue, so server startup never creates a worktree", () => {
+    expect(isolatePlatformSourceWorkspace({
+      issueId: null,
+      baseCwd: "/Users/glad0s/paperclip",
+      platformSourceRoot: "/Users/glad0s/paperclip",
+      config: {},
+    })).toEqual({ applied: false, mode: null, config: {} });
+  });
+
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({

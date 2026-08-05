@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import type {
   ExecutionWorkspaceMode,
   ExecutionWorkspaceStrategy,
@@ -16,6 +18,54 @@ export const WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE =
   `This task is set to run in an isolated git worktree, but it has no project and no reusable execution workspace to create the worktree from. ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`;
 
 type WorkspaceStrategyType = ExecutionWorkspaceStrategy["type"];
+
+export function resolvePlatformSourceRoot(serverCwd: string, configuredRoot?: string | null): string {
+  const configured = configuredRoot?.trim();
+  if (configured) return path.resolve(configured);
+  // `pnpm --filter @paperclipai/server` may execute from either the repository
+  // root or its `server/` package directory.
+  return path.basename(path.resolve(serverCwd)) === "server"
+    ? path.resolve(serverCwd, "..")
+    : path.resolve(serverCwd);
+}
+
+/**
+ * A server editing its own checkout can be killed by its development watcher
+ * before the agent reports completion. Keep that source tree read-only to
+ * agents by forcing those runs into a sibling worktree outside the checkout.
+ */
+export function isolatePlatformSourceWorkspace(input: {
+  issueId: string | null | undefined;
+  baseCwd: string | null | undefined;
+  platformSourceRoot: string | null | undefined;
+  config: Record<string, unknown>;
+  worktreeParentDir?: string;
+}): {
+  applied: boolean;
+  mode: ParsedExecutionWorkspaceMode | null;
+  config: Record<string, unknown>;
+} {
+  const baseCwd = input.baseCwd?.trim();
+  const platformSourceRoot = input.platformSourceRoot?.trim();
+  if (!input.issueId || !baseCwd || !platformSourceRoot || path.resolve(baseCwd) !== path.resolve(platformSourceRoot)) {
+    return { applied: false, mode: null, config: input.config };
+  }
+
+  const strategy = parseObject(input.config.workspaceStrategy);
+  return {
+    applied: true,
+    mode: "isolated_workspace",
+    config: {
+      ...input.config,
+      workspaceStrategy: {
+        ...strategy,
+        type: "git_worktree",
+        // Never place the agent's worktree beneath the watched source checkout.
+        worktreeParentDir: input.worktreeParentDir ?? path.join(os.tmpdir(), "paperclip-platform-worktrees"),
+      },
+    },
+  };
+}
 
 export type UnrunnableWorktreeIssueRef = {
   projectId?: string | null;

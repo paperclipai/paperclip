@@ -194,6 +194,7 @@ import {
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
+  isolatePlatformSourceWorkspace,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
@@ -201,6 +202,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  resolvePlatformSourceRoot,
   selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -15132,7 +15134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
     });
-    const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
+    let effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
     let selectedEnvironmentId = environmentResolution.environmentId;
@@ -15447,8 +15449,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         ),
     });
-    const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
+    const platformSourceIsolation = isolatePlatformSourceWorkspace({
+      issueId: issueRef?.id,
+      baseCwd: resolvedWorkspace.cwd,
+      platformSourceRoot: resolvePlatformSourceRoot(process.cwd(), process.env.PAPERCLIP_PLATFORM_SOURCE_ROOT),
       config: mergedConfig,
+    });
+    if (platformSourceIsolation.mode) effectiveExecutionWorkspaceMode = platformSourceIsolation.mode;
+    const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
+      config: platformSourceIsolation.config,
       trustPreset,
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
     });
@@ -15462,7 +15471,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
     } satisfies ExecutionWorkspaceInput;
     await assertGitWorktreeBaseWorkspaceReady({
-      requestedExecutionWorkspaceMode,
+      requestedExecutionWorkspaceMode: effectiveExecutionWorkspaceMode,
       config: hostExecutionWorkspaceConfig,
       issue: issueRef,
       base: executionWorkspaceBase,
@@ -15471,7 +15480,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceStrategyFingerprintValue =
       Object.keys(workspaceStrategyForFingerprint).length > 0 ? workspaceStrategyForFingerprint : null;
     const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(
-      requestedExecutionWorkspaceMode,
+      effectiveExecutionWorkspaceMode,
       hostExecutionWorkspaceConfig,
     );
     const selectedEnvironmentConfigForFingerprint = parseObject(selectedEnvironmentForConfig?.config);
@@ -15495,7 +15504,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
     };
     const latestWorkspaceConfigMetadata = buildEffectiveRunWorkspaceConfigMetadata({
-      mode: requestedExecutionWorkspaceMode,
+      mode: effectiveExecutionWorkspaceMode,
       projectId: executionWorkspaceBase.projectId,
       projectWorkspaceId: executionWorkspaceBase.workspaceId,
       strategyType: latestWorkspaceStrategyType,
@@ -15653,11 +15662,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               projectWorkspaceId: resolvedProjectWorkspaceId,
               sourceIssueId: issueRef?.id ?? null,
               mode:
-                requestedExecutionWorkspaceMode === "isolated_workspace"
+                effectiveExecutionWorkspaceMode === "isolated_workspace"
                   ? "isolated_workspace"
-                  : requestedExecutionWorkspaceMode === "operator_branch"
+                  : effectiveExecutionWorkspaceMode === "operator_branch"
                     ? "operator_branch"
-                    : requestedExecutionWorkspaceMode === "agent_default"
+                    : effectiveExecutionWorkspaceMode === "agent_default"
                       ? "adapter_managed"
                       : "shared_workspace",
               strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
@@ -15746,8 +15755,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
         issueRef?.executionWorkspacePreference === "reuse_existing" ||
-        requestedExecutionWorkspaceMode === "isolated_workspace" ||
-        requestedExecutionWorkspaceMode === "operator_branch";
+        effectiveExecutionWorkspaceMode === "isolated_workspace" ||
+        effectiveExecutionWorkspaceMode === "operator_branch";
       const nextIssuePatch: Record<string, unknown> = {};
       if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
