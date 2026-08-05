@@ -10910,21 +10910,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const promoted = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "queued",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, dueRun.id),
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          lte(heartbeatRuns.scheduledRetryAt, now),
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const promoted = await db.transaction(async (tx) => {
+      const company = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, dueRun.companyId))
+        .for("share")
+        .then((rows) => rows[0] ?? null);
+      if (company?.status !== "active") return null;
+
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: "queued",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, dueRun.id),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+            lte(heartbeatRuns.scheduledRetryAt, now),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
     if (!promoted) return { outcome: "not_promoted", run: null };
 
     await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
