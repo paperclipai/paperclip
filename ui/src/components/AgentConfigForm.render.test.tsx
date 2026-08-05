@@ -253,6 +253,7 @@ async function renderForm(
       mutations: { retry: false },
     },
   });
+  const onSave = vi.fn();
 
   await act(async () => {
     root.render(
@@ -262,7 +263,7 @@ async function renderForm(
             <AgentConfigForm
               mode="edit"
               agent={makeAgent(agentOverrides)}
-              onSave={vi.fn()}
+              onSave={onSave}
               hidePromptTemplate
               content={options.content}
               showAdapterTypeField={false}
@@ -275,7 +276,7 @@ async function renderForm(
   });
 
   await flushReact();
-  return { container, root };
+  return { container, root, onSave };
 }
 
 async function renderCreateForm(
@@ -2562,6 +2563,7 @@ describe("AgentConfigForm Role field", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
     mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -2605,5 +2607,18 @@ describe("AgentConfigForm Role field", () => {
     await flushReact();
 
     expect(result.container.textContent).toContain("Engineer");
+
+    const saveButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    );
+    expect(saveButton).toBeTruthy();
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledTimes(1);
+    expect(result.onSave.mock.calls[0]?.[0]).toMatchObject({ role: "engineer" });
   });
 });
