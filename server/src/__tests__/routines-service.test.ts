@@ -3225,6 +3225,60 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(refreshedTrigger?.lastResult).toMatch(/reused/i);
   });
 
+  it("keeps a cancelled scheduled execution terminal and creates a linked replacement", async () => {
+    const { companyId, routine, svc } = await seedFixture({ wakeup: async () => null });
+    await svc.update(
+      routine.id,
+      {
+        env: {
+          PAPERCLIP_ROUTINE_ISSUE_MODE: { type: "plain", value: "reuse_terminal" },
+        },
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+    await svc.tickScheduledTriggers(new Date());
+
+    const [cancelledIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(cancelledIssue).toBeTruthy();
+    await db
+      .update(issues)
+      .set({ status: "cancelled", cancelledAt: new Date(), executionRunId: null, executionLockedAt: null })
+      .where(eq(issues.id, cancelledIssue!.id));
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+
+    await svc.tickScheduledTriggers(new Date());
+
+    const routineIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .orderBy(issues.createdAt);
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues[0]).toMatchObject({ id: cancelledIssue!.id, status: "cancelled" });
+    expect(routineIssues[1]).toMatchObject({ status: "todo" });
+    expect(routineIssues[1]?.description).toContain(
+      `Replacement for cancelled routine execution ${cancelledIssue!.identifier}.`,
+    );
+
+    const latestRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .orderBy(routineRuns.createdAt)
+      .then((rows) => rows.at(-1) ?? null);
+    expect(latestRun).toMatchObject({ status: "issue_created", linkedIssueId: routineIssues[1]?.id });
+  });
+
   it("ignores terminal routine parents by default and reuses the terminal execution issue", async () => {
     const { companyId, routine, svc, wakeups } = await seedFixture({ wakeup: async () => null });
     const parentIssueId = randomUUID();

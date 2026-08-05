@@ -2816,6 +2816,7 @@ export function routineService(
           return withLegacyRoutineRunIssueId(updated ?? createdRun);
         }
 
+        let cancelledReuseSource: Awaited<ReturnType<typeof findReusableTerminalExecutionIssue>> | null = null;
         if (canReuseTerminalExecutionIssue && persistedOriginFingerprint) {
           const reusableIssue = await findReusableTerminalExecutionIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
@@ -2842,34 +2843,42 @@ export function routineService(
               }, txDb);
               return withLegacyRoutineRunIssueId(updated ?? createdRun);
             }
-            reusedIssueSnapshot = reusableIssue;
-            executionIssue = await issueSvc.update(reusableIssue.id, {
-              projectId,
-              goalId: input.routine.goalId,
-              parentId: input.routine.parentIssueId,
-              title,
-              description,
-              status: "todo",
-              priority: input.routine.priority,
-              assigneeAgentId,
-              assigneeUserId: null,
-              originKind: issueOriginKind,
-              originId: issueOriginId,
-              originRunId: createdRun.id,
-              originFingerprint: persistedOriginFingerprint,
-              billingCode: issueBillingCode,
-              executionWorkspaceId: input.executionWorkspaceId ?? null,
-              executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-              executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-            }, txDb);
-            if (executionIssue) {
-              if (reusableIssue.hiddenAt) {
-                await txDb
-                  .update(issues)
-                  .set({ hiddenAt: null, updatedAt: new Date() })
-                  .where(eq(issues.id, reusableIssue.id));
+            // A cancelled execution is an audit decision, not reusable scheduler
+            // capacity. Re-opening it loses the cancellation history and was the
+            // direct cause of the fallback-monitor duplicate rail recurrence.
+            // Keep it terminal and create a new, explicitly linked execution below.
+            if (reusableIssue.status === "cancelled") {
+              cancelledReuseSource = reusableIssue;
+            } else {
+              reusedIssueSnapshot = reusableIssue;
+              executionIssue = await issueSvc.update(reusableIssue.id, {
+                projectId,
+                goalId: input.routine.goalId,
+                parentId: input.routine.parentIssueId,
+                title,
+                description,
+                status: "todo",
+                priority: input.routine.priority,
+                assigneeAgentId,
+                assigneeUserId: null,
+                originKind: issueOriginKind,
+                originId: issueOriginId,
+                originRunId: createdRun.id,
+                originFingerprint: persistedOriginFingerprint,
+                billingCode: issueBillingCode,
+                executionWorkspaceId: input.executionWorkspaceId ?? null,
+                executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+                executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+              }, txDb);
+              if (executionIssue) {
+                if (reusableIssue.hiddenAt) {
+                  await txDb
+                    .update(issues)
+                    .set({ hiddenAt: null, updatedAt: new Date() })
+                    .where(eq(issues.id, reusableIssue.id));
+                }
+                dispatchStatus = "issue_reused";
               }
-              dispatchStatus = "issue_reused";
             }
           }
         }
@@ -2887,7 +2896,13 @@ export function routineService(
               goalId: input.routine.goalId,
               parentId: input.routine.parentIssueId,
               title,
-              description,
+              description: cancelledReuseSource
+                ? [
+                    description ?? "",
+                    "",
+                    `Replacement for cancelled routine execution ${cancelledReuseSource.identifier}.`,
+                  ].join("\n").trim()
+                : description,
               status: "todo",
               priority: input.routine.priority,
               assigneeAgentId,

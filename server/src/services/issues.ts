@@ -7440,9 +7440,13 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+        const isFallbackMonitorRoutineExecution =
+          issueData.originKind === "routine_execution" && normalizedTitle === "fallback-monitor";
         if (allowDuplicate === false) {
           const titleGuardKey =
-            `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+            isFallbackMonitorRoutineExecution
+              ? `issue-create:fallback-monitor:${companyId}:${normalizedTitle}`
+              : `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
         }
         if (idempotencyKey) {
@@ -7484,10 +7488,14 @@ export function issueService(db: Db) {
             .from(issues)
             .where(and(
               eq(issues.companyId, companyId),
-              issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+              ...(isFallbackMonitorRoutineExecution
+                ? []
+                : [issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId)]),
               isNull(issues.hiddenAt),
               notInArray(issues.status, ["done", "cancelled"]),
-              gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+              ...(isFallbackMonitorRoutineExecution
+                ? []
+                : [gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000))]),
               sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
             ))
             .orderBy(asc(issues.createdAt), asc(issues.id))
