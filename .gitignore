@@ -155,3 +155,14 @@ server/work-products/TSM-5448
 server/work-products/TSM-5451
 server/work-products/TSM-5452
 server/work-products/tsr-4158
+
+# --- Candidate/PII containment (added 2026-08-05 after a TSR candidate CV reached the
+# repo via an unexpanded $PAPERCLIP_WORK_PRODUCTS_DIR path).
+# Real candidate deliverables belong in the per-company instance work-products dir
+# (~/.paperclip/instances/<inst>/companies/<id>/work-products), NEVER in the served tree.
+# This repo has a public upstream; a leaked CV is unrecoverable.
+**/$*
+work-products/**/*tailored-cv*
+work-products/**/*cover-letter*
+work-products/**/*application-pack*
+work-products/**/candidate-*/
