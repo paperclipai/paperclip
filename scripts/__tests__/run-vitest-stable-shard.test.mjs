@@ -28,8 +28,9 @@ function dryRunJson(args) {
   return JSON.parse(result.stdout);
 }
 
-const SHARD_COUNT = 4;
+const SHARD_COUNT = 5;
 const SERIALIZED_SHARD_COUNT = 5;
+
 
 test("the serialized shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>

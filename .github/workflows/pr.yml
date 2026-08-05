@@ -149,26 +149,31 @@ jobs:
         include:
           # The server suite is pinned to maxWorkers=1 (server/vitest.config.ts),
           # so it can only be parallelized across runners. Shard it to keep this
-          # lane off the PR critical path. Four shards because the suite has
-          # grown to ~880s of serial vitest wall time (run 30723165356,
-          # 2026-08-01): at three shards the worst shard ran 313s and was the
-          # slowest check in the whole PR run; four brings each shard to ~220s.
+          # lane off the PR critical path. Five shards because the suite has
+          # grown to ~946s of serial vitest wall time (run 30930345729,
+          # 2026-08-04): at four shards the worst shard ran 311s and was the
+          # slowest check in the whole PR run; five brings each shard to ~196s
+          # of suite time (~240s job), level with the other ~250-300s lanes.
           - group: general-server
-            group_label: server (1/4)
+            group_label: server (1/5)
             shard_index: 0
-            shard_count: 4
+            shard_count: 5
           - group: general-server
-            group_label: server (2/4)
+            group_label: server (2/5)
             shard_index: 1
-            shard_count: 4
+            shard_count: 5
           - group: general-server
-            group_label: server (3/4)
+            group_label: server (3/5)
             shard_index: 2
-            shard_count: 4
+            shard_count: 5
           - group: general-server
-            group_label: server (4/4)
+            group_label: server (4/5)
             shard_index: 3
-            shard_count: 4
+            shard_count: 5
+          - group: general-server
+            group_label: server (5/5)
+            shard_index: 4
+            shard_count: 5
           - group: general-workspaces-a
             group_label: workspaces-a
           - group: general-workspaces-b
