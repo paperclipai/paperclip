@@ -3,6 +3,10 @@ import { ATTENTION_SOURCE_KINDS } from "../types/attention.js";
 
 export const decisionAttentionSourceKindSchema = z.enum(ATTENTION_SOURCE_KINDS);
 
+export const decisionAttentionSourceIdSchema = z.string()
+  .trim()
+  .uuid("sourceId must be a valid UUID");
+
 export const decisionQueueKeySchema = z.string()
   .trim()
   .min(1)
@@ -25,7 +29,7 @@ export const updateDecisionQueueSchema = z.object({
 
 export const addDecisionQueueItemSchema = z.object({
   sourceKind: decisionAttentionSourceKindSchema,
-  sourceId: z.string().trim().min(1).max(500),
+  sourceId: decisionAttentionSourceIdSchema,
 }).strict();
 
 export const removeDecisionQueueItemSchema = z.object({

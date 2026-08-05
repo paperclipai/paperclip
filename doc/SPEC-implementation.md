@@ -1045,7 +1045,7 @@ The current app also exposes V1-supporting surfaces for:
 - company skill policy read/replace/reset/simulation, enforced by the same core evaluator used by skill mutation routes
 - decision queues and per-attention-item triage:
   - `GET|POST /companies/:companyId/decision-queues`
-  - `PATCH /companies/:companyId/decision-queues/:key`
+  - `PATCH|DELETE /companies/:companyId/decision-queues/:key` (DELETE rejects data-backed seed queues)
   - `GET|POST /companies/:companyId/decision-queues/:key/items`
   - `DELETE /companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId`
   - `GET /companies/:companyId/decision-queue-seed-rules`

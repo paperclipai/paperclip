@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   addDecisionQueueItemSchema,
   createDecisionQueueSchema,
+  decisionAttentionSourceIdSchema,
   decisionAttentionSourceKindSchema,
   removeDecisionQueueItemSchema,
   updateDecisionQueueSchema,
@@ -58,9 +59,9 @@ async function assertDecisionAccess(
 function sourceParams(req: Parameters<typeof getActorInfo>[0]) {
   const parsed = decisionAttentionSourceKindSchema.safeParse(req.params.sourceKind);
   if (!parsed.success) return null;
-  const sourceId = (req.params.sourceId as string | undefined)?.trim();
-  if (!sourceId || sourceId.length > 500) return null;
-  return { sourceKind: parsed.data, sourceId };
+  const sourceId = decisionAttentionSourceIdSchema.safeParse(req.params.sourceId);
+  if (!sourceId.success) return null;
+  return { sourceKind: parsed.data, sourceId: sourceId.data };
 }
 
 export function decisionQueueRoutes(db: Db) {
@@ -100,6 +101,16 @@ export function decisionQueueRoutes(db: Db) {
       key: req.params.key as string,
       patch: req.body,
       authActor: req.actor,
+      actor: mutationActor(req),
+    }));
+  });
+
+  router.delete("/companies/:companyId/decision-queues/:key", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertDecisionAccess(db, req, companyId, "decision_queue:manage");
+    res.json(await svc.remove({
+      companyId,
+      key: req.params.key as string,
       actor: mutationActor(req),
     }));
   });

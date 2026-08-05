@@ -17,15 +17,16 @@ import {
   issues,
   joinRequests,
 } from "@paperclipai/db";
-import type {
-  AttentionItem,
-  AttentionSourceKind,
-  DecisionQueue,
-  DecisionQueueItem,
-  DecisionQueueSeedRule,
-  DecisionTriage,
+import {
+  decisionAttentionSourceIdSchema,
+  type AttentionItem,
+  type AttentionSourceKind,
+  type DecisionQueue,
+  type DecisionQueueItem,
+  type DecisionQueueSeedRule,
+  type DecisionTriage,
 } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { badRequest, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import {
   authorizationService,
@@ -203,6 +204,9 @@ async function sourceIssueId(
   sourceKind: AttentionSourceKind,
   sourceId: string,
 ): Promise<{ exists: boolean; issueId: string | null; ownerAgentId?: string | null; agentId?: string | null }> {
+  if (!decisionAttentionSourceIdSchema.safeParse(sourceId).success) {
+    throw badRequest("sourceId must be a valid UUID");
+  }
   switch (sourceKind) {
     case "approval": {
       const row = await db.select({ id: approvals.id, issueId: issueApprovals.issueId })
@@ -470,6 +474,49 @@ export function decisionQueueService(db: Db) {
       });
       return toQueue(row, (await visibleItems(input.companyId, row.id, input.authActor)).length);
     },
+
+    remove: async (input: {
+      companyId: string;
+      key: string;
+      actor: DecisionMutationActor;
+    }) => db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const queue = await txDb.select().from(decisionQueues)
+        .where(and(eq(decisionQueues.companyId, input.companyId), eq(decisionQueues.key, input.key)))
+        .then((rows) => rows[0] ?? null);
+      if (!queue) throw notFound("Decision queue not found");
+      if (queue.createdByType === "system" && queue.seedRules.length > 0) {
+        throw unprocessable("Data-backed seed queues cannot be deleted");
+      }
+
+      const itemCount = await txDb.select({ count: sql<number>`count(*)::int` })
+        .from(decisionQueueItems)
+        .where(and(
+          eq(decisionQueueItems.companyId, input.companyId),
+          eq(decisionQueueItems.queueId, queue.id),
+        ))
+        .then((rows) => rows[0]?.count ?? 0);
+      await txDb.insert(decisionTriageEvents).values({
+        companyId: input.companyId,
+        queueId: queue.id,
+        action: "queue.deleted",
+        ...eventActorColumns(input.actor),
+        details: { key: queue.key, title: queue.title, itemCount },
+      });
+      const deleted = await txDb.delete(decisionQueues).where(and(
+        eq(decisionQueues.companyId, input.companyId),
+        eq(decisionQueues.id, queue.id),
+      )).returning({ id: decisionQueues.id }).then((rows) => rows[0] ?? null);
+      if (!deleted) throw notFound("Decision queue not found");
+      await recordActivity(txDb, input.actor, {
+        companyId: input.companyId,
+        action: "decision_queue.deleted",
+        entityType: "decision_queue",
+        entityId: queue.id,
+        details: { key: queue.key, title: queue.title, itemCount },
+      });
+      return { deleted: true as const };
+    }),
 
     listItems: async (companyId: string, key: string, authActor: AuthorizationActor) => {
       const queue = await getQueue(companyId, key);

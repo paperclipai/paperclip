@@ -3471,6 +3471,20 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/decision-queues/{key}",
+  tags: ["decision-queues"],
+  summary: "Delete a custom decision queue",
+  responses: {
+    200: r.ok(z.object({ deleted: z.literal(true) }).strict()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/companies/{companyId}/decision-queues/{key}/items",
   tags: ["decision-queues"],

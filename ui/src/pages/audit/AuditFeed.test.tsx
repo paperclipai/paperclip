@@ -143,6 +143,21 @@ describe("AuditFeed", () => {
     expect(container.textContent, `waiting for "${text}"`).toContain(text);
   }
 
+  async function waitForCondition(
+    condition: () => boolean,
+    description: string,
+    timeoutMs: number,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (condition()) return;
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      });
+    }
+    expect(condition(), `waiting for ${description}`).toBe(true);
+  }
+
   function clickButton(text: string) {
     const btn = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
     expect(btn, `button "${text}"`).toBeTruthy();
@@ -230,7 +245,17 @@ describe("AuditFeed", () => {
       setInputValue!.call(fromDate, "2026-08-01");
       fromDate!.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await flushReact();
+    // The 403 clears privileged filters before the replacement basic-tier
+    // query settles. Under a busy worker pool the controls can disappear while
+    // the recovery request still has the stale date, so require both the final
+    // unfiltered request and the settled least-privileged UI.
+    await waitForCondition(
+      () => listAgentActionsMock.mock.calls.at(-1)?.[1]?.from === undefined
+        && Boolean(container.textContent?.includes("commented on"))
+        && !container.textContent?.includes("All agents"),
+      "the unfiltered basic-tier audit feed",
+      20_000,
+    );
 
     expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
     expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
@@ -240,7 +265,7 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("Paperclip Enterprise view");
     expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("Export CSV");
-  });
+  }, 30_000);
 
   it("drops cached privileged pages when pagination observes an access downgrade", async () => {
     let permissionRevoked = false;

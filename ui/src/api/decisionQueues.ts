@@ -88,6 +88,9 @@ export const decisionQueuesApi = {
   update: (companyId: string, key: string, body: UpdateDecisionQueueBody) =>
     api.patch<DecisionQueueDto>(`/companies/${companyId}/decision-queues/${encodeURIComponent(key)}`, body),
 
+  remove: (companyId: string, key: string) =>
+    api.delete<{ deleted: true }>(`/companies/${companyId}/decision-queues/${encodeURIComponent(key)}`),
+
   listItems: (companyId: string, key: string) =>
     api.get<DecisionQueueItemDto[]>(`/companies/${companyId}/decision-queues/${encodeURIComponent(key)}/items`),
 

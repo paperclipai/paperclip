@@ -151,7 +151,7 @@ export const decisionTriageEvents = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    queueId: uuid("queue_id").references(() => decisionQueues.id),
+    queueId: uuid("queue_id").references(() => decisionQueues.id, { onDelete: "set null" }),
     sourceKind: text("source_kind"),
     sourceId: text("source_id"),
     action: text("action").notNull(),

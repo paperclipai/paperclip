@@ -133,6 +133,7 @@ export type {
 } from "./types/decision-queue.js";
 export {
   decisionAttentionSourceKindSchema,
+  decisionAttentionSourceIdSchema,
   decisionQueueKeySchema,
   createDecisionQueueSchema,
   updateDecisionQueueSchema,

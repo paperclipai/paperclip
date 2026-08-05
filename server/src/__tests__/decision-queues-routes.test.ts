@@ -17,7 +17,7 @@ import {
   issueWorkProducts,
   issues,
 } from "@paperclipai/db";
-import type { AttentionItem } from "@paperclipai/shared";
+import { ATTENTION_SOURCE_KINDS, type AttentionItem } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -261,6 +261,91 @@ describeEmbeddedPostgres("decision queue routes", () => {
       eq(decisionQueueItems.companyId, companyId),
       eq(decisionQueueItems.sourceKind, "approval"),
     ))).toHaveLength(0);
+  });
+
+  it("returns 400 for a non-UUID sourceId before looking up every attention source kind", async () => {
+    const { companyId } = await seed();
+    const board = boardActor(companyId);
+    await request(app(board)).post(`/api/companies/${companyId}/decision-queues`).send({
+      key: "triage",
+      title: "Triage",
+    }).expect(201);
+
+    for (const sourceKind of ATTENTION_SOURCE_KINDS) {
+      const response = await request(app(board))
+        .post(`/api/companies/${companyId}/decision-queues/triage/items`)
+        .send({ sourceKind, sourceId: `decision:${randomUUID()}` })
+        .expect(400);
+      expect(response.body).toMatchObject({ error: "Validation error" });
+      expect(response.body.details).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: "sourceId must be a valid UUID", path: ["sourceId"] }),
+      ]));
+    }
+
+    await request(app(board))
+      .get(`/api/companies/${companyId}/decision-triage/review/not-a-uuid`)
+      .expect(400, { error: "Invalid attention source identity" });
+  });
+
+  it("deletes user-created queues with their items, preserves audit history, and protects seed queues", async () => {
+    const { companyId, issueId } = await seed();
+    const board = boardActor(companyId);
+    const created = await request(app(board)).post(`/api/companies/${companyId}/decision-queues`).send({
+      key: "temporary",
+      title: "Temporary",
+    }).expect(201);
+    await request(app(board))
+      .post(`/api/companies/${companyId}/decision-queues/temporary/items`)
+      .send({ sourceKind: "review", sourceId: issueId })
+      .expect(201);
+
+    await request(app(board))
+      .delete(`/api/companies/${companyId}/decision-queues/temporary`)
+      .expect(200, { deleted: true });
+    expect(await db.select().from(decisionQueues).where(eq(decisionQueues.id, created.body.id))).toHaveLength(0);
+    expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.queueId, created.body.id)))
+      .toHaveLength(0);
+
+    const deletionEvent = await db.select().from(decisionTriageEvents)
+      .where(and(
+        eq(decisionTriageEvents.companyId, companyId),
+        eq(decisionTriageEvents.action, "queue.deleted"),
+      ))
+      .then((rows) => rows[0]);
+    expect(deletionEvent).toMatchObject({
+      queueId: null,
+      actorUserId: "board-user",
+      details: { key: "temporary", title: "Temporary", itemCount: 1 },
+    });
+    const deletionActivity = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "decision_queue.deleted"),
+    )).then((rows) => rows[0]);
+    expect(deletionActivity?.details).toMatchObject({ key: "temporary", itemCount: 1 });
+
+    await request(app(board))
+      .delete(`/api/companies/${companyId}/decision-queues/temporary`)
+      .expect(404);
+
+    await db.insert(decisionQueues).values({
+      companyId,
+      key: "plans",
+      title: "Plans",
+      createdByType: "system",
+      seedRules: [{
+        key: "plan-document-confirmation",
+        signal: "plan_document_confirmation",
+        description: "Pending plan confirmations.",
+      }],
+      seedRulesEnabled: true,
+    });
+    await request(app(board))
+      .delete(`/api/companies/${companyId}/decision-queues/plans`)
+      .expect(422, { error: "Data-backed seed queues cannot be deleted" });
+    expect(await db.select().from(decisionQueues).where(and(
+      eq(decisionQueues.companyId, companyId),
+      eq(decisionQueues.key, "plans"),
+    ))).toHaveLength(1);
   });
 
   it("materializes data-backed starter queues from plan, question, and pull-request signals", async () => {
