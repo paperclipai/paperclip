@@ -8,6 +8,15 @@ export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_hando
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICES_PER_ISSUE = 3;
+// Repeat-notice escalation threshold. `recovery/index.ts` re-exports this name and
+// `heartbeat.ts` reads it, but it was never defined here — the missing export threw
+// `SyntaxError: does not provide an export named ...` at module load, which crash-looped the
+// whole control plane on 2026-08-05 (launchd restarted, it re-crashed, board down ~1h).
+// It is an alias of the per-issue notice cap, which is exactly what
+// `shouldEscalateRepeatedSuccessfulRunHandoff` already falls back to, so defining it changes
+// no behaviour — it only makes the existing contract real.
+export const SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD =
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICES_PER_ISSUE;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY =
@@ -318,6 +327,59 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
             keyValueRow("Latest handoff run status", input.latestHandoffRunStatus),
             keyValueRow("Normalized cause", SUCCESSFUL_RUN_MISSING_STATE_REASON),
             keyValueRow("Missing disposition", input.missingDisposition),
+          ],
+        },
+      ],
+    },
+  };
+}
+
+// Referenced by `recovery/index.ts` and called from `heartbeat.ts`
+// (addSuccessfulRunHandoffRepeatGuardCommentOnce) but never defined — the missing export threw at
+// module load and crash-looped the control plane on 2026-08-05. Body constant and notice shape
+// already existed; only the builder was absent.
+export function buildSuccessfulRunHandoffRepeatGuardNotice(input: {
+  issue: NoticeIssue;
+  run: NoticeRun;
+  agent: NoticeAgent;
+  detectedProgressSummary?: string | null;
+  repeatedNoticeCount?: number;
+  threshold?: number;
+}): SuccessfulRunHandoffNotice {
+  const repeatedNoticeCount = Math.max(0, Number(input.repeatedNoticeCount) || 0);
+  const threshold = Math.max(
+    1,
+    Number(input.threshold) || DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICES_PER_ISSUE,
+  );
+  return {
+    body: SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY,
+    presentation: systemNoticePresentation({
+      tone: "danger",
+      title: "Automatic retries stopped: repeated missing disposition",
+    }),
+    metadata: {
+      version: 1,
+      sourceRunId: input.run.id,
+      sections: [
+        {
+          title: "Why Paperclip stopped retrying",
+          rows: [
+            issueLinkRow("Source issue", input.issue),
+            agentLinkRow("Assignee", input.agent),
+            keyValueRow("Repeated notice count", String(repeatedNoticeCount)),
+            keyValueRow("Repeat guard threshold", String(threshold)),
+          ],
+        },
+        {
+          title: "Required board action",
+          rows: [
+            runLinkRow("Latest source run", input.run),
+            keyValueRow("Normalized cause", SUCCESSFUL_RUN_MISSING_STATE_REASON),
+            keyValueRow("Missing disposition", "clear_next_step"),
+            keyValueRow(
+              "Detected progress",
+              input.detectedProgressSummary?.trim() || "No new progress detected since the last notice.",
+            ),
           ],
         },
       ],
