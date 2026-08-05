@@ -1,9 +1,11 @@
-import { Activity, Beaker, Inbox, Settings2, ShieldCheck, Wrench } from "lucide-react";
+import { Activity, Beaker, BarChart3, Inbox, KeyRound, Settings2, ShieldCheck, Wrench } from "lucide-react";
 
 export const APP_TABS = [
   { key: "setup", label: "Setup", icon: Settings2 },
   { key: "review", label: "Review", icon: Inbox },
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
+  { key: "grants", label: "Grants", icon: KeyRound },
+  { key: "usage", label: "Usage", icon: BarChart3 },
   { key: "activity", label: "Activity", icon: Activity },
   { key: "test", label: "Test", icon: Beaker },
   { key: "advanced", label: "Advanced", icon: Wrench },

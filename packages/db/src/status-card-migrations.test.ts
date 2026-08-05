@@ -22,18 +22,26 @@ describeEmbeddedPostgres("status card migrations", () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
-  it("can be reapplied after the schema already exists", async () => {
-    const database = await startEmbeddedPostgresTestDatabase("paperclip-status-card-migrations-");
-    cleanups.push(database.cleanup);
-    const sql = postgres(database.connectionString, { max: 1 });
-    cleanups.push(async () => sql.end());
-
-    for (const migrationFile of MIGRATION_FILES) {
-      const migrationSql = await fs.promises.readFile(
-        new URL(`./migrations/${migrationFile}`, import.meta.url),
-        "utf8",
+  it(
+    "can be reapplied after the schema already exists",
+    async () => {
+      const database = await startEmbeddedPostgresTestDatabase(
+        "paperclip-status-card-migrations-",
       );
-      await sql.unsafe(migrationSql);
-    }
-  });
+      cleanups.push(database.cleanup);
+      const sql = postgres(database.connectionString, { max: 1 });
+      cleanups.push(async () => sql.end());
+
+      for (const migrationFile of MIGRATION_FILES) {
+        const migrationSql = await fs.promises.readFile(
+          new URL(`./migrations/${migrationFile}`, import.meta.url),
+          "utf8",
+        );
+        await sql.unsafe(migrationSql);
+      }
+    },
+    // Embedded PostgreSQL startup can exceed the default timeout when the
+    // workspace suite is also compiling and starting other test databases.
+    60_000,
+  );
 });

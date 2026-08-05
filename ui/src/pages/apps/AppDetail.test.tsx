@@ -173,16 +173,25 @@ describe("AppDetail", () => {
     listGalleryMock.mockResolvedValue({
       apps: [
         {
-          key: "github",
+          schemaVersion: 1,
+          slug: "github",
           name: "GitHub",
-          logoUrl: "https://example.com/github.png",
-          tagline: "GitHub tagline",
           description: "Give agents a governed way to inspect repositories and pull requests.",
-          authKind: "api_key",
-          transportTemplate: { transport: "mcp_remote", url: "https://github.example/mcp" },
-          credentialFields: [],
-          recommendedDefaults: {},
+          categories: ["developer"],
+          branding: { logoUrl: "https://example.com/github.png" },
           urlPatterns: [],
+          methods: [
+            {
+              key: "api_key",
+              transport: "mcp_remote",
+              auth: "api_key",
+              ownershipModes: ["customer"],
+              whenToUse: "Authenticate with a GitHub personal access token.",
+              guidanceMd: "Create a PAT at github.com.",
+              riskTier: "S2",
+              credentialFields: [{ key: "token", label: "Personal access token", type: "password", secret: true }],
+            },
+          ],
         },
       ],
     });
@@ -386,17 +395,26 @@ describe("AppDetail", () => {
     listGalleryMock.mockResolvedValue({
       apps: [
         {
-          key: "google-sheets",
+          schemaVersion: 1,
+          slug: "google-sheets",
           name: "Google Sheets",
-          logoUrl: "https://example.com/sheets.png",
-          tagline: "Read and update selected spreadsheets.",
           description: "Share each sheet with the robot email, then paste the sheet links here.",
-          authKind: "none",
-          transportTemplate: { transport: "local_stdio", templateKey: "paperclip.google-sheets" },
-          credentialFields: [],
-          recommendedDefaults: {},
+          categories: ["productivity"],
+          branding: { logoUrl: "https://example.com/sheets.png" },
           urlPatterns: ["https://docs.google.com/spreadsheets/*"],
           availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+          methods: [
+            {
+              key: "service_account",
+              transport: "local_stdio",
+              auth: "none",
+              ownershipModes: ["platform_shared"],
+              whenToUse: "Use the Paperclip robot account.",
+              guidanceMd: "Share each sheet with the robot email.",
+              riskTier: "S1",
+              defaults: { templateKey: "paperclip.google-sheets" },
+            },
+          ],
         },
       ],
     });

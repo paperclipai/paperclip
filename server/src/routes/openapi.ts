@@ -821,6 +821,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "GET /api/companies/{companyId}/tools/gallery",
   "POST /api/companies/{companyId}/tools/apps/connect",
+  "GET /api/companies/{companyId}/tools/apps/{connectionId}/setup",
   "POST /api/companies/{companyId}/tools/apps/{connectionId}/finish",
   "GET /api/companies/{companyId}/tools/apps/attention",
   "GET /api/companies/{companyId}/tools/action-requests",
@@ -6541,6 +6542,14 @@ registerCurrentRoute({
   summary: "Create a draft app connection from gallery input",
   body: connectToolAppSchema,
   responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/apps/{connectionId}/setup",
+  tags: ["tool-access"],
+  summary: "Resume gallery app setup after authorization",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registerCurrentRoute({

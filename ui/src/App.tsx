@@ -59,7 +59,7 @@ import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Connections } from "./pages/apps/Connections";
 import { Browse } from "./pages/apps/Browse";
-import { AppsConnect } from "./pages/apps/AppsConnect";
+import { AddConnectionWizard } from "./pages/apps/connect/AddConnectionWizard";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
@@ -72,6 +72,7 @@ import { Secrets } from "./pages/Secrets";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
+import { ConnectPreview } from "./pages/apps/connect/ConnectPreview";
 import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { InstanceSettings } from "./pages/InstanceSettings";
@@ -123,8 +124,9 @@ function boardRoutes() {
       <Route element={<AppsExperimentalGate />}>
         <Route path="apps" element={<Connections />} />
         <Route path="apps/browse" element={<Browse />} />
-        <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
-        <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/connect" element={<AddConnectionWizard />} />
+        <Route path="apps/connect/:appKey" element={<AddConnectionWizard />} />
+        {/* Legacy staged deep-links collapse into the single accordion wizard. */}
         <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
         <Route path="apps/review" element={<AppsReview />} />
         {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
@@ -298,17 +300,12 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="apps/preview" element={<ConnectPreview />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />
       <Route path=":pluginRoutePath/*" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
   );
-}
-
-function AppsConnectEntryRoute() {
-  const location = useLocation();
-  const searchParams = new URLSearchParams(location.search);
-  return searchParams.get("byo") === "1" ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
 }
 
 function InboxRootRedirect() {

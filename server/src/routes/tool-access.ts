@@ -113,6 +113,27 @@ export function toolAccessRoutes(
     }
     return new URL("/api/tools/oauth/callback", configured).toString();
   }
+
+  function safeOAuthReturnTo(value: string | null | undefined) {
+    if (!value?.startsWith("/") || value.startsWith("//")) return null;
+    try {
+      const parsed = new URL(value, "http://paperclip.local");
+      if (parsed.origin !== "http://paperclip.local") return null;
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+      return null;
+    }
+  }
+
+  async function companyIssuePrefix(companyId: string) {
+    const [company] = await db
+      .select({ issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    if (!company) throw new Error("OAuth connection belongs to a missing company");
+    return company.issuePrefix;
+  }
   const access = accessService(db);
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
@@ -258,9 +279,13 @@ export function toolAccessRoutes(
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {
+        const returnTo = req.body.galleryKey
+          ? `/${await companyIssuePrefix(companyId)}/apps/connect/${encodeURIComponent(req.body.galleryKey)}?oauth=connected&connectionId=${encodeURIComponent(result.connectionId)}`
+          : undefined;
         const start = await svc.startOAuth(companyId, result.connectionId, {
           redirectUri: oauthRedirectUri(),
           actor: getActorInfo(req),
+          returnTo,
         });
         result.auth.startUrl = start.authorizationUrl;
       }
@@ -284,6 +309,13 @@ export function toolAccessRoutes(
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
+  });
+
+  router.get("/companies/:companyId/tools/apps/:connectionId/setup", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.getGalleryAppSetup(companyId, req.params.connectionId as string));
   });
 
   router.post(
@@ -349,13 +381,9 @@ export function toolAccessRoutes(
       },
     });
     if (req.get("accept")?.includes("text/html")) {
-      const [company] = await db
-        .select({ issuePrefix: companies.issuePrefix })
-        .from(companies)
-        .where(eq(companies.id, result.connection.companyId))
-        .limit(1);
-      if (!company) throw new Error("OAuth callback connection belongs to a missing company");
-      res.redirect(303, `/${company.issuePrefix}/apps/${result.connection.id}/setup?oauth=connected`);
+      const returnTo = safeOAuthReturnTo(pendingState.returnTo);
+      const fallback = `/${await companyIssuePrefix(result.connection.companyId)}/apps/${result.connection.id}/setup?oauth=connected`;
+      res.redirect(303, returnTo ?? fallback);
       return;
     }
     res.json(result);

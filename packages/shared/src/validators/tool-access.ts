@@ -260,6 +260,7 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
 
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
+  methodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),

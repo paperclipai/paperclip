@@ -11,7 +11,8 @@
     "logoUrl": "https://www.google.com/s2/favicons?domain=notion.so&sz=128"
   },
   "urlPatterns": [
-    "https://mcp.notion.com/*"
+    "https://mcp.notion.com/*",
+    "https://api.notion.com/*"
   ],
   "methods": [
     {
@@ -22,7 +23,7 @@
         "customer",
         "dcr"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Use Notion's hosted MCP server for the quickest OAuth setup.",
       "defaults": {
         "serverUrl": "https://mcp.notion.com/mcp",
         "authorizationEndpoint": "https://api.notion.com/v1/oauth/authorize",

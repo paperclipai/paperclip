@@ -139,6 +139,16 @@ describe("secrets CLI helpers", () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
     delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.AWS_PROFILE;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
+    delete process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+    delete process.env.AWS_ROLE_ARN;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
+    delete process.env.AWS_SHARED_CREDENTIALS_FILE;
+    delete process.env.AWS_CONFIG_FILE;
   });
 
   afterEach(() => {
