@@ -955,6 +955,7 @@ export function Costs() {
                         {rows.map((summary) => (
                           <BudgetPolicyCard
                             key={summary.policyId}
+                            enforceable={!subscriptionOnlyBilling}
                             summary={summary}
                             isSaving={policyMutation.isPending}
                             onSave={(amount) =>
