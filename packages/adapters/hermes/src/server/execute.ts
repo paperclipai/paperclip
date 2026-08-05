@@ -1,11 +1,19 @@
 /**
  * Server-side execution logic for the Hermes Agent adapter.
  *
- * Spawns `hermes chat -q "..." -Q` as a child process, streams output,
- * and returns structured results to Paperclip.
+ * Spawns `hermes chat -q - -Q` as a child process (prompt delivered via
+ * stdin, NOT as an argv element), streams output, and returns structured
+ * results to Paperclip.
+ *
+ * Security note: passing the prompt as an argv element (`-q "<prompt>"`) is
+ * unsafe — the full text (including wake context, task body, agent
+ * instructions, and API credentials guidance) is visible to any process that
+ * can read /proc/<pid>/cmdline or run `ps aux` on the same host.  We pass the
+ * sentinel `-` instead and write the prompt to stdin, matching the pattern
+ * used by the claude-local adapter.  See TRA-257 / TRA-256.
  *
  * Verified CLI flags (hermes chat):
- *   -q/--query         single query (non-interactive)
+ *   -q/--query         single query; `-q -` reads the query from stdin
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -411,7 +419,13 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  // SECURITY FIX (TRA-257): pass `-q -` so hermes reads the prompt from stdin
+  // instead of argv.  Passing the prompt as an argv element exposes the full
+  // rendered text (task body, wake context, API guidance) to any local process
+  // that can read /proc/<pid>/cmdline or run `ps aux`.  The sentinel `-` tells
+  // hermes to read the query from stdin; the actual prompt is delivered via the
+  // `stdin` option of runChildProcess below.
+  const args: string[] = ["chat", "-q", "-"];
   if (useQuiet) args.push("-Q");
 
   if (model) {
@@ -527,6 +541,7 @@ export async function execute(
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
+    stdin: prompt, // SECURITY FIX (TRA-257): deliver prompt via stdin, not argv
     timeoutSec,
     graceSec,
     onLog: wrappedOnLog,
