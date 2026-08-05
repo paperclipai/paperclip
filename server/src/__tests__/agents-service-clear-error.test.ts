@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import request from "supertest";
 import {
   agents,
@@ -26,6 +26,16 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({ queueIssueAssignmentW
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function issuePatchApp(db: ReturnType<typeof createDb>, companyId: string, agentId: string, runId: string) {
   const app = express();
@@ -306,6 +316,35 @@ describeEmbeddedPostgres("agent service clearError", () => {
     const res = await request(issuePatchApp(db, companyId, managerId, managerRun!.id)).patch(`/api/issues/${openIssueId}`).send({ title: "Manager resumed released work" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ id: openIssueId, assigneeAgentId: managerId, title: "Manager resumed released work" });
+  });
+
+  it("revalidates a manager terminated concurrently before releasing work", async () => {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const terminatedAgentId = randomUUID();
+    const openIssueId = randomUUID();
+    const managerLocked = deferred<void>();
+    const allowManagerTermination = deferred<void>();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values([
+      { id: managerId, companyId, name: "Manager", role: "manager", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: terminatedAgentId, companyId, name: "Leaving", role: "engineer", reportsTo: managerId, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(issues).values({ id: openIssueId, companyId, title: "Open work", status: "in_progress", priority: "high", assigneeAgentId: terminatedAgentId });
+
+    const concurrentManagerTermination = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${agents.id} from ${agents} where ${agents.id} = ${managerId} for update`);
+      managerLocked.resolve();
+      await allowManagerTermination.promise;
+      await tx.update(agents).set({ status: "terminated", updatedAt: new Date() }).where(eq(agents.id, managerId));
+    });
+    await managerLocked.promise;
+    const terminateSource = agentService(db).terminate(terminatedAgentId);
+    allowManagerTermination.resolve();
+    await Promise.all([concurrentManagerTermination, terminateSource]);
+
+    const [openIssue] = await db.select().from(issues).where(eq(issues.id, openIssueId));
+    expect(openIssue?.assigneeAgentId).toBeNull();
   });
 
   it("releases open work to the unassigned queue when no assignable manager exists", async () => {
