@@ -14463,6 +14463,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "active",
             lastUsedAt: new Date(),
             metadata: nextExecutionWorkspaceMetadata,
+            projectWorkspaceId:
+              resolvedProjectWorkspaceId ?? reusableExistingExecutionWorkspace.projectWorkspaceId,
           })
         : resolvedProjectId
           ? await executionWorkspacesSvc.create({
