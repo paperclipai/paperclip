@@ -719,6 +719,13 @@ export function agentService(db: Db) {
 
       await db.transaction(async (tx) => {
         const now = new Date();
+        // Agent lifecycle changes can race each other. Lock the complete
+        // company graph before deriving a replacement so a concurrent
+        // termination cannot make that replacement ineligible between the
+        // eligibility check and the issue/report reassignment writes.
+        await tx.execute(
+          sql`select ${agents.id} from ${agents} where ${agents.companyId} = ${existing.companyId} order by ${agents.id} for update`,
+        );
         const companyAgents = await tx.select().from(agents).where(eq(agents.companyId, existing.companyId));
         const eligibilityAgents = companyAgents.map(toEligibilityAgent);
         const manager = existing.reportsTo

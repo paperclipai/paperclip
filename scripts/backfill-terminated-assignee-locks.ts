@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, or, agents, companies, createDb, issueComments, issues } from "../packages/db/src/index.js";
+import { sql } from "drizzle-orm";
 import { isAgentAssignableToWork } from "../packages/shared/src/agent-eligibility.js";
 import { loadConfig } from "../server/src/config.js";
 
@@ -56,9 +57,12 @@ async function main() {
       }
 
       await db.transaction(async (tx) => {
-        // Re-read the lifecycle graph inside the transaction. A long-running
-        // backfill must not assign work to a manager that was terminated or
-        // made ineligible after the initial candidate scan.
+        // Serialize against terminate() before reading the graph. Re-reading
+        // without locks still permits a manager termination to commit between
+        // this check and the issue assignment below.
+        await tx.execute(
+          sql`select ${agents.id} from ${agents} where ${agents.companyId} = ${company.id} order by ${agents.id} for update`,
+        );
         const currentAgents = await tx.select({
           id: agents.id,
           companyId: agents.companyId,
