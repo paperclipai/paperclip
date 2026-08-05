@@ -455,6 +455,13 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_NO_PROGRESS_MAX_ATTEMPTS = 3;
 const STANDING_EXEMPT_RECOVERY_ACTION_KINDS = new Set<string>(["missing_disposition", "stranded_assigned_issue"]);
 
+// Hard ceiling on how many SEPARATE recovery actions one issue may burn for one cause before the
+// board is asked instead of another agent cycle. `maxAttempts` bounds retries within a single
+// action; this bounds the number of actions. TSMC-19481 consumed eight `missing_disposition`
+// actions with no outstanding work — the lane could not DELIVER a disposition, so re-dispatching
+// could never converge. Repeated identical failure is an escalation, not a retry.
+const MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND = 3;
+
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
@@ -3504,6 +3511,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
+  // How many recovery actions this issue has already burned for this cause, in any state. Counts
+  // resolved ones deliberately: a resolved-but-ineffective action is exactly the loop we are
+  // bounding — the action closed, the issue stayed stuck, and a fresh action was spawned.
+  async function countPriorRecoveryActionsForIssue(input: {
+    companyId: string;
+    sourceIssueId: string;
+    kind: string;
+  }) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+          eq(issueRecoveryActions.kind, input.kind),
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -3524,7 +3552,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
       preferredOwnerAgentId: input.recoveryOwnerAgentId,
     });
-    const ownerAgentId = routing.ownerAgentId;
+    // RECOVERY-LOOP CAP (2026-08-05).
+    //
+    // `maxAttempts`/`attemptCount` already bound retries WITHIN one recovery action, but nothing
+    // bounded how many SEPARATE actions one issue could burn through. TSMC-19481 consumed EIGHT
+    // consecutive `missing_disposition` actions while no work was outstanding at all: the assigned
+    // lane had a disposition each time and could not deliver it, because the run-scoped bridge drops
+    // whenever the served tree reloads. Each undelivered disposition read as "no disposition given",
+    // force-blocked the issue, and spawned a fresh action. The loop cannot converge, because
+    // re-dispatching does not fix the exit.
+    //
+    // Past the cap, hand the issue to the BOARD instead of another agent cycle. A null ownerAgentId
+    // is the existing signal for that: callers route it to escalateStrandedAssignedIssue, so this
+    // reuses the tested escalation path rather than adding a parallel one. Repeated identical
+    // failure is an escalation, not a retry.
+    const priorActionCount = await countPriorRecoveryActionsForIssue({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      kind: strandedRecoveryActionKind(recoveryCause),
+    });
+    const recoveryLoopCapExceeded = priorActionCount >= MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND;
+    const ownerAgentId = recoveryLoopCapExceeded ? null : routing.ownerAgentId;
+    if (recoveryLoopCapExceeded) {
+      logger.warn(
+        {
+          service: "recovery",
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          issueIdentifier: input.issue.identifier,
+          kind: strandedRecoveryActionKind(recoveryCause),
+          priorActionCount,
+          cap: MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND,
+          recoveryCause,
+        },
+        "recovery loop cap reached; escalating to board instead of dispatching another agent recovery",
+      );
+    }
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
