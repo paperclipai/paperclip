@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import express from "express";
 import request from "supertest";
-import { isNotNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, issues } from "@paperclipai/db";
-import { errorHandler } from "../middleware/index.js";
-import { issueRoutes } from "../routes/issues.js";
+import { createDb, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  issueRouteApp,
+  resetIssueRouteData,
+  seedIssueRouteCompany,
+} from "./helpers/issue-route-app.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -24,57 +25,30 @@ describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(issues).where(isNotNull(issues.parentId));
-    await db.delete(issues);
-    await db.delete(companies);
+    await resetIssueRouteData(db);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
   });
 
-  function appFor(companyId: string, userId: string) {
-    const app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = {
-        type: "board",
-        source: "session",
-        userId,
-        companyIds: [companyId],
-        memberships: [{ companyId, membershipRole: "operator", status: "active" }],
-        isInstanceAdmin: false,
-      };
-      next();
-    });
-    app.use("/api", issueRoutes(db, {} as never));
-    app.use(errorHandler);
-    return app;
-  }
-
   async function seed() {
-    const companyId = randomUUID();
-    const userId = `user-${randomUUID()}`;
+    const company = await seedIssueRouteCompany(db, "Parent alias");
+    const companyId = company.companyId;
     const parentId = randomUUID();
     const otherParentId = randomUUID();
     const childId = randomUUID();
-    const otherChildId = randomUUID();
     const blockedChildId = randomUUID();
-    const blockedOtherChildId = randomUUID();
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: `Parent alias ${companyId}`,
-      issuePrefix: `PA${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
-    });
     await db.insert(issues).values([
       { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
       { id: otherParentId, companyId, title: "Other parent", status: "todo", priority: "medium" },
     ]);
     await db.insert(issues).values([
       { id: childId, companyId, title: "Child", status: "todo", priority: "medium", parentId },
+      { id: blockedChildId, companyId, title: "Blocked child", status: "blocked", priority: "medium", parentId },
       {
-        id: otherChildId,
+        id: randomUUID(),
         companyId,
         title: "Other child",
         status: "todo",
@@ -82,15 +56,7 @@ describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
         parentId: otherParentId,
       },
       {
-        id: blockedChildId,
-        companyId,
-        title: "Blocked child",
-        status: "blocked",
-        priority: "medium",
-        parentId,
-      },
-      {
-        id: blockedOtherChildId,
+        id: randomUUID(),
         companyId,
         title: "Blocked other child",
         status: "blocked",
@@ -99,74 +65,64 @@ describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
       },
     ]);
 
-    return {
-      companyId,
-      userId,
-      parentId,
-      otherParentId,
-      childId,
-      blockedChildId,
-    };
+    return { ...company, parentId, otherParentId, childId, blockedChildId };
+  }
+
+  type Seeded = Awaited<ReturnType<typeof seed>>;
+
+  async function listIds(seeded: Seeded, query: Record<string, string>) {
+    const res = await request(issueRouteApp(db, seeded))
+      .get(`/api/companies/${seeded.companyId}/issues`)
+      .query(query)
+      .expect(200);
+    return (res.body as { id: string }[]).map((issue) => issue.id).sort();
+  }
+
+  async function blockedCount(seeded: Seeded, query: Record<string, string>) {
+    const res = await request(issueRouteApp(db, seeded))
+      .get(`/api/companies/${seeded.companyId}/issues/count`)
+      .query({ attention: "blocked", ...query })
+      .expect(200);
+    return res.body as { count: number };
+  }
+
+  function childrenOfParent(seeded: Seeded) {
+    return [seeded.childId, seeded.blockedChildId].sort();
   }
 
   it("filters children by ?parentId=", async () => {
     const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues`)
-      .query({ parentId: seeded.parentId })
-      .expect(200);
-    expect((res.body as { id: string }[]).map((issue) => issue.id).sort())
-      .toEqual([seeded.childId, seeded.blockedChildId].sort());
+    expect(await listIds(seeded, { parentId: seeded.parentId })).toEqual(childrenOfParent(seeded));
   });
 
   it("filters children by ?parentIssueId=", async () => {
     const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues`)
-      .query({ parentIssueId: seeded.parentId })
-      .expect(200);
-    expect((res.body as { id: string }[]).map((issue) => issue.id).sort())
-      .toEqual([seeded.childId, seeded.blockedChildId].sort());
+    expect(await listIds(seeded, { parentIssueId: seeded.parentId })).toEqual(childrenOfParent(seeded));
   });
 
   it("prefers ?parentId= when both spellings are present", async () => {
     const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues`)
-      .query({ parentId: seeded.parentId, parentIssueId: seeded.otherParentId })
-      .expect(200);
-    expect((res.body as { id: string }[]).map((issue) => issue.id).sort())
-      .toEqual([seeded.childId, seeded.blockedChildId].sort());
+    const ids = await listIds(seeded, {
+      parentId: seeded.parentId,
+      parentIssueId: seeded.otherParentId,
+    });
+    expect(ids).toEqual(childrenOfParent(seeded));
   });
 
   it("returns the whole company list when neither spelling is present", async () => {
     const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues`)
-      .expect(200);
-    expect(res.body).toHaveLength(6);
+    expect(await listIds(seeded, {})).toHaveLength(6);
   });
 
   it("filters the blocked count by ?parentIssueId=", async () => {
     const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues/count`)
-      .query({ attention: "blocked", parentIssueId: seeded.parentId })
-      .expect(200);
-    expect(res.body).toEqual({ count: 1 });
+    expect(await blockedCount(seeded, { parentIssueId: seeded.parentId })).toEqual({ count: 1 });
   });
 
-  it("matches the blocked count for both spellings", async () => {
+  it("returns the same blocked count for both spellings", async () => {
     const seeded = await seed();
-    const app = appFor(seeded.companyId, seeded.userId);
-    const byShortForm = await request(app)
-      .get(`/api/companies/${seeded.companyId}/issues/count`)
-      .query({ attention: "blocked", parentId: seeded.parentId })
-      .expect(200);
-    const byAlias = await request(app)
-      .get(`/api/companies/${seeded.companyId}/issues/count`)
-      .query({ attention: "blocked", parentIssueId: seeded.parentId })
-      .expect(200);
-    expect(byAlias.body).toEqual(byShortForm.body);
+    const byShortForm = await blockedCount(seeded, { parentId: seeded.parentId });
+    const byAlias = await blockedCount(seeded, { parentIssueId: seeded.parentId });
+    expect(byAlias).toEqual(byShortForm);
   });
 });

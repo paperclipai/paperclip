@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
-import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, issues } from "@paperclipai/db";
-import { errorHandler } from "../middleware/index.js";
-import { issueRoutes } from "../routes/issues.js";
+import { createDb, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  issueRouteApp,
+  resetIssueRouteData,
+  seedIssueRouteCompany,
+} from "./helpers/issue-route-app.js";
 
 /**
  * Regression coverage for https://github.com/paperclipai/paperclip/issues/4628.
@@ -29,53 +31,23 @@ describeEmbeddedPostgres("issue list status query parsing", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(issues);
-    await db.delete(companies);
+    await resetIssueRouteData(db);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
   });
 
-  function appFor(companyId: string, userId: string) {
-    const app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = {
-        type: "board",
-        source: "session",
-        userId,
-        companyIds: [companyId],
-        memberships: [{ companyId, membershipRole: "operator", status: "active" }],
-        isInstanceAdmin: false,
-      };
-      next();
-    });
-    app.use("/api", issueRoutes(db, {} as never));
-    app.use(errorHandler);
-    return app;
-  }
-
-  async function seed() {
-    const companyId = randomUUID();
-    const userId = `user-${randomUUID()}`;
-    await db.insert(companies).values({
-      id: companyId,
-      name: `Status parsing ${companyId}`,
-      issuePrefix: `SP${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
-    });
+  async function listStatuses(query: string) {
+    const company = await seedIssueRouteCompany(db, "Status parsing");
+    const companyId = company.companyId;
     await db.insert(issues).values([
       { id: randomUUID(), companyId, title: "Todo", status: "todo", priority: "medium" },
       { id: randomUUID(), companyId, title: "In progress", status: "in_progress", priority: "medium" },
       { id: randomUUID(), companyId, title: "Done", status: "done", priority: "medium" },
     ]);
-    return { companyId, userId };
-  }
-
-  async function listStatuses(query: string) {
-    const seeded = await seed();
-    const res = await request(appFor(seeded.companyId, seeded.userId))
-      .get(`/api/companies/${seeded.companyId}/issues${query}`)
+    const res = await request(issueRouteApp(db, company))
+      .get(`/api/companies/${companyId}/issues${query}`)
       .expect(200);
     return (res.body as { status: string }[]).map((issue) => issue.status).sort();
   }
