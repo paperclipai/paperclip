@@ -606,7 +606,7 @@ const plugin = definePlugin({
         credentialRequired,
         credentialSecretName: requestCredentialSecretName || null,
       },
-      execute: async (command) => await execInReadyPod(kc, clients, namespace, podName, "repo-loader", command, undefined, config.podActivityDeadlineSec * 1000, execInPod),
+      execute: async (command) => await execInReadyPod(kc, clients, namespace, podName, "repo-loader", command, execInPod, undefined, config.podActivityDeadlineSec * 1000),
     });
     return {
       cwd: snapshot.workspacePath,
@@ -887,9 +887,9 @@ const plugin = definePlugin({
               podName,
               "agent",
               ["/bin/sh", "-c", script],
+              execInPod,
               base64Body,
               flushTimeoutMs,
-              execInPod,
             );
           } catch (err) {
             return {
@@ -957,9 +957,9 @@ const plugin = definePlugin({
           podName,
           "agent",
           execCommand,
+          execInPod,
           typeof params.stdin === "string" ? params.stdin : undefined,
           remainingTimeoutMs,
-          execInPod,
         );
       } catch (err) {
         // Watchdog-fired or WebSocket-setup error. Surface as a timeout so

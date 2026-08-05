@@ -35,9 +35,9 @@ export async function execInReadyPod(
   podName: string,
   containerName: string,
   command: string[],
+  exec: typeof execInPod,
   stdin?: string | Buffer,
   timeoutMs?: number,
-  exec: typeof execInPod,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   await assertPodContainerReady(clients, namespace, podName, containerName);
   return exec(kc, namespace, podName, containerName, command, stdin, timeoutMs);

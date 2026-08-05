@@ -2626,6 +2626,16 @@ export function resolveEffectiveRepositoryCredentialsRequired(input: {
   return input.issuePolicy ?? input.projectPolicy ?? input.workspacePolicy ?? false;
 }
 
+export function isKubernetesSandboxRepositoryEnvironment(input: {
+  driver: string | null | undefined;
+  config: unknown;
+}): boolean {
+  const config = parseObject(input.config);
+  return input.driver === "sandbox" &&
+    readNonEmptyString(config.provider) === "kubernetes" &&
+    (readNonEmptyString(config.backend) ?? "sandbox-cr") === "sandbox-cr";
+}
+
 type ProjectWorkspaceCandidate = {
   id: string;
 };
@@ -14254,8 +14264,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // target. A remote run resolves referenced projects only for the confined sandbox
             // transport with the remote flag on. This never changes the anchor workspace.
             executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
-            sandboxNative:
-              (selectedEnvironmentForConfig?.driver ?? selectedEnvironmentDriver) === "sandbox",
+            sandboxNative: isKubernetesSandboxRepositoryEnvironment({
+              driver: selectedEnvironmentForConfig?.driver ?? selectedEnvironmentDriver,
+              config: selectedEnvironmentForConfig?.config,
+            }),
           },
         ),
     });
@@ -14282,8 +14294,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspacePolicy: requestedReusableExecutionWorkspaceConfig?.repositoryCredentialsRequired,
       }),
     } satisfies ExecutionWorkspaceInput;
-    const sandboxNativeRun =
-      (selectedEnvironmentForConfig?.driver ?? lowTrustPreflightEnvironmentDriver) === "sandbox";
+    const sandboxNativeRun = isKubernetesSandboxRepositoryEnvironment({
+      driver: selectedEnvironmentForConfig?.driver ?? lowTrustPreflightEnvironmentDriver,
+      config: selectedEnvironmentForConfig?.config,
+    });
     const configuredGitReadOnlySecretName = readNonEmptyString(
       parseObject(selectedEnvironmentForConfig?.config).gitReadOnlySecretName,
     );

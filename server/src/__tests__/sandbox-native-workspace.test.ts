@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isKubernetesSandboxRepositoryEnvironment,
   resolveEffectiveRepositoryCredentialsRequired,
   resolveEffectiveSandboxRepositoryRef,
 } from "../services/heartbeat.js";
@@ -20,6 +21,27 @@ describe("sandbox-native workspace revision selection", () => {
     expect(resolveEffectiveRepositoryCredentialsRequired({ projectPolicy: false, workspacePolicy: true })).toBe(false);
     expect(resolveEffectiveRepositoryCredentialsRequired({ issuePolicy: true, projectPolicy: false })).toBe(true);
     expect(resolveEffectiveRepositoryCredentialsRequired({})).toBe(false);
+  });
+
+  it("uses sandbox_repository only for the Kubernetes sandbox-cr backend", () => {
+    expect(isKubernetesSandboxRepositoryEnvironment({
+      driver: "sandbox",
+      config: { provider: "kubernetes", backend: "sandbox-cr" },
+    })).toBe(true);
+  });
+
+  it("keeps another sandbox provider on its existing workspace path", () => {
+    expect(isKubernetesSandboxRepositoryEnvironment({
+      driver: "sandbox",
+      config: { provider: "daytona" },
+    })).toBe(false);
+  });
+
+  it("keeps the Kubernetes job backend on its existing workspace path", () => {
+    expect(isKubernetesSandboxRepositoryEnvironment({
+      driver: "sandbox",
+      config: { provider: "kubernetes", backend: "job" },
+    })).toBe(false);
   });
 
   it("carries the resolved credential policy and run-scoped binding into the realization request", () => {

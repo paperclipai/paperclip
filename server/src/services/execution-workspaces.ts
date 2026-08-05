@@ -690,7 +690,7 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
   };
 
   const hasConfig = Object.values(config).some((value) => {
-    if (value === null) return false;
+    if (value === null || value === undefined) return false;
     if (typeof value === "object") return Object.keys(value).length > 0;
     return true;
   });
@@ -740,7 +740,7 @@ export function mergeExecutionWorkspaceConfig(
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {
-    if (value === null) return false;
+    if (value === null || value === undefined) return false;
     if (typeof value === "object") return Object.keys(value).length > 0;
     return true;
   });

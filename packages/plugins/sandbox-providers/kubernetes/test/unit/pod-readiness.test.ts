@@ -24,7 +24,7 @@ describe("pod exec readiness gate", () => {
   it("calls exec only after the readiness check succeeds", async () => {
     const clients = clientsFor(readyStatus);
     const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "ok", stderr: "" });
-    const result = await execInReadyPod({} as never, clients, "ns", "pod", "agent", ["/bin/sh"], undefined, 1000, exec);
+    const result = await execInReadyPod({} as never, clients, "ns", "pod", "agent", ["/bin/sh"], exec, undefined, 1000);
     expect(result.stdout).toBe("ok");
     expect(clients.core.readNamespacedPod).toHaveBeenCalledBefore(exec);
     expect(exec).toHaveBeenCalledWith({}, "ns", "pod", "agent", ["/bin/sh"], undefined, 1000);
