@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE ONLY — do not install from implementation tasks.
+  Live cutover installs this as ~/Library/LaunchAgents/ie.thinkstack.paperclip-deploy.plist
+  during a CTO-authorized maintenance window (TSMC-19809).
+
+  Placeholders:
+    __DEPLOY_ROOT__   e.g. /Users/glad0s/paperclip-deploy
+    __HOME__          e.g. /Users/glad0s
+    __START_SCRIPT__  e.g. /Users/glad0s/paperclip-deploy/scripts/pinned-deploy-start.sh
+                      (or a stable copy under ~/.paperclip/deploy/bin/)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ie.thinkstack.paperclip-deploy</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__START_SCRIPT__</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__DEPLOY_ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PAPERCLIP_UI_DEV_MIDDLEWARE</key>
+    <string>true</string>
+    <key>PORT</key>
+    <string>3100</string>
+    <key>PAPERCLIP_DEPLOY_ROOT</key>
+    <string>__DEPLOY_ROOT__</string>
+    <key>PAPERCLIP_DEPLOY_RECEIPT</key>
+    <string>__HOME__/.paperclip/deploy/current-receipt.json</string>
+    <key>PAPERCLIP_DEPLOY_LOG_DIR</key>
+    <string>__HOME__/.paperclip/deploy/logs</string>
+    <key>HEARTBEAT_HUNG_RUN_MAX_RUNTIME_MS</key>
+    <string>7200000</string>
+    <key>PAPERCLIP_RUN_LOG_RETENTION_DAYS</key>
+    <string>7</string>
+    <key>PAPERCLIP_RUN_LOG_ARCHIVE_PATH</key>
+    <string>/Volumes/X10 Pro/ThinkStack-DR/Paperclip-Run-Logs</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- Logs OUTSIDE the replaceable deploy worktree -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/.paperclip/deploy/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.paperclip/deploy/logs/launchd.err.log</string>
+</dict>
+</plist>

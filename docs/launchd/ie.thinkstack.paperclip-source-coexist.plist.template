@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE ONLY — coexist/source plane after pinned-deploy cutover.
+  PORT=3101, NO PAPERCLIP_RECLAIM_PRIMARY. Must never kill :3100/:13100.
+
+  Placeholders:
+    __SOURCE_ROOT__  e.g. /Users/glad0s/paperclip
+    __HOME__         e.g. /Users/glad0s
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ie.thinkstack.paperclip-source</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SOURCE_ROOT__/launchd-start.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__SOURCE_ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PAPERCLIP_UI_DEV_MIDDLEWARE</key>
+    <string>true</string>
+    <!-- Coexist: source/dev only. Deploy owns :3100. -->
+    <key>PORT</key>
+    <string>3101</string>
+    <key>HEARTBEAT_HUNG_RUN_MAX_RUNTIME_MS</key>
+    <string>7200000</string>
+    <key>PAPERCLIP_RUN_LOG_RETENTION_DAYS</key>
+    <string>7</string>
+    <key>PAPERCLIP_RUN_LOG_ARCHIVE_PATH</key>
+    <string>/Volumes/X10 Pro/ThinkStack-DR/Paperclip-Run-Logs</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>__SOURCE_ROOT__/.devlogs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__SOURCE_ROOT__/.devlogs/launchd.err.log</string>
+</dict>
+</plist>
