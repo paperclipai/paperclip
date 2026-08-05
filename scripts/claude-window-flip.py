@@ -150,6 +150,19 @@ def main():
                 print(f"  {role}: {claude['name']} (claude) — NO codex sister, leaving on Claude")
                 want(claude, "active")
                 continue
+            # QUOTA-DEAD SISTER OVERRIDE (2026-08-05). Parking the claude lane is only safe
+            # while the codex sister can actually carry the role. On 2026-08-05 the whole
+            # ChatGPT/Codex account exhausted its quota until Aug 9 and this hourly flip kept
+            # re-parking the claude CEOs/CTOs the operator had just resumed as failover cover —
+            # every hour, on the hour, the fleet lost its C-suite again (9 lanes re-paused at
+            # 22:00:05 within 30 min of the operator's restore). Availability beats the bench
+            # preference: a parked claude lane behind a dead codex sister is NOBODY running the
+            # role. Self-reverting — when swap-back resumes the codex lanes, the next flip
+            # re-parks claude per the normal policy below.
+            if sister["status"] in ("paused", "error"):
+                print(f"  {role}: codex sister {sister['name']}[{sister['status']}] UNAVAILABLE — keeping claude {claude['name']} ACTIVE (quota failover)")
+                want(claude, "active")
+                continue
             # Codex sister is the always-on ops lane — NOT pause/resumed here (owned by
             # session-limit-watch failover). window-flip only moves the Claude sprint lane.
             # CEO: gpt-5.4 TIES opus on CEO judgment (0.97 vs 0.98, within noise) — a claude CEO
