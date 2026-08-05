@@ -32,6 +32,7 @@ import {
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
+  surfaceLimitTextThroughOpaqueError,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
@@ -3671,5 +3672,37 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     expect(emitted.has("stage.sync")).toBe(false);
     expect(emitted.has("bridge.paperclip")).toBe(false);
     expect(emitted.has("bridge.process-session")).toBe(false);
+  });
+});
+
+describe("surfaceLimitTextThroughOpaqueError", () => {
+  // 2026-08-05 incident fixture: Codex quota exhaustion surfaced as an opaque
+  // "Internal error" while the true cause arrived as the final text_delta. The
+  // run error text is what FALLBACK_LIMIT_REASON_RE and the fallback-monitor
+  // key on, so the limit sentence must be carried into it.
+  const LIMIT_TEXT =
+    "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 9th, 2026 1:35 PM.\n\n";
+
+  it("carries the provider limit sentence through an opaque Internal error", async () => {
+    const surfaced = surfaceLimitTextThroughOpaqueError("Internal error", [
+      "working on it...",
+      LIMIT_TEXT,
+    ]);
+    expect(surfaced).toMatch(/you've hit your usage limit/i);
+    expect(surfaced).toContain("try again at Aug 9th, 2026 1:35 PM");
+    expect(surfaced).toContain("(ACP turn failed: Internal error)");
+    // Must satisfy the failover trigger regex from server/src/services/agents.ts.
+    expect(surfaced).toMatch(/you(?:'|’)ve hit your (session|weekly|daily|5-?hour|usage) limit/i);
+  });
+
+  it("leaves non-opaque errors untouched even when limit text is present", async () => {
+    expect(surfaceLimitTextThroughOpaqueError("ACP agent disconnected during request", [LIMIT_TEXT]))
+      .toBe("ACP agent disconnected during request");
+  });
+
+  it("leaves opaque errors untouched when no limit signature exists in the turn text", async () => {
+    expect(surfaceLimitTextThroughOpaqueError("Internal error", ["done, all good"]))
+      .toBe("Internal error");
+    expect(surfaceLimitTextThroughOpaqueError(null, [LIMIT_TEXT])).toBeNull();
   });
 });

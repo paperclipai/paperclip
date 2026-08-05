@@ -2449,6 +2449,45 @@ function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   return result.error.message;
 }
 
+// Opaque terminal errors that tell the platform nothing about the real cause. Codex's ACP
+// backend reports account quota exhaustion this way: the human-readable cause ("You've hit
+// your usage limit ... try again at Aug 9th ...") arrives as the turn's final agent
+// text_delta, then the turn fails with a bare "Internal error".
+const OPAQUE_TURN_ERROR_RE = /^internal error\.?$/i;
+// Provider-limit signatures worth carrying into the run error. Mirrors
+// FALLBACK_LIMIT_REASON_RE (server/src/services/agents.ts) and the fallback-monitor's
+// LIMIT_RE — those consumers key lane failover off the run error TEXT, so the text must
+// reach them. Capture the full sentence(s) so downstream reset-time parsing
+// ("try again at ...") keeps working.
+const PROVIDER_LIMIT_TEXT_RE =
+  /(you(?:'|’)?ve hit your (?:session|weekly|daily|5-?hour|usage) limit[^\n]*)/i;
+
+/**
+ * FAILOVER SIGNAL FIX (2026-08-06, TSMC fallback investigation). On 2026-08-05 the Codex
+ * account hit its usage limit fleet-wide and NO automatic failover engaged: all 123 failed
+ * codex runs that evening recorded error "Internal error" (`acpx_turn_failed`), so
+ * `FALLBACK_LIMIT_REASON_RE` and every fallback-monitor watching run errors were blind —
+ * while the true cause was present in the run log as the last agent text_delta, one event
+ * before the error. When the terminal error is opaque and the turn text carries a provider
+ * limit signature, surface that signature as the error message (original preserved in
+ * parentheses). Scoped narrowly: only opaque errors are rewritten, and only when a limit
+ * signature is actually present — all other errors pass through untouched.
+ */
+export function surfaceLimitTextThroughOpaqueError(
+  errorMessage: string | null,
+  turnTextParts: readonly string[],
+): string | null {
+  if (!errorMessage || !OPAQUE_TURN_ERROR_RE.test(errorMessage.trim())) return errorMessage;
+  // Recent-first: the limit notice is the backend's final message before the turn fails.
+  for (let i = turnTextParts.length - 1, seen = 0; i >= 0 && seen < 8; i -= 1, seen += 1) {
+    const match = turnTextParts[i]?.match(PROVIDER_LIMIT_TEXT_RE);
+    if (match?.[1]) {
+      return `${match[1].trim()} (ACP turn failed: ${errorMessage})`;
+    }
+  }
+  return errorMessage;
+}
+
 function usageBreakdownsEqual(
   left: AcpRuntimeUsageBreakdown,
   right: AcpRuntimeUsageBreakdown,
@@ -3444,8 +3483,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
       const errorMessage = timedOut
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-        : resultErrorMessage(terminal);
-      const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        : surfaceLimitTextThroughOpaqueError(resultErrorMessage(terminal), textParts);
+      const terminalStopReason = terminal.status === "failed"
+        ? (errorMessage ?? terminal.error.message)
+        : terminal.stopReason;
       await emitAcpxLog(ctx, {
         type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
         summary: terminal.status,
