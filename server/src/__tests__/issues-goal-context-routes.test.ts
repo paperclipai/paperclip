@@ -580,4 +580,39 @@ describe.sequential("issue goal context routes", () => {
       sourceKind: "request_confirmation",
     }));
   });
+
+  it("keeps terminal interaction diagnostics visible without requiring board action", async () => {
+    mockIssueService.getBoardActionRequirements.mockResolvedValue(new Map([
+      [
+        legacyProjectLinkedIssue.id,
+        {
+          source: "interaction",
+          kind: "interaction",
+          state: "unresolvable_terminal_interaction",
+          sourceId: "interaction-terminal",
+          sourceKind: "request_confirmation",
+          title: "Superseded rollout confirmation",
+          summary: null,
+          createdAt: new Date("2026-08-05T12:00:00Z"),
+          decisionText: "This interaction is terminal and cannot accept a board decision.",
+          resumeText: "No board action is pending.",
+        },
+      ],
+    ]));
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.applyBoardActionTitlePrefix).toHaveBeenCalledWith(
+      legacyProjectLinkedIssue.title,
+      false,
+    );
+    expect(res.body.issue.boardActionRequired).toBe(false);
+    expect(res.body.issue.boardAction).toEqual(expect.objectContaining({
+      state: "unresolvable_terminal_interaction",
+      sourceId: "interaction-terminal",
+    }));
+  });
 });

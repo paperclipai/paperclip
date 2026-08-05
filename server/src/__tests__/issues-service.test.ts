@@ -8060,7 +8060,7 @@ describeEmbeddedPostgres("board action requirements", () => {
     expect(result.has(issueId)).toBe(false);
   });
 
-  it("surfaces stale_issue_state board-action expiries back onto the source issue", async () => {
+  it("does not derive a board action from a terminal stale-state interaction", async () => {
     const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
 
     await db.insert(issueThreadInteractions).values({
@@ -8088,19 +8088,12 @@ describeEmbeddedPostgres("board action requirements", () => {
     });
 
     const result = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
-    const requirement = result.get(issueId);
-
-    expect(requirement).toEqual(expect.objectContaining({
-      source: "interaction",
-      sourceKind: "request_checkbox_confirmation",
-      state: "pending_board_decision",
+    expect(result.get(issueId)).toEqual(expect.objectContaining({
+      state: "unresolvable_terminal_interaction",
     }));
-    expect(requirement?.decisionText).toContain("auto-cancelled");
-    expect(requirement?.decisionText).toContain("Approve artifact set");
-    expect(requirement?.resumeText).toContain("Issue closed as done.");
   });
 
-  it("keeps reassignment-cancelled board actions explicitly unresolved", async () => {
+  it("does not turn a reassignment-cancelled interaction into a pending board action", async () => {
     const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
 
     await db.insert(issueThreadInteractions).values({
@@ -8127,16 +8120,58 @@ describeEmbeddedPostgres("board action requirements", () => {
     });
 
     const result = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
-    const requirement = result.get(issueId);
-
-    expect(requirement).toEqual(expect.objectContaining({
-      source: "interaction",
-      sourceKind: "request_confirmation",
-      state: "pending_board_decision",
+    expect(result.get(issueId)).toEqual(expect.objectContaining({
+      state: "unresolvable_terminal_interaction",
     }));
-    expect(requirement?.decisionText).toContain("reassigned before any decision was made");
-    expect(requirement?.resumeText).toContain("No decision was made before reassignment");
-    expect(requirement?.resumeText).toContain("Issue reassigned to a different owner.");
+  });
+
+  it.each(["cancelled", "withdrawn", "expired", "rejected"])(
+    "does not derive a board action from a %s confirmation",
+    async (status) => {
+      const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status,
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: { version: 1, prompt: "Approve the rollout?" },
+        result: { version: 1, outcome: "stale_issue_state", reason: "Resolved before reconciliation." },
+        createdByAgentId: assigneeAgentId,
+        resolvedAt: new Date(),
+      });
+
+      const result = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
+      expect(result.get(issueId)).toEqual(expect.objectContaining({
+        state: "unresolvable_terminal_interaction",
+      }));
+    },
+  );
+
+  it("reconciles legacy terminal projections without replaying interactions", async () => {
+    const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt: "Approve the rollout?" },
+      result: { version: 1, outcome: "stale_issue_state", reason: "Issue reassigned." },
+      createdByAgentId: assigneeAgentId,
+      resolvedAt: new Date(),
+    });
+
+    await expect(svc.reconcileBoardActionRequirements()).resolves.toEqual(expect.objectContaining({
+      issuesCleared: 1,
+      clearedByCompany: [expect.objectContaining({
+        companyId,
+        issueCount: 1,
+        state: "unresolvable_terminal_interaction",
+      })],
+    }));
   });
 });
 

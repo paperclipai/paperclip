@@ -6256,8 +6256,8 @@ export function issueRoutes(
           kind: "full",
           body: result.map((issue) => ({
             ...issue,
-            title: svc.applyBoardActionTitlePrefix(issue.title, boardActionByIssue.has(issue.id)),
-            boardActionRequired: boardActionByIssue.has(issue.id),
+            title: svc.applyBoardActionTitlePrefix(issue.title, boardActionByIssue.get(issue.id)?.state === "pending_board_decision"),
+            boardActionRequired: boardActionByIssue.get(issue.id)?.state === "pending_board_decision",
             ...(boardActionByIssue.get(issue.id) ? { boardAction: boardActionByIssue.get(issue.id) } : {}),
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
@@ -6562,7 +6562,7 @@ export function issueRoutes(
       issue: {
         id: issue.id,
         identifier: issue.identifier,
-        title: svc.applyBoardActionTitlePrefix(issue.title, Boolean(boardAction)),
+        title: svc.applyBoardActionTitlePrefix(issue.title, boardAction?.state === "pending_board_decision"),
         description: issue.description
           ? `${issue.description}\n\n---\n${dispositionContract}`
           : dispositionContract,
@@ -6571,7 +6571,7 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         ...(boardAction ? { boardAction } : {}),
-        boardActionRequired: Boolean(boardAction),
+        boardActionRequired: boardAction?.state === "pending_board_decision",
         productivityReview,
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
@@ -6831,9 +6831,9 @@ export function issueRoutes(
       ...issue,
       ...inboxArchiveFields,
       triggerPayload: webhookTriggerPayload,
-      title: svc.applyBoardActionTitlePrefix(issue.title, Boolean(boardAction)),
+      title: svc.applyBoardActionTitlePrefix(issue.title, boardAction?.state === "pending_board_decision"),
       boardAction,
-      boardActionRequired: Boolean(boardAction),
+      boardActionRequired: boardAction?.state === "pending_board_decision",
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),

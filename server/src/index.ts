@@ -885,6 +885,17 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
 
+  // Board action is a live projection. This pass records terminal interactions
+  // which the prior stale-state projection would have reported as pending,
+  // without mutating or replaying the resolved interaction.
+  void issueService(db as any).reconcileBoardActionRequirements()
+    .then((result) => {
+      logger.info(result, "reconciled terminal interaction board-action projections");
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of terminal interaction board actions failed");
+    });
+
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.

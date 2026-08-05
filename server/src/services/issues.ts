@@ -3247,7 +3247,12 @@ const BOARD_ACTION_REQUIRED_TITLE_PREFIX_TOKEN = "BOARD ACTION REQUIRED:";
 type BoardActionRequirement = {
   source: "interaction" | "approval";
   kind: "interaction" | "approval";
-  state: "pending_board_decision";
+  /**
+   * Only pending_board_decision is actionable by an operator. The terminal
+   * state is retained as diagnostic projection data so callers can see why a
+   * formerly-stuck badge disappeared without mistaking it for a live ask.
+   */
+  state: "pending_board_decision" | "unresolvable_terminal_interaction";
   sourceId: string;
   sourceKind: string;
   title: string | null;
@@ -3255,6 +3260,21 @@ type BoardActionRequirement = {
   createdAt: Date;
   decisionText: string;
   resumeText: string;
+};
+
+type BoardActionReconciliationSummary = {
+  companiesScanned: number;
+  issuesCleared: number;
+  clearedByCompany: Array<{
+    companyId: string;
+    issueCount: number;
+    /**
+     * A terminal interaction which the former stale-state projection treated
+     * as a pending decision. It is diagnostic-only: it must never re-create
+     * a board action or operator badge.
+     */
+    state: "unresolvable_terminal_interaction";
+  }>;
 };
 
 type RequestConfirmationIssueDocumentTarget = {
@@ -3545,30 +3565,6 @@ function boardActionDecisionTextFromApproval() {
   return "Approve, reject, or request revision on this linked approval.";
 }
 
-function boardActionDecisionTextFromStaleInteraction(input: {
-  kind: string;
-  title: string | null;
-  summary: string | null;
-  reason?: string | null;
-}) {
-  const interactionLabel = [input.title, input.summary].find((value) => value && value.trim().length > 0)?.trim();
-  const interactionName = interactionLabel ? ` interaction "${interactionLabel}"` : " interaction";
-  if (input.reason?.includes("reassigned")) {
-    return `Review the auto-cancelled${interactionName}: the issue was reassigned before any decision was made, so recreate a fresh ask if the decision is still needed.`;
-  }
-  return `Review the auto-cancelled${interactionName} and decide whether it still needs to be recreated on a live issue.`;
-}
-
-function boardActionResumeTextFromStaleInteraction(reason: string | null) {
-  if (reason?.includes("reassigned")) {
-    return `No decision was made before reassignment. Recreate the interaction for the new owner if the decision is still needed (auto-cancel reason: ${reason}).`;
-  }
-  if (reason) {
-    return `Reopen the issue or recreate the interaction on a live issue if the decision is still needed (auto-cancel reason: ${reason}).`;
-  }
-  return "Reopen the issue or recreate the interaction on a live issue if the decision is still needed.";
-}
-
 function isBoardActionInteraction(
   interaction: { kind: string },
   issueRow: { assigneeUserId?: string | null },
@@ -3593,33 +3589,6 @@ function isBoardActionInteraction(
   return true;
 }
 
-function isStaleIssueStateBoardActionInteraction(input: {
-  interaction: { kind: string; result: unknown };
-  issue: { assigneeUserId?: string | null };
-}) {
-  if (!isBoardActionInteraction(input.interaction, input.issue)) {
-    return false;
-  }
-  const result = parseObject(input.interaction.result);
-  if (input.interaction.kind === "ask_user_questions") {
-    return result.expirationReason === "stale_issue_state";
-  }
-  return result.outcome === "stale_issue_state";
-}
-
-function staleIssueStateBoardActionReason(interaction: { result: unknown }) {
-  const result = parseObject(interaction.result);
-  return typeof result.reason === "string" && result.reason.trim().length > 0 ? result.reason.trim() : null;
-}
-
-function isResolvedNonStaleBoardActionInteraction(input: {
-  interaction: { kind: string; result: unknown };
-  issue: { assigneeUserId?: string | null };
-}) {
-  return isBoardActionInteraction(input.interaction, input.issue)
-    && !isStaleIssueStateBoardActionInteraction(input);
-}
-
 async function listIssueBoardActionRequirementMap(
   dbOrTx: any,
   companyId: string,
@@ -3633,8 +3602,8 @@ async function listIssueBoardActionRequirementMap(
     pendingInteractions,
     pendingApprovals,
     latestUserCommentRows,
-    staleIssueStateInteractions,
-    resolvedBoardInteractions,
+    terminalInteractions,
+    resolvedInteractions,
   ] = await Promise.all([
     dbOrTx
       .select({
@@ -3695,13 +3664,12 @@ async function listIssueBoardActionRequirementMap(
       .from(issueThreadInteractions)
       .where(and(
         eq(issueThreadInteractions.companyId, companyId),
-        inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+        inArray(issueThreadInteractions.status, ["cancelled", "withdrawn", "expired", "rejected"]),
         inArray(issueThreadInteractions.issueId, issueIds),
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
     dbOrTx
       .select({
-        id: issueThreadInteractions.id,
         issueId: issueThreadInteractions.issueId,
         kind: issueThreadInteractions.kind,
         result: issueThreadInteractions.result,
@@ -3711,7 +3679,7 @@ async function listIssueBoardActionRequirementMap(
       .from(issueThreadInteractions)
       .where(and(
         eq(issueThreadInteractions.companyId, companyId),
-        inArray(issueThreadInteractions.status, ["accepted", "rejected", "answered", "cancelled", "expired"]),
+        inArray(issueThreadInteractions.status, ["accepted", "answered", "rejected", "cancelled", "withdrawn", "expired"]),
         inArray(issueThreadInteractions.issueId, issueIds),
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
@@ -3833,50 +3801,98 @@ async function listIssueBoardActionRequirementMap(
     });
   }
 
-  const latestResolvedNonStaleBoardInteractionAtByIssue = new Map<string, Date>();
-  for (const interaction of resolvedBoardInteractions) {
+  // A prior projection treated stale-state terminal interactions as fresh
+  // pending asks. Keep that history observable, but never turn it back into a
+  // board-action-required badge: there is no valid accept/reject transition
+  // left for an operator to take.
+  const latestNonLegacyResolutionAtByIssue = new Map<string, Date>();
+  for (const interaction of resolvedInteractions) {
     const issue = issueById.get(interaction.issueId);
-    if (!issue || !isResolvedNonStaleBoardActionInteraction({ interaction, issue })) {
-      continue;
-    }
+    if (!issue || !isBoardActionInteraction(interaction, issue)) continue;
+    const interactionResult = parseObject(interaction.result);
+    const wasLegacyStaleProjection = interaction.kind === "ask_user_questions"
+      ? interactionResult.expirationReason === "stale_issue_state"
+      : interactionResult.outcome === "stale_issue_state";
+    if (wasLegacyStaleProjection) continue;
     const markerAt = interaction.resolvedAt ?? interaction.createdAt;
-    const existing = latestResolvedNonStaleBoardInteractionAtByIssue.get(interaction.issueId);
-    if (!existing || markerAt > existing) {
-      latestResolvedNonStaleBoardInteractionAtByIssue.set(interaction.issueId, markerAt);
-    }
+    const existing = latestNonLegacyResolutionAtByIssue.get(interaction.issueId);
+    if (!existing || markerAt > existing) latestNonLegacyResolutionAtByIssue.set(interaction.issueId, markerAt);
   }
 
-  for (const interaction of staleIssueStateInteractions) {
+  for (const interaction of terminalInteractions) {
     const issue = issueById.get(interaction.issueId);
-    if (
-      !issue
-      || result.has(interaction.issueId)
-      || !isStaleIssueStateBoardActionInteraction({ interaction, issue })
-    ) {
-      continue;
-    }
-    const latestResolvedNonStaleAt = latestResolvedNonStaleBoardInteractionAtByIssue.get(interaction.issueId);
-    const staleMarkerAt = interaction.resolvedAt ?? interaction.createdAt;
-    if (latestResolvedNonStaleAt && latestResolvedNonStaleAt >= staleMarkerAt) {
-      continue;
-    }
-
-    const reason = staleIssueStateBoardActionReason(interaction);
+    if (!issue || result.has(interaction.issueId) || !isBoardActionInteraction(interaction, issue)) continue;
+    const interactionResult = parseObject(interaction.result);
+    const wasLegacyStaleProjection = interaction.kind === "ask_user_questions"
+      ? interactionResult.expirationReason === "stale_issue_state"
+      : interactionResult.outcome === "stale_issue_state";
+    if (!wasLegacyStaleProjection) continue;
+    const markerAt = interaction.resolvedAt ?? interaction.createdAt;
+    const latestNonLegacyResolutionAt = latestNonLegacyResolutionAtByIssue.get(interaction.issueId);
+    if (latestNonLegacyResolutionAt && latestNonLegacyResolutionAt >= markerAt) continue;
     result.set(interaction.issueId, {
       source: "interaction",
       kind: "interaction",
-      state: "pending_board_decision",
+      state: "unresolvable_terminal_interaction",
       sourceId: interaction.id,
       sourceKind: interaction.kind,
       title: interaction.title,
       summary: interaction.summary,
-      createdAt: interaction.resolvedAt ?? interaction.createdAt,
-      decisionText: boardActionDecisionTextFromStaleInteraction({ ...interaction, reason }),
-      resumeText: boardActionResumeTextFromStaleInteraction(reason),
+      createdAt: markerAt,
+      decisionText: "This interaction is terminal and cannot accept a board decision.",
+      resumeText: "No board action is pending; recreate a fresh interaction only if a decision is still required.",
     });
   }
 
   return result;
+}
+
+/**
+ * Board actions are derived, rather than persisted. Reconciliation therefore
+ * does not mutate interaction rows or replay a decision: it recomputes the
+ * projection from live rows and reports legacy terminal interactions that the
+ * former stale-state branch would have incorrectly surfaced as pending.
+ */
+async function reconcileBoardActionRequirements(dbOrTx: any): Promise<BoardActionReconciliationSummary> {
+  const [companyRows, terminalRows] = await Promise.all([
+    dbOrTx.select({ id: companies.id }).from(companies),
+    dbOrTx
+      .select({
+        companyId: issueThreadInteractions.companyId,
+        issueId: issueThreadInteractions.issueId,
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        result: issueThreadInteractions.result,
+      })
+      .from(issueThreadInteractions)
+      .where(inArray(issueThreadInteractions.status, ["cancelled", "withdrawn", "expired", "rejected"])),
+  ]);
+
+  const clearedIssueIdsByCompany = new Map<string, Set<string>>();
+  for (const interaction of terminalRows) {
+    const result = parseObject(interaction.result);
+    const wasLegacyStaleProjection = interaction.kind === "ask_user_questions"
+      ? result.expirationReason === "stale_issue_state"
+      : result.outcome === "stale_issue_state";
+    if (!wasLegacyStaleProjection) continue;
+    const issueIds = clearedIssueIdsByCompany.get(interaction.companyId) ?? new Set<string>();
+    issueIds.add(interaction.issueId);
+    clearedIssueIdsByCompany.set(interaction.companyId, issueIds);
+  }
+
+  const clearedByCompany = [...clearedIssueIdsByCompany.entries()]
+    .map(([companyId, issueIds]) => ({
+      companyId,
+      issueCount: issueIds.size,
+      state: "unresolvable_terminal_interaction" as const,
+    }))
+    .sort((a, b) => a.companyId.localeCompare(b.companyId));
+
+  return {
+    companiesScanned: companyRows.length,
+    issuesCleared: clearedByCompany.reduce((total, row) => total + row.issueCount, 0),
+    clearedByCompany,
+  };
 }
 
 function blockedInboxSearchText(attention: IssueBlockedInboxAttention, row: BlockedInboxIssueRow) {
@@ -6151,6 +6167,8 @@ export function issueService(db: Db) {
 
       return listIssueBoardActionRequirementMap(db, companyId, [...issueById.values()]);
     },
+
+    reconcileBoardActionRequirements: async () => reconcileBoardActionRequirements(db),
 
     countUnreadTouchedByUser: async (
       companyId: string,
