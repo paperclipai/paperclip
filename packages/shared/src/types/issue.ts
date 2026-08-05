@@ -498,9 +498,20 @@ export interface IssueBlockedInboxAttention {
 
 export type IssueUnblockOwner = { agentId: string } | { userId: string } | "board";
 
+/**
+ * First-class no-link block reason. A non-null descriptor is accepted by
+ * enter-blocked validation without `blockedByIssueIds`.
+ *
+ * Date-gated waits set optional `blockedUntil` to an ISO-8601 timestamp
+ * (the durable API form of the `blocked-until-<timestamp>` convention).
+ * When `blockedUntil` is present, write paths also require a live
+ * `assigneeAgentId` so the gate opens onto a permissioned executor.
+ */
 export interface IssueUnblockDescriptor {
   owner: IssueUnblockOwner;
   action: string;
+  /** ISO-8601 datetime; when set, this block is a first-class date gate. */
+  blockedUntil?: string | null;
 }
 
 export type IssueProductivityReviewTrigger =

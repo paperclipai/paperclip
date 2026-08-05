@@ -1035,12 +1035,31 @@ Use formal approvals for governed actions. Use `request_confirmation` for decisi
 
 Create a confirmation:
 
+Minimal documented payload (canonical contract — `summary`, `payload.version=1`, `payload.prompt`):
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "summary": "ASK: Approve this plan? WHY: it gates implementation. ACTION: accept ships it.",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?"
+  }
+}
+```
+
+Invalid creates return one consolidated `400` with `error`, `missing`, `contract.example`, and `details` (not sequential single-field failures).
+
+Full example with plan target:
+
 ```json
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
   "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
   "title": "Plan approval",
+  "summary": "ASK: Accept this plan? WHY: it gates implementation. ACTION: accept ships it.",
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
@@ -1065,6 +1084,7 @@ POST /api/issues/{issueId}/interactions
 
 Rules:
 
+- Minimal required fields: `summary`, `payload.version` (literal `1`), `payload.prompt`.
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
 - Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
@@ -1348,6 +1368,8 @@ Terminal states: `done`, `cancelled`
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
+- For no-link blocks, set first-class `unblockDescriptor: { owner, action, blockedUntil? }` (or `External owner:` / `External action:` prose). `blockedUntil` (ISO-8601) is the durable date-gate field and is accepted without `blockedByIssueIds`; date gates still require `assigneeAgentId`.
+- Issue read payloads expose the blocked-gate contract keys: `status`, `unblockDescriptor`, `blockedBy`, `blockedTransitionAt`, `blockedOwnerNotifiedAt`, `monitorNextCheckAt`, `executionPolicy`.
 
 ---
 

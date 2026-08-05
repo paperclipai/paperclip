@@ -553,7 +553,7 @@ describe("issue activity event routes", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe(
-      "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
+      "Issue cannot enter blocked without unresolved blockedByIssueIds, external owner/action, or unblockDescriptor",
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });

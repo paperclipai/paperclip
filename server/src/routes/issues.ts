@@ -175,7 +175,10 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
-import { hasExplicitExternalOwnerAction } from "../services/issue-blocked-gate.js";
+import {
+  BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE,
+  hasSanctionedNoLinkBlockReason,
+} from "../services/issue-blocked-gate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -9766,11 +9769,17 @@ export function issueRoutes(
       const unresolvedBlockedByIssueIds = nextBlockedByIssueIds !== null
         ? await svc.listUnresolvedBlockerIssueIds(existing.companyId, nextBlockedByIssueIds)
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerIssueIds;
-      // A validated unblockDescriptor is a sanctioned no-link block reason, same
-      // as an explicit external owner/action in the description.
-      if (unresolvedBlockedByIssueIds.length === 0 && !hasExplicitExternalOwnerAction(nextDescription) && !descriptor) {
+      // A validated unblockDescriptor (incl. blockedUntil date gate) is a sanctioned
+      // no-link block reason, same as explicit external owner/action prose.
+      if (
+        unresolvedBlockedByIssueIds.length === 0
+        && !hasSanctionedNoLinkBlockReason({
+          description: nextDescription,
+          unblockDescriptor: descriptor,
+        })
+      ) {
         res.status(409).json({
-          error: "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
+          error: BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE,
         });
         return;
       }

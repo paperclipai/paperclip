@@ -3,12 +3,53 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  formatRequestConfirmationValidationError,
+  REQUEST_CONFIRMATION_MINIMAL_CONTRACT,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("accepts the documented minimal request_confirmation payload (TSMC-19681)", () => {
+    const parsed = createIssueThreadInteractionSchema.parse(REQUEST_CONFIRMATION_MINIMAL_CONTRACT.example);
+    expect(parsed).toMatchObject({
+      kind: "request_confirmation",
+      summary: REQUEST_CONFIRMATION_MINIMAL_CONTRACT.example.summary,
+      payload: {
+        version: 1,
+        prompt: REQUEST_CONFIRMATION_MINIMAL_CONTRACT.example.payload.prompt,
+      },
+    });
+    expect(REQUEST_CONFIRMATION_MINIMAL_CONTRACT.required).toEqual([
+      "summary",
+      "payload.version",
+      "payload.prompt",
+    ]);
+  });
+
+  it("returns one consolidated validation response for bare request_confirmation creates", () => {
+    const result = createIssueThreadInteractionSchema.safeParse({ kind: "request_confirmation" });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+
+    const paths = result.error.errors.map((issue) => issue.path.join("."));
+    expect(paths).toEqual(expect.arrayContaining(["summary", "payload.version", "payload.prompt"]));
+
+    const consolidated = formatRequestConfirmationValidationError(result.error);
+    expect(consolidated).not.toBeNull();
+    expect(consolidated?.error).toBe(REQUEST_CONFIRMATION_MINIMAL_CONTRACT.message);
+    expect(consolidated?.missing).toEqual([
+      "summary",
+      "payload.version",
+      "payload.prompt",
+    ]);
+    expect(consolidated?.contract.example.payload).toEqual({
+      version: 1,
+      prompt: "Accept this plan?",
+    });
+  });
+
   it("parses request_confirmation payloads with default no-wake continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
@@ -156,6 +197,7 @@ describe("issue thread interaction schemas", () => {
   it("parses ask_user_questions supersede flags and expired results", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "ask_user_questions",
+      summary: "ASK: Choose scope? WHY: gates implementation. ACTION: pick one option.",
       payload: {
         version: 1,
         title: "Choose scope",

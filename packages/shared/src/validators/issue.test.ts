@@ -98,6 +98,36 @@ describe("issue validators", () => {
     }).success).toBe(false);
   });
 
+  it("accepts first-class date-gate blockedUntil on unblockDescriptor (TSMC-19681)", () => {
+    const parsed = updateIssueSchema.parse({
+      status: "blocked",
+      assigneeAgentId: "00000000-0000-4000-8000-000000000001",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Wait until the sprint window opens",
+        blockedUntil: "2026-08-10T14:00:00.000Z",
+      },
+    });
+    expect(parsed.unblockDescriptor).toEqual({
+      owner: "board",
+      action: "Wait until the sprint window opens",
+      blockedUntil: "2026-08-10T14:00:00.000Z",
+    });
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Wait",
+        blockedUntil: "not-a-timestamp",
+      },
+    }).success).toBe(false);
+    // null clears the date gate while keeping the descriptor
+    expect(updateIssueSchema.parse({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "External review", blockedUntil: null },
+    }).unblockDescriptor).toMatchObject({ blockedUntil: null });
+  });
+
   it("rejects invalid task-scoped network egress CIDRs", () => {
     expect(updateIssueSchema.safeParse({
       executionWorkspaceSettings: {

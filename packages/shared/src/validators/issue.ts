@@ -526,6 +526,9 @@ const createIssueBaseSchema = z.object({
       z.literal("board"),
     ]),
     action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
+    // First-class date gate (ISO-8601). Sanctioned blocked reason without
+    // blockedByIssueIds; pairs with assigneeAgentId at write time.
+    blockedUntil: z.string().datetime({ offset: true }).nullable().optional(),
   }).strict().optional().nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
@@ -940,9 +943,44 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+/**
+ * Canonical minimal `request_confirmation` create contract (TSMC-19681).
+ * Documented example + required field set so agents get a stable schema rather than
+ * sequential undisclosed requirements. Invalid creates should surface every missing
+ * minimal field in one response and cite this contract.
+ *
+ * Note: company pocket docs historically cited this as TSKB0065; the confirmation
+ * minimum is owned here in the shared validator (canonical contract surface).
+ */
+export const REQUEST_CONFIRMATION_MINIMAL_CONTRACT = {
+  kind: "request_confirmation" as const,
+  required: ["summary", "payload.version", "payload.prompt"] as const,
+  message:
+    "request_confirmation minimal payload requires summary, payload.version=1, and payload.prompt",
+  example: {
+    kind: "request_confirmation" as const,
+    summary: "ASK: Approve this plan? WHY: it gates implementation. ACTION: accept ships it.",
+    payload: {
+      version: 1 as const,
+      prompt: "Accept this plan?",
+    },
+  },
+};
+
 export const requestConfirmationPayloadSchema = z.object({
-  version: z.literal(1),
-  prompt: z.string().trim().min(1).max(1000),
+  version: z.literal(1, {
+    errorMap: () => ({
+      message: "payload.version must be literal 1 (request_confirmation minimal contract)",
+    }),
+  }),
+  prompt: z
+    .string({
+      required_error: "payload.prompt is required (request_confirmation minimal contract)",
+      invalid_type_error: "payload.prompt must be a non-empty string (request_confirmation minimal contract)",
+    })
+    .trim()
+    .min(1, "payload.prompt is required (request_confirmation minimal contract)")
+    .max(1000),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectRequiresReason: z.boolean().optional(),
@@ -954,6 +992,66 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
 });
+
+/**
+ * Coerce omitted `payload` to `{}` so missing version/prompt surface together with
+ * missing summary in one ZodError (no sequential discovery).
+ */
+export const requestConfirmationCreatePayloadSchema = z.preprocess(
+  (value) => (value === undefined ? {} : value),
+  requestConfirmationPayloadSchema,
+);
+
+/**
+ * Format a Zod failure into one actionable consolidated validation response for
+ * `request_confirmation` creates. Safe to call for other kinds — returns null when
+ * the failure is unrelated.
+ */
+export function formatRequestConfirmationValidationError(error: {
+  errors: Array<{ path: (string | number)[]; message: string }>;
+}): {
+  error: string;
+  contract: typeof REQUEST_CONFIRMATION_MINIMAL_CONTRACT;
+  details: Array<{ path: (string | number)[]; message: string }>;
+  missing: string[];
+} | null {
+  const details = error.errors ?? [];
+  const paths = details.map((issue) => issue.path.map(String).join("."));
+  const touchesConfirmation =
+    paths.some((path) =>
+      path === "summary"
+      || path === "payload"
+      || path.startsWith("payload.")
+      || path === "kind",
+    )
+    || details.some((issue) => issue.message.includes("request_confirmation"));
+  if (!touchesConfirmation) return null;
+
+  const missing = new Set<string>();
+  for (const issue of details) {
+    const path = issue.path.map(String).join(".");
+    if (path === "summary" || issue.message.toLowerCase().includes("summary is required")) {
+      missing.add("summary");
+    }
+    if (path === "payload.version" || issue.message.includes("payload.version")) {
+      missing.add("payload.version");
+    }
+    if (path === "payload.prompt" || issue.message.includes("payload.prompt")) {
+      missing.add("payload.prompt");
+    }
+    if (path === "payload" && issue.message.toLowerCase().includes("required")) {
+      missing.add("payload.version");
+      missing.add("payload.prompt");
+    }
+  }
+
+  return {
+    error: REQUEST_CONFIRMATION_MINIMAL_CONTRACT.message,
+    contract: REQUEST_CONFIRMATION_MINIMAL_CONTRACT,
+    details,
+    missing: REQUEST_CONFIRMATION_MINIMAL_CONTRACT.required.filter((field) => missing.has(field)),
+  };
+}
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
@@ -1094,7 +1192,12 @@ export const requestConfirmationResultSchema = z.object({
 // readable. (suggest_tasks is agent-to-agent and stays optional.) The validator only enforces
 // presence + length; the make-a-skill rule enforces the ASK/WHY/ACTION + user-facing-link quality.
 export const requiredAskSummarySchema = z
-  .string()
+  .string({
+    required_error:
+      "summary is required for asks — write a crisp ASK / WHY / ACTION (one line each); request_confirmation also needs payload.version=1 and payload.prompt",
+    invalid_type_error:
+      "summary must be a non-empty string (ASK / WHY / ACTION); request_confirmation also needs payload.version=1 and payload.prompt",
+  })
   .trim()
   .min(1, "summary is required for asks — write a crisp ASK / WHY / ACTION (one line each)")
   .max(1000);
@@ -1265,7 +1368,8 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     title: z.string().trim().max(240).nullable().optional(),
     summary: requiredAskSummarySchema,
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
-    payload: requestConfirmationPayloadSchema,
+    // Preprocess omitted payload → {} so version/prompt missing-fields report with summary.
+    payload: requestConfirmationCreatePayloadSchema,
   }),
   z.object({
     kind: z.literal("request_checkbox_confirmation"),

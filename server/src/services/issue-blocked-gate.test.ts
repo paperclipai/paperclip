@@ -2,10 +2,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE,
+  BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE,
   DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE,
+  ISSUE_BLOCKED_GATE_PAYLOAD_KEYS,
   blockedGateLinesCarryDate,
   dateGatedBlockerMissingExecutor,
   hasExplicitExternalOwnerAction,
+  hasSanctionedNoLinkBlockReason,
+  hasUnblockDescriptor,
+  unblockDescriptorHasDateGate,
 } from "./issue-blocked-gate.js";
 
 // The verbatim TSMC-18564 description — one of the three cards whose 14:30 Europe/Dublin
@@ -103,5 +109,69 @@ describe("dateGatedBlockerMissingExecutor (TSMC-18729 Layer 2)", () => {
 
   it("names the required field in the rejection message", () => {
     expect(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE).toMatch(/assigneeAgentId/);
+  });
+});
+
+describe("first-class unblockDescriptor date gate (TSMC-19681)", () => {
+  const dateGateDescriptor = {
+    owner: "board" as const,
+    action: "Wait until the sprint window opens",
+    blockedUntil: "2026-08-10T14:00:00.000Z",
+  };
+
+  it("treats a validated unblockDescriptor as a sanctioned no-link block without blockedByIssueIds", () => {
+    expect(hasUnblockDescriptor(dateGateDescriptor)).toBe(true);
+    expect(hasSanctionedNoLinkBlockReason({
+      description: "no external lines",
+      unblockDescriptor: dateGateDescriptor,
+    })).toBe(true);
+    expect(hasSanctionedNoLinkBlockReason({
+      description: null,
+      unblockDescriptor: { owner: "board", action: "External review" },
+    })).toBe(true);
+    expect(hasSanctionedNoLinkBlockReason({
+      description: null,
+      unblockDescriptor: { owner: "board", action: "   " },
+    })).toBe(false);
+    expect(hasSanctionedNoLinkBlockReason({ description: null, unblockDescriptor: null })).toBe(false);
+  });
+
+  it("recognizes blockedUntil as a first-class date gate and still requires assigneeAgentId", () => {
+    expect(unblockDescriptorHasDateGate(dateGateDescriptor)).toBe(true);
+    expect(unblockDescriptorHasDateGate({
+      owner: "board",
+      action: "External review",
+      blockedUntil: null,
+    })).toBe(false);
+    expect(unblockDescriptorHasDateGate({
+      owner: "board",
+      action: "External review",
+      blockedUntil: "not-a-timestamp",
+    })).toBe(false);
+    expect(dateGatedBlockerMissingExecutor({
+      description: null,
+      assigneeAgentId: null,
+      unblockDescriptor: dateGateDescriptor,
+    })).toBe(true);
+    expect(dateGatedBlockerMissingExecutor({
+      description: null,
+      assigneeAgentId: "agent_live_lane",
+      unblockDescriptor: dateGateDescriptor,
+    })).toBe(false);
+  });
+
+  it("exports the issue read payload key contract for blocked-gate consumers", () => {
+    expect([...ISSUE_BLOCKED_GATE_PAYLOAD_KEYS]).toEqual([
+      "status",
+      "unblockDescriptor",
+      "blockedBy",
+      "blockedTransitionAt",
+      "blockedOwnerNotifiedAt",
+      "monitorNextCheckAt",
+      "executionPolicy",
+    ]);
+    expect(BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE).toMatch(/unblockDescriptor/);
+    expect(BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE).toMatch(/unblockDescriptor/);
+    expect(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE).toMatch(/blockedUntil/);
   });
 });

@@ -128,9 +128,12 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { logActivity } from "./activity-log.js";
 import {
+  BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE,
+  BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE,
   DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE,
   dateGatedBlockerMissingExecutor,
   hasExplicitExternalOwnerAction,
+  hasSanctionedNoLinkBlockReason,
 } from "./issue-blocked-gate.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
@@ -7370,14 +7373,23 @@ export function issueService(db: Db) {
           companyId,
           blockedByIssueIds ?? [],
         );
-        if (unresolvedBlockerIssueIds.length === 0 && !hasExplicitExternalOwnerAction(data.description)) {
-          throw unprocessable(
-            "Issue cannot be created blocked without unresolved blockedByIssueIds or external owner/action",
-          );
+        if (
+          unresolvedBlockerIssueIds.length === 0
+          && !hasSanctionedNoLinkBlockReason({
+            description: data.description,
+            unblockDescriptor: data.unblockDescriptor,
+          })
+        ) {
+          throw unprocessable(BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE);
         }
-        // Layer 2 (TSMC-18729): a date-gated blocker must name a permissioned executor at write
-        // time, or its gate opens onto nobody. A dateless external wait is unaffected.
-        if (dateGatedBlockerMissingExecutor({ description: data.description, assigneeAgentId: data.assigneeAgentId })) {
+        // Layer 2 (TSMC-18729 / TSMC-19681): a date-gated blocker must name a permissioned
+        // executor at write time, or its gate opens onto nobody. Covers prose gate lines and
+        // first-class unblockDescriptor.blockedUntil. A dateless external wait is unaffected.
+        if (dateGatedBlockerMissingExecutor({
+          description: data.description,
+          assigneeAgentId: data.assigneeAgentId,
+          unblockDescriptor: data.unblockDescriptor,
+        })) {
           throw unprocessable(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE);
         }
       }
@@ -8079,25 +8091,30 @@ export function issueService(db: Db) {
         if (unresolvedBlockerIssueIds.length === 0) {
           const nextDescription =
             issueData.description !== undefined ? issueData.description : existing.description;
-          // A validated unblockDescriptor is a sanctioned no-link block reason,
-          // same as an explicit external owner/action in the description.
+          // A validated unblockDescriptor (optionally with blockedUntil date gate) is a
+          // sanctioned no-link block reason, same as explicit external owner/action prose.
           const nextUnblockDescriptor =
             issueData.unblockDescriptor !== undefined ? issueData.unblockDescriptor : existing.unblockDescriptor;
-          if (!hasExplicitExternalOwnerAction(nextDescription) && !nextUnblockDescriptor) {
-            throw unprocessable(
-              "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
-            );
+          if (!hasSanctionedNoLinkBlockReason({
+            description: nextDescription,
+            unblockDescriptor: nextUnblockDescriptor,
+          })) {
+            throw unprocessable(BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE);
           }
         }
-        // Layer 2 (TSMC-18729): reject entering/re-validating blocked when the gate lines carry a
-        // date but no agent is named to open the gate. Runs regardless of blocker count — a date
-        // gate opens onto a deadline whether or not a relation also blocks it. Recovery writers
-        // stamp dateless gate lines and preserve an agent assignee, so this stays inert for them.
+        // Layer 2 (TSMC-18729 / TSMC-19681): reject entering/re-validating blocked when the gate
+        // lines or unblockDescriptor.blockedUntil carry a date but no agent is named to open the
+        // gate. Runs regardless of blocker count — a date gate opens onto a deadline whether or
+        // not a relation also blocks it. Recovery writers stamp dateless gate lines and preserve
+        // an agent assignee, so this stays inert for them.
         const nextBlockedDescription =
           issueData.description !== undefined ? issueData.description : existing.description;
+        const nextUnblockDescriptorForDateGate =
+          issueData.unblockDescriptor !== undefined ? issueData.unblockDescriptor : existing.unblockDescriptor;
         if (dateGatedBlockerMissingExecutor({
           description: nextBlockedDescription,
           assigneeAgentId: nextAssigneeAgentId,
+          unblockDescriptor: nextUnblockDescriptorForDateGate,
         })) {
           throw unprocessable(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE);
         }
@@ -8383,15 +8400,35 @@ export function issueService(db: Db) {
             // If the source has no other unresolved blocker and no explicit external
             // gate, return it to todo so normal scheduling resumes.
             const sourceIssue = await tx
-              .select({ id: issues.id, status: issues.status, description: issues.description, identifier: issues.identifier })
+              .select({
+                id: issues.id,
+                status: issues.status,
+                description: issues.description,
+                identifier: issues.identifier,
+                unblockDescriptor: issues.unblockDescriptor,
+              })
               .from(issues)
               .where(and(eq(issues.id, parsedIncident.issueId), eq(issues.companyId, existing.companyId)))
-              .then((rows: Array<{ id: string; status: string; description: string | null; identifier: string | null }>) => rows[0] ?? null);
+              .then((rows: Array<{
+                id: string;
+                status: string;
+                description: string | null;
+                identifier: string | null;
+                unblockDescriptor: unknown;
+              }>) => rows[0] ?? null);
             if (sourceIssue?.status === "blocked") {
               const remainingUnresolved = (
                 await listIssueDependencyReadinessMap(tx, existing.companyId, [sourceIssue.id])
               ).get(sourceIssue.id)?.unresolvedBlockerIssueIds ?? [];
-              if (remainingUnresolved.length === 0 && !hasExplicitExternalOwnerAction(sourceIssue.description)) {
+              // Preserve sanctioned no-link blocks (external owner/action prose or
+              // first-class unblockDescriptor / date gate) when an escalation edge drops.
+              if (
+                remainingUnresolved.length === 0
+                && !hasSanctionedNoLinkBlockReason({
+                  description: sourceIssue.description,
+                  unblockDescriptor: sourceIssue.unblockDescriptor,
+                })
+              ) {
                 await tx
                   .update(issues)
                   .set({

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
+import { formatRequestConfirmationValidationError } from "@paperclipai/shared";
 import { HttpError, isTransientDbError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -118,6 +119,20 @@ export function errorHandler(
   }
 
   if (err instanceof ZodError) {
+    const confirmation = formatRequestConfirmationValidationError(err);
+    if (confirmation) {
+      res.status(400).json({
+        error: confirmation.error,
+        contract: {
+          kind: confirmation.contract.kind,
+          required: confirmation.contract.required,
+          example: confirmation.contract.example,
+        },
+        missing: confirmation.missing,
+        details: confirmation.details,
+      });
+      return;
+    }
     res.status(400).json({ error: "Validation error", details: err.errors });
     return;
   }
