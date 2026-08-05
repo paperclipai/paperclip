@@ -753,10 +753,16 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
 
-        const liveness = await heartbeat.reconcileIssueGraphLiveness();
-        if (liveness.escalationsCreated > 0 || liveness.boardEscalationsCreated > 0) {
-          logger.warn({ ...liveness }, `${phase} issue-graph liveness reconciliation created escalations`);
-        }
+        // Issue-graph liveness reconciliation is deliberately NOT run here.
+        //
+        // It creates an "Unblock liveness incident" issue per finding, flips the
+        // healthy source issue to `blocked`, and wakes an owner. The detector does
+        // not count comments, documents, or work products as a next action, so
+        // issues legitimately parked in review or backlog were reported as
+        // incidents — producing a steady stream of false "Needs unblock" pages.
+        //
+        // Detection is unchanged and still reachable on demand via
+        // POST /instance/settings/experimental/issue-graph-liveness-auto-recovery/{preview,run}.
 
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
