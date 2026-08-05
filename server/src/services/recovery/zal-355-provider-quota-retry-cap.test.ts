@@ -9,6 +9,12 @@ import { classifyContinuationFailure } from "./service.js";
 // Keep `provider_quota` separate from the generic transient_infra set so the
 // cap does not widen to legitimate upstream transients (claude_transient_upstream,
 // codex_transient_upstream, timeout, etc.).
+//
+// Backoff math: with `baseBackoffMs = 60_000` and the existing
+// `baseBackoffMs * 2^(consecutive-1)` multiplier, attempt 1 fires at 60s and
+// attempt 2 at 120s. The recovery wake still waits for the upstream reset
+// clock via `providerQuotaRetryNotBefore` / `parseProviderQuotaClockReset`,
+// so the local ladder only governs the time between our own attempts.
 
 const run = (errorCode: string | null) =>
   ({ errorCode } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
