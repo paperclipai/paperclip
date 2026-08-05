@@ -11165,6 +11165,39 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
+    const boardDecisionKinds = new Set([
+      "request_confirmation",
+      "request_checkbox_confirmation",
+      "ask_user_questions",
+      "request_item_verdicts",
+    ]);
+    const isSelfAssignedBoardAsk = req.actor.type === "agent"
+      && actor.agentId === issue.assigneeAgentId
+      && boardDecisionKinds.has(req.body.kind);
+    const humanCategory = req.body.payload?.humanCategory;
+    const humanJustification = req.body.payload?.humanJustification;
+    if (isSelfAssignedBoardAsk && (!humanCategory || !humanJustification)) {
+      const refusal = `agent_owns_this_work: ${issue.identifier} is assigned to you and needs no human category; complete it or reassign it. Confirmation refused.`;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_refused",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          refusalCode: "agent_owns_this_work",
+          interactionKind: req.body.kind,
+          humanCategory: humanCategory ?? null,
+          missingJustification: !humanJustification,
+        },
+      });
+      res.status(422).json({ error: refusal });
+      return;
+    }
     if (req.body.kind === "request_confirmation" && req.body.payload?.toolAction !== undefined) {
       throw unprocessable("payload.toolAction is server-owned metadata and cannot be supplied when creating an interaction");
     }

@@ -847,6 +847,9 @@ export const askUserQuestionsQuestionSchema = z.object({
 
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
+  /** Declared machine-readable reason an agent needs a human response. */
+  humanCategory: z.enum(["credential", "identity", "spend", "oauth", "g_class"]).optional(),
+  humanJustification: z.string().trim().min(1).max(400).optional(),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
@@ -981,6 +984,9 @@ export const requestConfirmationPayloadSchema = z.object({
     .trim()
     .min(1, "payload.prompt is required (request_confirmation minimal contract)")
     .max(1000),
+  /** Declared machine-readable reason an agent needs a human response. */
+  humanCategory: z.enum(["credential", "identity", "spend", "oauth", "g_class"]).optional(),
+  humanJustification: z.string().trim().min(1).max(400).optional(),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectRequiresReason: z.boolean().optional(),
@@ -1062,6 +1068,9 @@ export const requestCheckboxConfirmationOptionSchema = z.object({
 export const requestCheckboxConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
+  /** Declared machine-readable reason an agent needs a human response. */
+  humanCategory: z.enum(["credential", "identity", "spend", "oauth", "g_class"]).optional(),
+  humanJustification: z.string().trim().min(1).max(400).optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   options: z.array(requestCheckboxConfirmationOptionSchema)
     .min(1)
@@ -1235,6 +1244,9 @@ export const requestItemVerdictsItemSchema = z.object({
 export const requestItemVerdictsPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
+  /** Declared machine-readable reason an agent needs a human response. */
+  humanCategory: z.enum(["credential", "identity", "spend", "oauth", "g_class"]).optional(),
+  humanJustification: z.string().trim().min(1).max(400).optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   items: z.array(requestItemVerdictsItemSchema)
     .min(1)

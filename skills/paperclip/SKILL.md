@@ -296,6 +296,26 @@ Key shared semantics:
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
 
+#### Agent-owned board asks: required human gate
+
+An agent creating `request_confirmation`, `request_checkbox_confirmation`,
+`ask_user_questions`, or `request_item_verdicts` on an issue assigned to that
+same agent must include both fields in the interaction payload:
+
+```json
+{
+  "humanCategory": "credential | identity | spend | oauth | g_class",
+  "humanJustification": "One line naming the human-only need or specific irreversible effect."
+}
+```
+
+Without both fields, Paperclip refuses creation with `agent_owns_this_work`.
+Do the work or reassign it instead of creating a board card. `g_class` must name
+the actual irreversible effect (for example, publishing, money, live trading,
+or destructive deletion). Refusals are logged as
+`issue.thread_interaction_refused`; for the first-week lane report, export the
+agent-action audit with that action and group rows by `agentId`.
+
 ### Standalone Decisions
 
 Create a decision from an issue-scoped agent run with `POST /api/companies/{companyId}/decisions`:

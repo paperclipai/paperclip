@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getBoardActionRequirements: vi.fn(),
   getAncestors: vi.fn(),
   addComment: vi.fn(),
+  assertCheckoutOwner: vi.fn(async () => ({ adoptedFromRunId: null })),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -1465,6 +1466,74 @@ describe.sequential("issue thread interaction routes", () => {
         agentId: CREATED_AGENT_ID,
         userId: null,
       },
+    );
+  });
+
+  it("refuses an agent-owned confirmation without a human category and logs the refusal", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ assigneeAgentId: CREATED_AGENT_ID }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        summary: "ASK: approve the implementation. WHY: work cannot continue. ACTION: accept to proceed.",
+        payload: { version: 1, prompt: "Proceed?" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe(
+      "agent_owns_this_work: PAP-1714 is assigned to you and needs no human category; complete it or reassign it. Confirmation refused.",
+    );
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_refused",
+        agentId: CREATED_AGENT_ID,
+        details: expect.objectContaining({
+          refusalCode: "agent_owns_this_work",
+          interactionKind: "request_confirmation",
+          humanCategory: null,
+        }),
+      }),
+    );
+  });
+
+  it("allows an agent-owned spend confirmation with structured human-gate details", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ assigneeAgentId: CREATED_AGENT_ID }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        summary: "ASK: approve the paid plan. WHY: this raises monthly spend. ACTION: accept to purchase.",
+        payload: {
+          version: 1,
+          prompt: "Approve the monthly spend?",
+          humanCategory: "spend",
+          humanJustification: "This creates a new $42/month commitment.",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({ humanCategory: "spend" }),
+      }),
+      expect.anything(),
     );
   });
 
