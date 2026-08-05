@@ -34,6 +34,7 @@ PAIRS = (
     ("420627", "LC-01", 14, 15, "LCZ_UNRESOLVED"), ("420630", "AH-01", 1, 1, "LCZ_UNRESOLVED"),
     ("420630", "LC-13", 1, 1, "LCZ_UNRESOLVED"),
 )
+EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS = 92
 
 SCHEMA_SQL = '''SELECT m.name AS table_name,
        p.cid AS column_ordinal, p.name AS column_name, p.type AS declared_type,
@@ -111,6 +112,15 @@ def d840_costs() -> list[tuple[str, str, float]]:
         wb.close()
 
 
+def require_expected_channel2_target_product_rows(product_rows: int) -> None:
+    """Fail closed if the bounded source-snapshot control drifts."""
+    if product_rows != EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS:
+        raise RuntimeError(
+            "channel-2 target product-row control drift: "
+            f"{product_rows} != {EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS}"
+        )
+
+
 def retail(files: list[Path], skus: set[str]) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]], dict[str, object]]:
     manifest, matches, headers = [], [], {}
     for path in files:
@@ -168,6 +178,7 @@ def main() -> None:
         target_values = ",".join("?" for _ in TARGETS)
         target_predicate = f"TRIM(CAST(p.DealerSKU AS TEXT)) IN ({target_values})"
         product_rows = conn.execute(f"SELECT COUNT(*) FROM ORD_ROProduct p JOIN ORD_RetailOrder o ON o.RetailOrderID=p.RetailOrderID JOIN COM_Company d ON d.CompanyID=o.DealerCompanyID WHERE d.SalesChannelID=2 AND {target_predicate}", TARGETS).fetchone()[0]
+        require_expected_channel2_target_product_rows(product_rows)
         price_nulls = conn.execute(f"SELECT COUNT(*) FROM ORD_ROProduct p JOIN ORD_RetailOrder o ON o.RetailOrderID=p.RetailOrderID JOIN COM_Company d ON d.CompanyID=o.DealerCompanyID WHERE d.SalesChannelID=2 AND o.RetailPriceBucketID IS NULL AND {target_predicate}", TARGETS).fetchone()[0]
         controls = {
             "ORD_RetailOrder.SalesChannelID": {"result": "ABSENT", "columns": columns(conn, "ORD_RetailOrder")},
@@ -204,7 +215,7 @@ def main() -> None:
     hashes = {path.name: digest(path) for path in sorted(OUT.iterdir()) if path.is_file()}
     verification = "# D-840 contract-packet verification\n\n" + "\n".join([
         f"- Read URI: `{SOURCE_URI}`", f"- `PRAGMA query_only`: `{query_only}`", f"- SHA-256 before/after match: `{before == after}`", f"- Channel-2 aggregate rows: `{len(channel)}` (expected 16)",
-        f"- Channel-2 product rows: `{product_rows}` (expected 133)", f"- Cost-source-only pair rows: `{len(pairs)}` (expected 19)",
+        f"- Channel-2 product rows: `{product_rows}` (expected {EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS})", f"- Cost-source-only pair rows: `{len(pairs)}` (expected 19)",
         f"- Zero-proven / unresolved: `{sum(x[5] == 'PAIR_ZERO_PROVEN' for x in pairs)}` / `{sum(x[5] == 'LCZ_UNRESOLVED' for x in pairs)}`", f"- Retail workbook count: `{len(files)}` (required 6) -> `{reconciliation['status']}`",
         "- Accepted mapping rows: `0`; no units-by-sku-lcz materialization exists.", "- D-840 retail lineage rows: `0`; retail >= cost is not asserted.", "", "## Artifact SHA-256", ""] + [f"- `{name}`: `{value}`" for name, value in sorted(hashes.items())]) + "\n"
     emit(OUT / "verification.md", verification)
@@ -281,6 +292,7 @@ def finalize() -> None:
     with (OUT / "channel2-sku-aggregate.csv").open(newline="", encoding="utf-8") as handle:
         channel_rows = [(row["sku"], int(row["channel2_order_count"]), int(row["channel2_sku_units"])) for row in csv.DictReader(handle)]
     controls = json.loads((OUT / "lcz-negative-controls.json").read_text(encoding="utf-8"))
+    require_expected_channel2_target_product_rows(controls["RetailPriceBucketID"]["channel2_product_rows"])
     after, finished = digest(SOURCE), datetime.now(UTC).isoformat()
     query_only = 1
     preflight = {"read_uri": SOURCE_URI, "source_sha256_before": before, "source_sha256_after": after,
@@ -305,7 +317,7 @@ def finalize() -> None:
     hashes = {path.name: digest(path) for path in sorted(OUT.iterdir()) if path.is_file()}
     verification = "# D-840 contract-packet verification\n\n" + "\n".join([
         f"- Read URI: `{SOURCE_URI}`", f"- `PRAGMA query_only`: `{query_only}`", f"- SHA-256 before/after match: `{before == after}`", f"- Channel-2 aggregate rows: `{len(channel_rows)}` (expected 16)",
-        f"- Channel-2 product rows: `{controls['RetailPriceBucketID']['channel2_product_rows']}` (expected 133)", f"- Cost-source-only pair rows: `{len(pairs)}` (expected 19)",
+        f"- Channel-2 product rows: `{controls['RetailPriceBucketID']['channel2_product_rows']}` (expected {EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS})", f"- Cost-source-only pair rows: `{len(pairs)}` (expected 19)",
         f"- Zero-proven / unresolved: `{sum(x[5] == 'PAIR_ZERO_PROVEN' for x in pairs)}` / `{sum(x[5] == 'LCZ_UNRESOLVED' for x in pairs)}`", f"- Retail workbook count: `{len(files)}` (required 6) -> `{reconciliation['status']}`",
         "- Accepted mapping rows: `0`; no units-by-sku-lcz materialization exists.", "- D-840 retail lineage rows: `0`; retail >= cost is not asserted.", "", "## Artifact SHA-256", ""] + [f"- `{name}`: `{value}`" for name, value in sorted(hashes.items())]) + "\n"
     emit(OUT / "verification.md", verification)
@@ -364,6 +376,7 @@ def finish_retail_and_report() -> None:
     """Emit the file-backed retail controls and final report without rereading DB."""
     preflight = json.loads((OUT / "source-preflight.json").read_text(encoding="utf-8"))
     controls = json.loads((OUT / "lcz-negative-controls.json").read_text(encoding="utf-8"))
+    require_expected_channel2_target_product_rows(controls["RetailPriceBucketID"]["channel2_product_rows"])
     pairs = list(csv.DictReader((OUT / "pair-manifest.csv").open(newline="", encoding="utf-8")))
     files = sorted(RETAIL_ROOT.glob("*_Fee_Cost_Retail_v003.xlsx"))
     manifest, matches, reconciliation = retail(files, set())
@@ -374,7 +387,7 @@ def finish_retail_and_report() -> None:
     hashes = {path.name: digest(path) for path in sorted(OUT.iterdir()) if path.is_file()}
     verification = "# D-840 contract-packet verification\n\n" + "\n".join([
         f"- Read URI: `{SOURCE_URI}`", f"- `PRAGMA query_only`: `{preflight['query_only']}`", f"- SHA-256 before/after match: `{preflight['source_snapshot_status'] == 'MATCH'}`",
-        "- Channel-2 aggregate rows: `16` (expected 16)", f"- Channel-2 product rows: `{controls['RetailPriceBucketID']['channel2_product_rows']}` (expected 133)",
+        "- Channel-2 aggregate rows: `16` (expected 16)", f"- Channel-2 product rows: `{controls['RetailPriceBucketID']['channel2_product_rows']}` (expected {EXPECTED_CHANNEL2_TARGET_PRODUCT_ROWS})",
         f"- Cost-source-only pair rows: `{len(pairs)}` (expected 19)", f"- Zero-proven / unresolved: `{sum(row['units_lcz_verdict'] == 'PAIR_ZERO_PROVEN' for row in pairs)}` / `{sum(row['units_lcz_verdict'] == 'LCZ_UNRESOLVED' for row in pairs)}`",
         f"- Retail workbook count: `{len(files)}` (required 6) -> `{reconciliation['status']}`", "- Accepted mapping rows: `0`; no units-by-sku-lcz materialization exists.",
         "- D-840 retail lineage rows: `0`; retail >= cost is not asserted.", "", "## Artifact SHA-256", ""] + [f"- `{name}`: `{value}`" for name, value in sorted(hashes.items())]) + "\n"
@@ -439,6 +452,7 @@ def refresh_target_negative_controls() -> None:
         target_predicate = f"TRIM(CAST(p.DealerSKU AS TEXT)) IN ({target_values})"
         source_sql = "FROM ORD_ROProduct p JOIN ORD_RetailOrder o ON o.RetailOrderID=p.RetailOrderID JOIN COM_Company d ON d.CompanyID=o.DealerCompanyID WHERE d.SalesChannelID=2 AND " + target_predicate
         product_rows = conn.execute("SELECT COUNT(*) " + source_sql, targets).fetchone()[0]
+        require_expected_channel2_target_product_rows(product_rows)
         price_nulls = conn.execute("SELECT COUNT(*) " + source_sql + " AND o.RetailPriceBucketID IS NULL", targets).fetchone()[0]
     finally:
         conn.close()
