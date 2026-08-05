@@ -6,3 +6,54 @@ cd "$repo_root"
 
 echo "[pre-commit] running pnpm --filter sdk build"
 pnpm --filter sdk build
+
+# Server typecheck gate (added 2026-08-05).
+#
+# WHY: this hook built the plugin SDK but never typechecked server/. Agents commit
+# straight to the served `live` branch, and CI only runs on pull requests, so nothing
+# stood between a broken server symbol and the running control plane. Three separate
+# incidents in ONE DAY came from edits referencing symbols that were never completed:
+#
+#   * SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD and
+#     buildSuccessfulRunHandoffRepeatGuardNotice: re-exported and imported, never
+#     defined -> SyntaxError at module load, crash-looped the control plane ~1h.
+#   * readQueuedRunRetryNotBefore: referenced, never defined -> every routine
+#     execution fleet-wide died with "is not defined".
+#   * duplicate imports and a duplicate function implementation, accumulated to 9
+#     typecheck errors, leaving the commit gate red and blocking EVERY agent's
+#     commit with a failure none of them owned.
+#
+# `tsc --noEmit` catches all three classes before they reach the served tree. The
+# boot-time gate in launchd-start.sh is the safety net; this is the prevention.
+#
+# Scoped to staged server/shared sources so unrelated commits stay fast. Set
+# PAPERCLIP_SKIP_SERVER_TYPECHECK=1 only as a deliberate, explained exception -- a red
+# server typecheck is a portfolio-wide outage waiting to happen.
+if [ "${PAPERCLIP_SKIP_SERVER_TYPECHECK:-0}" = "1" ]; then
+  echo "[pre-commit] server typecheck SKIPPED via PAPERCLIP_SKIP_SERVER_TYPECHECK=1"
+  exit 0
+fi
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR || true)"
+needs_check=""
+case "$staged" in
+  *server/src/*) needs_check=1 ;;
+esac
+case "$staged" in
+  *packages/shared/*|*packages/adapter-utils/*|*packages/adapters/*) needs_check=1 ;;
+esac
+
+if [ -n "$needs_check" ]; then
+  echo "[pre-commit] typechecking server (staged server/shared sources)"
+  if ! pnpm --filter @paperclipai/server exec tsc --noEmit -p tsconfig.json; then
+    echo ""
+    echo "[pre-commit] REJECTED: server does not typecheck."
+    echo "[pre-commit] The served tree RUNS this code. A missing or renamed symbol here"
+    echo "[pre-commit] takes down the control plane for every company, and leaves every"
+    echo "[pre-commit] other lane unable to commit."
+    echo "[pre-commit] Fix the errors above, or re-run with PAPERCLIP_SKIP_SERVER_TYPECHECK=1"
+    echo "[pre-commit] only if you can explain why shipping a red typecheck is safe."
+    exit 1
+  fi
+  echo "[pre-commit] server typecheck OK"
+fi
