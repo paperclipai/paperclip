@@ -425,11 +425,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readExecutionWorkspaceConfig(byId.get(untouchedWorkspaceId) ?? null)).toBeNull();
   });
 
-  it("limits reusable summaries to open non-shared execution workspaces", async () => {
+  it("includes open shared project-primary sessions in reusable summaries", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const openWorkspaceId = randomUUID();
     const sharedWorkspaceId = randomUUID();
+    const sharedProjectWorkspaceId = randomUUID();
     const closedWorkspaceId = randomUUID();
 
     await db.insert(companies).values({
@@ -446,6 +447,15 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       executionWorkspacePolicy: {
         enabled: true,
       },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: sharedProjectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/project-primary",
     });
     await db.insert(executionWorkspaces).values([
       {
@@ -464,6 +474,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         id: sharedWorkspaceId,
         companyId,
         projectId,
+        projectWorkspaceId: sharedProjectWorkspaceId,
         mode: "shared_workspace",
         strategyType: "project_primary",
         name: "Shared session",
@@ -491,6 +502,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
 
     expect(summaries).toEqual([
+      expect.objectContaining({
+        id: sharedWorkspaceId,
+        name: "Shared session",
+        mode: "shared_workspace",
+        status: "active",
+        cwd: "/tmp/project-primary",
+      }),
       expect.objectContaining({
         id: openWorkspaceId,
         name: "Open isolated workspace",
