@@ -993,7 +993,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issues.id, subtreeIssueIds),
           visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
-          ...(opts.excludeRunId ? [ne(heartbeatRuns.id, opts.excludeRunId)] : []),
+          ...(opts.excludeRunId ? [
+            ne(heartbeatRuns.id, opts.excludeRunId),
+            sql`not exists (
+              select 1 from ${agentWakeupRequests}
+              where ${agentWakeupRequests.id} = ${heartbeatRuns.wakeupRequestId}
+                and ${agentWakeupRequests.companyId} = ${companyId}
+                and ${agentWakeupRequests.requestedByRunId} = ${opts.excludeRunId}
+            )`,
+          ] : []),
         )),
       db
         .select({
@@ -1463,7 +1471,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
     }
 
-    const input = await collectClassifierInput(watchdog.companyId, watchdog);
+    const input = await collectClassifierInput(watchdog.companyId, watchdog, {
+      excludeRunId: opts.runId ?? null,
+    });
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
