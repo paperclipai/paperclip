@@ -1292,6 +1292,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             triggerPayload: null,
             dispatchFingerprint: null,
             linkedIssueId: null,
+            issueId: null,
             coalescedIntoRunId: null,
             failureReason: null,
             completedAt: null,

@@ -242,6 +242,13 @@ function nextResultText(status: string, issueId?: string | null) {
   return status;
 }
 
+function withLegacyRoutineRunIssueId<T extends { linkedIssueId: string | null }>(run: T): T & { issueId: string | null } {
+  return {
+    ...run,
+    issueId: run.linkedIssueId,
+  };
+}
+
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
   const parsed = Number(rawTimestamp);
   if (!Number.isFinite(parsed)) return null;
@@ -1004,7 +1011,7 @@ export function routineService(
 
     const map = new Map<string, RoutineRunSummary>();
     for (const row of rows) {
-      map.set(row.routineId, {
+      map.set(row.routineId, withLegacyRoutineRunIssueId({
         id: row.id,
         companyId: row.companyId,
         routineId: row.routineId,
@@ -1039,7 +1046,7 @@ export function routineService(
             label: row.triggerLabel,
           }
           : null,
-      });
+      }));
     }
     return map;
   }
@@ -1628,7 +1635,7 @@ export function routineService(
             issueId: activeIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return withLegacyRoutineRunIssueId(updated ?? createdRun);
         }
 
         try {
@@ -1695,7 +1702,7 @@ export function routineService(
             issueId: existingIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return withLegacyRoutineRunIssueId(updated ?? createdRun);
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
@@ -1720,7 +1727,7 @@ export function routineService(
           issueId: createdIssue.id,
           nextRunAt,
         }, txDb);
-        return updated ?? createdRun;
+        return withLegacyRoutineRunIssueId(updated ?? createdRun);
       } catch (error) {
         if (createdIssue) {
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
@@ -1738,7 +1745,7 @@ export function routineService(
           status: "failed",
           nextRunAt,
         }, txDb);
-        return failed ?? createdRun;
+        return withLegacyRoutineRunIssueId(failed ?? createdRun);
       }
     });
 
@@ -1772,7 +1779,7 @@ export function routineService(
       });
     }
 
-    return run;
+    return withLegacyRoutineRunIssueId(run);
   }
 
   return {
@@ -1864,7 +1871,7 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(25)
           .then((runs) =>
-            runs.map((run) => ({
+            runs.map((run) => withLegacyRoutineRunIssueId({
               id: run.id,
               companyId: run.companyId,
               routineId: run.routineId,
@@ -2730,7 +2737,7 @@ export function routineService(
         .orderBy(desc(routineRuns.createdAt))
         .limit(cappedLimit);
 
-      return rows.map((row) => ({
+      return rows.map((row) => withLegacyRoutineRunIssueId({
         id: row.id,
         companyId: row.companyId,
         routineId: row.routineId,
