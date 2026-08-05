@@ -1,50 +1,34 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createDb, issues } from "@paperclipai/db";
+import { expect, it } from "vitest";
+import { issues } from "@paperclipai/db";
+import { issueRoutes } from "../routes/issues.js";
 import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
-import {
-  issueRouteApp,
-  resetIssueRouteData,
-  seedIssueRouteCompany,
-} from "./helpers/issue-route-app.js";
-
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+  describeEmbeddedPostgres,
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
-  let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-
-  beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parent-id-alias-");
-    db = createDb(tempDb.connectionString);
-  }, 20_000);
-
-  afterEach(async () => {
-    await resetIssueRouteData(db);
-  });
-
-  afterAll(async () => {
-    await tempDb?.cleanup();
+  const ctx = useEmbeddedPostgres("paperclip-issues-parent-id-alias-", {
+    resetEach: resetCompanyIssueFixtures,
   });
 
   async function seed() {
-    const company = await seedIssueRouteCompany(db, "Parent alias");
+    const company = await seedCompanyWithBoardAccess(ctx.db, "Parent alias");
     const companyId = company.companyId;
     const parentId = randomUUID();
     const otherParentId = randomUUID();
     const childId = randomUUID();
     const blockedChildId = randomUUID();
 
-    await db.insert(issues).values([
+    await ctx.db.insert(issues).values([
       { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
       { id: otherParentId, companyId, title: "Other parent", status: "todo", priority: "medium" },
     ]);
-    await db.insert(issues).values([
+    await ctx.db.insert(issues).values([
       { id: childId, companyId, title: "Child", status: "todo", priority: "medium", parentId },
       { id: blockedChildId, companyId, title: "Blocked child", status: "blocked", priority: "medium", parentId },
       {
@@ -70,8 +54,12 @@ describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
 
   type Seeded = Awaited<ReturnType<typeof seed>>;
 
+  function appFor(seeded: Seeded) {
+    return routeApp(ctx.db, seeded.actor, issueRoutes);
+  }
+
   async function listIds(seeded: Seeded, query: Record<string, string>) {
-    const res = await request(issueRouteApp(db, seeded))
+    const res = await request(appFor(seeded))
       .get(`/api/companies/${seeded.companyId}/issues`)
       .query(query)
       .expect(200);
@@ -79,7 +67,7 @@ describeEmbeddedPostgres("issue list parentIssueId query alias", () => {
   }
 
   async function blockedCount(seeded: Seeded, query: Record<string, string>) {
-    const res = await request(issueRouteApp(db, seeded))
+    const res = await request(appFor(seeded))
       .get(`/api/companies/${seeded.companyId}/issues/count`)
       .query({ attention: "blocked", ...query })
       .expect(200);

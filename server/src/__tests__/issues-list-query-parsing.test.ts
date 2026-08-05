@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createDb, issues } from "@paperclipai/db";
+import { expect, it } from "vitest";
+import { issues } from "@paperclipai/db";
+import { issueRoutes } from "../routes/issues.js";
 import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
-import {
-  issueRouteApp,
-  resetIssueRouteData,
-  seedIssueRouteCompany,
-} from "./helpers/issue-route-app.js";
+  describeEmbeddedPostgres,
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
 
 /**
  * Regression coverage for https://github.com/paperclipai/paperclip/issues/4628.
@@ -18,35 +17,20 @@ import {
  * `?status=`, and the route normalizes both shapes.
  */
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-
 describeEmbeddedPostgres("issue list status query parsing", () => {
-  let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-
-  beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-list-query-parsing-");
-    db = createDb(tempDb.connectionString);
-  }, 20_000);
-
-  afterEach(async () => {
-    await resetIssueRouteData(db);
-  });
-
-  afterAll(async () => {
-    await tempDb?.cleanup();
+  const ctx = useEmbeddedPostgres("paperclip-issues-list-query-parsing-", {
+    resetEach: resetCompanyIssueFixtures,
   });
 
   async function listStatuses(query: string) {
-    const company = await seedIssueRouteCompany(db, "Status parsing");
+    const company = await seedCompanyWithBoardAccess(ctx.db, "Status parsing");
     const companyId = company.companyId;
-    await db.insert(issues).values([
+    await ctx.db.insert(issues).values([
       { id: randomUUID(), companyId, title: "Todo", status: "todo", priority: "medium" },
       { id: randomUUID(), companyId, title: "In progress", status: "in_progress", priority: "medium" },
       { id: randomUUID(), companyId, title: "Done", status: "done", priority: "medium" },
     ]);
-    const res = await request(issueRouteApp(db, company))
+    const res = await request(routeApp(ctx.db, company.actor, issueRoutes))
       .get(`/api/companies/${companyId}/issues${query}`)
       .expect(200);
     return (res.body as { status: string }[]).map((issue) => issue.status).sort();
