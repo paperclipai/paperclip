@@ -100,7 +100,6 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
-              "adapters/copilot-local",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",

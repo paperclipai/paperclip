@@ -1,7 +1,6 @@
 import type { UIAdapterModule } from "./types";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
-import { copilotLocalUIAdapter } from "./copilot-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
@@ -55,7 +54,6 @@ function registerBuiltInUIAdapters() {
   for (const adapter of [
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
-    copilotLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
     grokLocalUIAdapter,
