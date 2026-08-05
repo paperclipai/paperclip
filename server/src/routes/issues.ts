@@ -9381,7 +9381,7 @@ export function issueRoutes(
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
             : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup: { ...wakeup, requestedByRunId: actor.runId } });
       };
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;
@@ -9866,6 +9866,7 @@ export function issueRoutes(
           payload: { issueId: issue.id, mutation: "checkout" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          requestedByRunId: actor.runId,
           contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
@@ -11238,7 +11239,7 @@ export function issueRoutes(
             : currentIssue.id;
         const key = `${agentId}:${wakeIssueId}`;
         if (wakeups.has(key)) return;
-        wakeups.set(key, { agentId, wakeup });
+        wakeups.set(key, { agentId, wakeup: { ...wakeup, requestedByRunId: actor.runId } });
       };
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;

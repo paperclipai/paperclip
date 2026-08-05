@@ -17,6 +17,7 @@ export const agentWakeupRequests = pgTable(
     coalescedCount: integer("coalesced_count").notNull().default(0),
     requestedByActorType: text("requested_by_actor_type"),
     requestedByActorId: text("requested_by_actor_id"),
+    requestedByRunId: uuid("requested_by_run_id"),
     idempotencyKey: text("idempotency_key"),
     runId: uuid("run_id"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),

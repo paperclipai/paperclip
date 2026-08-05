@@ -2437,6 +2437,7 @@ interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByRunId?: string | null;
   contextSnapshot?: Record<string, unknown>;
 }
 
@@ -17098,6 +17099,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
+        requestedByRunId: opts.requestedByRunId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
         finishedAt: new Date(),
         ...patch,
@@ -17393,6 +17395,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
+            requestedByRunId: opts.requestedByRunId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -17417,6 +17420,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
+            requestedByRunId: opts.requestedByRunId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -17673,6 +17677,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
+            requestedByRunId: opts.requestedByRunId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -17770,6 +17775,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "skipped",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
+              requestedByRunId: opts.requestedByRunId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: now,
             });
@@ -17854,6 +17860,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
+              requestedByRunId: opts.requestedByRunId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
               runId: mergedRun.id,
               finishedAt: new Date(),
@@ -17920,6 +17927,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "deferred_issue_execution",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
+              requestedByRunId: opts.requestedByRunId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
             });
 
@@ -18034,6 +18042,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "skipped",
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
+                requestedByRunId: opts.requestedByRunId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: throttleNow,
               });
@@ -18062,6 +18071,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
+            requestedByRunId: opts.requestedByRunId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: now,
           });
@@ -18089,6 +18099,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
+            requestedByRunId: opts.requestedByRunId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
           .returning()
@@ -18204,6 +18215,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         coalescedCount: 1,
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
+        requestedByRunId: opts.requestedByRunId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
         runId: mergedRun.id,
         finishedAt: new Date(),
@@ -18236,6 +18248,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "skipped",
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
+          requestedByRunId: opts.requestedByRunId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
           finishedAt: now,
         });
@@ -18263,6 +18276,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
+          requestedByRunId: opts.requestedByRunId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
         .returning()
