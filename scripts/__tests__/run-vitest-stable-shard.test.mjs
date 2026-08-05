@@ -29,6 +29,18 @@ function dryRunJson(args) {
 }
 
 const SHARD_COUNT = 4;
+const SERIALIZED_SHARD_COUNT = 5;
+
+test("the serialized shards form a complete, non-overlapping partition", () => {
+  const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
+    dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
+  );
+
+  const total = shards[0].serializedSuiteCount;
+  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
+  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
+  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
+});
 
 test("the general-server shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
