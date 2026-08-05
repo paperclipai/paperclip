@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const AGENT_ACTOR_ID = "11111111-1111-4111-8111-111111111111";
 const PAUSED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const IDLE_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+const PEER_AGENT_ID = "44444444-4444-4444-8444-444444444444";
+const OPERATOR_USER_ID = "55555555-5555-4555-8555-555555555555";
 
 const agentStatusById: Record<string, string> = {
   [AGENT_ACTOR_ID]: "idle",
@@ -39,6 +41,25 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async (id: string) => ({
+    id,
+    companyId: "company-1",
+    status: agentStatusById[id] ?? "idle",
+  })),
+  resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
+    ambiguous: false,
+    agent: {
+      id: raw,
+      companyId: "company-1",
+      status: agentStatusById[raw] ?? "idle",
+      orgChainHealth: { status: "healthy" },
+    },
+  })),
+  listFallbackRelationships: vi.fn(async () => []),
+  list: vi.fn(async () => []),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -53,24 +74,7 @@ vi.mock("../services/index.js", () => ({
     })),
     hasPermission: vi.fn(async () => true),
   }),
-  agentService: () => ({
-    getById: vi.fn(async (id: string) => ({
-      id,
-      companyId: "company-1",
-      status: agentStatusById[id] ?? "idle",
-    })),
-    resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-      ambiguous: false,
-      agent: {
-        id: raw,
-        companyId: "company-1",
-        status: agentStatusById[raw] ?? "idle",
-        orgChainHealth: { status: "healthy" },
-      },
-    })),
-    listFallbackRelationships: vi.fn(async () => []),
-    list: vi.fn(async () => []),
-  }),
+  agentService: () => mockAgentService,
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
@@ -276,9 +280,15 @@ describe("agent delegation cycle guard", () => {
     mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(null);
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockAgentService.getById.mockClear();
+    mockAgentService.listFallbackRelationships.mockReset();
+    mockAgentService.listFallbackRelationships.mockResolvedValue([]);
+    mockAgentService.list.mockReset();
+    mockAgentService.list.mockResolvedValue([]);
   });
 
-  it("refuses an agent child assigned to the creator of an open ancestor", async () => {
+  it("emits a detectable defect when a cyclic delegation has no technical fallback", async () => {
     const parent = makeIssue();
     mockIssueService.getById.mockResolvedValue(parent);
     mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue({
@@ -299,9 +309,64 @@ describe("agent delegation cycle guard", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("Delegation cycle");
-    expect(res.body.details).toMatchObject({ code: "delegation_cycle" });
+    expect(res.body.details).toMatchObject({ code: "delegation_cycle_failover_exhausted" });
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(parent.id, IDLE_AGENT_ID);
+  });
+
+  it("reassigns a cyclic child to a same-role peer and records a receipt", async () => {
+    const parent = makeIssue();
+    mockIssueService.getById.mockResolvedValue(parent);
+    mockIssueService.findOpenAncestorCreatedByAgent.mockImplementation(async (_parentId: string, agentId: string) =>
+      agentId === IDLE_AGENT_ID
+        ? { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", identifier: "PAP-100" }
+        : null,
+    );
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      role: "engineer",
+      status: "idle",
+      orgChainHealth: { status: "healthy" },
+    }));
+    mockAgentService.list.mockResolvedValue([
+      { id: IDLE_AGENT_ID, role: "engineer", status: "idle", orgChainHealth: { status: "healthy" } },
+      { id: PEER_AGENT_ID, role: "engineer", status: "idle", orgChainHealth: { status: "healthy" } },
+    ]);
+    mockIssueService.createChild.mockResolvedValue({
+      issue: makeIssue({ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", parentId: parent.id, assigneeAgentId: PEER_AGENT_ID }),
+      parentBlockerAdded: false,
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/issues/${parent.id}/children`)
+      .send({ title: "Continue implementation", description: "Implement the focused patch", assigneeAgentId: IDLE_AGENT_ID });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalledWith(parent.id, expect.objectContaining({ assigneeAgentId: PEER_AGENT_ID }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      expect.stringContaining(`Rejected candidate: ${IDLE_AGENT_ID}`),
+      expect.anything(),
+    );
+    expect(mockIssueService.addComment.mock.calls[0]?.[1]).toContain(`Chosen fallback: ${PEER_AGENT_ID}`);
+  });
+
+  it("does not route agent-created execution work to an operator", async () => {
+    const parent = makeIssue();
+    mockIssueService.getById.mockResolvedValue(parent);
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/issues/${parent.id}/children`)
+      .send({
+        title: "Implement the patch",
+        description: "Update the route and tests",
+        assigneeUserId: OPERATOR_USER_ID,
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "human_assignment_restricted" });
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
   });
 
   it("allows the same child when no open ancestor was created by the assignee", async () => {
