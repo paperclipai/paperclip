@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
+import { ToastProvider } from "../context/ToastContext";
 import { Companies } from "./Companies";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -91,7 +92,9 @@ describe("Companies page", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Companies />
+          <ToastProvider>
+            <Companies />
+          </ToastProvider>
         </QueryClientProvider>,
       );
     });
