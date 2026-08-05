@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildAntigravityArgs } from "./execute.js";
 import { parseAntigravityOutput } from "./parse.js";
+import { models } from "../index.js";
 import { sessionCodec } from "./index.js";
 
 describe("antigravity_local execute helpers", () => {
@@ -91,6 +92,10 @@ describe("antigravity_local model selection", () => {
     // the dashed internal form (`claude-opus-4-6`) is rejected: "not recognized as a known model".
     expect(buildAntigravityArgs({ ...base, model: "Claude Opus 4.6 (Thinking)" }))
       .toEqual(["--print", "p", "--model", "Claude Opus 4.6 (Thinking)"]);
+  });
+
+  it("offers only pinned agy model IDs", () => {
+    expect(models.map((entry) => entry.id)).not.toContain("antigravity");
   });
 
   it("omits --model entirely when none is configured", () => {

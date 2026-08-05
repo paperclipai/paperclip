@@ -1,8 +1,6 @@
 export const type = "antigravity_local";
 export const label = "Antigravity (local)";
 
-export const DEFAULT_ANTIGRAVITY_LOCAL_MODEL = "antigravity";
-
 // agy model ids are the DISPLAY NAMES verbatim, effort included — that is exactly what
 // `agy --model` accepts. The dashed internal form (`claude-opus-4-6`) that appears under
 // ~/.gemini is REJECTED with "not recognized as a known model". Keep these byte-identical
@@ -13,10 +11,9 @@ export const DEFAULT_ANTIGRAVITY_LOCAL_MODEL = "antigravity";
 // adapter offered one generic "Antigravity" entry and never passed --model at all, so every
 // lane ran on the Gemini default and those paid bands were never consumed.
 //
-// The bare `antigravity` id stays FIRST and remains the default: it means "whatever agy's own
-// session default is", preserving existing behaviour for every agent already configured.
+// Do not expose an unpinned session-default entry: every selectable model must be an explicit
+// `agy --model` value so Paperclip can persist and compare the declared model per run.
 export const models = [
-  { id: DEFAULT_ANTIGRAVITY_LOCAL_MODEL, label: "Antigravity (agy session default)" },
   { id: "Gemini 3.6 Flash (High)", label: "Gemini 3.6 Flash (High)" },
   { id: "Gemini 3.6 Flash (Medium)", label: "Gemini 3.6 Flash (Medium)" },
   { id: "Gemini 3.6 Flash (Low)", label: "Gemini 3.6 Flash (Low)" },

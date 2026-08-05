@@ -337,6 +337,20 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+  it("rejects a PATCH model that is not exported by the selected adapter", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "claude-opus-4-6" } }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toBe(
+      'Invalid adapterConfig.model "claude-opus-4-6" for codex_local. Valid model IDs: codex-mini-latest, gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.3-codex-spark, gpt-5.4, gpt-5.4-mini, gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra, o3, o3-mini, o4-mini',
+    );
+  });
+
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const app = await createApp();

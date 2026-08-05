@@ -1589,12 +1589,23 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
-    try {
-      requireOpenCodeModelId(adapterConfig.model);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (adapterType) {
+      const configuredModel = asNonEmptyString(adapterConfig.model);
+      const exportedModels = requireServerAdapter(adapterType).models ?? [];
+      if (configuredModel && exportedModels.length > 0 && !exportedModels.some((model) => model.id === configuredModel)) {
+        const validIds = exportedModels.map((model) => model.id).sort().join(", ");
+        throw unprocessable(
+          `Invalid adapterConfig.model "${configuredModel}" for ${adapterType}. Valid model IDs: ${validIds}`,
+        );
+      }
+    }
+    if (adapterType === "opencode_local") {
+      try {
+        requireOpenCodeModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
     }
   }
 

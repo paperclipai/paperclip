@@ -114,6 +114,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { buildServedModelProvenance } from "./served-model-provenance.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -5178,7 +5179,6 @@ function readConfiguredModelFromAdapterConfig(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
 ) {
-  if (adapterType === "antigravity_local") return null;
   return readNonEmptyString(adapterConfig?.model);
 }
 
@@ -16910,6 +16910,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : "failed";
 
       const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+      const servedModelProvenance = buildServedModelProvenance({
+        declaredModel: configuredModel,
+        servedModel: adapterResult.model,
+      });
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
           ? ({
@@ -16935,7 +16939,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               configFreshness: configFreshnessResultMetadata,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
-              model: readNonEmptyString(adapterResult.model) ?? "unknown",
+              model: servedModelProvenance.servedModel,
+              declaredModel: servedModelProvenance.declaredModel,
+              servedModel: servedModelProvenance.servedModel,
+              servedModelGuardFindings: servedModelProvenance.guardFindings,
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
@@ -16955,6 +16962,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
+                declaredModel: servedModelProvenance.declaredModel,
+                servedModel: servedModelProvenance.servedModel,
+                servedModelGuardFindings: servedModelProvenance.guardFindings,
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
