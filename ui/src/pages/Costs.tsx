@@ -540,6 +540,13 @@ export function Costs() {
     subscriptionOnlyBilling,
   });
 
+  // Child cards (provider quota, biller spend) already treat 0 as "no cap
+  // configured" and hide their budget UI on it. Passing 0 when the budget
+  // cannot be enforced reuses that existing contract, so the suppression is
+  // decided once here rather than re-derived in every card — and any card added
+  // to this page later inherits it.
+  const enforceableBudgetCents = budgetEnforceable ? (spendData?.summary.budgetCents ?? 0) : 0;
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -994,7 +1001,7 @@ export function Costs() {
                           key={provider}
                           provider={provider}
                           rows={byProvider.get(provider) ?? []}
-                          budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                          budgetMonthlyCents={enforceableBudgetCents}
                           totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                           weekSpendCents={weekSpendByProvider.get(provider) ?? 0}
                           windowRows={windowSpendByProvider.get(provider) ?? []}
@@ -1014,7 +1021,7 @@ export function Costs() {
                     <ProviderQuotaCard
                       provider={provider}
                       rows={byProvider.get(provider) ?? []}
-                      budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                      budgetMonthlyCents={enforceableBudgetCents}
                       totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                       weekSpendCents={weekSpendByProvider.get(provider) ?? 0}
                       windowRows={windowSpendByProvider.get(provider) ?? []}
@@ -1053,7 +1060,7 @@ export function Costs() {
                             key={biller}
                             row={row}
                             weekSpendCents={weekSpendByBiller.get(biller) ?? 0}
-                            budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                            budgetMonthlyCents={enforceableBudgetCents}
                             totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                             providerRows={providerRows}
                           />
@@ -1072,7 +1079,7 @@ export function Costs() {
                       <BillerSpendCard
                         row={row}
                         weekSpendCents={weekSpendByBiller.get(biller) ?? 0}
-                        budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                        budgetMonthlyCents={enforceableBudgetCents}
                         totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                         providerRows={providerRows}
                       />

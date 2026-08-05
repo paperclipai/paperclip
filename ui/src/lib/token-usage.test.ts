@@ -185,3 +185,38 @@ describe("budgetIsEnforceable", () => {
     }
   });
 });
+
+describe("enforceable budget amount passed to child cards", () => {
+  // Child cards (ProviderQuotaCard, BillerSpendCard) gate their budget UI on
+  // `budgetMonthlyCents > 0`. Passing the raw amount when the budget cannot be
+  // enforced makes them render quota bars and a healthy green state against a
+  // cap that can never be consumed. Deciding it once at the source keeps every
+  // card consistent, including cards added later.
+  const amountFor = (budgetCents: number | null | undefined, subscriptionOnlyBilling: boolean) =>
+    budgetIsEnforceable({ budgetCents, subscriptionOnlyBilling }) ? (budgetCents ?? 0) : 0;
+
+  it("passes 0 on subscription billing so child cards hide their budget UI", () => {
+    expect(amountFor(250_000, true)).toBe(0);
+  });
+
+  it("passes the real amount on metered billing", () => {
+    expect(amountFor(250_000, false)).toBe(250_000);
+  });
+
+  it("passes 0 when no budget is set, in either mode", () => {
+    expect(amountFor(0, false)).toBe(0);
+    expect(amountFor(null, true)).toBe(0);
+    expect(amountFor(undefined, false)).toBe(0);
+  });
+
+  it("never passes a positive amount that budgetIsEnforceable rejects", () => {
+    for (const budgetCents of [0, 1, 250_000, null, undefined]) {
+      for (const sub of [true, false]) {
+        const amount = amountFor(budgetCents, sub);
+        if (amount > 0) {
+          expect(budgetIsEnforceable({ budgetCents, subscriptionOnlyBilling: sub })).toBe(true);
+        }
+      }
+    }
+  });
+});
