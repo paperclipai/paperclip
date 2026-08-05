@@ -84,6 +84,7 @@ vi.mock("@/context/CompanyContext", () => ({
       issuePrefix: "PAP",
       name: "Acme Labs",
       brandColor: "#3366ff",
+      logoUrl: "/api/assets/logo-asset-1/content",
       status: "active",
     },
     setSelectedCompanyId: mockSetSelectedCompanyId,
@@ -97,8 +98,8 @@ vi.mock("@/context/DialogContext", () => ({
 }));
 
 vi.mock("./CompanyPatternIcon", () => ({
-  CompanyPatternIcon: ({ companyName }: { companyName: string }) => (
-    <span aria-hidden="true">{companyName.slice(0, 1)}</span>
+  CompanyPatternIcon: ({ companyName, logoUrl }: { companyName: string; logoUrl?: string | null }) => (
+    <span aria-hidden="true" data-logo-url={logoUrl ?? undefined}>{companyName.slice(0, 1)}</span>
   ),
 }));
 
@@ -491,6 +492,35 @@ describe("SidebarCompanyMenu", () => {
       // Drag-to-reorder is self-hosted only in v1.
       expect(Array.from(document.body.querySelectorAll("button"))
         .some((element) => element.textContent === "Edit")).toBe(false);
+
+      act(() => {
+        root.unmount();
+      });
+    });
+
+    it("shows the synced company logo on the trigger while stack rows keep monograms", async () => {
+      const { root } = renderMenu({ cloud: true });
+      await flushReact();
+      await flushReact();
+
+      // A Cloud tenant holds exactly one company, and the harness pushes the
+      // stack's uploaded workspace icon into that company's branding — so the
+      // trigger renders the company logo, not the monogram.
+      const trigger = container.querySelector(
+        'button[aria-label="Open Acme Labs organization switcher"]',
+      );
+      expect(trigger).not.toBeNull();
+      expect(
+        trigger?.querySelector('[data-logo-url="/api/assets/logo-asset-1/content"]'),
+      ).not.toBeNull();
+
+      // Other stacks have no hot-linkable icon in the portfolio payload, so
+      // their rows keep the deterministic monogram treatment.
+      await openMenu("Open Acme Labs organization switcher");
+      const strataRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+        .find((element) => element.textContent?.includes("Strata Systems"));
+      expect(strataRow).toBeTruthy();
+      expect(strataRow?.querySelector("[data-logo-url]")).toBeNull();
 
       act(() => {
         root.unmount();
