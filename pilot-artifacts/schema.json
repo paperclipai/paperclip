@@ -1,0 +1,281 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SSI-HP Enriched Catalog Row",
+  "description": "Strict schema for an enriched High Performance surface catalog row produced by the local-AI batch enrichment pipeline (reference).",
+  "type": "object",
+  "required": [
+    "sku",
+    "product_name",
+    "material_type",
+    "primary_color_family",
+    "finish",
+    "applications",
+    "price_tier",
+    "availability",
+    "is_outdoor",
+    "enrichment_confidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "sku": {
+      "type": "string",
+      "pattern": "^[A-Z0-9\\-]{3,30}$",
+      "description": "Product SKU. Uppercase alphanumeric with hyphens."
+    },
+    "product_name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 120,
+      "description": "Full product display name."
+    },
+    "manufacturer": {
+      "type": ["string", "null"],
+      "minLength": 2,
+      "maxLength": 80,
+      "description": "Brand or manufacturer name."
+    },
+    "series_name": {
+      "type": ["string", "null"],
+      "maxLength": 80,
+      "description": "Product line or collection name within a brand."
+    },
+    "material_type": {
+      "type": "string",
+      "enum": [
+        "quartz",
+        "granite",
+        "marble",
+        "quartzite",
+        "porcelain",
+        "sintered_stone",
+        "laminate",
+        "solid_surface",
+        "recycled_glass",
+        "terrazzo",
+        "soapstone",
+        "slate",
+        "travertine",
+        "limestone",
+        "onyx",
+        "other"
+      ],
+      "description": "Primary substrate/material category."
+    },
+    "primary_color_family": {
+      "type": "string",
+      "enum": [
+        "white",
+        "off_white",
+        "gray",
+        "black",
+        "beige",
+        "cream",
+        "brown",
+        "taupe",
+        "blue",
+        "green",
+        "red",
+        "pink",
+        "gold",
+        "multicolor"
+      ],
+      "description": "Dominant color family for filtering and display."
+    },
+    "secondary_color_family": {
+      "type": ["string", "null"],
+      "enum": [
+        "white", "off_white", "gray", "black", "beige", "cream",
+        "brown", "taupe", "blue", "green", "red", "pink", "gold",
+        "multicolor", null
+      ],
+      "description": "Secondary color family if the product has a prominent accent color."
+    },
+    "finish": {
+      "type": "string",
+      "enum": [
+        "polished",
+        "honed",
+        "matte",
+        "leathered",
+        "brushed",
+        "sandblasted",
+        "flamed",
+        "bush_hammered",
+        "satin"
+      ],
+      "description": "Surface finish/texture."
+    },
+    "pattern_type": {
+      "type": ["string", "null"],
+      "enum": [
+        "solid",
+        "veined",
+        "flecked",
+        "marbled",
+        "speckled",
+        "linear",
+        "geometric",
+        "organic",
+        null
+      ],
+      "description": "Visual pattern category."
+    },
+    "thickness_options_mm": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "number",
+        "minimum": 6,
+        "maximum": 60
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Available slab/tile thicknesses in millimeters."
+    },
+    "applications": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "countertop",
+          "kitchen_island",
+          "bathroom_vanity",
+          "flooring",
+          "wall_cladding",
+          "shower_surround",
+          "backsplash",
+          "fireplace_surround",
+          "outdoor_kitchen",
+          "table_top",
+          "commercial"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Intended use contexts. At least one required."
+    },
+    "is_outdoor": {
+      "type": "boolean",
+      "description": "True if the product is rated for outdoor/exterior use."
+    },
+    "weather_rating": {
+      "type": ["string", "null"],
+      "enum": ["excellent", "good", "fair", "not_rated", null],
+      "description": "Required when is_outdoor=true. Overall outdoor durability rating."
+    },
+    "uv_resistant": {
+      "type": ["boolean", "null"],
+      "description": "True if product is UV-stable (color-fade resistant in direct sunlight)."
+    },
+    "heat_resistance": {
+      "type": ["string", "null"],
+      "enum": ["excellent", "good", "moderate", "low", null],
+      "description": "Ability to withstand heat without damage."
+    },
+    "scratch_resistance": {
+      "type": ["string", "null"],
+      "enum": ["excellent", "good", "moderate", "low", null],
+      "description": "Surface hardness / scratch resistance rating."
+    },
+    "stain_resistant": {
+      "type": ["boolean", "null"],
+      "description": "True if the product has inherent or treated stain resistance."
+    },
+    "sealing_required": {
+      "type": ["boolean", "null"],
+      "description": "True if periodic professional sealing is required for maintenance."
+    },
+    "care_level": {
+      "type": ["string", "null"],
+      "enum": ["low", "moderate", "high", null],
+      "description": "Overall maintenance burden for the end user."
+    },
+    "price_tier": {
+      "type": "string",
+      "enum": ["budget", "mid", "premium", "luxury"],
+      "description": "Relative price positioning within the HP catalog."
+    },
+    "availability": {
+      "type": "string",
+      "enum": ["in_stock", "made_to_order", "limited_stock", "discontinued", "coming_soon"],
+      "description": "Current inventory / ordering status."
+    },
+    "edge_profiles_available": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "string",
+        "enum": [
+          "eased",
+          "beveled",
+          "bullnose",
+          "ogee",
+          "waterfall",
+          "mitered",
+          "dupont",
+          "chiseled"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Edge finishing options offered for this product."
+    },
+    "certifications": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "string",
+        "enum": [
+          "NSF_51",
+          "GREENGUARD_Gold",
+          "LEED_eligible",
+          "ISO_14001",
+          "recycled_content_certified"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Third-party certifications held by this product."
+    },
+    "recycled_content_pct": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Percentage of recycled material content (0–100)."
+    },
+    "warranty_years": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 25,
+      "description": "Manufacturer warranty length in years."
+    },
+    "country_of_origin": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z]{2}$",
+      "description": "ISO 3166-1 alpha-2 country code (e.g. US, IT, IN, BR)."
+    },
+    "enrichment_confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Model's self-reported aggregate confidence for this enrichment row (0.0–1.0)."
+    },
+    "enrichment_notes": {
+      "type": ["string", "null"],
+      "maxLength": 500,
+      "description": "Optional model note on uncertain inferences or missing source data."
+    },
+    "low_confidence_fields": {
+      "type": ["array", "null"],
+      "items": {"type": "string"},
+      "description": "Field names the model was uncertain about. These are routed to the reviewer."
+    }
+  },
+  "if": {
+    "properties": { "is_outdoor": { "const": true } }
+  },
+  "then": {
+    "required": ["weather_rating"],
+    "properties": {
+      "weather_rating": {
+        "type": "string",
+        "enum": ["excellent", "good", "fair", "not_rated"]
+      }
+    }
+  }
+}

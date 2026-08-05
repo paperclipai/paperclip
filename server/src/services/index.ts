@@ -95,6 +95,11 @@ export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
+export {
+  enrichmentService,
+  FLAG_THRESHOLD,
+  type EnrichmentBatchSummary,
+} from "./enrichment.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
