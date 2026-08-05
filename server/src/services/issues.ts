@@ -813,6 +813,9 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type AccountableIssueState = Pick<typeof issues.$inferSelect,
   "status" | "assigneeAgentId" | "assigneeUserId" | "responsibleUserId" | "executionPolicy"> & {
   blockedByIssueIds?: string[];
+  /** First-class no-link block reason (TSMC-19829 assignee-outage descriptor and peers). */
+  unblockDescriptor?: unknown;
+  description?: unknown;
 };
 
 function externalWaitFromPolicy(executionPolicy: unknown) {
@@ -835,11 +838,29 @@ function assertAccountableIssueState(input: AccountableIssueState) {
   if (input.status === "done" || input.status === "cancelled") return;
   const externalWait = externalWaitFromPolicy(input.executionPolicy);
   const blockers = input.blockedByIssueIds ?? [];
-  if (input.status === "blocked" && blockers.length === 0 && !externalWait) {
-    throw unprocessable("Blocked issues require unresolved blockedByIssueIds or executionPolicy.externalWait", {
-      code: "blocked_state_requires_wait_path",
-      required: ["blockedByIssueIds", "executionPolicy.externalWait.owner", "executionPolicy.externalWait.action", "executionPolicy.externalWait.nextCheckAt", "executionPolicy.externalWait.monitorOwner"],
-    });
+  const sanctionedNoLink = hasSanctionedNoLinkBlockReason({
+    description: input.description,
+    unblockDescriptor: input.unblockDescriptor,
+  });
+  // Blocked writes need a live wait path: open blockers, externalWait, or a
+  // sanctioned no-link reason (validated unblockDescriptor / external prose).
+  // Without the descriptor branch, assignee-outage self-heal blocks (TSMC-19829)
+  // could never persist through issuesSvc.update.
+  if (input.status === "blocked" && blockers.length === 0 && !externalWait && !sanctionedNoLink) {
+    throw unprocessable(
+      "Blocked issues require unresolved blockedByIssueIds, executionPolicy.externalWait, or a sanctioned unblockDescriptor",
+      {
+        code: "blocked_state_requires_wait_path",
+        required: [
+          "blockedByIssueIds",
+          "executionPolicy.externalWait.owner",
+          "executionPolicy.externalWait.action",
+          "executionPolicy.externalWait.nextCheckAt",
+          "executionPolicy.externalWait.monitorOwner",
+          "unblockDescriptor",
+        ],
+      },
+    );
   }
   // Legacy todo/backlog rows remain readable and migratable. The states that
   // can actively strand work must carry an accountable path at write time.
@@ -7738,6 +7759,8 @@ export function issueService(db: Db) {
           responsibleUserId,
           executionPolicy: data.executionPolicy ?? null,
           blockedByIssueIds: unresolvedBlockedByIssueIds,
+          description: data.description ?? null,
+          unblockDescriptor: data.unblockDescriptor ?? null,
         });
 
         const resolvedGoalId = await resolveCreateGoalId(tx, {
@@ -8140,6 +8163,8 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ||
         issueData.assigneeUserId !== undefined ||
         issueData.executionPolicy !== undefined ||
+        issueData.unblockDescriptor !== undefined ||
+        issueData.description !== undefined ||
         blockedByIssueIds !== undefined;
       if (accountabilityFieldsChanged) {
         assertAccountableIssueState({
@@ -8151,6 +8176,10 @@ export function issueService(db: Db) {
           blockedByIssueIds: blockedByIssueIds !== undefined
             ? blockedByIssueIds
             : (await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])).get(id)?.unresolvedBlockerIssueIds ?? [],
+          description: issueData.description !== undefined ? issueData.description : existing.description,
+          unblockDescriptor: issueData.unblockDescriptor !== undefined
+            ? issueData.unblockDescriptor
+            : existing.unblockDescriptor,
         });
       }
       if (patch.status === "in_progress") {

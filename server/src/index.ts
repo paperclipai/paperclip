@@ -1093,6 +1093,9 @@ export async function startServer(): Promise<StartedServer> {
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         const restartLaneRecovery = await heartbeat.sweepRestartLaneRecovery();
+        const assigneeNotInvokableHealed = await heartbeat.healAssigneeNotInvokableBlockedIssues({
+          source: "startup.heal_assignee_not_invokable",
+        });
         if (
           promotion.promoted > 0 ||
           reconciled.assignmentDispatched > 0 ||
@@ -1108,6 +1111,12 @@ export async function startServer(): Promise<StartedServer> {
         }
         if (restartLaneRecovery.candidates > 0) {
           logger.warn({ ...restartLaneRecovery }, "startup restart-lane recovery sweep completed");
+        }
+        if (assigneeNotInvokableHealed.healed > 0 || assigneeNotInvokableHealed.checked > 0) {
+          logger.warn(
+            { ...assigneeNotInvokableHealed },
+            "startup assignee-not-invokable self-heal sweep completed",
+          );
         }
 
         const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
@@ -1399,6 +1408,9 @@ export async function startServer(): Promise<StartedServer> {
               await heartbeat.resumeQueuedRuns();
               const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
               const restartLaneRecovery = await heartbeat.sweepRestartLaneRecovery();
+              const assigneeNotInvokableHealed = await heartbeat.healAssigneeNotInvokableBlockedIssues({
+                source: "periodic.heal_assignee_not_invokable",
+              });
               if (
                 promotion.promoted > 0 ||
                 reconciled.assignmentDispatched > 0 ||
@@ -1414,6 +1426,12 @@ export async function startServer(): Promise<StartedServer> {
               }
               if (restartLaneRecovery.candidates > 0) {
                 logger.warn({ ...restartLaneRecovery }, "periodic restart-lane recovery sweep completed");
+              }
+              if (assigneeNotInvokableHealed.healed > 0) {
+                logger.warn(
+                  { ...assigneeNotInvokableHealed },
+                  "periodic assignee-not-invokable self-heal sweep completed",
+                );
               }
             })
             .then(async () => {

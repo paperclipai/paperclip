@@ -3696,6 +3696,17 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
+    // TSMC-19829: resume returns the lane to invokable idle — heal outage blocks.
+    try {
+      await recovery.healAssigneeNotInvokableBlockedIssues({
+        agentId: agent.id,
+        companyId: agent.companyId,
+        source: "agents.resume",
+      });
+    } catch {
+      // Best-effort; startup/periodic sweep is the backstop.
+    }
+
     res.json(agent);
   });
 
@@ -3727,6 +3738,17 @@ export function agentRoutes(
       entityType: "agent",
       entityId: agent.id,
     });
+
+    // TSMC-19829: clearing error returns the lane to invokable idle — heal outage blocks.
+    try {
+      await recovery.healAssigneeNotInvokableBlockedIssues({
+        agentId: agent.id,
+        companyId: agent.companyId,
+        source: "agents.clear_error",
+      });
+    } catch {
+      // Best-effort; startup/periodic sweep is the backstop.
+    }
 
     res.json(agent);
   });

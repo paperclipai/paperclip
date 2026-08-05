@@ -13539,6 +13539,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    const previousStatus = existing.status;
     const updated = await db
       .update(agents)
       .set({
@@ -13572,6 +13573,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           outcome,
         },
       });
+
+      // TSMC-19829: finalize only lands idle|running|error. paused/terminated already
+      // returned above; resume/clear_error heal on the agents route. Here heal
+      // when a lane leaves error for an invokable status.
+      const becameInvokable =
+        (nextStatus === "idle" || nextStatus === "running") &&
+        previousStatus === "error";
+      if (becameInvokable) {
+        try {
+          await recovery.healAssigneeNotInvokableBlockedIssues({
+            agentId: updated.id,
+            companyId: updated.companyId,
+            source: "heartbeat.finalize_agent_status",
+          });
+        } catch (err) {
+          logger.warn(
+            { err, agentId: updated.id, previousStatus, nextStatus },
+            "failed assignee-not-invokable self-heal after agent status transition",
+          );
+        }
+      }
     }
   }
 
@@ -14729,6 +14751,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+  }
+
+  async function healAssigneeNotInvokableBlockedIssues(opts?: {
+    agentId?: string | null;
+    companyId?: string | null;
+    source?: string;
+    runId?: string | null;
+  }) {
+    return recovery.healAssigneeNotInvokableBlockedIssues(opts);
   }
 
   async function sweepStaleIssueLocks() {
@@ -20785,6 +20816,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileStrandedAssignedIssues,
     sweepRestartLaneRecovery,
+    healAssigneeNotInvokableBlockedIssues,
 
     sweepStaleIssueLocks,
 

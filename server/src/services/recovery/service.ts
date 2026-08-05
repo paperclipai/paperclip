@@ -202,7 +202,30 @@ type StrandedRecoveryCause =
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
+  | "agent_not_invokable"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
+
+/** Stable machine-readable cause stamped on assignee-outage blocks (TSMC-19827/19829). */
+export const ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE = "assignee_not_invokable";
+export const ASSIGNEE_NOT_INVOKABLE_UNBLOCK_ACTION =
+  "Restore a live execution path after the assignee becomes invokable again (cause:assignee_not_invokable).";
+
+export function buildAssigneeNotInvokableUnblockDescriptor() {
+  return {
+    owner: "board" as const,
+    action: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_ACTION,
+  };
+}
+
+export function isAssigneeNotInvokableUnblockDescriptor(descriptor: unknown): boolean {
+  if (!descriptor || typeof descriptor !== "object") return false;
+  const action = (descriptor as { action?: unknown }).action;
+  return typeof action === "string" &&
+    (
+      action.includes(`cause:${ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE}`) ||
+      action === ASSIGNEE_NOT_INVOKABLE_UNBLOCK_ACTION
+    );
+}
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
 
@@ -239,6 +262,8 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
       return "reviewer recovery failed";
     case "provider_quota":
       return "provider quota unavailable";
+    case "agent_not_invokable":
+      return "assignee not invokable";
     case SUCCESSFUL_RUN_MISSING_STATE_REASON:
       return "missing disposition recovery failed";
     default:
@@ -4772,6 +4797,65 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       input.latestRun,
       input.recoveryCause,
     );
+
+    // Assignee-outage blocks must be re-checkable when the lane recovers. Use a
+    // first-class unblockDescriptor and no blockedBy edges so the self-heal
+    // sweep can return the issue to todo without human intervention (TSMC-19829).
+    if (recoveryCause === "agent_not_invokable") {
+      if (current.status === "blocked" && isAssigneeNotInvokableUnblockDescriptor(input.issue.unblockDescriptor)) {
+        const unresolved = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+        if (unresolved.length === 0) {
+          return input.issue;
+        }
+      }
+
+      const descriptor = buildAssigneeNotInvokableUnblockDescriptor();
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: [],
+        assigneeAgentId: input.issue.assigneeAgentId,
+        unblockDescriptor: descriptor,
+      });
+      if (!updated) return null;
+
+      const commentBody = input.comment ??
+        ("Paperclip cannot continue this assigned issue because the assignee is not invokable " +
+          "and the issue has no live execution path. Moving it to `blocked` with a machine-readable " +
+          "assignee-not-invokable descriptor so it can self-heal when the assignee becomes invokable again.");
+      await issuesSvc.addComment(
+        input.issue.id,
+        commentBody,
+        {},
+        {
+          authorType: "system",
+          presentation: compactRecoveryPresentation("Recovery: assignee not invokable — moved to blocked"),
+          metadata: recoveryNoticeMetadata({
+            cause: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
+            latestRun: input.latestRun,
+            previousStatus: input.previousStatus,
+          }),
+        },
+      );
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: input.issue.assigneeAgentId ?? null,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.assignee_not_invokable_blocked",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          source: "recovery.escalate_stranded_assigned_issue",
+          cause: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
+          previousStatus: input.previousStatus,
+          assigneeAgentId: input.issue.assigneeAgentId ?? null,
+          latestRunId: input.latestRun?.id ?? null,
+        },
+      });
+      return updated;
+    }
+
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
@@ -5357,10 +5441,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue: freshIssue,
             previousStatus: freshIssue.status as StrandedPreviousStatus,
             latestRun,
+            recoveryCause: "agent_not_invokable",
             comment:
               "Paperclip cannot continue this assigned issue because the assignee is not invokable " +
-              "and the issue has no live execution path. Moving it to `blocked` with a finite recovery action " +
-              "instead of retrying the dead assignee lane indefinitely." +
+              "and the issue has no live execution path. Moving it to `blocked` with a machine-readable " +
+              "assignee-not-invokable descriptor so it can self-heal when the assignee becomes invokable again." +
               `${failureSummary ?? ""}`,
           });
           if (updated) {
@@ -7604,11 +7689,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ]);
       }));
 
+      const recoveredAgentIds: string[] = [];
       for (const entry of settled) {
         if (entry.kind === "recovered") {
           result.reset += 1;
           result.recovered += 1;
           result.successorRunIds.push(entry.successorRunId);
+          recoveredAgentIds.push(entry.candidate.agent.id);
         } else if (entry.kind === "unrecoverable") {
           result.reset += 1;
           result.unrecoverable += 1;
@@ -7618,9 +7705,226 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
         }
       }
+
+      // TSMC-19829: restart-lane recovery flips error→idle; heal outage-blocked issues.
+      for (const agentId of recoveredAgentIds) {
+        try {
+          await healAssigneeNotInvokableBlockedIssues({
+            agentId,
+            source: "recovery.restart_lane",
+          });
+        } catch (err) {
+          logger.warn({ err, agentId }, "failed assignee-not-invokable heal after restart-lane recovery");
+        }
+      }
     }
     for (const entry of unrecoverable) await recordRestartLaneUnrecoverable(entry);
     result.issueIds = await createRestartLaneRecoveryIssues(unrecoverable);
+    return result;
+  }
+
+  /**
+   * Self-heal issues that were blocked solely because their assignee was not
+   * invokable (TSMC-19827/19829). Sweep only the stable assignee_not_invokable
+   * unblockDescriptor and only issues with no open blockedBy edges. When the
+   * assignee is invokable again, return them to todo and clear the descriptor.
+   * Idempotent and race-safe: re-validates status/descriptor before update.
+   */
+  async function healAssigneeNotInvokableBlockedIssues(opts?: {
+    agentId?: string | null;
+    companyId?: string | null;
+    source?: string;
+    runId?: string | null;
+  }) {
+    const source = opts?.source ?? "recovery.heal_assignee_not_invokable";
+    const result = {
+      checked: 0,
+      healed: 0,
+      skipped: 0,
+      issueIds: [] as string[],
+    };
+
+    const filters = [
+      eq(issues.status, "blocked"),
+      visibleIssueCondition(),
+      sql`${issues.assigneeAgentId} is not null`,
+      sql`(
+        ${issues.unblockDescriptor} ->> 'action' = ${ASSIGNEE_NOT_INVOKABLE_UNBLOCK_ACTION}
+        or coalesce(${issues.unblockDescriptor} ->> 'action', '') like ${`%cause:${ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE}%`}
+      )`,
+    ];
+    if (opts?.agentId) filters.push(eq(issues.assigneeAgentId, opts.agentId));
+    if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
+
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(and(...filters));
+    result.checked = candidates.length;
+
+    const invokableByAgentId = new Map<string, boolean>();
+
+    for (const candidate of candidates) {
+      try {
+        const fresh = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, candidate.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!fresh || fresh.status !== "blocked") {
+          result.skipped += 1;
+          continue;
+        }
+        if (!isAssigneeNotInvokableUnblockDescriptor(fresh.unblockDescriptor)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const agentId = fresh.assigneeAgentId;
+        if (!agentId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const unresolvedBlockers = await existingUnresolvedBlockerIssueIds(fresh.companyId, fresh.id);
+        if (unresolvedBlockers.length > 0) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (await isAutomaticRecoverySuppressedByPauseHold(db, fresh.companyId, fresh.id, treeControlSvc)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        let invokable = invokableByAgentId.get(agentId);
+        if (invokable === undefined) {
+          const agent = await getAgent(agentId);
+          invokable = Boolean(
+            agent &&
+            agent.companyId === fresh.companyId &&
+            (await isAgentInvokable(agent)),
+          );
+          invokableByAgentId.set(agentId, invokable);
+        }
+        if (!invokable) {
+          result.skipped += 1;
+          continue;
+        }
+
+        // issuesSvc.update clears unblockDescriptor when leaving blocked.
+        const updated = await issuesSvc.update(fresh.id, {
+          status: "todo",
+          blockedByIssueIds: [],
+        });
+        if (!updated || updated.status !== "todo") {
+          result.skipped += 1;
+          continue;
+        }
+
+        await issuesSvc.addComment(
+          fresh.id,
+          "Paperclip restored this issue to `todo` because the assignee is invokable again. " +
+            "The previous block was only the machine-readable assignee-not-invokable outage descriptor " +
+            `(cause:${ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE}); no open blockedBy edges remained.`,
+          {},
+          {
+            authorType: "system",
+            presentation: compactRecoveryPresentation("Recovery: assignee invokable — returned to todo"),
+            metadata: {
+              version: 1,
+              sourceRunId: opts?.runId ?? null,
+              sections: [{
+                title: "Recovery",
+                rows: [
+                  { type: "key_value", label: "Cause", value: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE },
+                  { type: "key_value", label: "Source", value: source },
+                  { type: "key_value", label: "Previous status", value: "blocked" },
+                  { type: "key_value", label: "Next status", value: "todo" },
+                ],
+              }],
+            },
+          },
+        );
+
+        await logActivity(db, {
+          companyId: fresh.companyId,
+          actorType: "system",
+          actorId: "recovery",
+          agentId,
+          runId: opts?.runId ?? null,
+          action: "issue.assignee_not_invokable_healed",
+          entityType: "issue",
+          entityId: fresh.id,
+          details: {
+            source,
+            cause: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
+            previousStatus: "blocked",
+            nextStatus: "todo",
+            assigneeAgentId: agentId,
+          },
+        });
+
+        // Best-effort assignment recovery wake so work resumes without waiting
+        // for the next stranded/timer sweep. Failures here do not undo the heal.
+        try {
+          const blockedAtKey = fresh.blockedTransitionAt?.toISOString()
+            ?? fresh.updatedAt?.toISOString()
+            ?? "unknown";
+          await deps.enqueueWakeup(agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_assignment_recovery",
+            payload: {
+              issueId: fresh.id,
+              healedFrom: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
+            },
+            contextSnapshot: {
+              issueId: fresh.id,
+              taskId: fresh.id,
+              wakeReason: "issue_assignment_recovery",
+              retryReason: "assignment_recovery",
+              source,
+              healedFrom: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
+            },
+            idempotencyKey: `assignee-not-invokable-heal:${fresh.id}:${blockedAtKey}`,
+            requestedByActorType: "system",
+            requestedByActorId: "recovery",
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: fresh.id, agentId, source },
+            "failed to enqueue wake after assignee-not-invokable heal",
+          );
+        }
+
+        result.healed += 1;
+        result.issueIds.push(fresh.id);
+      } catch (err) {
+        result.skipped += 1;
+        logger.warn(
+          { err, issueId: candidate.id, source },
+          "failed to heal assignee-not-invokable blocked issue",
+        );
+      }
+    }
+
+    if (result.healed > 0) {
+      logger.warn(
+        {
+          healed: result.healed,
+          checked: result.checked,
+          skipped: result.skipped,
+          issueIds: result.issueIds,
+          source,
+          agentId: opts?.agentId ?? null,
+          companyId: opts?.companyId ?? null,
+        },
+        "healed assignee-not-invokable blocked issues",
+      );
+    }
+
     return result;
   }
 
@@ -7746,6 +8050,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    healAssigneeNotInvokableBlockedIssues,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
