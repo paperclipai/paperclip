@@ -652,4 +652,92 @@ describe("IssueChatThread system notice routing", () => {
     expect(details).toHaveProperty("hidden", false);
     expect(container.textContent).toContain("run-stale");
   });
+
+  it("folds a required disposition warning while a live continuation is running the issue", () => {
+    const comment: IssueChatComment = {
+      id: "comment-live-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-source",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-source",
+        sections: [],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "in_progress",
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        hasLiveContinuation: true,
+        liveRunId: "run-live",
+        sourceRunId: "run-source",
+        correctiveRunId: null,
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    const row = container.querySelector('[data-testid="stale-disposition-warning"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
+  });
+
+  it("keeps the required disposition warning loud when no live continuation exists", () => {
+    const comment: IssueChatComment = {
+      id: "comment-stuck-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-source",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-source",
+        sections: [],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "in_progress",
+      successfulRunHandoff: {
+        state: "required",
+        required: true,
+        hasLiveContinuation: false,
+        sourceRunId: "run-source",
+        correctiveRunId: null,
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    expect(container.querySelector('[data-testid="stale-disposition-warning"]')).toBeNull();
+    expect(container.textContent).toContain("Paperclip needs a disposition before this issue can continue.");
+  });
 });

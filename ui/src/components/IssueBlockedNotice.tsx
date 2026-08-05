@@ -16,6 +16,7 @@ import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
 import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { Badge } from "@/components/ui/badge";
 import {
   deriveActiveRecoveryDisplayState,
@@ -379,7 +380,14 @@ export function IssueBlockedNotice({
   agentName?: string | null;
 }) {
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
-  const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
+  // A live run on this issue means an agent is already handling it — the
+  // missing-disposition complaint only applies when the issue is stuck.
+  // `hasLiveContinuation` is the server's view; `liveIssueIds` catches runs
+  // that started after the issue payload was fetched.
+  const showSuccessfulRunHandoff =
+    successfulRunHandoff != null
+    && isSuccessfulRunHandoffRequired({ successfulRunHandoff, scheduledRetry })
+    && !(issueId && liveIssueIds?.has(issueId));
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
   const successfulRunRetryNow = showSuccessfulRunHandoff
     && issueId

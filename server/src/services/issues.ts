@@ -3891,7 +3891,7 @@ async function listIssueBlockedInboxAttentionMap(
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
     const hasLiveHandoffContinuation = Boolean(
-      handoff?.state === "required"
+      (handoff?.state === "required" || handoff?.state === "escalated")
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
