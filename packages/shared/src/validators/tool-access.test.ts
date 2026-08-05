@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionTokenRequestSchema,
+  createOutlookInboxMetadataConnectionSchema,
   createToolConnectionSchema,
   startConnectionAuthorizationSchema,
   toolCredentialSecretRefSchema,
@@ -64,6 +65,26 @@ describe("tool access validators", () => {
     });
 
     expect(parsed.success).toBe(true);
+  });
+
+  it("accepts only the three fixed Outlook OAuth secret-reference bindings", () => {
+    const base = {
+      name: "Outlook Inbox metadata",
+      mailbox: "approved@example.test",
+      credentialSecretRefs: [
+        { secretId: "11111111-1111-4111-8111-111111111111", configPath: "oauth.tenant_id" },
+        { secretId: "22222222-2222-4222-8222-222222222222", configPath: "oauth.client_id" },
+        { secretId: "33333333-3333-4333-8333-333333333333", configPath: "oauth.client_secret" },
+      ],
+    };
+    expect(createOutlookInboxMetadataConnectionSchema.safeParse(base).success).toBe(true);
+    expect(createOutlookInboxMetadataConnectionSchema.safeParse({
+      ...base,
+      credentialSecretRefs: [...base.credentialSecretRefs.slice(0, 2), {
+        secretId: "33333333-3333-4333-8333-333333333333",
+        configPath: "oauth.access_token",
+      }],
+    }).success).toBe(false);
   });
 
   it("keeps invocation payload summaries redacted and bounded", () => {

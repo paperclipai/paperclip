@@ -4,6 +4,7 @@ import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companySecretBindings,
   approvals,
   documents,
   heartbeatRuns,
@@ -57,6 +58,7 @@ import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { executeOutlookInboxMetadata } from "./outlook-inbox-metadata.js";
 import {
   createToolRuntimeSupervisor,
   ToolRuntimeSupervisorError,
@@ -115,7 +117,8 @@ export type ToolGatewayProviderType =
   | "mcp_local_stdio"
   | "paperclip_self"
   | "paperclip_plugin"
-  | "paperclip_virtual";
+  | "paperclip_virtual"
+  | "outlook_inbox_metadata";
 
 export interface ConnectedMcpGatewayMetadata {
   applicationId: string;
@@ -941,6 +944,43 @@ export function createToolGatewayService(
   async function connectedMcpToolsForConnection(companyId: string, connectionId: string): Promise<ToolGatewayDescriptor[]> {
     return (await connectedMcpToolsForCompany(companyId))
       .filter((tool) => tool.connectionId === connectionId);
+  }
+
+  function isActivatedOutlookInboxMetadataConnection(connection: typeof toolConnections.$inferSelect) {
+    const config = asRecord(connection.config);
+    const outlook = asRecord(config?.outlookInboxMetadata);
+    return connection.transport === "rest_api"
+      && connection.status === "active"
+      && connection.enabled
+      && typeof outlook?.mailbox === "string"
+      && typeof outlook?.independentReviewIssueId === "string";
+  }
+
+  async function connectedOutlookInboxMetadataToolsForCompany(companyId: string): Promise<ToolGatewayDescriptor[]> {
+    const rows = await db.select({ connection: toolConnections, application: toolApplications })
+      .from(toolConnections)
+      .innerJoin(toolApplications, eq(toolConnections.applicationId, toolApplications.id))
+      .where(and(
+        eq(toolConnections.companyId, companyId),
+        eq(toolApplications.companyId, companyId),
+        eq(toolApplications.status, "active"),
+        eq(toolConnections.transport, "rest_api"),
+      ));
+    return rows.filter(({ connection }) => isActivatedOutlookInboxMetadataConnection(connection)).map(({ connection, application }) => ({
+      name: `outlook.${shortStableId(connection.id)}:inbox_metadata`,
+      displayName: "Read Outlook Inbox metadata",
+      description: "Reads at most one Inbox message's id and received date/time. No subject, sender, body, preview, attachment, draft, send, or mutation is supported.",
+      parametersSchema: { type: "object", properties: {}, additionalProperties: false },
+      pluginId: "paperclip.outlook-inbox-metadata",
+      providerType: "outlook_inbox_metadata" as const,
+      risk: "read" as const,
+      applicationId: application.id,
+      applicationKey: application.applicationKey,
+      applicationDisplayName: application.name,
+      connectionId: connection.id,
+      upstreamToolName: "outlook.inbox_metadata",
+      providerMetadata: { operation: "outlook_inbox_metadata", connectionId: connection.id },
+    }));
   }
 
   async function assertAgentInCompany(companyId: string, agentId: string): Promise<void> {
@@ -1903,7 +1943,10 @@ export function createToolGatewayService(
     if (session.agentId) {
       await assertAgentInCompany(session.companyId, session.agentId);
     }
-    const allConnectedTools = await connectedMcpToolsForCompany(session.companyId);
+    const allConnectedTools = [
+      ...await connectedMcpToolsForCompany(session.companyId),
+      ...await connectedOutlookInboxMetadataToolsForCompany(session.companyId),
+    ];
     const onDemandTargets = allConnectedTools.filter(isOnDemandRemoteTool);
     const tools = [...allTools(), ...allConnectedTools.filter((tool) => !isOnDemandRemoteTool(tool))].filter(
       (tool) => session.agentId || (tool.providerType !== "paperclip_self" && tool.providerType !== "paperclip_plugin"),
@@ -2085,6 +2128,76 @@ export function createToolGatewayService(
     }
 
     throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+  }
+
+  async function executeOutlookInboxMetadataTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor, parameters: unknown) {
+    if (tool.providerType !== "outlook_inbox_metadata" || !tool.connectionId) {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    const [connection] = await db.select().from(toolConnections).where(and(
+      eq(toolConnections.id, tool.connectionId),
+      eq(toolConnections.companyId, session.companyId),
+    )).limit(1);
+    if (!connection || !isActivatedOutlookInboxMetadataConnection(connection)) {
+      throw new ToolGatewayHttpError(403, "Outlook Inbox metadata connection is disabled.", "outlook_connection_disabled");
+    }
+    try {
+      const result = await executeOutlookInboxMetadata({
+        connection,
+        parameters,
+        resolveSecret: (companyId, secretId, version, context) => secrets.resolveSecretValue(companyId, secretId, version, context),
+        storeAccessToken: async (accessToken) => {
+          const existingRef = connection.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+          if (existingRef) {
+            await secrets.rotate(existingRef.secretId, { value: accessToken });
+          } else {
+            const secret = await secrets.create(connection.companyId, {
+              name: `${connection.name} OAuth access token ${randomUUID().slice(0, 8)}`,
+              key: `tool_app.${randomUUID()}.oauth_access_token`,
+              provider: "local_encrypted",
+              value: accessToken,
+              description: `OAuth access token for ${connection.name}.`,
+            });
+            const nextRef = {
+              secretId: secret.id,
+              versionSelector: "latest" as const,
+              configPath: "oauth.access_token",
+              required: true,
+              label: "OAuth access token",
+            };
+            await db.update(toolConnections).set({
+              credentialSecretRefs: [...connection.credentialSecretRefs, nextRef],
+              updatedAt: new Date(),
+            }).where(eq(toolConnections.id, connection.id));
+            await db.insert(companySecretBindings).values({
+              companyId: connection.companyId,
+              secretId: secret.id,
+              targetType: "tool_connection",
+              targetId: connection.id,
+              configPath: "oauth.access_token",
+              projectionClass: "unclassified",
+              projectionAllowlistKey: null,
+            });
+          }
+        },
+        audit: (event) => writeAudit({
+          session,
+          companyId: session.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.outlook_inbox_metadata",
+          details: { connectionId: connection.id, ...event },
+        }),
+      });
+      return { content: JSON.stringify(result), data: result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Outlook Inbox metadata request failed.";
+      const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
+        ? error.code
+        : "outlook_inbox_metadata_failed";
+      throw new ToolGatewayHttpError(502, message, code, { connectionId: connection.id });
+    }
   }
 
   function remoteEndpoint(config: Record<string, unknown>): string {
@@ -3768,12 +3881,15 @@ export function createToolGatewayService(
           : args.tool.providerType === "mcp_local_stdio"
             ? await executeLocalStdioTool(args.session, args.tool, args.parameters, executionTimeoutMs)
             : null;
-      if (!connectedMcpExecution) {
+      const outlookExecution = args.tool.providerType === "outlook_inbox_metadata"
+        ? await executeOutlookInboxMetadataTool(args.session, args.tool, args.parameters)
+        : null;
+      if (!connectedMcpExecution && !outlookExecution) {
         throw new ToolGatewayHttpError(404, `Tool "${args.tool.name}" not found`, "tool_not_found", {
           tool: args.tool.name,
         });
       }
-      const result = connectedMcpExecution.result;
+      const result = connectedMcpExecution?.result ?? outlookExecution!;
       const resultValidation = validateToolContent({
         value: result,
         direction: "result",
@@ -5787,9 +5903,14 @@ export function createToolGatewayService(
             : tool.providerType === "mcp_local_stdio"
             ? await executeLocalStdioTool(session, tool, effectiveParameters, executionTimeoutMs)
             : null;
+        const outlookExecution = tool.providerType === "outlook_inbox_metadata"
+          ? await executeOutlookInboxMetadataTool(session, tool, effectiveParameters)
+          : null;
         const result =
           connectedMcpExecution
             ? connectedMcpExecution.result
+            : outlookExecution
+            ? outlookExecution
             : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(

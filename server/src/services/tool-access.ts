@@ -115,6 +115,7 @@ import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remot
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
+import { validateOutlookInboxMetadataConnection } from "./outlook-inbox-metadata.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
@@ -5571,12 +5572,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
       if (transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
+      if (transport === "rest_api") {
+        validateOutlookInboxMetadataConnection({
+          id: "pending",
+          companyId,
+          config,
+          credentialSecretRefs: input.credentialSecretRefs ?? [],
+        });
+        if (input.enabled === true || input.status === "active") {
+          throw unprocessable("Outlook Inbox metadata connections are created disabled pending independent review", {
+            code: "outlook_independent_review_required",
+          });
+        }
+      }
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
         applicationNamespace = app.applicationKey ?? app.name;
-        if ((transport === "mcp_remote" && app.type !== "mcp_http") || (transport === "local_stdio" && app.type !== "mcp_stdio")) {
+        if ((transport === "mcp_remote" && app.type !== "mcp_http")
+          || (transport === "local_stdio" && app.type !== "mcp_stdio")
+          || (transport === "rest_api" && app.type !== "mcp_http")) {
           throw unprocessable("Connection transport must match application type");
         }
       } else {
@@ -5584,7 +5600,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           companyId,
           applicationKey: normalizeKey(input.applicationName ?? input.name),
           name: input.applicationName ?? input.name,
-          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+          type: transport === "local_stdio" ? "mcp_stdio" : "mcp_http",
           status: "active",
           metadata: {},
         }).returning();
@@ -5601,7 +5617,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connectionKind: input.connectionKind ?? "managed",
         ownership: input.ownership ?? "customer",
         transport,
-        authKind: input.authKind ?? "none",
+        authKind: transport === "rest_api" ? "oauth" : input.authKind ?? "none",
         status: input.status ?? "draft",
         enabled: input.enabled ?? false,
         config,
@@ -5805,6 +5821,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
+      const isOutlookInboxMetadata = Boolean(asRecord(existing.config).outlookInboxMetadata);
+      if (isOutlookInboxMetadata) {
+        validateOutlookInboxMetadataConnection({
+          id: existing.id,
+          companyId: existing.companyId,
+          config,
+          credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
+        });
+        if (input.enabled === true || input.status === "active") {
+          throw unprocessable("Outlook Inbox metadata activation requires a recorded independent review", {
+            code: "outlook_independent_review_required",
+          });
+        }
+      }
       if (existing.transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
@@ -5827,6 +5857,40 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await syncCredentialBindings(row);
       await ensureRuntimeSlot(row);
       return toConnection(row);
+    },
+
+    activateOutlookInboxMetadataConnection: async (connectionId: string, independentReviewIssueId: string): Promise<ToolConnection> => {
+      const existing = await getConnectionRow(connectionId);
+      if (existing.transport !== "rest_api") throw notFound("Outlook Inbox metadata connection not found");
+      validateOutlookInboxMetadataConnection({
+        id: existing.id,
+        companyId: existing.companyId,
+        config: existing.config,
+        credentialSecretRefs: existing.credentialSecretRefs,
+      });
+      const [review] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, independentReviewIssueId),
+        eq(issues.companyId, existing.companyId),
+        eq(issues.status, "done"),
+      ));
+      if (!review) {
+        throw unprocessable("A completed independent review in this company is required before activation", {
+          code: "outlook_independent_review_required",
+        });
+      }
+      const [row] = await db.update(toolConnections).set({
+        status: "active",
+        enabled: true,
+        config: {
+          ...existing.config,
+          outlookInboxMetadata: {
+            ...asRecord(existing.config).outlookInboxMetadata as Record<string, unknown>,
+            independentReviewIssueId,
+          },
+        },
+        updatedAt: new Date(),
+      }).where(eq(toolConnections.id, existing.id)).returning();
+      return toConnection(row!);
     },
 
     archiveConnection: async (connectionId: string): Promise<ToolConnection> => {

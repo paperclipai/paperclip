@@ -7,7 +7,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
-import { toolsApi, type CreateToolConnectionInput } from "@/api/tools";
+import { toolsApi, type CreateOutlookInboxMetadataConnectionInput, type CreateToolConnectionInput } from "@/api/tools";
 import { secretsApi } from "@/api/secrets";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -112,6 +112,79 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
 }
 
 type CredentialDraft = { secretId: string; headerName: string };
+
+/**
+ * Board-only draft setup for the fixed native Outlook operation. It presents
+ * secret metadata/IDs only and intentionally has no probe or activation path.
+ */
+export function OutlookInboxMetadataSetupDialog({ companyId, onClose }: { companyId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { pushToast } = useToast();
+  const secrets = useQuery({
+    queryKey: queryKeys.secrets.list(companyId),
+    queryFn: () => secretsApi.list(companyId),
+  });
+  const [name, setName] = useState("Outlook Inbox metadata");
+  const [mailbox, setMailbox] = useState("");
+  const [tenantSecretId, setTenantSecretId] = useState("");
+  const [clientIdSecretId, setClientIdSecretId] = useState("");
+  const [clientSecretId, setClientSecretId] = useState("");
+  const create = useMutation({
+    mutationFn: () => {
+      const credentialSecretRefs: CreateOutlookInboxMetadataConnectionInput["credentialSecretRefs"] = [
+        { secretId: tenantSecretId, configPath: "oauth.tenant_id", required: true, label: "Microsoft tenant ID" },
+        { secretId: clientIdSecretId, configPath: "oauth.client_id", required: true, label: "Microsoft client ID" },
+        { secretId: clientSecretId, configPath: "oauth.client_secret", required: true, label: "Microsoft client secret" },
+      ];
+      return toolsApi.createOutlookInboxMetadataConnection(companyId, { name: name.trim(), mailbox: mailbox.trim(), credentialSecretRefs });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) });
+      qc.invalidateQueries({ queryKey: queryKeys.tools.applications(companyId) });
+      pushToast({ title: "Outlook metadata draft created", body: "It remains disabled until an independent review is recorded.", tone: "success" });
+      onClose();
+    },
+    onError: (err) => pushToast({ title: "Could not create Outlook draft", body: err instanceof ApiError ? err.message : String(err), tone: "error" }),
+  });
+  const canCreate = name.trim().length > 0 && mailbox.trim().length > 0 && tenantSecretId && clientIdSecretId && clientSecretId && !create.isPending;
+  const secretOptions = secrets.data ?? [];
+  const secretLabel = (secret: CompanySecret) => `${secret.name} · ${secret.provider}`;
+  const bindingSelect = (label: string, value: string, setValue: (next: string) => void) => (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <Select value={value} onValueChange={setValue}>
+        <SelectTrigger><SelectValue placeholder="Select existing secret" /></SelectTrigger>
+        <SelectContent>
+          {secretOptions.map((secret) => <SelectItem key={secret.id} value={secret.id}>{secretLabel(secret)}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Set up Outlook Inbox metadata</DialogTitle>
+          <DialogDescription>Creates a disabled, read-only draft. This form stores secret references, never secret values, and makes no Microsoft or mailbox call.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-md border border-border bg-muted p-3 text-sm text-foreground">
+            Uses OAuth client credentials and requires Mail.ReadBasic.All with mailbox-scoped Exchange RBAC where available. The operation can read only one Inbox item’s id and received date/time; it cannot activate until independent review is recorded.
+          </div>
+          <div className="space-y-1.5"><Label>Connection name</Label><Input value={name} onChange={(event) => setName(event.target.value)} /></div>
+          <div className="space-y-1.5"><Label>Approved mailbox</Label><Input value={mailbox} onChange={(event) => setMailbox(event.target.value)} placeholder="mailbox@example.com" /></div>
+          {bindingSelect("Tenant ID secret", tenantSecretId, setTenantSecretId)}
+          {bindingSelect("Client ID secret", clientIdSecretId, setClientIdSecretId)}
+          {bindingSelect("Client secret", clientSecretId, setClientSecretId)}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button disabled={!canCreate} onClick={() => create.mutate()}>Create disabled draft</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /** Probe outcome captured before activation: health + discovered tool count + round-trip latency. */
 type ProbeResult = {

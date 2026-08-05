@@ -1876,6 +1876,8 @@ export {
   finishToolAppSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
+  createOutlookInboxMetadataConnectionSchema,
+  activateOutlookInboxMetadataConnectionSchema,
   createToolMcpGatewaySchema,
   createToolMcpGatewayTokenSchema,
   createToolStdioCommandTemplateSchema,

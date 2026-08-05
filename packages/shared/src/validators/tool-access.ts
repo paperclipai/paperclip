@@ -167,6 +167,27 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
 
+/** Setup input for the only native Outlook action. Secret values are never accepted. */
+export const createOutlookInboxMetadataConnectionSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  mailbox: z.string().trim().min(3).max(320),
+  credentialSecretRefs: z.array(toolCredentialSecretRefSchema).length(3).superRefine((refs, ctx) => {
+    const expected = ["oauth.client_id", "oauth.client_secret", "oauth.tenant_id"];
+    const actual = refs.map((ref) => ref.configPath).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Outlook Inbox metadata requires exactly oauth.tenant_id, oauth.client_id, and oauth.client_secret secret references." });
+    }
+  }),
+}).strict();
+
+export type CreateOutlookInboxMetadataConnection = z.infer<typeof createOutlookInboxMetadataConnectionSchema>;
+
+export const activateOutlookInboxMetadataConnectionSchema = z.object({
+  independentReviewIssueId: z.string().uuid(),
+}).strict();
+
+export type ActivateOutlookInboxMetadataConnection = z.infer<typeof activateOutlookInboxMetadataConnectionSchema>;
+
 export const connectionGrantSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),

@@ -13,6 +13,8 @@ import {
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
   createToolConnectionSchema,
+  createOutlookInboxMetadataConnectionSchema,
+  activateOutlookInboxMetadataConnectionSchema,
   createToolPolicySchema,
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
@@ -554,6 +556,63 @@ export function toolAccessRoutes(
       svc.ensureNoDuplicateNameError(error);
     }
   });
+
+  // This setup endpoint accepts existing vault *references* and a mailbox
+  // identifier only. It deliberately creates a disabled draft and makes no
+  // OAuth, Microsoft, Graph, or mailbox request.
+  router.post(
+    "/companies/:companyId/tools/outlook-inbox-metadata",
+    validate(createOutlookInboxMetadataConnectionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertBoardToolPermission(req, companyId, "tools:manage_connections");
+      const connection = await svc.createConnection(companyId, {
+        name: req.body.name,
+        applicationName: "Outlook Inbox Metadata",
+        transport: "rest_api",
+        authKind: "oauth",
+        status: "draft",
+        enabled: false,
+        config: { outlookInboxMetadata: { mailbox: req.body.mailbox } },
+        credentialSecretRefs: req.body.credentialSecretRefs,
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_connection.created",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: {
+          operation: "outlook_inbox_metadata",
+          status: "draft",
+          enabled: false,
+          credentialRefCount: connection.credentialSecretRefs.length,
+        },
+      });
+      res.status(201).json(connection);
+    },
+  );
+
+  router.post(
+    "/tool-connections/:connectionId/outlook-inbox-metadata/activate",
+    validate(activateOutlookInboxMetadataConnectionSchema),
+    async (req, res) => {
+      const existing = await svc.getConnection(req.params.connectionId as string);
+      await assertBoardToolPermission(req, existing.companyId, "tools:manage_connections");
+      const connection = await svc.activateOutlookInboxMetadataConnection(existing.id, req.body.independentReviewIssueId);
+      await logActivity(db, {
+        companyId: connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_connection.updated",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { operation: "outlook_inbox_metadata", lifecycle: "activated_after_independent_review" },
+      });
+      res.json(connection);
+    },
+  );
 
   router.get("/tool-connections/:connectionId", async (req, res) => {
     assertBoard(req);

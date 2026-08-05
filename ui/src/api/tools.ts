@@ -129,6 +129,18 @@ export interface UpdateToolConnectionInput {
   enabled?: boolean;
 }
 
+export interface CreateOutlookInboxMetadataConnectionInput {
+  name: string;
+  mailbox: string;
+  credentialSecretRefs: Array<{
+    secretId: string;
+    versionSelector?: "latest" | number;
+    configPath: "oauth.tenant_id" | "oauth.client_id" | "oauth.client_secret";
+    required?: boolean;
+    label?: string | null;
+  }>;
+}
+
 export interface ToolProfileEntryInput {
   selectorType: ToolProfileEntrySelectorType;
   effect?: ToolProfileEntryEffect;
@@ -287,6 +299,10 @@ export const toolsApi = {
     ),
   createConnection: (companyId: string, input: CreateToolConnectionInput) =>
     api.post<ToolConnection>(`/companies/${companyId}/tools/connections`, input),
+  createOutlookInboxMetadataConnection: (companyId: string, input: CreateOutlookInboxMetadataConnectionInput) =>
+    api.post<ToolConnection>(`/companies/${companyId}/tools/outlook-inbox-metadata`, input),
+  activateOutlookInboxMetadataConnection: (connectionId: string, independentReviewIssueId: string) =>
+    api.post<ToolConnection>(`/tool-connections/${connectionId}/outlook-inbox-metadata/activate`, { independentReviewIssueId }),
   updateConnection: (connectionId: string, input: UpdateToolConnectionInput) =>
     api.patch<ToolConnection>(`/tool-connections/${connectionId}`, input),
   archiveConnection: (connectionId: string) =>

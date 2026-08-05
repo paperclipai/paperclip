@@ -28,6 +28,7 @@ import {
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
 import { AdvancedToolsLink } from "./store-cards";
+import { OutlookInboxMetadataSetupDialog } from "@/pages/tools/connection-dialogs";
 
 const BROWSE_HREF = "/apps/browse";
 
@@ -87,6 +88,7 @@ export function Connections() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const reviewCount = useReviewCount();
   const [filter, setFilter] = useState<StatusFilter>("all");
+  const [outlookSetupOpen, setOutlookSetupOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -201,7 +203,10 @@ export function Connections() {
           <Skeleton className="h-64 w-full" />
         </div>
       ) : rows.length === 0 ? (
-        <EmptyConnections onBrowse={() => navigate(BROWSE_HREF)} />
+        <>
+          <EmptyConnections onBrowse={() => navigate(BROWSE_HREF)} onOutlookSetup={() => setOutlookSetupOpen(true)} />
+          {outlookSetupOpen ? <OutlookInboxMetadataSetupDialog companyId={selectedCompanyId} onClose={() => setOutlookSetupOpen(false)} /> : null}
+        </>
       ) : (
         <div className="space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
@@ -211,7 +216,10 @@ export function Connections() {
                 The tools you’ve connected, and whether they’re working.
               </p>
             </div>
-            <Button onClick={() => navigate(BROWSE_HREF)}>Connect an app</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setOutlookSetupOpen(true)}>Set up Outlook metadata</Button>
+              <Button onClick={() => navigate(BROWSE_HREF)}>Connect an app</Button>
+            </div>
           </header>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -366,6 +374,7 @@ export function Connections() {
             </p>
             <AdvancedToolsLink />
           </div>
+          {outlookSetupOpen ? <OutlookInboxMetadataSetupDialog companyId={selectedCompanyId} onClose={() => setOutlookSetupOpen(false)} /> : null}
         </div>
       )}
     </div>
@@ -419,7 +428,7 @@ function floatSummary(rows: AppRow[]): string {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-function EmptyConnections({ onBrowse }: { onBrowse: () => void }) {
+function EmptyConnections({ onBrowse, onOutlookSetup }: { onBrowse: () => void; onOutlookSetup: () => void }) {
   return (
     <div className="space-y-6">
       <header>
@@ -438,9 +447,10 @@ function EmptyConnections({ onBrowse }: { onBrowse: () => void }) {
           Add one from <span className="font-medium text-foreground">Apps</span> to give your agents
           the tools they need.
         </p>
-        <Button className="mt-6" onClick={onBrowse}>
-          Browse apps
-        </Button>
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <Button onClick={onBrowse}>Browse apps</Button>
+          <Button variant="outline" onClick={onOutlookSetup}>Set up Outlook metadata</Button>
+        </div>
       </div>
     </div>
   );
