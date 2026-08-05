@@ -82,6 +82,43 @@ describe("heartbeat agent start lock", () => {
     expect(skipped).not.toHaveBeenCalled();
   });
 
+  it("caps the hung-start chain: when the holder AND its takeover both hang, later attempts skip until one settles", async () => {
+    vi.useFakeTimers();
+
+    const agentId = randomUUID();
+    let releaseTakeover: () => void = () => undefined;
+    const hungHolder = vi.fn(() => new Promise<void>(() => undefined));
+    const hungTakeover = vi.fn(
+      () => new Promise<string>((resolve) => {
+        releaseTakeover = () => resolve("takeover-finished");
+      }),
+    );
+    const blocked = vi.fn(async () => "blocked");
+    const afterSettle = vi.fn(async () => "after-settle");
+
+    void withAgentStartLock(agentId, hungHolder);
+    await Promise.resolve();
+    const takeoverResult = withAgentStartLock(agentId, hungTakeover);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(hungTakeover).toHaveBeenCalledTimes(1);
+
+    // Holder and takeover are both in flight. Every further attempt must skip,
+    // however many stale windows pass — this is the unbounded-chain scenario.
+    for (let i = 0; i < 3; i += 1) {
+      await expect(withAgentStartLock(agentId, blocked)).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    expect(blocked).not.toHaveBeenCalled();
+
+    // As soon as one in-flight start settles, admission resumes.
+    releaseTakeover();
+    await expect(takeoverResult).resolves.toBe("takeover-finished");
+    const resumed = withAgentStartLock(agentId, afterSettle);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(resumed).resolves.toBe("after-settle");
+    expect(afterSettle).toHaveBeenCalledTimes(1);
+  });
+
   it("serialises cleanly when the holder finishes normally: later attempts run without skipping", async () => {
     const agentId = randomUUID();
 

@@ -10,6 +10,13 @@ const startLocksByAgent = new Map<string, { promise: Promise<void>; startedAtMs:
 // unbounded concurrent claim+spawn sequences onto an already-degraded process
 // (#9360).
 const pendingStartWaiters = new Set<string>();
+// In-flight start callbacks per agent. Bounds the hung-start chain: the stale
+// window admits one takeover past a hung holder (liveness), but if that
+// takeover hangs too, further attempts must NOT keep acquiring stale timeouts
+// forever -- at most holder + one takeover run concurrently, and everything
+// else skips until one of them settles.
+const activeStartCounts = new Map<string, number>();
+const MAX_CONCURRENT_STARTS_PER_AGENT = 2;
 
 async function waitForAgentStartLock(agentId: string, lock: { promise: Promise<void>; startedAtMs: number }) {
   const elapsedMs = Date.now() - lock.startedAtMs;
@@ -49,12 +56,35 @@ export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T
       );
       return undefined;
     }
+    if ((activeStartCounts.get(agentId) ?? 0) >= MAX_CONCURRENT_STARTS_PER_AGENT) {
+      // The holder AND a stale takeover are both still running. Admitting more
+      // attempts would let each later stale window add another concurrent
+      // start, unbounded. Skip until one of the in-flight starts settles.
+      logger.warn(
+        { agentId, activeStarts: activeStartCounts.get(agentId) },
+        "agent already has the maximum concurrent start attempts in flight; skipping this queued-run start",
+      );
+      return undefined;
+    }
     pendingStartWaiters.add(agentId);
   }
   const waitForPrevious = previous
     ? waitForAgentStartLock(agentId, previous).finally(() => pendingStartWaiters.delete(agentId))
     : Promise.resolve();
-  const run = waitForPrevious.then(fn);
+  const run = waitForPrevious.then(() => {
+    activeStartCounts.set(agentId, (activeStartCounts.get(agentId) ?? 0) + 1);
+    const decrementActiveStarts = () => {
+      const remaining = (activeStartCounts.get(agentId) ?? 1) - 1;
+      if (remaining <= 0) activeStartCounts.delete(agentId);
+      else activeStartCounts.set(agentId, remaining);
+    };
+    try {
+      return fn().finally(decrementActiveStarts);
+    } catch (err) {
+      decrementActiveStarts();
+      throw err;
+    }
+  });
   const marker = run.then(
     () => undefined,
     () => undefined,
