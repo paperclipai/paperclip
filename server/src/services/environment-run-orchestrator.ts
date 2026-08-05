@@ -376,7 +376,8 @@ export function environmentRunOrchestrator(
       requestedMode: persistedExecutionWorkspace?.mode ?? effectiveExecutionWorkspaceMode,
       workspace: executionWorkspace,
       workspaceConfig: persistedExecutionWorkspace?.config ?? null,
-      repositoryStrategy: environment.driver === "sandbox" ? "sandbox_repository" : null,
+      repositoryStrategy:
+        executionWorkspace.strategy === "sandbox_repository" ? "sandbox_repository" : null,
       repositoryCredentialsRequired: executionWorkspace.repositoryCredentialsRequired,
       repositoryCredentialSecretName: input.repositoryCredentialSecretName,
     });
