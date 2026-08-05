@@ -351,6 +351,42 @@ describe("agent routes adapter validation", () => {
     );
   });
 
+  it("accepts the canonical dashed Antigravity model ID when updating an agent", async () => {
+    mockAgentService.getById.mockResolvedValueOnce({
+      ...(await mockAgentService.getById()),
+      adapterType: "antigravity_local",
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "claude-opus-4-6-thinking" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect((patch.adapterConfig as Record<string, unknown>).model).toBe("claude-opus-4-6-thinking");
+  });
+
+  it("rejects an unknown Antigravity model and lists the valid IDs", async () => {
+    mockAgentService.getById.mockResolvedValueOnce({
+      ...(await mockAgentService.getById()),
+      adapterType: "antigravity_local",
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { model: "claude-not-a-real-antigravity-model" } }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      'Invalid adapterConfig.model "claude-not-a-real-antigravity-model" for antigravity_local.',
+    );
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain("claude-opus-4-6-thinking");
+  });
+
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const app = await createApp();
