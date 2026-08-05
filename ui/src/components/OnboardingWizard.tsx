@@ -1,6 +1,10 @@
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type {
+  AdapterEnvironmentCheck,
+  AdapterEnvironmentTestResult
+} from "@paperclipai/shared";
+import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -47,6 +51,7 @@ import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
+import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -71,6 +76,52 @@ const MISSION_PROMPT_CHIPS = [
   "Scale a content business",
   "Launch a marketplace"
 ];
+
+type CredentialBinding = { type: "secret_ref"; secretId: string };
+
+/**
+ * Merges guided-credential-connect bindings into a base adapter config's
+ * `env`, scoped to the *current* adapter's credential-setup envKeys.
+ *
+ * `credentialBindings` accumulates across the whole wizard session (a user
+ * can pick claude_local, bind ANTHROPIC_API_KEY, then switch to
+ * gemini_local) — without filtering, a binding collected under a
+ * previously-selected adapter would leak into the config of whichever
+ * adapter the user ends up hiring. Only entries whose envKey appears in the
+ * current adapter's `credentialSetup` options survive the merge.
+ *
+ * Also merges on top of `baseConfig.env` (rather than replacing it) so
+ * unrelated env entries already produced by `buildAdapterConfig` — notably
+ * the `forceUnsetAnthropicApiKey` plain-value marker — survive alongside
+ * the bindings. If there's nothing to merge (no matching bindings and no
+ * base env), `env` is omitted entirely to preserve the existing
+ * regression-guarded "no env key when nothing is bound" behavior.
+ */
+function mergeCredentialBindings(
+  baseConfig: Record<string, unknown>,
+  bindings: Record<string, CredentialBinding>,
+  setup: AdapterCredentialSetup | undefined
+): Record<string, unknown> {
+  const allowedEnvKeys = new Set((setup?.options ?? []).map((option) => option.envKey));
+  const filteredBindings = Object.fromEntries(
+    Object.entries(bindings).filter(([envKey]) => allowedEnvKeys.has(envKey))
+  );
+  const baseEnv =
+    typeof baseConfig.env === "object" &&
+    baseConfig.env !== null &&
+    !Array.isArray(baseConfig.env)
+      ? (baseConfig.env as Record<string, unknown>)
+      : undefined;
+
+  if (Object.keys(filteredBindings).length === 0 && !baseEnv) {
+    return baseConfig;
+  }
+
+  return {
+    ...baseConfig,
+    env: { ...(baseEnv ?? {}), ...filteredBindings }
+  };
+}
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
@@ -180,6 +231,14 @@ export function OnboardingWizard() {
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  const [credentialBindings, setCredentialBindings] = useState<
+    Record<string, { type: "secret_ref"; secretId: string }>
+  >(
+    (saved?.credentialBindings as Record<
+      string,
+      { type: "secret_ref"; secretId: string }
+    >) ?? {}
+  );
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -238,6 +297,7 @@ export function OnboardingWizard() {
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
+      credentialBindings,
     };
     localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
   }, [
@@ -246,6 +306,7 @@ export function OnboardingWizard() {
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
+    credentialBindings,
   ]);
 
   const {
@@ -277,6 +338,7 @@ export function OnboardingWizard() {
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
+  const credentialSetup = getUIAdapter(adapterType)?.credentialSetup;
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
@@ -521,7 +583,9 @@ export function OnboardingWizard() {
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
+          adapterConfig:
+            adapterConfigOverride ??
+            mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup)
         }
       );
       setAdapterEnvResult(result);
@@ -534,6 +598,22 @@ export function OnboardingWizard() {
     } finally {
       setAdapterEnvLoading(false);
     }
+  }
+
+  // Guided BYOK credential connect (step 4): bind an env key to a freshly
+  // created company secret, then re-run the environment check with the
+  // fresh binding included (passed explicitly rather than relying on
+  // credentialBindings state, which wouldn't have re-rendered yet).
+  function handleCredentialBind(envKey: string, secretId: string) {
+    const nextBindings = {
+      ...credentialBindings,
+      [envKey]: { type: "secret_ref" as const, secretId }
+    };
+    setCredentialBindings(nextBindings);
+    setAdapterEnvResult(null);
+    void runAdapterEnvironmentTest(
+      mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
+    );
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
@@ -629,7 +709,7 @@ export function OnboardingWizard() {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -1443,6 +1523,17 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
+                  {credentialSetup && createdCompanyId && (
+                    <AdapterCredentialConnect
+                      key={adapterType}
+                      companyId={createdCompanyId}
+                      adapterType={adapterType}
+                      setup={credentialSetup}
+                      boundEnvKeys={Object.keys(credentialBindings)}
+                      onBind={handleCredentialBind}
+                    />
+                  )}
+
                   {isLocalAdapter && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       <div className="flex items-center justify-between gap-2">
@@ -1472,12 +1563,27 @@ export function OnboardingWizard() {
                         </div>
                       )}
 
-                      {adapterEnvResult &&
-                      adapterEnvResult.status === "pass" ? (
-                        <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                          <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
-                        </div>
+                      {adapterEnvResult && adapterEnvResult.status === "pass" ? (
+                        <>
+                          <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                            <Check className="h-3.5 w-3.5 shrink-0" />
+                            <span className="font-medium">Passed</span>
+                          </div>
+                          {adapterEnvResult.checks.some(
+                            (check) => check.level === "warn"
+                          ) && (
+                            <div className="rounded-md border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-2.5 py-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300 space-y-1">
+                              {adapterEnvResult.checks
+                                .filter((check) => check.level === "warn")
+                                .map((check, idx) => (
+                                  <AdapterEnvironmentCheckRow
+                                    key={`${check.code}-${idx}`}
+                                    check={check}
+                                  />
+                                ))}
+                            </div>
+                          )}
+                        </>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
                       ) : null}
@@ -1762,28 +1868,38 @@ function AdapterEnvironmentResult({
       </div>
       <div className="mt-1.5 space-y-1">
         {result.checks.map((check, idx) => (
-          <div
+          <AdapterEnvironmentCheckRow
             key={`${check.code}-${idx}`}
-            className="leading-relaxed break-words"
-          >
-            <span className="font-medium uppercase tracking-wide opacity-80">
-              {check.level}
-            </span>
-            <span className="mx-1 opacity-60">·</span>
-            <span>{check.message}</span>
-            {check.detail && (
-              <span className="block opacity-75 break-all">
-                ({check.detail})
-              </span>
-            )}
-            {check.hint && (
-              <span className="block opacity-90 break-words">
-                Hint: {check.hint}
-              </span>
-            )}
-          </div>
+            check={check}
+          />
         ))}
       </div>
+    </div>
+  );
+}
+
+function AdapterEnvironmentCheckRow({
+  check
+}: {
+  check: AdapterEnvironmentCheck;
+}) {
+  return (
+    <div className="leading-relaxed break-words">
+      <span className="font-medium uppercase tracking-wide opacity-80">
+        {check.level}
+      </span>
+      <span className="mx-1 opacity-60">·</span>
+      <span>{check.message}</span>
+      {check.detail && (
+        <span className="block opacity-75 break-all">
+          ({check.detail})
+        </span>
+      )}
+      {check.hint && (
+        <span className="block opacity-90 break-words">
+          Hint: {check.hint}
+        </span>
+      )}
     </div>
   );
 }
