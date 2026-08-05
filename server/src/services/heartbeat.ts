@@ -183,6 +183,7 @@ import {
 } from "./issue-continuation-summary.js";
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
@@ -225,6 +226,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   buildSuccessfulRunHandoffRequiredNotice,
+  buildSuccessfulRunHandoffRepeatGuardNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
@@ -7053,6 +7055,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
+  let resumeQueuedRunsInFlight: Promise<void> | null = null;
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {
@@ -9384,6 +9387,126 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  async function countSuccessfulRunHandoffRequiredNotices(input: {
+    companyId: string;
+    issueId: string;
+  }) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueId),
+          sql`(${issueComments.body} = ${SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY} or ${issueComments.body} like '## This issue still needs a next step%' or ${issueComments.body} like '## Successful run missing issue disposition%')`,
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
+  async function addSuccessfulRunHandoffRepeatGuardCommentOnce(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: Pick<typeof agents.$inferSelect, "id" | "name">;
+    detectedProgressSummary: string;
+    repeatedNoticeCount: number;
+    threshold: number;
+    interactionId: string;
+  }) {
+    const existing = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.run.companyId),
+          eq(issueComments.issueId, input.issue.id),
+          eq(issueComments.body, SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+    const notice = buildSuccessfulRunHandoffRepeatGuardNotice(input);
+    return issuesSvc.addComment(
+      input.issue.id,
+      notice.body,
+      { runId: input.run.id },
+      {
+        authorType: "system",
+        presentation: notice.presentation,
+        metadata: notice.metadata,
+      },
+    );
+  }
+
+  async function escalateRepeatedSuccessfulRunHandoffNotices(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title" | "status">;
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: Pick<typeof agents.$inferSelect, "id" | "name">;
+    detectedProgressSummary: string;
+    repeatedNoticeCount: number;
+  }) {
+    const interactionsSvc = issueThreadInteractionService(db);
+    const interaction = await interactionsSvc.create(input.issue, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: `successful_run_handoff_repeat_guard:${input.issue.id}`,
+      sourceRunId: input.run.id,
+      title: "Repeated missing-disposition retries stopped",
+      summary: "Automatic retries were suppressed after repeated identical missing-disposition notices.",
+      payload: {
+        version: 1,
+        prompt: "Automatic missing-disposition retries are suppressed for this issue. Review the thread and choose the next owner/action manually before resuming.",
+        acceptLabel: "Resume after review",
+        rejectLabel: "Keep blocked",
+        rejectRequiresReason: true,
+        supersedeOnUserComment: false,
+        detailsMarkdown:
+          `Paperclip stopped automatic retries after ${input.repeatedNoticeCount} identical missing-disposition notices on this issue. `
+          + "Resolve the issue manually by choosing a concrete disposition or owner path before resuming execution.",
+      },
+    }, {
+      agentId: input.run.agentId,
+    });
+    if (input.issue.status === "in_progress") {
+      await issuesSvc.update(input.issue.id, {
+        status: "in_review",
+        actorAgentId: input.run.agentId,
+      });
+    }
+
+    await addSuccessfulRunHandoffRepeatGuardCommentOnce({
+      issue: input.issue,
+      run: input.run,
+      agent: input.agent,
+      detectedProgressSummary: input.detectedProgressSummary,
+      repeatedNoticeCount: input.repeatedNoticeCount,
+      threshold: SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
+      interactionId: interaction.id,
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.successful_run_handoff_escalated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        label: "Repeated missing-disposition retries suppressed",
+        sourceRunId: input.run.id,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        escalationReason: "repeat_notice_guard",
+        repeatedNoticeCount: input.repeatedNoticeCount,
+        threshold: SUCCESSFUL_RUN_HANDOFF_REPEAT_NOTICE_THRESHOLD,
+        interactionId: interaction.id,
+        issue: issueUiLink(input.issue),
+      },
+    });
+  }
+
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
@@ -9446,6 +9569,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      repeatedNoticeCount,
     ] = await Promise.all([
       issue
         ? db
@@ -9585,6 +9709,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? countSuccessfulRunHandoffRequiredNotices({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+        : Promise.resolve(0),
     ]);
 
     if (!issue) return;
@@ -12821,6 +12951,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    const retryNotBefore = readQueuedRunRetryNotBefore(run, context);
+    if (retryNotBefore && retryNotBefore.getTime() > Date.now()) {
+      return null;
+    }
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -13271,22 +13405,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: staleness.reason,
     });
 
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, run.companyId),
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, run.id),
-        ),
-      );
-
     await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -13295,7 +13413,78 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+
+    if (staleness.errorCode === "issue_assignee_changed") {
+      await ensureQueuedRunWakePathAfterReassignment(cancelled, issueId);
+    }
+
     return cancelled;
+  }
+
+  async function ensureQueuedRunWakePathAfterReassignment(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const issue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue?.assigneeAgentId || issue.assigneeAgentId === run.agentId) return null;
+    if (issue.status === "done" || issue.status === "cancelled") return null;
+
+    const activeExecutionPath = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (activeExecutionPath) return null;
+
+    const pendingWakePath = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+        or(
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issueId}`,
+        ),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (pendingWakePath) return null;
+
+    return enqueueWakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assignment_recovery",
+      payload: {
+        issueId,
+        retryOfRunId: run.id,
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assignment_recovery",
+        retryReason: "assignment_recovery",
+        source: "issue.assignment_recovery",
+        retryOfRunId: run.id,
+      },
+      idempotencyKey: `stale-queued-reassignment-recovery:${issueId}:${run.id}`,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    });
   }
 
   function truncateAgentErrorReason(reason: string | null | undefined): string | null {

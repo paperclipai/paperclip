@@ -338,6 +338,7 @@ export const issueExecutionPolicySchema = z.object({
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+  externalWait: issueExternalWaitSchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),

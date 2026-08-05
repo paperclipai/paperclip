@@ -1037,6 +1037,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: `owner-${companyId}`,
       requireBoardApprovalForNewAgents: false,
     });
     return companyId;
@@ -1235,6 +1236,65 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         assigneeAgentId: terminatedAgentId,
       },
     });
+  });
+
+  it("rejects orphan blocked writes with an actionable invariant error", async () => {
+    const companyId = await seedAssignableAgentCompany();
+
+    await expect(svc.create(companyId, {
+      title: "Orphan blocked issue",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "blocked_state_requires_wait_path" },
+    });
+  });
+
+  it("rejects an unassigned active issue when no responsible user or external monitor exists", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ownerless Paperclip",
+      issuePrefix: `O${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Unowned active issue",
+      description: null,
+      status: "in_review",
+      priority: "medium",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "nonterminal_issue_requires_accountable_owner" },
+    });
+  });
+
+  it("allows an unassigned blocked issue only with a structured dated external wait", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Vendor confirmation",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        externalWait: {
+          owner: "Vendor support",
+          action: "Confirm the account migration",
+          nextCheckAt: "2026-08-04T12:00:00.000Z",
+          monitorOwner: "Operations desk",
+        },
+      },
+    });
+
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBeNull();
+    expect(issue.executionPolicy).toMatchObject({ externalWait: { monitorOwner: "Operations desk" } });
   });
 
   it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {

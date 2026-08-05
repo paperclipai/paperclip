@@ -99,6 +99,8 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
   "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
   "",
+  ...HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
+  "",
   "Safe multiline update pattern:",
   "```bash",
   "api=\"${PAPERCLIP_API_URL%/}\"",

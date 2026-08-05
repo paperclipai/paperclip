@@ -10,6 +10,8 @@ export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICES_PER_ISSUE = 3;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
+export const SUCCESSFUL_RUN_HANDOFF_REPEAT_GUARD_NOTICE_BODY =
+  "Paperclip stopped automatic missing-disposition retries after repeated identical notices. Board action is required before this issue resumes.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
   "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
 export const SUCCESSFUL_RUN_HANDOFF_REPEATED_NOTICE_ESCALATION_BODY =

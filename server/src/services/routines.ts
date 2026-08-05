@@ -1428,6 +1428,7 @@ export function routineService(
         dispatchFingerprint: routineRuns.dispatchFingerprint,
         routineRevisionId: routineRuns.routineRevisionId,
         linkedIssueId: routineRuns.linkedIssueId,
+        deliveryReceipt: routineRuns.deliveryReceipt,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
         failureReason: routineRuns.failureReason,
         deliveryReceipt: routineRuns.deliveryReceipt,
@@ -1463,6 +1464,7 @@ export function routineService(
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
+        deliveryReceipt: row.deliveryReceipt,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         deliveryReceipt: row.deliveryReceipt,
@@ -1930,6 +1932,43 @@ export function routineService(
       logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log ignored webhook routine run");
     }
 
+    return withLegacyRoutineRunIssueId(run);
+  }
+
+  async function recordIgnoredWebhookRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    payload: Record<string, unknown> | null;
+    reason: NonActionableWebhookPayloadKind;
+  }) {
+    const triggeredAt = new Date();
+    const run = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "webhook",
+          status: "skipped",
+          triggeredAt,
+          triggerPayload: input.payload,
+          failureReason: input.reason,
+          completedAt: triggeredAt,
+          linkedIssueId: null,
+          routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
+        })
+        .returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger.id,
+        triggeredAt,
+        status: "skipped",
+      }, txDb);
+      return createdRun;
+    });
     return withLegacyRoutineRunIssueId(run);
   }
 
@@ -2832,7 +2871,7 @@ export function routineService(
             issueId: activeIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return withLegacyRoutineRunIssueId(updated ?? createdRun);
         }
 
         if (canReuseTerminalExecutionIssue && persistedOriginFingerprint) {
@@ -3240,6 +3279,7 @@ export function routineService(
             dispatchFingerprint: routineRuns.dispatchFingerprint,
             routineRevisionId: routineRuns.routineRevisionId,
             linkedIssueId: routineRuns.linkedIssueId,
+            deliveryReceipt: routineRuns.deliveryReceipt,
             coalescedIntoRunId: routineRuns.coalescedIntoRunId,
             failureReason: routineRuns.failureReason,
             deliveryReceipt: routineRuns.deliveryReceipt,
@@ -3274,6 +3314,7 @@ export function routineService(
               dispatchFingerprint: run.dispatchFingerprint,
               routineRevisionId: run.routineRevisionId,
               linkedIssueId: run.linkedIssueId,
+              deliveryReceipt: run.deliveryReceipt,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
               deliveryReceipt: run.deliveryReceipt,
@@ -4185,6 +4226,7 @@ export function routineService(
           dispatchFingerprint: routineRuns.dispatchFingerprint,
           routineRevisionId: routineRuns.routineRevisionId,
           linkedIssueId: routineRuns.linkedIssueId,
+          deliveryReceipt: routineRuns.deliveryReceipt,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
           failureReason: routineRuns.failureReason,
           deliveryReceipt: routineRuns.deliveryReceipt,
@@ -4219,6 +4261,7 @@ export function routineService(
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
+        deliveryReceipt: row.deliveryReceipt,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         deliveryReceipt: row.deliveryReceipt,

@@ -308,6 +308,8 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
         ]),
     ...HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
     "",
+    ...HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
+    "",
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
