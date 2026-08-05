@@ -118,6 +118,21 @@ describe("git workspace sync", () => {
     });
   });
 
+  it("drops a filesystem-path origin instead of copying it into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-path-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", path.join(rootDir, "elsewhere.git")]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
   it("pushes new commits from the shallow clone to an origin that holds the base commit", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-shallow-push-"));
     cleanupDirs.push(rootDir);
@@ -141,9 +156,12 @@ describe("git workspace sync", () => {
       await git(cloneDir, ["commit", "-m", "sandbox change"]);
       const cloneHead = await git(cloneDir, ["rev-parse", "HEAD"]);
 
-      // The clone is shallow (single grafted commit), but the boundary commit
+      // A filesystem-path origin is dropped by the allowlist, so configure the
+      // remote explicitly — the property under test is the push itself: the
+      // clone is shallow (single grafted commit), but the boundary commit
       // already exists on the origin, so the push pack closes without full
-      // ancestry — the property that makes transported branches publishable.
+      // ancestry. That is what makes transported branches publishable.
+      await git(cloneDir, ["remote", "add", "origin", upstream]);
       await git(cloneDir, ["push", "origin", "HEAD:refs/heads/sandbox-change"]);
 
       expect(await git(upstream, ["rev-parse", "refs/heads/sandbox-change"])).toBe(cloneHead);
@@ -380,24 +398,41 @@ describe("git workspace sync", () => {
 });
 
 describe("sanitizeGitRemoteUrl", () => {
-  it("strips userinfo from http(s) URLs", () => {
+  it("strips userinfo, query, and fragment from http(s) URLs", () => {
     expect(sanitizeGitRemoteUrl("https://x-access-token:sekret@github.com/example/repo.git"))
       .toBe("https://github.com/example/repo.git");
     expect(sanitizeGitRemoteUrl("https://sekret-token@github.com/example/repo.git"))
       .toBe("https://github.com/example/repo.git");
     expect(sanitizeGitRemoteUrl("http://user:pass@git.internal/example/repo.git"))
       .toBe("http://git.internal/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git?private_token=sekret#fragment"))
+      .toBe("https://github.com/example/repo.git");
   });
 
-  it("leaves credential-free and non-http remotes unchanged", () => {
-    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git"))
-      .toBe("https://github.com/example/repo.git");
-    expect(sanitizeGitRemoteUrl("git@github.com:example/repo.git"))
-      .toBe("git@github.com:example/repo.git");
+  it("strips password and query from ssh-scheme URLs but keeps the username", () => {
     expect(sanitizeGitRemoteUrl("ssh://git@github.com/example/repo.git"))
       .toBe("ssh://git@github.com/example/repo.git");
-    expect(sanitizeGitRemoteUrl("/tmp/local/upstream.git"))
-      .toBe("/tmp/local/upstream.git");
+    expect(sanitizeGitRemoteUrl("ssh://git:sekret@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("git+ssh://git@github.com/example/repo.git?key=sekret"))
+      .toBe("git+ssh://git@github.com/example/repo.git");
+  });
+
+  it("keeps credential-free scp-like remotes unchanged", () => {
+    expect(sanitizeGitRemoteUrl("git@github.com:example/repo.git"))
+      .toBe("git@github.com:example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+  });
+
+  it("drops every shape whose credential surface is unknown", () => {
+    // Filesystem paths are useless on the execution host and could leak
+    // host-layout details; unknown schemes and malformed userinfo could carry
+    // embedded secrets the sanitizer cannot recognize. All fail closed.
+    expect(sanitizeGitRemoteUrl("/tmp/local/upstream.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("ftp://user:pass@host/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("user:pass@host:path/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("host.example:path/repo.git")).toBeNull();
   });
 
   it("returns null for empty input", () => {

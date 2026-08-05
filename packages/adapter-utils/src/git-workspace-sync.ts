@@ -110,12 +110,22 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
+// scp-like ssh remote (`user@host:path`). The syntax has no password slot, so
+// it cannot embed a secret. Conservative shape: exactly one `@`, no colon in
+// the user segment (a colon there could smuggle credential-looking material),
+// no scheme separator (a `://` form parses as a URL and never reaches this).
+const SCP_LIKE_REMOTE_PATTERN = /^[^@:/\s]+@[^@:/\s]+:\S+$/;
+
 /**
- * Strip credential material from a git remote URL before it is copied into a
- * transported workspace. http(s) URLs can embed a token in the userinfo part
- * (`https://x-access-token:<token>@github.com/...`); everything else (scp-like
- * `git@host:path`, `ssh://`, filesystem paths) carries no secret in the URL and
- * passes through unchanged.
+ * Reduce a git remote URL to a credential-free form before it is copied into a
+ * transported workspace, or null when the URL must not be carried at all.
+ * Allowlist, fail closed: only shapes whose credential surface is fully known
+ * are kept — http(s) with userinfo/query/fragment stripped (tokens ride in any
+ * of those), ssh/git schemes with password/query/fragment stripped, and
+ * scp-like `user@host:path` (no password slot exists in that syntax). Every
+ * other form — filesystem paths, unknown schemes, unparseable strings — is
+ * dropped rather than risk persisting an embedded secret in the execution
+ * host's git config.
  */
 export function sanitizeGitRemoteUrl(url: string): string | null {
   const trimmed = url.trim();
@@ -124,15 +134,25 @@ export function sanitizeGitRemoteUrl(url: string): string | null {
   }
   try {
     const parsed = new URL(trimmed);
-    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.username || parsed.password)) {
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
       parsed.username = "";
       parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
       return parsed.toString();
     }
+    if (parsed.protocol === "ssh:" || parsed.protocol === "git:" || parsed.protocol === "git+ssh:") {
+      // The username (conventionally `git`) is addressing, not a secret; a
+      // password or query string can be, so those are stripped.
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+    return null;
   } catch {
-    // Not URL-parseable (scp-like remote or a filesystem path) — no userinfo to scrub.
+    return SCP_LIKE_REMOTE_PATTERN.test(trimmed) ? trimmed : null;
   }
-  return trimmed;
 }
 
 /**
