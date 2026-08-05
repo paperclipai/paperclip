@@ -443,6 +443,65 @@ describe("issue execution policy routes", () => {
     expect((patch.monitorNextCheckAt as Date).getTime()).toBeGreaterThan(Date.now());
   });
 
+  it("keeps a caller-supplied future monitor on a reviewer handoff instead of overwriting it", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const requestedAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1012",
+      title: "Reviewer handoff with an explicit monitor",
+      executionPolicy: null,
+      executionState: null,
+      monitorNextCheckAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: "active",
+      permissions: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        assigneeAgentId: reviewerId,
+        // The documented LUN-4497 disposition carries the monitor as an ISO string here.
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: requestedAt.toISOString(),
+            scheduledBy: "assignee",
+            recoveryPolicy: "wake_owner",
+            notes: "review Otto - relancer si pas de verdict",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    // The fallback exists to cover a missing timeout, not to shorten one the caller chose.
+    expect((patch.monitorNextCheckAt as Date).getTime()).toBe(requestedAt.getTime());
+    expect(patch.monitorScheduledBy).toBe("assignee");
+  });
+
   it("rejects an agent-authored in_review transition handed to a paused reviewer agent", async () => {
     const reviewerId = "44444444-4444-4444-8444-444444444444";
     const issue = {
