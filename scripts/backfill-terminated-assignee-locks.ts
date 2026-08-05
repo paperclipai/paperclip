@@ -1,5 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, or, agents, companies, createDb, issueComments, issues } from "../packages/db/src/index.js";
-import { sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql, agents, companies, createDb, issueComments, issues } from "../packages/db/src/index.js";
 import { isAgentAssignableToWork } from "../packages/shared/src/agent-eligibility.js";
 import { loadConfig } from "../server/src/config.js";
 
