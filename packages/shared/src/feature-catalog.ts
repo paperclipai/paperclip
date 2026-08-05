@@ -197,6 +197,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  hotRestart: {
+    title: "Hot Restart",
+    description:
+      "In local development, preserve eligible local agent runs across an explicit hot restart and adopt them after the server returns.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   autoRestartDevServerWhenIdle: {
     title: "Auto-Restart Dev Server When Idle",
     description:

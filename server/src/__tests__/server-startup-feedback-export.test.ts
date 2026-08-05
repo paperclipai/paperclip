@@ -13,6 +13,7 @@ const {
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
+  completeHotRestartReportMock,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
@@ -38,6 +39,7 @@ const {
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
+  const completeHotRestartReportMock = vi.fn(() => null);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
@@ -48,6 +50,14 @@ const {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    adoptAwaitingRuns: vi.fn(async () => ({
+      adopted: 0,
+      adoptedRunIds: [],
+      finalizedWhileDown: 0,
+      finalizedWhileDownRunIds: [],
+      rejected: 0,
+      rejectedRunIds: [],
+    })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
@@ -106,6 +116,7 @@ const {
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
+    completeHotRestartReportMock,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
@@ -207,6 +218,10 @@ vi.mock("../middleware/logger.js", () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+vi.mock("../hot-restart-report.js", () => ({
+  completeHotRestartReport: completeHotRestartReportMock,
 }));
 
 vi.mock("../realtime/live-events-ws.js", () => ({
@@ -517,7 +532,20 @@ describe("startServer feedback export wiring", () => {
     await startServer();
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.adoptAwaitingRuns).toHaveBeenCalledTimes(1);
+    expect(completeHotRestartReportMock).toHaveBeenCalledWith({
+      newServerVersion: expect.any(String),
+      adoptedRunIds: [],
+      finalizedWhileDownRunIds: [],
+      rejectedRunIds: [],
+    });
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+    expect(heartbeatServiceMock.adoptAwaitingRuns.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.reapOrphanedRuns.mock.invocationCallOrder[0]!,
+    );
+    expect(completeHotRestartReportMock.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.reapOrphanedRuns.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {

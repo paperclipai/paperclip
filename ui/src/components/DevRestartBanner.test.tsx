@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DevRestartBanner } from "./DevRestartBanner";
+import type { DevServerHealthStatus } from "../api/health";
 
 const mockHealthApi = vi.hoisted(() => ({
   requestDevServerRestart: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock("../api/health", () => ({
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
 
-const devServer = {
+const devServer: DevServerHealthStatus = {
   enabled: true as const,
   restartRequired: true,
   reason: "backend_changes" as const,
@@ -31,6 +32,9 @@ const devServer = {
   activeRunCount: 1,
   waitingForIdle: true,
   lastRestartAt: "2026-03-20T11:30:00.000Z",
+  hotRestartEnabled: false,
+  eligibleLiveRunCount: 0,
+  adoptionReport: null,
 };
 
 beforeEach(() => {
@@ -51,11 +55,11 @@ afterEach(() => {
   mockHealthApi.requestDevServerRestart.mockReset();
 });
 
-function render() {
+function render(overrides: Partial<DevServerHealthStatus> = {}) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root?.render(<DevRestartBanner devServer={devServer} />));
+  act(() => root?.render(<DevRestartBanner devServer={{ ...devServer, ...overrides }} />));
   return container;
 }
 
@@ -109,5 +113,57 @@ describe("DevRestartBanner", () => {
 
     expect(button?.disabled).toBe(false);
     expect(node.textContent).toContain("Restart now");
+  });
+
+  it("hides the hot restart action when the setting is off", () => {
+    const node = render({ hotRestartEnabled: false });
+    const hotButton = [...node.querySelectorAll("button")].find((entry) =>
+      entry.textContent?.includes("Hot restart"),
+    );
+    expect(hotButton).toBeUndefined();
+    // Default restart action is always present and unchanged.
+    expect([...node.querySelectorAll("button")].some((b) => b.textContent?.includes("Restart now"))).toBe(true);
+  });
+
+  it("shows the hot restart action with the eligible run count and requests a hot restart", async () => {
+    const node = render({ hotRestartEnabled: true, eligibleLiveRunCount: 3 });
+    const hotButton = [...node.querySelectorAll("button")].find((entry) =>
+      entry.textContent?.includes("Hot restart"),
+    );
+    expect(hotButton?.textContent).toContain("Hot restart (keeps 3 live runs)");
+
+    await act(async () => {
+      hotButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Hot restart Paperclip now? Your 3 live runs keep running and will be adopted by the new server.",
+    );
+    expect(mockHealthApi.requestDevServerRestart).toHaveBeenCalledWith({ hot: true });
+    expect(node.textContent).toContain("Hot restart requested");
+  });
+
+  it("surfaces the adoption report after a fresh boot with no restart pending", () => {
+    const node = render({
+      restartRequired: false,
+      adoptionReport: {
+        completedAt: "2026-03-20T12:05:00.000Z",
+        newServerVersion: "abc1234",
+        adopted: 2,
+        finalizedWhileDown: 1,
+        lost: 0,
+      },
+    });
+    expect(node.textContent).toContain("Hot restart complete");
+    expect(node.textContent).toContain("2");
+    expect(node.textContent).toContain("adopted");
+    expect(node.textContent).toContain("finalized while down");
+    expect(node.textContent).toContain("abc1234");
+
+    const dismiss = [...node.querySelectorAll("button")].find((entry) =>
+      entry.getAttribute("aria-label") === "Dismiss hot restart report",
+    );
+    act(() => dismiss?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(node.textContent).not.toContain("Hot restart complete");
   });
 });

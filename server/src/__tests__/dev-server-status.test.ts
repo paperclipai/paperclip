@@ -100,4 +100,19 @@ describe("dev server status helpers", () => {
       reason: "manual_restart_now",
     });
   });
+
+  it("accepts a hot-restart intent reason", () => {
+    const filePath = createTempStatusFile({ dirty: true });
+    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+
+    expect(writeDevServerRestartRequest({
+      requestedAt: "2026-03-20T12:05:00.000Z",
+      reason: "hot_restart_intent",
+    }, env)).toBe(true);
+
+    const requestPath = getDevServerRestartRequestFilePath(env);
+    expect(JSON.parse(readFileSync(requestPath!, "utf8"))).toMatchObject({
+      reason: "hot_restart_intent",
+    });
+  });
 });

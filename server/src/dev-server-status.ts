@@ -12,6 +12,19 @@ export type PersistedDevServerStatus = {
   lastRestartAt: string | null;
 };
 
+/**
+ * Post-restart adoption summary surfaced in the Restart Required banner area.
+ * Mirrors the completed hot-restart report the deploy routine
+ * posts; counts are derived from the persisted report's run-id arrays.
+ */
+export type DevServerAdoptionReport = {
+  completedAt: string;
+  newServerVersion: string | null;
+  adopted: number;
+  finalizedWhileDown: number;
+  lost: number;
+};
+
 export type DevServerHealthStatus = {
   enabled: true;
   restartRequired: boolean;
@@ -24,11 +37,19 @@ export type DevServerHealthStatus = {
   activeRunCount: number;
   waitingForIdle: boolean;
   lastRestartAt: string | null;
+  // Hot restart: the separate "Hot restart (keeps N live
+  // runs)" action only surfaces when the experimental setting is on; N is the
+  // count of running local runs eligible for preservation right now.
+  hotRestartEnabled: boolean;
+  eligibleLiveRunCount: number;
+  // Present only just after a hot restart adopted/lost runs; drives the
+  // post-restart adoption report banner. Null on ordinary boots.
+  adoptionReport: DevServerAdoptionReport | null;
 };
 
 export type DevServerRestartRequest = {
   requestedAt: string;
-  reason: "manual_restart_now";
+  reason: "manual_restart_now" | "hot_restart_intent";
 };
 
 export function getDevServerRestartRequestFilePath(
@@ -104,7 +125,13 @@ export function readPersistedDevServerStatus(
 
 export function toDevServerHealthStatus(
   persisted: PersistedDevServerStatus,
-  opts: { autoRestartEnabled: boolean; activeRunCount: number },
+  opts: {
+    autoRestartEnabled: boolean;
+    activeRunCount: number;
+    hotRestartEnabled?: boolean;
+    eligibleLiveRunCount?: number;
+    adoptionReport?: DevServerAdoptionReport | null;
+  },
 ): DevServerHealthStatus {
   const hasPathChanges = persisted.changedPathCount > 0;
   const hasPendingMigrations = persisted.pendingMigrations.length > 0;
@@ -130,5 +157,8 @@ export function toDevServerHealthStatus(
     activeRunCount: opts.activeRunCount,
     waitingForIdle: restartRequired && opts.autoRestartEnabled && opts.activeRunCount > 0,
     lastRestartAt: persisted.lastRestartAt,
+    hotRestartEnabled: opts.hotRestartEnabled ?? false,
+    eligibleLiveRunCount: Math.max(0, opts.eligibleLiveRunCount ?? 0),
+    adoptionReport: opts.adoptionReport ?? null,
   };
 }
