@@ -251,46 +251,56 @@ ensure_temp_dir() {
 
 update_path() {
   local target="${HOME}/.local/bin"
-  if [[ ":$PATH:" != *":$target:"* ]]; then
-    log "Adding $target to PATH in shell startup files"
+  local pending=()
+  local rc
 
-    # Patch every existing shell startup file that lacks the export so both
-    # interactive (.bashrc/.zshrc) and login shells pick up the CLI.
-    local rc
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
-      if [ -f "$rc" ] && ! grep -qF "$target" "$rc"; then
-        if [ "$DRY_RUN" != "1" ]; then
-          # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
-          printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
-        else
-          log "[dry-run] would append export PATH to $rc"
-        fi
-      fi
-    done
+  # Deliberately not gated on the current $PATH: this process may already export
+  # $target (inherited from a parent, or left over from an earlier install) while
+  # the user's startup files still lack it. Persisting is what a fresh shell
+  # depends on, so it runs regardless; the per-file grep below keeps it
+  # idempotent.
 
-    # Ensure a startup file the user's default shell actually reads exists,
-    # otherwise fresh shells won't see the PATH. POSIX/bash/dash login shells read
-    # the first of .bash_profile/.bash_login/.profile; interactive zsh shells
-    # (including login) read .zshrc, which is login-only for .zprofile. Create the
-    # matching file only when none is already present (the loop above already
-    # added the export to any existing one).
-    local ensure_file=""
-    if [[ "${SHELL:-}" == */zsh ]]; then
-      # Key interactive coverage off .zshrc: a login-only .zprofile must not
-      # suppress it, or non-login interactive zsh shells miss the PATH.
-      [ -f "${HOME}/.zshrc" ] || ensure_file="${HOME}/.zshrc"
-    else
-      { [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.bash_login" ] || [ -f "${HOME}/.profile" ]; } || ensure_file="${HOME}/.profile"
+  # Patch every existing shell startup file that lacks the export so both
+  # interactive (.bashrc/.zshrc) and login shells pick up the CLI.
+  for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
+    if [ -f "$rc" ] && ! grep -qF "$target" "$rc"; then
+      pending+=("$rc")
     fi
-    if [ -n "$ensure_file" ]; then
-      if [ "$DRY_RUN" != "1" ]; then
-        # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
-        printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$ensure_file"
-      else
-        log "[dry-run] would create $ensure_file with export PATH"
-      fi
+  done
+
+  # Shells read two classes of startup file: login shells read a login file, and
+  # non-login interactive shells read an rc file. When a class has no file at all
+  # the export has nowhere to live, and that kind of session never sees the CLI,
+  # so create the file the user's shell expects. Existing files of either class
+  # were already handled by the loop above.
+  if [[ "${SHELL:-}" == */zsh ]]; then
+    # zsh reads .zshrc for every interactive shell, login ones included, so it
+    # covers both classes on its own. .zprofile is login-only and must not
+    # suppress it, or non-login interactive zsh shells miss the PATH.
+    [ -f "${HOME}/.zshrc" ] || pending+=("${HOME}/.zshrc")
+  else
+    # POSIX/bash/dash login shells read the first of .bash_profile/.bash_login/
+    # .profile and never .bashrc.
+    { [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.bash_login" ] || [ -f "${HOME}/.profile" ]; } ||
+      pending+=("${HOME}/.profile")
+    # Non-login interactive bash reads only .bashrc, so a login file is not
+    # sufficient coverage. Skipped for plain sh/dash, which have no such rc file.
+    if [[ "${SHELL:-}" == */bash || -z "${SHELL:-}" ]]; then
+      [ -f "${HOME}/.bashrc" ] || pending+=("${HOME}/.bashrc")
     fi
   fi
+
+  [ "${#pending[@]}" -gt 0 ] || return 0
+
+  log "Adding $target to PATH in shell startup files"
+  for rc in "${pending[@]}"; do
+    if [ "$DRY_RUN" = "1" ]; then
+      log "[dry-run] would add export PATH to $rc"
+      continue
+    fi
+    # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
+    printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
+  done
 }
 
 download_checked_script() {

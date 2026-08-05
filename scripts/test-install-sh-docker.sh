@@ -250,22 +250,74 @@ docker run --rm \
 assert_contains "$RESULTS_DIR/path-zprof-home/.zshrc" 'export PATH="/results/path-zprof-home/.local/bin:'
 assert_contains "$RESULTS_DIR/path-zprof-home/.zprofile" 'export PATH="/results/path-zprof-home/.local/bin:'
 
+echo "==> update_path: bash home with only .bash_profile still creates .bashrc"
+mkdir -p "$RESULTS_DIR/path-bashprof-home"
+printf 'umask 022\n' >"$RESULTS_DIR/path-bashprof-home/.bash_profile"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-bashprof-home \
+  -e SHELL=/bin/bash \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-bashprof.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+# .bash_profile is login-only; non-login interactive bash reads .bashrc, so
+# .bashrc must be created even though the login class is already covered.
+[ -f "$RESULTS_DIR/path-bashprof-home/.bashrc" ] || {
+  echo "Expected .bashrc created alongside an existing .bash_profile" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-bashprof-home/.bashrc" 'export PATH="/results/path-bashprof-home/.local/bin:'
+assert_contains "$RESULTS_DIR/path-bashprof-home/.bash_profile" 'export PATH="/results/path-bashprof-home/.local/bin:'
+# .bash_profile already covers login shells, so no redundant .profile.
+[ ! -e "$RESULTS_DIR/path-bashprof-home/.profile" ] || {
+  echo "Did not expect .profile when .bash_profile already exists" >&2
+  exit 1
+}
+
+echo "==> update_path: PATH already exported in this process still persists"
+mkdir -p "$RESULTS_DIR/path-transient-home"
+printf 'alias ll=ls\n' >"$RESULTS_DIR/path-transient-home/.bashrc"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-transient-home \
+  -e SHELL=/bin/bash \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-transient.args \
+  -e PATH="/results/path-transient-home/.local/bin:/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+# The installer process inherited ~/.local/bin on PATH, but the startup files
+# never had it. Skipping persistence here would break the next fresh shell.
+assert_contains "$RESULTS_DIR/path-transient-home/.bashrc" 'export PATH="/results/path-transient-home/.local/bin:'
+[ -f "$RESULTS_DIR/path-transient-home/.profile" ] || {
+  echo "Expected a login startup file despite ~/.local/bin already being on PATH" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-transient-home/.profile" 'export PATH="/results/path-transient-home/.local/bin:'
+
 echo "==> update_path: existing export is not duplicated"
 mkdir -p "$RESULTS_DIR/path-idem-home"
-# shellcheck disable=SC2016  # seed the exact export line install.sh would write
-printf 'export PATH="/results/path-idem-home/.local/bin:$PATH"\n' >"$RESULTS_DIR/path-idem-home/.profile"
-dup_before="$(grep -cF '/results/path-idem-home/.local/bin' "$RESULTS_DIR/path-idem-home/.profile")"
+# Seed both classes so a re-install has nothing left to do: persistence now runs
+# on every install, so a fully covered home must come out byte-identical.
+for idem_rc in .profile .bashrc; do
+  # shellcheck disable=SC2016  # seed the exact export line install.sh would write
+  printf 'export PATH="/results/path-idem-home/.local/bin:$PATH"\n' >"$RESULTS_DIR/path-idem-home/$idem_rc"
+done
+idem_before="$(cat "$RESULTS_DIR/path-idem-home/.profile" "$RESULTS_DIR/path-idem-home/.bashrc")"
 docker run --rm \
   -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
   -v "$RESULTS_DIR:/results" \
   -e HOME=/results/path-idem-home \
+  -e SHELL=/bin/bash \
   -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-idem.args \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   node:22-bookworm-slim \
   bash /paperclip-scripts/install.sh --no-prompt --no-onboard
-dup_after="$(grep -cF '/results/path-idem-home/.local/bin' "$RESULTS_DIR/path-idem-home/.profile")"
-[ "$dup_after" = "$dup_before" ] || {
-  printf 'Expected no duplicate export lines, got %s before / %s after\n' "$dup_before" "$dup_after" >&2
+idem_after="$(cat "$RESULTS_DIR/path-idem-home/.profile" "$RESULTS_DIR/path-idem-home/.bashrc")"
+[ "$idem_after" = "$idem_before" ] || {
+  printf 'Expected startup files to be unchanged, got:\n%s\n---\n%s\n' "$idem_before" "$idem_after" >&2
   exit 1
 }
 
