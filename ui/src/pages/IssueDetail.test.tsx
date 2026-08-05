@@ -1075,8 +1075,23 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
-  it("does not load decisions into the issue header", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue());
+  it("does not load or render decision sections in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      reviewAttention: {
+        state: "covered",
+        reason: "Review has a maintained action path.",
+        paths: [
+          {
+            kind: "interaction",
+            label: "Pending request confirmation",
+            responder: "Board",
+            since: "2026-04-21T00:00:00.000Z",
+            ref: "interaction-1",
+          },
+        ],
+      },
+    }));
 
     await act(async () => {
       root.render(
@@ -1089,6 +1104,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Issue detail smoke");
+    expect(container.querySelector('[data-testid="issue-review-panel"]')).toBeNull();
     expect(mockDecisionsApi.list).not.toHaveBeenCalled();
   });
 

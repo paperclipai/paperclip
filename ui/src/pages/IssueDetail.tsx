@@ -122,7 +122,6 @@ import {
 } from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
-import { IssueReviewPanel } from "../components/IssueReviewPanel";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -4525,8 +4524,6 @@ export function IssueDetail() {
           onCheckNow={() => checkIssueMonitorNow.mutate()}
           checkingNow={checkIssueMonitorNow.isPending}
         />
-
-        <IssueReviewPanel issue={issue} />
 
         {taskChatShellEnabled ? null : (
           <InlineEditor
