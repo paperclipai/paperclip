@@ -163,9 +163,29 @@
   "RetailPriceBucketID": {
     "channel2_product_rows": 92,
     "null_channel2_product_rows": 92,
-    "result": "NOT_AN_LCZ_SOURCE"
+    "result": "NOT_AN_LCZ_SOURCE",
+    "scope": "16 D-840 source SKUs"
   },
   "allocation": "DISALLOWED",
+  "bounded_target_skus": [
+    "1086071",
+    "117318",
+    "1324386",
+    "201314",
+    "420345",
+    "420458",
+    "420460",
+    "420464",
+    "420466",
+    "420469",
+    "420470",
+    "420484",
+    "420488",
+    "420491",
+    "420627",
+    "420630"
+  ],
+  "control_read_at_utc": "2026-08-05T23:01:54.162849+00:00",
   "quote_adpatch": "NO_JOIN_KEY_PROVEN",
   "zip_parent_assigned": "NO_ZIP_TO_LCZ_TRANSFORMATION_OR_ALLOCATION_PERFORMED"
 }
