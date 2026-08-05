@@ -509,8 +509,14 @@ describe("IssueDocumentAnnotations", () => {
     // Open + resolved both render without any filter interaction.
     expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull();
     expect(container.querySelector('[data-thread-id="resolved-1"]')).not.toBeNull();
-    // Orphaned threads can't be anchored in the doc, so they stay hidden.
-    expect(container.querySelector('[data-thread-id="orphan-1"]')).toBeNull();
+    // Orphaned threads render in the detached section so reviewers can still read them.
+    const detachedHeading = Array.from(container.querySelectorAll("h3")).find((heading) =>
+      (heading.textContent ?? "").includes("Detached"),
+    );
+    expect(detachedHeading).not.toBeUndefined();
+    const detachedSection = detachedHeading!.closest("section");
+    expect(detachedSection).not.toBeNull();
+    expect(detachedSection!.querySelector('[data-thread-id="orphan-1"]')).not.toBeNull();
 
     // The Open/Resolved/Stale/Orphaned filter chips are gone.
     const filterChip = Array.from(container.querySelectorAll("button")).find((button) =>
