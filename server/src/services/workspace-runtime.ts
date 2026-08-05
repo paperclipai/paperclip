@@ -578,11 +578,14 @@ async function executeProcess(input: {
 }
 
 async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
+  // Force C locale last so it always wins over opts.env or host locale.
+  // gitErrorIncludes matches English substrings in git error output.
+  const mergedEnv = opts?.env ? { ...process.env, ...opts.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" } : { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" };
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
-    env: opts?.env,
+    env: mergedEnv,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -594,7 +597,7 @@ function formatShortSha(value: string | null | undefined) {
   return value ? value.slice(0, 12) : "unknown";
 }
 
-function gitErrorIncludes(error: unknown, needle: string) {
+export function gitErrorIncludes(error: unknown, needle: string) {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes(needle.toLowerCase());
 }
@@ -976,6 +979,7 @@ async function getGitWorktreeBranchAncestryVerdict(input: {
     command: "git",
     args: ["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha],
     cwd: input.repoRoot,
+    env: { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" },
   }).catch(() => null);
   if (!proc) return "unknown";
   if (proc.code === 0) return "ancestor";
@@ -2519,10 +2523,12 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
+      // Force C locale for consistent English git output
       const result = await executeProcess({
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" },
       });
       stdout = result.stdout;
       stderr = result.stderr;
@@ -2939,7 +2945,7 @@ export async function realizeExecutionWorkspace(input: {
         failureLabel: `git worktree add ${worktreePath}`,
       });
     } catch (attachError) {
-      if (!gitErrorIncludes(attachError, "already checked out")) {
+      if (!gitErrorIncludes(attachError, "already checked out") && !gitErrorIncludes(attachError, "already used by worktree")) {
         throw attachError;
       }
       const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
