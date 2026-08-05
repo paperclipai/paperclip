@@ -2199,6 +2199,45 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T03:00:00.000Z"));
   });
 
+  it("dispatches each missed recovery-sweeper internal-action tick exactly once", async () => {
+    const { routine } = await seedFixture();
+    const actionRuns: string[] = [];
+    const internalSvc = routineService(db, {
+      heartbeat: { wakeup: async () => null },
+      internalActionHandlers: {
+        recovery_sweeper_v1: async ({ runId }) => {
+          actionRuns.push(runId);
+          return {
+            actionKey: "recovery_sweeper_v1",
+            mode: "live",
+            exitStatus: 0,
+            stdoutSummary: JSON.stringify({ errorAgentsReactivated: [], errorAgentFailures: [], recoveryActionNudged: [], surfacedOnly: [] }),
+            stderrSummary: "",
+            outcome: "completed",
+          };
+        },
+      },
+    });
+    await db.update(routines).set({
+      originKind: "internal_action",
+      originId: "recovery_sweeper_v1",
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await internalSvc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-16T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await internalSvc.tickScheduledTriggers(new Date("2026-07-16T02:30:00.000Z"))).toEqual({ triggered: 3 });
+    expect(actionRuns).toHaveLength(3);
+    expect(new Set(actionRuns).size).toBe(3);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).toHaveLength(3);
+  });
+
   it("continues replaying missed ticks for daily schedules with multiple minute values", async () => {
     const { routine, svc } = await seedFixture();
     await db.update(routines).set({

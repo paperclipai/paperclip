@@ -80,6 +80,11 @@ import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import {
+  createRecoverySweeperErrorReactivator,
+  createRecoverySweeperRunner,
+  RECOVERY_SWEEPER_ACTION_KEY,
+} from "./services/recovery-sweeper.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -943,7 +948,28 @@ export async function startServer(): Promise<StartedServer> {
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
-    const routines = routineService(db as any, { pluginWorkerManager });
+    const recoverySweeper = createRecoverySweeperRunner({
+      reactivateErrorAgents: createRecoverySweeperErrorReactivator(db as any),
+    });
+    const routines = routineService(db as any, {
+      pluginWorkerManager,
+      internalActionHandlers: {
+        [RECOVERY_SWEEPER_ACTION_KEY]: async ({ companyId, runId }) => {
+          const result = await recoverySweeper.run({ mode: "live", companyId, runId });
+          return {
+            ...result,
+            summary: result.summary
+              ? {
+                errorAgentsReactivated: result.summary.errorAgentsReactivated,
+                errorAgentFailures: result.summary.errorAgentFailures,
+                recoveryActionNudged: result.summary.recoveryActionNudged,
+                surfacedOnly: result.summary.surfacedOnly,
+              }
+              : null,
+          };
+        },
+      },
+    });
     const statusCards = statusCardService(db as any);
     const issues = issueService(db as any);
     const tools = toolAccessService(db as any, {

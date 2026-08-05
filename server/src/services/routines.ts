@@ -77,6 +77,23 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+export type InternalRoutineActionResult = {
+  actionKey: string;
+  mode: string;
+  exitStatus: number;
+  stdoutSummary: string;
+  stderrSummary: string;
+  outcome: "completed" | "failed";
+  summary?: Record<string, unknown> | null;
+};
+
+export type InternalRoutineActionHandler = (input: {
+  companyId: string;
+  routineId: string;
+  runId: string;
+  actionKey: string;
+}) => Promise<InternalRoutineActionResult>;
+
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -626,12 +643,14 @@ export function routineService(
     heartbeat?: IssueAssignmentWakeupDeps;
     pluginWorkerManager?: PluginWorkerManager;
     runtimeEnv?: Record<string, string | undefined>;
+    internalActionHandlers?: Record<string, InternalRoutineActionHandler>;
   } = {},
 ) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const instanceSettings = instanceSettingsService(db);
   const runtimeEnv = deps.runtimeEnv ?? process.env;
+  const internalActionHandlers = deps.internalActionHandlers ?? {};
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
@@ -1928,6 +1947,75 @@ export function routineService(
     return run;
   }
 
+  async function dispatchInternalRoutineRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    actionKey: string;
+    nextRunAt: Date | null;
+    scheduledRunAt?: Date | null;
+  }) {
+    const handler = internalActionHandlers[input.actionKey];
+    const triggeredAt = new Date();
+    const idempotencyKey = `schedule:${input.trigger.id}:${input.scheduledRunAt?.toISOString() ?? input.trigger.nextRunAt?.toISOString() ?? triggeredAt.toISOString()}`;
+    const prepared = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`);
+      const existing = await txDb.select().from(routineRuns).where(and(
+        eq(routineRuns.companyId, input.routine.companyId), eq(routineRuns.routineId, input.routine.id),
+        eq(routineRuns.triggerId, input.trigger.id), eq(routineRuns.idempotencyKey, idempotencyKey),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (existing) return { run: existing, isNew: false };
+      const active = input.routine.concurrencyPolicy === "skip_if_active"
+        ? await txDb.select({ id: routineRuns.id }).from(routineRuns).where(and(
+          eq(routineRuns.companyId, input.routine.companyId), eq(routineRuns.routineId, input.routine.id), eq(routineRuns.status, "running"),
+        )).limit(1).then((rows) => rows[0] ?? null)
+        : null;
+      const [created] = await txDb.insert(routineRuns).values({
+        companyId: input.routine.companyId, routineId: input.routine.id, triggerId: input.trigger.id,
+        source: "schedule", status: active ? "skipped" : "running", triggeredAt,
+        routineRevisionId: input.routine.latestRevisionId, responsibleUserId: input.routine.responsibleUserId ?? null,
+        idempotencyKey, triggerPayload: { internalActionKey: input.actionKey, mode: "live" },
+        completedAt: active ? triggeredAt : null, failureReason: active ? "skip_if_active" : null,
+      }).returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id, triggerId: input.trigger.id, triggeredAt,
+        status: active ? "skipped" : "running", nextRunAt: input.nextRunAt,
+      }, txDb);
+      return { run: created, isNew: true };
+    });
+    const { run, isNew } = prepared;
+    if (!isNew || run.status === "skipped" || !handler) {
+      if (isNew && !handler) await finalizeRun(run.id, {
+        status: "failed", failureReason: `No internal routine action handler registered for ${input.actionKey}`, completedAt: new Date(),
+      });
+      return run;
+    }
+    let result: InternalRoutineActionResult;
+    try {
+      result = await handler({ companyId: input.routine.companyId, routineId: input.routine.id, runId: run.id, actionKey: input.actionKey });
+    } catch (error) {
+      result = { actionKey: input.actionKey, mode: "live", exitStatus: 1, stdoutSummary: "", stderrSummary: error instanceof Error ? error.message : String(error), outcome: "failed" };
+    }
+    const details = {
+      internalActionKey: result.actionKey, actionKey: result.actionKey, mode: result.mode, exitStatus: result.exitStatus,
+      stdoutSummary: result.stdoutSummary, stderrSummary: result.stderrSummary, outcome: result.outcome, summary: result.summary ?? null,
+    };
+    const finalized = await finalizeRun(run.id, {
+      status: result.outcome === "completed" ? "completed" : "failed",
+      failureReason: result.outcome === "completed" ? null : result.stderrSummary || "Internal routine action failed",
+      completedAt: new Date(), triggerPayload: details,
+    });
+    try {
+      await logActivity(db, {
+        companyId: input.routine.companyId, actorType: "system", actorId: "routine-scheduler", action: "routine.run_triggered",
+        entityType: "routine_run", entityId: run.id, details,
+      });
+    } catch (err) {
+      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log internal routine run");
+    }
+    return finalized ?? run;
+  }
+
   return {
     evaluateActivityGate,
     get: getRoutineById,
@@ -3054,6 +3142,32 @@ export function routineService(
         }
 
         for (let i = 0; i < runCount; i += 1) {
+          const internalActionKey = row.routine.originKind === "internal_action"
+            ? row.routine.originId
+            : null;
+          if (internalActionKey) {
+            const scheduledRunAt = row.trigger.nextRunAt
+              ? new Date(row.trigger.nextRunAt)
+              : null;
+            if (scheduledRunAt) {
+              let cursor = scheduledRunAt;
+              for (let j = 0; j < i; j += 1) {
+                const next = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
+                if (!next) break;
+                cursor = next;
+              }
+              if (i > 0) scheduledRunAt.setTime(cursor.getTime());
+            }
+            await dispatchInternalRoutineRun({
+              routine: row.routine,
+              trigger: row.trigger,
+              actionKey: internalActionKey,
+              nextRunAt: claimedNextRunAt,
+              scheduledRunAt,
+            });
+            triggered += 1;
+            continue;
+          }
           await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
