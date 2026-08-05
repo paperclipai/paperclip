@@ -149,6 +149,10 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
+        // opencode_local now defaults OPENCODE_ALLOW_ALL_MODELS=1 fleet-wide
+        // (BLU-26616), which skips the probe. This test asserts the probe path,
+        // so opt back into it explicitly.
+        env: { OPENCODE_ALLOW_ALL_MODELS: "0" },
       },
       context: {
         paperclipWorkspace: {
@@ -285,6 +289,10 @@ describe("opencode remote execution", () => {
         config: {
           command: "opencode",
           model: "opencode/gpt-5-nano",
+          // opencode_local now defaults OPENCODE_ALLOW_ALL_MODELS=1 fleet-wide
+          // (BLU-26616), which skips the probe. This test asserts the probe
+          // rejects an unavailable model, so opt back into it explicitly.
+          env: { OPENCODE_ALLOW_ALL_MODELS: "0" },
         },
         context: {
           paperclipWorkspace: {
