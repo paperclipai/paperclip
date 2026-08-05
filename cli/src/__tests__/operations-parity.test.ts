@@ -12,6 +12,10 @@ const PROJECT_WORKSPACE_ID = "77777777-7777-4777-8777-777777777777";
 const ENV_ID = "88888888-8888-4888-8888-888888888888";
 const INCIDENT_ID = "99999999-9999-4999-8999-999999999999";
 
+function stripAnsi(value: string): string {
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 function createProgram(): Command {
   const program = new Command();
   program.exitOverride();
@@ -141,7 +145,7 @@ describe("operations parity commands", () => {
     await expect(run(["environment", "delete", ENV_ID])).rejects.toThrow("exit:1");
     await expect(run(["project-workspace", "delete", PROJECT_ID, PROJECT_WORKSPACE_ID])).rejects.toThrow("exit:1");
 
-    expect(errorSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+    expect(errorSpy.mock.calls.map((call) => stripAnsi(String(call[0])))).toEqual([
       "Deletion requires --yes.",
       "Deletion requires --yes.",
     ]);
