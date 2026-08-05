@@ -4480,6 +4480,16 @@ export function IssueChatThread({
     () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
     [displayLiveRuns, activeRun],
   );
+  // Real-time view of the handoff: a run that starts after the issue payload
+  // was fetched must quiet the missing-disposition warnings without waiting
+  // for a refetch to update `hasLiveContinuation`.
+  const successfulRunHandoffWithLiveness = useMemo(() => {
+    if (!successfulRunHandoff || successfulRunHandoff.hasLiveContinuation) {
+      return successfulRunHandoff ?? null;
+    }
+    const liveNow = activeRunIds.size > 0 || Boolean(issueId && liveIssueIds?.has(issueId));
+    return liveNow ? { ...successfulRunHandoff, hasLiveContinuation: true } : successfulRunHandoff;
+  }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -4958,7 +4968,7 @@ export function IssueChatThread({
       onUploadImage: stableOnUploadImage,
       issueStatus,
       issueAssigneeAgentId,
-      successfulRunHandoff,
+      successfulRunHandoff: successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     }),
@@ -4987,7 +4997,7 @@ export function IssueChatThread({
       stableOnUploadImage,
       issueStatus,
       issueAssigneeAgentId,
-      successfulRunHandoff,
+      successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     ],
@@ -5130,7 +5140,7 @@ export function IssueChatThread({
                     allBlockers={blockedBy}
                     liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
-                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoffWithLiveness}
                     scheduledRetry={scheduledRetry}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
