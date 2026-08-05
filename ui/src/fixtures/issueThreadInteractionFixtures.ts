@@ -105,6 +105,9 @@ function createSuggestTasksInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -181,6 +184,9 @@ function createAskUserQuestionsInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -224,6 +230,9 @@ function createRequestConfirmationInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -283,6 +292,9 @@ function createRequestCheckboxConfirmationInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -735,6 +747,74 @@ export const failedRequestConfirmationInteraction = createRequestConfirmationInt
   updatedAt: new Date("2026-04-20T14:42:00.000Z"),
 });
 
+// --- P4 governance / lifecycle card states (PAP-15427) ---
+
+// Agent-addressed, agents-may-resolve pending confirmation: exercises the
+// header policy badge + addressee chip.
+export const agentAddressedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-agent-addressed",
+    title: "Confirm the deploy window with the release agent",
+    summary:
+      "Directed to the release agent, who is permitted to resolve this without waiting on the board.",
+    addresseeAgentId: "agent-codex",
+    requestedResolverPolicy: "board_or_agents",
+    resolverPolicy: "board_or_agents",
+    effectiveResolverPolicy: "board_or_agents",
+  });
+
+// Confirmation resolved by an agent under governance: exercises the
+// "Resolved by … / Agent" audit chip.
+export const agentResolvedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-agent-resolved",
+    title: "Approved by the release agent",
+    status: "accepted",
+    createdByAgentId: "agent-codex",
+    resolvedByAgentId: "agent-codex",
+    resolvedByRunId: "run-agent-resolve-1",
+    requestedResolverPolicy: "board_or_agents",
+    resolverPolicy: "board_or_agents",
+    effectiveResolverPolicy: "board_or_agents",
+    resolvedAt: new Date("2026-04-20T15:05:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:05:00.000Z"),
+    result: { version: 1, outcome: "accepted" },
+  });
+
+// Withdrawn confirmation (status=cancelled + result.outcome=withdrawn): exercises
+// the "Withdrawn by … / reason" footer.
+export const withdrawnRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-withdrawn",
+    title: "Withdrawn: approve the plan",
+    status: "cancelled",
+    createdByAgentId: "agent-codex",
+    resolvedByAgentId: "agent-codex",
+    resolvedByRunId: "run-agent-withdraw-1",
+    resolvedAt: new Date("2026-04-20T15:10:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:10:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "withdrawn",
+      reason: "Plan superseded by a newer revision; no board decision needed.",
+    },
+  });
+
+// Interaction auto-expired when its issue reached a terminal state.
+export const issueClosedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-issue-closed",
+    title: "Expired: confirm the migration cutover",
+    status: "expired",
+    resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:12:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "issue_closed",
+      reason: "Issue was closed before the confirmation was resolved.",
+    },
+  });
+
 export const pendingRequestCheckboxConfirmationInteraction =
   createRequestCheckboxConfirmationInteraction({});
 
@@ -946,6 +1026,9 @@ function createRequestItemVerdictsInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 

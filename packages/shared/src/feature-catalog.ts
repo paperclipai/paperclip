@@ -96,6 +96,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableTaskChatRedesign: {
+    title: "Chat-Style Tasks",
+    description:
+      "Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableTaskWatchdogs: {
     title: "Task Watchdogs",
     description:
@@ -119,10 +127,10 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableCloudSync: {
-    title: "Cloud Sync",
+  enableStatusCards: {
+    title: "Status Cards",
     description:
-      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
+      "Enable the experimental shared status-card board, update engine, and gated API.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -148,6 +156,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "Show Paperclip-managed built-in agent surfaces, including roster badges, the Built-in agents tab, and setup controls.",
     tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableBetaSkills: {
+    title: "Beta skills",
+    description: "Allow agents to pin beta releases of the Paperclip core skill.",
+    tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },
@@ -213,6 +228,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: true,
     selfHostedDefault: true,
+  },
+  enableOwnerInstanceAdmin: {
+    title: "Owner Instance Admin",
+    description:
+      "On cloud-managed instances, grant the stack owner instance-admin access to their own dedicated instance. Elevation is computed at the trusted-header auth boundary; no instance admin role rows are created. Inert on self-hosted instances.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: false,
   },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",

@@ -12,8 +12,14 @@ import {
   GitCompare,
   TerminalSquare,
   User,
-  Wrench,
 } from "lucide-react";
+import { toolTaxonomy } from "../task-chat/tool-taxonomy";
+
+/** Family glyph for a tool block/row; the taxonomy falls back to Wrench. */
+function ToolFamilyIcon({ name, className }: { name: string; className?: string }) {
+  const Icon = toolTaxonomy(name).icon;
+  return <Icon className={className} />;
+}
 
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
@@ -930,7 +936,7 @@ function TranscriptToolCard({
         ) : block.status === "completed" ? (
           <Check className={iconClass} />
         ) : (
-          <Wrench className={iconClass} />
+          <ToolFamilyIcon name={block.name} className={iconClass} />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1197,7 +1203,7 @@ function TranscriptToolGroup({
                   isItemRunning && "animate-pulse",
                 )}
               >
-                <Wrench className="h-3.5 w-3.5" />
+                <ToolFamilyIcon name={item.name} className="h-3.5 w-3.5" />
               </span>
             );
           })}
@@ -1240,7 +1246,7 @@ function TranscriptToolGroup({
                       ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
-                  <Wrench className="h-3 w-3" />
+                  <ToolFamilyIcon name={item.name} className="h-3 w-3" />
                 </span>
                 <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground")}>
                   {humanizeLabel(item.name)}

@@ -118,7 +118,7 @@ function MarkdownIssueLink({
       aria-label={issueLabel}
     >
       {status ? (
-        <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
+        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>

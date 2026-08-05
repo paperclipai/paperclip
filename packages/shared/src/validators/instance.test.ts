@@ -50,6 +50,12 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableBuiltInAgents).toBe(false);
   });
 
+  it("defaults beta skills off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableBetaSkills).toBe(false);
+  });
+
   it("defaults apps off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 

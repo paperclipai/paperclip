@@ -62,8 +62,11 @@ It:
 
 - verifies the pushed commit
 - computes the canary version for the current UTC date
-- publishes under npm dist-tag `canary`
+- publishes workspace packages dependency-first under npm dist-tag `canary`
+- waits for each package version to become registry-visible before continuing
+- publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
+- installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
 

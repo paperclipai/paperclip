@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -20,6 +20,7 @@ import {
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -139,6 +140,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       status: "running",
       invocationSource: "assignment",
       responsibleUserId,
+      contextSnapshot: { issueId },
     });
     await db.insert(issues).values({
       id: issueId,
@@ -190,6 +192,112 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .send({})
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ ok: true, userId: seeded.responsibleUserId }));
+  });
+
+  it("silently archives an issue for the board user who moves it to done", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board",
+      source: "session",
+      userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    await request(app)
+      .patch(`/api/issues/${seeded.issueId}`)
+      .send({ status: "done" })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ id: seeded.issueId, status: "done" }));
+
+    const [archive] = await db
+      .select()
+      .from(issueInboxArchives)
+      .where(eq(issueInboxArchives.issueId, seeded.issueId));
+    expect(archive).toMatchObject({
+      issueId: seeded.issueId,
+      userId: seeded.responsibleUserId,
+      archivedByActorType: "user",
+      archivedByAgentId: null,
+      archivedByRunId: null,
+    });
+
+    const [archiveAudit] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.inbox_archived"));
+    expect(archiveAudit).toMatchObject({
+      actorType: "user",
+      actorId: seeded.responsibleUserId,
+      entityId: seeded.issueId,
+      details: {
+        userId: seeded.responsibleUserId,
+        targetResolvedFrom: "responsible_user",
+        source: "issue_status_done",
+      },
+    });
+
+    await request(app)
+      .get(`/api/companies/${seeded.companyId}/issues`)
+      .query({
+        touchedByUserId: seeded.responsibleUserId,
+        inboxArchivedByUserId: seeded.responsibleUserId,
+        status: "backlog,todo,in_progress,in_review,blocked,done",
+      })
+      .expect(200)
+      .expect(({ body }) => expect(body.map((issue: { id: string }) => issue.id)).not.toContain(seeded.issueId));
+  });
+
+  it("rolls back completion when the inbox archive audit cannot be written", async () => {
+    const seeded = await seed();
+    const liveEvents: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(seeded.companyId, (event) => liveEvents.push(event));
+    const app = appFor({
+      type: "board",
+      source: "session",
+      userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    await db.execute(sql`
+      alter table activity_log
+      add constraint reject_done_inbox_archive_audit
+      check (action <> 'issue.inbox_archived')
+    `);
+    try {
+      await request(app)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({ status: "done" })
+        .expect(500);
+      expect(liveEvents).not.toContainEqual(expect.objectContaining({
+        type: "activity.logged",
+        payload: expect.objectContaining({ action: "issue.inbox_archived" }),
+      }));
+    } finally {
+      unsubscribe();
+      await db.execute(sql`
+        alter table activity_log
+        drop constraint reject_done_inbox_archive_audit
+      `);
+    }
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue.status).toBe("todo");
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
+  });
+
+  it("does not archive a responsible user's inbox when an agent moves an issue to done", async () => {
+    const seeded = await seed();
+
+    await request(appFor(agentActor(seeded)))
+      .patch(`/api/issues/${seeded.issueId}`)
+      .send({ status: "done" })
+      .expect(200);
+
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
   });
 
   it("archives for the responsible user with agent/run attribution and resurfaces after new activity", async () => {

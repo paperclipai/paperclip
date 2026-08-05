@@ -18,7 +18,7 @@ import { Link } from "@/lib/router";
 import { decisionTrainingApi, type DecisionTrainingTarget } from "../api/decisionTraining";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { codeResolutionLabel, trainingTargetForItem } from "../lib/decisionTraining";
+import { codeResolutionLabel, decisionTrainingHref, trainingTargetForItem } from "../lib/decisionTraining";
 import { relativeTime } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
@@ -385,7 +385,7 @@ function SavedState({
         </AlertDialog>
 
         <Button asChild variant="outline" size="sm">
-          <Link to={`/training/${record.id}`}>
+          <Link to={decisionTrainingHref(record.id)}>
             Open full record
             <ExternalLink className="size-3.5" />
           </Link>
@@ -456,7 +456,7 @@ function SnapshotPreview({
             icon={<Clock className="size-4" />}
             label="Cutoff"
             value={cutoffAt ? new Date(cutoffAt).toLocaleString() : "now"}
-            href={exampleId ? `/training/${exampleId}` : undefined}
+            href={exampleId ? decisionTrainingHref(exampleId) : undefined}
           />
           <SnapshotRow
             icon={<MessageSquare className="size-4" />}
@@ -466,13 +466,13 @@ function SnapshotPreview({
                 ? "None before cutoff"
                 : `${snapshot.cutoff.commentCount} · last ${snapshot.cutoff.lastCommentId?.slice(0, 8) ?? "—"}`
             }
-            href={exampleId ? `/training/${exampleId}` : undefined}
+            href={exampleId ? decisionTrainingHref(exampleId) : undefined}
           />
           <SnapshotRow
             icon={<Play className="size-4" />}
             label="Runs"
             value={snapshot.runs.length === 0 ? "None before cutoff" : `${snapshot.runs.length} before cutoff`}
-            href={exampleId ? `/training/${exampleId}` : undefined}
+            href={exampleId ? decisionTrainingHref(exampleId) : undefined}
           />
           <SnapshotRow
             icon={<GitCommitHorizontal className="size-4" />}
@@ -482,7 +482,7 @@ function SnapshotPreview({
                 ? `${snapshot.code.commitSha.slice(0, 10)} · ${codeResolutionLabel(snapshot.code.resolution)}`
                 : codeResolutionLabel(snapshot.code.resolution)
             }
-            href={exampleId ? `/training/${exampleId}` : undefined}
+            href={exampleId ? decisionTrainingHref(exampleId) : undefined}
           />
         </div>
       )}

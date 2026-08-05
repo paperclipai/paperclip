@@ -771,6 +771,81 @@ describe("claude_local ACP lane", () => {
     });
   });
 
+  it("delivers the issue description exactly once per prompt and compacts non-assignment resume deltas", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-brief-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const description = "Update launch-card.svg and change the CTA to Try Team free.";
+    const fullTaskMarkdown = [
+      "Paperclip task context:",
+      "- Issue: \"PAP-15271\"",
+      "- Title: \"Preserve the task brief\"",
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+    ].join("\n");
+    const compactTaskMarkdown = [
+      "Paperclip task context:",
+      "- Issue: \"PAP-15271\"",
+      "- Title: \"Preserve the task brief\"",
+    ].join("\n");
+    const wakeContext = (reason: string) => ({
+      issueId: "issue-1",
+      paperclipTaskMarkdown: fullTaskMarkdown,
+      paperclipTaskMarkdownCompact: compactTaskMarkdown,
+      paperclipWake: {
+        reason,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-15271",
+          title: "Preserve the task brief",
+          description,
+          descriptionTruncated: false,
+          status: "in_progress",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+      paperclipWorkspace: {
+        cwd: root,
+        source: "project_workspace",
+        workspaceId: "workspace-1",
+      },
+    });
+
+    const first = await execute(buildContext(root, { context: wakeContext("issue_assigned") }));
+    const freshPrompt = runtimes[0]?.startInputs[0]?.text ?? "";
+    expect(freshPrompt.split(description)).toHaveLength(2);
+    expect(freshPrompt).toContain("Paperclip task context:");
+
+    const second = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+      context: wakeContext("issue_commented"),
+    }));
+    expect(second.exitCode).toBe(0);
+    const resumePrompt = runtimes[1]?.startInputs[0]?.text ?? "";
+    expect(resumePrompt).not.toContain(description);
+    expect(resumePrompt).toContain("Paperclip task context:");
+    expect(resumePrompt).toContain(
+      "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
+    );
+  });
+
   it("resumes compatible ACP sessions on later Claude ACP runs", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-resume-");
     const runtimes: FakeRuntime[] = [];

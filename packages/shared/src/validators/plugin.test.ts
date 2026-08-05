@@ -104,10 +104,14 @@ describe("plugin managed routine validators", () => {
     const parsed = pluginManagedRoutineDeclarationSchema.parse({
       routineKey: "wiki.refresh",
       title: "Refresh Wiki",
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
       issueTemplate: { surfaceVisibility: "default" },
     });
 
     expect(parsed.issueTemplate?.surfaceVisibility).toBe("default");
+    expect(parsed.activityGatePolicy).toBe("require_external_activity");
+    expect(parsed.activityGateScope).toBe("project");
   });
 
   it("rejects non-core issue surface visibility values in routine templates", () => {

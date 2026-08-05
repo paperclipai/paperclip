@@ -138,8 +138,8 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
   });
 
   const origin = useMemo(() => {

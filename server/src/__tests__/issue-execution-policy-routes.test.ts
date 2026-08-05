@@ -5,6 +5,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
@@ -30,11 +31,22 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(async () => false),
 }));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  for: () => ({
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{
+        id: "55555555-5555-4555-8555-555555555555",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        permissions: null,
+      }]).then(onFulfilled, onRejected),
+  }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{
+      id: "55555555-5555-4555-8555-555555555555",
       companyId: "company-1",
       agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: null,
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
@@ -42,10 +54,13 @@ const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWher
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
 }));
@@ -185,11 +200,22 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "55555555-5555-4555-8555-555555555555",
+            companyId: "company-1",
+            agentId: "33333333-3333-4333-8333-333333333333",
+            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
+          id: "55555555-5555-4555-8555-555555555555",
           companyId: "company-1",
           agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: null,
+          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
           permissions: null,
         }]).then(onFulfilled, onRejected),
     }));
@@ -243,7 +269,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -285,7 +311,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -330,7 +356,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review", executionPolicy: policy });
@@ -380,7 +406,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
@@ -431,6 +457,234 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
+  });
+
+  it("allows a board user to cancel an active agent review task", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Active review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "cancelled" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "cancelled",
+        executionState: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("allows a board user to cancel a drifted pending agent review task", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "blocked",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Drifted active review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "cancelled" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "cancelled",
+        executionState: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("cancelled");
+    expect(updatePatch.assigneeAgentId).toBeUndefined();
+    expect(updatePatch.assigneeUserId).toBeUndefined();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps the review stage pending when a board user reassigns to an eligible participant", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [
+            { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+            { type: "agent", agentId: "55555555-5555-4555-8555-555555555555" },
+          ],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Reassigned review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeAgentId: "55555555-5555-4555-8555-555555555555" });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.assigneeAgentId).toBe("55555555-5555-4555-8555-555555555555");
+    expect(updatePatch.assigneeUserId).toBeNull();
+    expect(updatePatch.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: "11111111-1111-4111-8111-111111111111",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: "55555555-5555-4555-8555-555555555555" },
+      returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+    });
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("dissolves the review when a board user reassigns an in_review task to a non-participant", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Reassigned away from review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeAgentId: "55555555-5555-4555-8555-555555555555" });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_progress");
+    expect(updatePatch.executionState).toBeNull();
+    expect(updatePatch.assigneeAgentId).toBe("55555555-5555-4555-8555-555555555555");
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {

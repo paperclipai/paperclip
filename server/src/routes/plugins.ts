@@ -2351,6 +2351,20 @@ export function pluginRoutes(
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
       if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        // Refresh the worker's authorized proactive company scopes so the
+        // just-configured company can be acted on from proactive loops (e.g.
+        // the chat gateway's notifier drain) without requiring a restart
+        // (LOOA-629). The set is exactly the plugin's configured companies.
+        try {
+          const configRows = await registry.listConfigs(plugin.id);
+          bridgeDeps.workerManager.setProactiveCompanyScopes(
+            plugin.id,
+            configRows.map((row) => row.companyId),
+          );
+        } catch {
+          // Non-fatal: the set is rebuilt from the DB on the next worker start.
+        }
+
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,

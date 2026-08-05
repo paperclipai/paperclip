@@ -59,9 +59,25 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+# Real version for this build, computed from `git describe` on the CI runner
+# (the image has no .git, so the server cannot derive it at runtime). Empty for
+# local `docker build`, which just leaves the server on its normal fallbacks.
+ARG PAPERCLIP_BUILD_VERSION=""
+# The exact commit this image was built from, for the same reason: server-info
+# falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
+# /api/health `commit` field that deploy tooling verifies. Empty locally.
+ARG PAPERCLIP_BUILD_COMMIT=""
+# Refreshes the tool layer below when it changes (CI stamps an ISO week, so
+# the @latest CLI tools advance weekly). Without it the cached layer would
+# freeze the tools until an unrelated cache bust.
+ARG CLI_TOOLS_CACHE_EPOCH=""
 WORKDIR /app
-COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+# Tool and OS layer BEFORE the app copy: it references nothing from /app, and
+# the app copy changes on every commit — ordered the other way around, this
+# (the single most expensive layer: four CLI toolchains + apt, per arch) can
+# never hit the layer cache and rebuilds on every build.
+RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -71,6 +87,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+COPY --chown=node:node --from=build /app /app
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -78,6 +96,8 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  PAPERCLIP_BUILD_VERSION=${PAPERCLIP_BUILD_VERSION} \
+  PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_BUILD_COMMIT} \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
@@ -90,3 +110,38 @@ EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+# Cloud image variant (build with `--target cloud`): the production image
+# plus built bundled sandbox-provider plugins. Managed instances receive a
+# `plugins.autoInstall` key list through PAPERCLIP_MANAGED_CONFIG and
+# install those plugins from the bundled catalog at boot
+# (server/src/services/bundled-plugins.ts), which requires each plugin's
+# dist/ to exist in the image — the default image ships only their source,
+# so auto-install logs "bundle not present" and skips. The plugins are
+# built in this separate target so the default (self-hosted) image stays
+# lean; CI pins the default build to `--target production`, which is
+# byte-identical to before this stage existed.
+#
+# The sandbox providers are intentionally excluded from the pnpm workspace
+# (see pnpm-workspace.yaml), so each installs standalone exactly as its
+# README prescribes. Installing in a `build`-based stage (not `production`)
+# keeps devDependencies available for tsc: `production` sets
+# NODE_ENV=production, which would make pnpm skip them.
+#
+# CLOUD_BUNDLED_PLUGINS is the space-separated list of sandbox-provider
+# directory names to build into the variant. Only what managed deployments
+# actually auto-install belongs here — every entry adds its node_modules
+# to the image. Growing the list is a one-line workflow change.
+FROM build AS cloud-plugins
+ARG CLOUD_BUNDLED_PLUGINS="daytona"
+RUN set -eu; \
+  for name in $CLOUD_BUNDLED_PLUGINS; do \
+    dir="packages/plugins/sandbox-providers/$name"; \
+    test -d "$dir" || { echo "ERROR: unknown sandbox provider '$name'" >&2; exit 1; }; \
+    pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
+    pnpm -C "$dir" build; \
+    test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
+  done
+
+FROM production AS cloud
+COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers

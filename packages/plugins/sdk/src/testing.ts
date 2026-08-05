@@ -45,6 +45,7 @@ import type {
   PermissionKey,
   PrincipalType,
 } from "./types.js";
+import { NOOP_PLUGIN_TRACER } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -1245,6 +1246,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
             concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
             catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
+            activityGatePolicy: declaration.activityGatePolicy ?? "always",
+            activityGateScope: declaration.activityGateScope ?? "company",
             variables: declaration.variables ?? [],
             latestRevisionId: null,
             latestRevisionNumber: 1,
@@ -1724,6 +1727,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           authorType: options?.actorUserId ? "user" : options?.authorAgentId ? "agent" : "system",
           authorAgentId: options?.actorUserId ? null : options?.authorAgentId ?? null,
           authorUserId: options?.actorUserId ?? null,
+          onBehalfOfUserId: null,
           body,
           presentation: null,
           metadata: null,
@@ -2500,6 +2504,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         logs.push({ level: "debug", message, meta });
       },
     },
+    tracer: NOOP_PLUGIN_TRACER,
   };
 
   const harness: TestHarness = {

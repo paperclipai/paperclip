@@ -16,11 +16,11 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
-  issueReadStates,
   issues,
   projectWorkspaces,
   projects,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
@@ -63,7 +63,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
-    await db.delete(issueReadStates);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
@@ -428,7 +427,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(agentId).not.toBe(otherAgentId);
   });
 
-  it("fires for a human comment and ignores pure-read activity", async () => {
+  it("fires for a human comment and ignores inbox bookkeeping activity", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const windowStart = new Date(Date.now() - 60_000);
     const now = new Date();
@@ -453,6 +452,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -480,6 +488,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -607,11 +624,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       changeSummary: "Created routine",
     });
     expect(initialRevisions[0]?.snapshot.routine.description).toBe("Run the frog routine");
+    expect(initialRevisions[0]?.snapshot.routine.activityGatePolicy).toBe("always");
+    expect(initialRevisions[0]?.snapshot.routine.activityGateScope).toBe("company");
 
     const updated = await svc.update(
       routine.id,
       {
         description: "Run the frog routine with logs",
+        activityGatePolicy: "require_external_activity",
+        activityGateScope: "project",
         baseRevisionId: routine.latestRevisionId,
       },
       {},
@@ -623,6 +644,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         description: "Run the frog routine with logs",
+        activityGatePolicy: "require_external_activity",
+        activityGateScope: "project",
         baseRevisionId: updated?.latestRevisionId,
       },
       {},
@@ -633,6 +656,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const revisions = await svc.listRevisions(routine.id);
     expect(revisions.map((revision) => revision.revisionNumber)).toEqual([2, 1]);
     expect(revisions[0]?.snapshot.routine.description).toBe("Run the frog routine with logs");
+    expect(revisions[0]?.snapshot.routine.activityGatePolicy).toBe("require_external_activity");
+    expect(revisions[0]?.snapshot.routine.activityGateScope).toBe("project");
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
@@ -739,7 +764,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const { routine, svc } = await seedFixture();
     const revision1Id = routine.latestRevisionId!;
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    const revision2Routine = await svc.update(routine.id, { description: "revision 2" }, {});
+    const revision2Routine = await svc.update(routine.id, {
+      description: "revision 2",
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    }, {});
 
     const restored = await svc.restoreRevision(routine.id, revision1Id, {});
 
@@ -748,12 +777,35 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restored.routine.latestRevisionNumber).toBe(3);
     expect(restored.routine.latestRevisionId).not.toBe(revision2Routine?.latestRevisionId);
     expect(restored.routine.description).toBe("Run the frog routine");
+    expect(restored.routine.activityGatePolicy).toBe("always");
+    expect(restored.routine.activityGateScope).toBe("company");
     expect(restored.revision.restoredFromRevisionId).toBe(revision1Id);
     expect(restored.revision.snapshot.routine.description).toBe("Run the frog routine");
 
     const revisions = await svc.listRevisions(routine.id);
     expect(revisions.map((revision) => revision.revisionNumber)).toEqual([3, 2, 1]);
     await expect(db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).resolves.toHaveLength(1);
+  });
+
+  it("defaults activity gates when restoring a legacy routine revision snapshot", async () => {
+    const { routine, svc } = await seedFixture();
+    const revision1Id = routine.latestRevisionId!;
+    const [revision1] = await db.select().from(routineRevisions).where(eq(routineRevisions.id, revision1Id));
+    const legacySnapshot = structuredClone(revision1!.snapshot) as { routine: Record<string, unknown> };
+    delete legacySnapshot.routine.activityGatePolicy;
+    delete legacySnapshot.routine.activityGateScope;
+    await db.update(routineRevisions).set({ snapshot: legacySnapshot }).where(eq(routineRevisions.id, revision1Id));
+    await svc.update(routine.id, {
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    }, {});
+
+    const restored = await svc.restoreRevision(routine.id, revision1Id, {});
+
+    expect(restored.routine.activityGatePolicy).toBe("always");
+    expect(restored.routine.activityGateScope).toBe("company");
+    expect(restored.revision.snapshot.routine.activityGatePolicy).toBe("always");
+    expect(restored.revision.snapshot.routine.activityGateScope).toBe("company");
   });
 
   it("rejects restoring the current latest routine revision", async () => {
@@ -1204,12 +1256,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 
@@ -1287,12 +1342,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 

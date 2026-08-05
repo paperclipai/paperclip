@@ -49,6 +49,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const TASK_CHAT_REDESIGN_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle chat-style tasks experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const DECISIONS_TOGGLE_SELECTOR =
@@ -57,9 +59,13 @@ const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
+const BETA_SKILLS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle beta skills experimental setting"]';
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
+const STATUS_CARDS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle status cards experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 
@@ -72,15 +78,17 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
+    enableTaskChatRedesign: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
+    enableBetaSkills: false,
     enableSummaries: false,
+    enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
-    enableCloudSync: false,
     enableServerInfoDebugView: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
@@ -88,6 +96,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
+    enableOwnerInstanceAdmin: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -284,6 +293,52 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
   });
 
+  it("renders and patches the Chat-Style Tasks experimental toggle on and off", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Chat-Style Tasks");
+    expect(container.textContent).toContain(
+      "Reimagines the task detail page as a live conversation with your agents",
+    );
+    expect(container.textContent).toContain(
+      "Turning this off instantly restores the classic task page. No task data is affected.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(TASK_CHAT_REDESIGN_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableTaskChatRedesign: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.textContent = "";
+    await renderPage();
+
+    const enabledToggle = container.querySelector<HTMLButtonElement>(
+      TASK_CHAT_REDESIGN_TOGGLE_SELECTOR,
+    );
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enabledToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableTaskChatRedesign: false,
+    });
+  });
+
   it("renders and patches the Decisions experimental toggle", async () => {
     await renderPage();
 
@@ -443,6 +498,26 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("renders and patches the Beta skills experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).toContain("pin beta releases of the Paperclip core skill");
+
+    const toggle = container.querySelector<HTMLButtonElement>(BETA_SKILLS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableBetaSkills: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("renders and patches the Summaries experimental toggle", async () => {
     await renderPage();
 
@@ -461,6 +536,54 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       enableSummaries: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("enables Summaries when enabling the Status Cards experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Status Cards");
+    expect(container.textContent).toContain("experimental shared status-card board");
+
+    const toggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: true,
+      enableStatusCards: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("disables Status Cards when disabling Summaries", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableSummaries: true,
+      enableStatusCards: true,
+    };
+    await renderPage();
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    await act(async () => {
+      summariesToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: false,
+      enableStatusCards: false,
+    });
+    expect(summariesToggle?.getAttribute("aria-checked")).toBe("false");
+    expect(
+      container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("renders and patches the Server Info Debug View experimental toggle", async () => {
@@ -638,6 +761,40 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("locks Status Cards when managed Summaries is disabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: {
+        enableSummaries: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const statusCardsToggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(statusCardsToggle?.disabled).toBe(true);
+
+    await act(() => statusCardsToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("locks Summaries on when managed Status Cards is enabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableSummaries: true,
+      enableStatusCards: true,
+      managedKeys: {
+        enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    expect(summariesToggle?.disabled).toBe(true);
+
+    await act(() => summariesToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("locks the managed auto-recovery toggle without opening the preview dialog", async () => {

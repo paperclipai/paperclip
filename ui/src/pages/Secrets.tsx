@@ -127,6 +127,9 @@ import {
 import type { MyUserSecretEntry } from "../api/secrets";
 
 type CreateMode = "managed" | "external";
+// "value" writes a new secret value (for external references: through to the
+// provider); "reference" re-points an external reference without writing.
+type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
 type SecretsTab = "secrets" | "my-secrets" | "vaults";
@@ -341,9 +344,12 @@ function modeLabel(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
 }
 
-function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
+function modeDescription(managedMode: SecretManagedMode, canWriteExternalValue = false) {
+  if (managedMode === "paperclip_managed") {
+    return "Paperclip owns create and rotation writes for this provider secret.";
+  }
+  return canWriteExternalValue
+    ? "Paperclip resolves this provider reference and can write new values to it via Update value."
     : "Paperclip resolves this provider reference but does not rotate the provider value.";
 }
 
@@ -650,8 +656,25 @@ export function Secrets() {
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [providedByFilter, setProvidedByFilter] = useState<ProvidedByFilter>("all");
-  const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
-  const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The detail sheet is deep-linkable: `?secret=<id>` /
+  // `?definition=<id>` are the source of truth for the current selection, so
+  // every open secret has a shareable URL and Back closes the sheet.
+  const selectedSecretId = searchParams.get("secret");
+  const selectedDefinitionId = searchParams.get("definition");
+  const setDetailSelection = useCallback(
+    (secretId: string | null, definitionId: string | null = null) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (secretId) next.set("secret", secretId);
+        else next.delete("secret");
+        if (definitionId) next.set("definition", definitionId);
+        else next.delete("definition");
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -674,6 +697,7 @@ export function Secrets() {
   });
   const [createError, setCreateError] = useState<unknown>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
+  const [rotateMode, setRotateMode] = useState<RotateMode>("value");
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
   const [rotateProviderConfigId, setRotateProviderConfigId] = useState("");
@@ -868,7 +892,6 @@ export function Secrets() {
   // Folders are derived purely from slash-delimited secret names; there is no
   // server-side folder record. `?path=` holds the normalized current folder
   // and is only meaningful on the main Secrets tab (inert on the others).
-  const [searchParams, setSearchParams] = useSearchParams();
   const pathParam = normalizeSecretPath(searchParams.get("path") ?? "");
   const folderPath = activeTab === "secrets" ? pathParam : "";
   const searching = search.trim().length > 0;
@@ -1094,12 +1117,10 @@ export function Secrets() {
       });
       setCreateError(null);
       if (result.kind === "company") {
-        setSelectedSecretId(result.item.id);
-        setSelectedDefinitionId(null);
+        setDetailSelection(result.item.id);
         invalidateAll([result.item.id]);
       } else {
-        setSelectedDefinitionId(result.item.id);
-        setSelectedSecretId(null);
+        setDetailSelection(null, result.item.id);
         invalidateAll([result.item.id]);
       }
     },
@@ -1111,7 +1132,7 @@ export function Secrets() {
   const rotateMutation = useMutation({
     mutationFn: () => {
       if (!selectedSecret) throw new Error("Select a secret first");
-      if (selectedSecret.managedMode === "external_reference") {
+      if (selectedSecret.managedMode === "external_reference" && rotateMode === "reference") {
         return secretsApi.rotate(selectedSecret.id, {
           externalRef: rotateExternalRef.trim() || selectedSecret.externalRef || undefined,
           providerConfigId: rotateProviderConfigId || null,
@@ -1183,7 +1204,7 @@ export function Secrets() {
     onSuccess: (_response, id) => {
       pushToast({ title: "Secret deleted", tone: "info" });
       setDeleteConfirm(null);
-      if (selectedSecretId === id) setSelectedSecretId(null);
+      if (selectedSecretId === id) setDetailSelection(null);
       invalidateAll([id]);
     },
     onError: (error) => {
@@ -1201,7 +1222,7 @@ export function Secrets() {
     onSuccess: (_response, definition) => {
       pushToast({ title: "User-provided secret removed", body: definition.name, tone: "info" });
       setDefinitionDeleteConfirm(null);
-      if (selectedDefinitionId === definition.id) setSelectedDefinitionId(null);
+      if (selectedDefinitionId === definition.id) setDetailSelection(null);
       invalidateAll([definition.id]);
     },
     onError: (error) => {
@@ -1409,25 +1430,54 @@ export function Secrets() {
 
   function openCompanySecret(secret: CompanySecret) {
     setSecretDetailTab("details");
-    setSelectedSecretId(secret.id);
-    setSelectedDefinitionId(null);
+    setDetailSelection(secret.id);
   }
 
   function openUserDefinition(definition: UserSecretDefinition) {
     setSecretDetailTab("details");
-    setSelectedDefinitionId(definition.id);
-    setSelectedSecretId(null);
+    setDetailSelection(null, definition.id);
+  }
+
+  function secretSupportsExternalValueWrite(secret: CompanySecret) {
+    return (
+      secret.managedMode === "external_reference" &&
+      Boolean(secret.externalRef) &&
+      Boolean(providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites)
+    );
+  }
+
+  function rotateActionLabel(secret: CompanySecret) {
+    return secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+      ? "Update reference"
+      : "Update value";
   }
 
   function openRotateSecret(secret: CompanySecret) {
     openCompanySecret(secret);
     setRotateOpen(true);
+    setRotateMode(
+      secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+        ? "reference"
+        : "value",
+    );
     setRotateValue("");
     setRotateExternalRef("");
     setRotateProviderConfigId(
       secret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, secret.provider),
     );
     setRotateError(null);
+  }
+
+  function copyDetailLink() {
+    void copyTextToClipboard(window.location.href)
+      .then(() => pushToast({ title: "Link copied", body: "Deep link to this secret", tone: "success" }))
+      .catch((error) =>
+        pushToast({
+          title: "Copy failed",
+          body: error instanceof Error ? error.message : "Unable to copy link",
+          tone: "error",
+        }),
+      );
   }
 
   function copySecretKey(key: string) {
@@ -1472,7 +1522,7 @@ export function Secrets() {
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => openRotateSecret(row.secret)}>
                 <RefreshCw className="h-4 w-4" />
-                {row.secret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                {rotateActionLabel(row.secret)}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -2139,10 +2189,7 @@ export function Secrets() {
       <Sheet
         open={Boolean(selectedSecret || selectedDefinition)}
         onOpenChange={(open) => {
-          if (!open) {
-            setSelectedSecretId(null);
-            setSelectedDefinitionId(null);
-          }
+          if (!open && (selectedSecret || selectedDefinition)) setDetailSelection(null);
         }}
       >
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
@@ -2188,7 +2235,10 @@ export function Secrets() {
                   onClick={() => openRotateSecret(selectedSecret)}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                  {rotateActionLabel(selectedSecret)}
+                </Button>
+                <Button variant="outline" size="sm" onClick={copyDetailLink}>
+                  <Link2 className="h-3.5 w-3.5 mr-1" /> Copy link
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -2964,14 +3014,26 @@ export function Secrets() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update external reference"
+                : "Update secret value"}
             </DialogTitle>
             <DialogDescription>
-              {selectedSecret?.managedMode === "external_reference"
-                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
-                : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
+              {selectedSecret?.managedMode !== "external_reference"
+                ? "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."
+                : rotateMode === "reference"
+                  ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
+                  : "Writes a new version of the referenced provider secret. The new value becomes current for every consumer of that secret, in and outside Paperclip."}
             </DialogDescription>
           </DialogHeader>
+          {selectedSecret && secretSupportsExternalValueWrite(selectedSecret) ? (
+            <Tabs value={rotateMode} onValueChange={(value) => setRotateMode(value as RotateMode)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="value">Write new value</TabsTrigger>
+                <TabsTrigger value="reference">Change reference</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          ) : null}
           <div>
             <label className="text-xs font-medium" htmlFor="rotate-secret-vault">Provider vault</label>
             <select
@@ -3000,7 +3062,7 @@ export function Secrets() {
               </p>
             )}
           </div>
-          {selectedSecret?.managedMode === "external_reference" ? (
+          {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference" ? (
             <div>
               <label className="text-xs font-medium" htmlFor="rotate-ref">External reference</label>
               <Input
@@ -3025,6 +3087,11 @@ export function Secrets() {
                 className="font-mono text-xs"
                 placeholder="Paste the new value"
               />
+              {selectedSecret?.managedMode === "external_reference" ? (
+                <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
+                  Written to <code className="font-mono">{selectedSecret.externalRef}</code> in the provider.
+                </p>
+              ) : null}
             </div>
           )}
           {rotateError ? <p className="text-xs text-destructive">{rotateError}</p> : null}
@@ -3040,13 +3107,15 @@ export function Secrets() {
               disabled={
                 rotateMutation.isPending ||
                 Boolean(rotateProviderBlockReason) ||
-                (selectedSecret?.managedMode === "external_reference"
+                (selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
                   ? !rotateExternalRef.trim() && !selectedSecret?.externalRef
                   : !rotateValue)
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Update value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update reference"
+                : "Update value"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4546,7 +4615,14 @@ function SecretDetailsTab({
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(
+          secret.managedMode,
+          Boolean(
+            secret.externalRef &&
+              providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites,
+          ),
+        )}{" "}
+        Paperclip never re-displays stored values.
       </div>
     </dl>
   );

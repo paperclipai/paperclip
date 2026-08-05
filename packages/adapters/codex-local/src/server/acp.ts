@@ -35,10 +35,12 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
@@ -81,6 +83,22 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
+        : {}),
+    };
+  }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
@@ -129,6 +147,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
+  // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -137,6 +160,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };
@@ -204,6 +228,13 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
+    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // resume that reuses this staged runtime). It reads the sandbox auth.json /
+    // workspace live and copies back to the host; it does NOT remove the staged
+    // in-sandbox home, so re-running it across resumes can't leave a later run
+    // without its staged home. Host staged-temp removal is deliberately NOT here
+    // — see `disposeStaged` — so caching this runtime for reuse never destroys
+    // resources the next resume needs.
     teardown: async () => {
       try {
         await onLog(
@@ -222,16 +253,22 @@ async function prepareCodexRemoteManagedHome(
             err instanceof Error ? err.message : String(err)
           }\n`,
         );
-      } finally {
-        await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
-          await onLog(
-            "stderr",
-            `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
-              error instanceof Error ? error.message : String(error)
-            }\n`,
-          );
-        });
       }
+    },
+    // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
+    // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
+    // re-stage, idle eviction) — never on a clean turn that keeps the runtime
+    // warm — so it can't remove the staged home while a reuse still depends on
+    // it. Idempotent: `force: true` no-ops if it was already removed.
+    disposeStaged: async () => {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
     },
   };
 }
@@ -455,19 +492,6 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-async function hasCodexNativeCredentials(codexHome: string): Promise<boolean> {
-  const raw = await fs.readFile(path.join(codexHome, "auth.json"), "utf8").catch(() => null);
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const record = parsed as Record<string, unknown>;
-    return isNonEmpty(record.OPENAI_API_KEY) || isNonEmpty(record.refresh_token);
-  } catch {
-    return false;
-  }
-}
-
 export async function testCodexAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -537,34 +561,50 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
-  const configApiKey = envConfig.OPENAI_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.OPENAI_API_KEY : undefined;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
-    checks.push({
-      code: "codex_acp_openai_api_key_detected",
-      level: "info",
-      message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-      detail: `Detected in ${source}.`,
+  if (!targetIsRemote) {
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const hostApiKey =
+      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+        ? null
+        : isNonEmpty(process.env.OPENAI_API_KEY)
+        ? process.env.OPENAI_API_KEY
+        : null;
+    const configuredApiKey = configApiKey ?? hostApiKey;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey,
     });
-  } else if (!targetIsRemote) {
-    const codexHome = isNonEmpty(envConfig.CODEX_HOME)
-      ? envConfig.CODEX_HOME
-      : path.join(process.env.HOME ?? "", ".codex");
-    if (codexHome && await hasCodexNativeCredentials(codexHome)) {
+
+    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+      checks.push({
+        code: "codex_acp_openai_api_key_detected",
+        level: "info",
+        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+      });
+    } else if (credentialReadiness.ready && !credentialReadiness.managed) {
+      checks.push({
+        code: "codex_acp_external_home_configured",
+        level: "info",
+        message: "Codex ACP will use an externally managed CODEX_HOME.",
+        detail: credentialReadiness.effectiveHome,
+      });
+    } else if (credentialReadiness.ready) {
       checks.push({
         code: "codex_acp_native_auth_detected",
         level: "info",
         message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials found in ${path.join(codexHome, "auth.json")}.`,
+        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
       });
     } else {
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials were detected.",
-        hint: "Set OPENAI_API_KEY or run `codex login` before starting a Codex ACP agent.",
+        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
       });
     }
   }

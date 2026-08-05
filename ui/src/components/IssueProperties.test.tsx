@@ -1230,6 +1230,31 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the current archived project visible in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        id: "archived-project",
+        name: "Archived Project",
+        archivedAt: new Date("2026-04-08T00:00:00.000Z"),
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "archived-project" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
@@ -2459,6 +2484,28 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: "Github PR",
+            iconKey: "github",
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "acme/web#242",
+            url: "https://github.com/acme/web/pull/242",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
       ],
     });
     await flush();
@@ -2485,6 +2532,10 @@ describe("IssueProperties", () => {
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+    const unrefreshedPullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/242");
+    expect(unrefreshedPullRequestLink?.textContent).toContain("PR 242 - Not yet refreshed");
+    expect(unrefreshedPullRequestLink?.textContent).not.toContain("Not yet resolved");
 
     act(() => root.unmount());
   });

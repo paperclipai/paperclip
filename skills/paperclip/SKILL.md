@@ -107,6 +107,9 @@ If an important file intentionally remains in the project or execution workspace
 For technical upload instructions, read `references/artifacts.md`.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
+
+**Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.
+
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 Before ending any heartbeat, apply this final-disposition checklist:
@@ -154,12 +157,23 @@ A "watcher" or "monitor" is not something that lives inside a run. A run/heartbe
 
 Because of that, follow these rules:
 
-- **Only claim a watcher/monitor exists after you have actually scheduled one.** Describing a watcher in a comment does not create it. Schedule it by setting `executionPolicy.monitor.nextCheckAt` (with `kind`/`serviceName`/`externalRef`/`timeoutAt`/`maxAttempts`) via `PATCH /api/issues/{id}`, then confirm the issue now reports a non-null `monitorNextCheckAt` **and** that it is agent-assigned (no `assigneeUserId`) and sitting in `in_progress`/`in_review` — the stored timestamp only fires under those conditions. Run a check on demand with `POST /api/issues/{id}/monitor/check-now`.
+- **Only claim a watcher/monitor exists after you have actually scheduled one.** Describing a watcher in a comment does not create it. Schedule it by setting `executionPolicy.monitor.nextCheckAt` (with `kind`/`serviceName`/`externalRef`/`timeoutAt`/`maxAttempts`) via `PATCH /api/issues/{id}`. Use that request's default full response (not `Prefer: return=minimal`) to confirm `monitorNextCheckAt` is non-null, `assigneeAgentId` is set, `assigneeUserId` is null, and `status` is `in_progress` or `in_review` — do not issue a confirming GET. The stored timestamp only fires under those conditions. Run a check on demand with `POST /api/issues/{id}/monitor/check-now`.
 - **Describe it in checkable terms.** State the monitor's kind, next check time, and attempt/timeout bounds — not vague "a watcher will wake me" background magic. If you cannot name those, you have not scheduled one and must not imply that you have.
 - **Never imply a live watcher on a task you are marking `done`.** `done` means no follow-up on this issue, which contradicts an ongoing watcher. If real re-checking is still needed, keep the issue `in_progress`/`in_review` with a scheduled monitor instead of closing it.
 - This is enforced by state, not by narration: the disposition guard rejects an agent move to `in_review` (`invalid_issue_disposition`) unless a real review path exists — interaction, approval, human reviewer, typed participant, or an actually-scheduled monitor with a real `monitorNextCheckAt` — and the recovery classifier flags `in_review_without_action_path` for anything parked with no live wake path. Keep your comments consistent with that real state.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+
+### Delegating review tasks
+
+Run-scoped writes are subtree-scoped: the delegate's run can write to its own issue and descendants, generally **not** to your issue. Write review-task descriptions accordingly:
+
+- Instruct the reviewer to **post findings on their own review issue and mark it `done`**. The verdict is the deliverable — a completed review with adverse findings is `done`, not `blocked`. Follow-up fixes belong to you (the parent's owner), and the `issue_blockers_resolved` wake brings the verdict to you when you set the blocker edge.
+- **Never instruct a delegate to "post findings as a comment on the parent."** For low-trust/review-contained delegates that instruction is guaranteed to 403, and a reviewer that converts the denial into `blocked` with a prose-only owner strands the tree. (Standard-trust delegates may additionally post one report comment on their direct parent where the platform allows it, but never make that the required completion step.)
+- Make the review issue's description **self-contained** — the delegate may not be able to read your issue or its documents. Put the full instructions, acceptance criteria, and material to review (or repo-relative pointers) in the description.
+- Block your issue on the review issue (`blockedByIssueIds`) so you wake when the verdict lands.
+
+**Courier pattern (lateral coordination):** to nudge or hand context to an agent whose issues you cannot write to, create a new issue assigned to that agent carrying complete, self-contained instructions. Issue-CREATE is company-scoped and always available; commenting into another agent's boundary is not.
 
 ## Managing A User's Inbox
 
@@ -219,7 +233,7 @@ POST /api/companies/{companyId}/approvals
 
 Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
 
-Five kinds are supported. Pick the smallest kind that fits the decision shape:
+Five issue-thread interaction kinds are supported. Pick the smallest kind that fits the decision shape:
 
 | Kind                            | When to use                                                                                  | When **not** to use                                                                                |
 | ------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -228,14 +242,82 @@ Five kinds are supported. Pick the smallest kind that fits the decision shape:
 | `request_item_verdicts`         | Board must approve/reject/defer individual known items, potentially over multiple submits.   | One-shot multi-select decisions (use `request_checkbox_confirmation`) or task creation choices.    |
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
 | `suggest_tasks`                 | Proposing concrete tasks for the board to accept; accepted tasks become real subtasks.       | Asking the board to confirm a plan or arbitrary selection. Tasks are the unit; not arbitrary ids.  |
+| `decision`                      | Effects span other issues, create a cross-issue bundle, or must stand alone from one thread. | The response belongs only to the current issue; use an issue-thread interaction instead.           |
+
+Routing rule: **same issue → issue-thread interaction; other issues or bundles → decision**.
 
 Key shared semantics:
 
 - **Continuation policy.** `request_checkbox_confirmation` and `request_item_verdicts` default to `wake_assignee`, which wakes you after the board resolves the selection or submits newly resolved item verdicts. `request_confirmation` defaults to `none`, so set `wake_assignee` or `wake_assignee_on_accept` when you need to resume after a yes/no decision. `none` never wakes you — only use it when you truly do not need to resume.
 - **Target binding and staleness.** `request_confirmation`, `request_checkbox_confirmation`, and `request_item_verdicts` accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
+- **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
+
+### Standalone Decisions
+
+Create a decision from an issue-scoped agent run with `POST /api/companies/{companyId}/decisions`:
+
+```json
+{
+  "title": "Reassign the blocked launch issue?",
+  "body": "The current owner is unavailable; this moves the existing issue without creating a duplicate.",
+  "ruleKey": "routing.reassign_blocked_issue",
+  "options": [
+    {
+      "id": "reassign",
+      "label": "Reassign",
+      "effects": [
+        { "type": "assign_issue", "targetIssueId": "{issueId}", "staleness": "strict", "assigneeAgentId": "{agentId}" }
+      ]
+    },
+    { "id": "leave", "label": "Leave unchanged", "effects": [] }
+  ],
+  "idempotencyKey": "decision:{originIssueId}:routing.reassign_blocked_issue:v1",
+  "continuationPolicy": "wake_origin_agent"
+}
+```
+
+- `options` accepts 1–8 options; option ids are unique and each option accepts up to 10 effects.
+- Supported effects are `comment_on_issue`, `create_issue`, `update_issue_status`, `assign_issue`, `cancel_issue_tree`, and `resolve_blocker`.
+- `expiresAt` is optional, defaults to seven days, and must be no more than 30 days away.
+- `idempotencyKey` is optional but strongly recommended; reuse is safe only with the same payload.
+- `continuationPolicy` is `none` or `wake_origin_agent`. Use the latter only when resolution or expiry must resume the proposer.
+- Each origin agent may have at most 50 open decisions by default.
+
+Bundle related cross-issue decisions with `POST /api/companies/{companyId}/decision-bundles`:
+
+```json
+{
+  "title": "Launch recovery choices",
+  "summary": "Independent choices for ownership and blocker cleanup.",
+  "decisions": [
+    {
+      "title": "Reassign owner?",
+      "body": "Move the issue to the recovery owner.",
+      "ruleKey": "routing.reassign",
+      "options": [
+        { "id": "reassign", "label": "Reassign", "effects": [{ "type": "assign_issue", "targetIssueId": "{issueId}", "staleness": "strict", "assigneeAgentId": "{agentId}" }] },
+        { "id": "leave", "label": "Leave unchanged", "effects": [] }
+      ],
+      "idempotencyKey": "decision:{originIssueId}:routing.reassign:v1"
+    },
+    {
+      "title": "Clear obsolete blocker?",
+      "body": "Remove the resolved dependency from the blocked issue.",
+      "ruleKey": "blockers.clear_obsolete",
+      "options": [
+        { "id": "clear", "label": "Clear blocker", "effects": [{ "type": "resolve_blocker", "targetIssueId": "{issueId}", "staleness": "strict", "removeBlockedByIssueIds": ["{blockerIssueId}"] }] },
+        { "id": "keep", "label": "Keep blocker", "effects": [] }
+      ],
+      "idempotencyKey": "decision:{originIssueId}:blockers.clear_obsolete:v1"
+    }
+  ]
+}
+```
+
+Bundles accept 1–50 decisions and are created atomically. The nested decision payload uses the same fields and limits as the single-create endpoint.
 
 Create a `request_checkbox_confirmation` (board selects any subset, then confirms):
 
@@ -501,7 +583,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
-| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
+| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond,withdraw}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |

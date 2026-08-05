@@ -191,6 +191,48 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
+### Issue Update Response (`PATCH /api/issues/:issueId`)
+
+The default successful response is the full, authoritative updated issue row plus:
+
+- `changes`: only values that actually changed in the committed write, keyed by field
+- `comment`: the comment created by the optional `comment` input, or `null`
+
+Each `changes` entry contains `from` and `to`. Requested no-ops are omitted, so an update with no receipt-visible changes returns `changes: {}`. Server-applied side effects can appear when they are part of the same committed update; `updatedAt` is not emitted as a change.
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "priority": "high",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+Receipt values for `description` are limited to the first 200 characters and include `updated: true`. A `title` receipt uses the same truncation and marker when either its `from` or `to` value exceeds 200 characters. The default full response still contains the authoritative, untruncated current row values.
+
+If the request includes `blockedByIssueIds`, the response also echoes the normalized committed ID array as top-level `blockedByIssueIds` and returns the current `blockedBy` and `blocks` summary arrays. Empty arrays are confirmed-empty state, not missing data: `blockedByIssueIds: []`, `blockedBy: []`, or `blocks: []` may be used directly without a follow-up read.
+
+Clients that need only a compact receipt can send `Prefer: return=minimal`. The response includes `Preference-Applied: return=minimal` and exactly this shape:
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+**The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
+
 ### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
 
 Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
@@ -863,6 +905,12 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
+Resolver governance:
+
+- Create accepts optional `resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The response snapshots immutable `requestedResolverPolicy` and `effectiveResolverPolicy`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity; resolution records `resolvedByAgentId`/`resolvedByRunId`. The resolver cannot be the creator agent or source run, low-trust and watchdog-scoped actors are denied, and `payload.toolAction` confirmations stay board-only regardless of policy.
+
 Rules:
 
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
@@ -973,6 +1021,9 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 ```
 
 Other outcomes match `request_confirmation`:
+
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
@@ -1196,7 +1247,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
 | GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
+| PATCH  | `/api/issues/:issueId`             | Update issue; response is authoritative and includes `changes` + `comment` (`Prefer: return=minimal` supported); `blockedByIssueIds` replaces blocker set |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
@@ -1210,6 +1261,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createRoot } from "react-dom/client";
+import { createRoot as createReactRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -114,6 +114,7 @@ const providers: SecretProviderDescriptor[] = [
     requiresExternalRef: false,
     supportsManagedValues: true,
     supportsExternalReferences: true,
+    supportsExternalValueWrites: true,
     configured: true,
   },
   {
@@ -159,12 +160,29 @@ const providerConfigs = [
   },
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
+const activeRoots = new Set<Root>();
+
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
+  let result: void | Promise<void>;
   flushSync(() => {
     result = callback();
   });
-  await result;
+  await result!;
+}
+
+function createRoot(container: Element | DocumentFragment) {
+  const root = createReactRoot(container);
+  const unmount = root.unmount.bind(root);
+  root.unmount = () => {
+    if (!activeRoots.delete(root)) return;
+    unmount();
+  };
+  activeRoots.add(root);
+  return root;
+}
+
+function unmountActiveRoots() {
+  for (const root of [...activeRoots]) root.unmount();
 }
 
 async function flushReact() {
@@ -368,6 +386,7 @@ describe("Secrets page layout", () => {
   });
 
   afterEach(() => {
+    unmountActiveRoots();
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -602,17 +621,124 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
+    await waitForReact(() => document.body.textContent?.includes("View in Usage") ?? false);
     const viewUsageButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("View in Usage"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
       viewUsageButton?.click();
     });
-    await flushReact();
+    await waitForReact(() => mockSecretsApi.usage.mock.calls.length > 0);
 
     expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
     expect(document.body.textContent).toContain("CodexCoder");
     expect(document.body.textContent).toContain("env.OPENAI_API_KEY");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the secret detail sheet from a ?secret= deep link", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    mockSecretsApi.usage.mockResolvedValue({ secretId: "secret-openai", bindings: [] });
+    mockSecretsApi.accessEvents.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/company/settings/secrets?secret=secret-openai"]}>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // The detail sheet is open without any clicks: the deep link drives selection.
+    const copyLinkButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Copy link"),
+    );
+    expect(copyLinkButton).not.toBeUndefined();
+    const sheet = copyLinkButton?.closest("[role='dialog']");
+    expect(sheet?.textContent).toContain("OPENAI_API_KEY");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("writes a new value through the provider for external reference secrets", async () => {
+    const externalSecret = makeCompanySecret({
+      id: "secret-neon",
+      key: "neon_admin_api_key",
+      name: "paperclip-cloud/prod/provider/neon/admin-api-key",
+      provider: "aws_secrets_manager",
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip-cloud/prod/provider/neon/admin-api-key",
+      providerConfigId: "vault-aws",
+    });
+    mockSecretsApi.list.mockResolvedValue([externalSecret]);
+    mockSecretsApi.usage.mockResolvedValue({ secretId: "secret-neon", bindings: [] });
+    mockSecretsApi.accessEvents.mockResolvedValue([]);
+    mockSecretsApi.rotate.mockResolvedValue({ ...externalSecret, latestVersion: 2 });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/company/settings/secrets?secret=secret-neon"]}>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // AWS supports write-through, so the primary action is a value update.
+    const updateValueButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Update value",
+    ) as HTMLButtonElement | undefined;
+    expect(updateValueButton).not.toBeUndefined();
+    await act(async () => {
+      updateValueButton?.click();
+    });
+    await flushReact();
+
+    // Both modes are offered; "Write new value" is the default.
+    expect(document.body.textContent).toContain("Write new value");
+    expect(document.body.textContent).toContain("Change reference");
+
+    const valueTextarea = document.getElementById("rotate-value") as HTMLTextAreaElement | null;
+    expect(valueTextarea).not.toBeNull();
+    setTextareaValue(valueTextarea!, "rotated-neon-admin-key");
+    await flushReact();
+
+    const dialog = valueTextarea!.closest("[role='dialog']") as HTMLElement;
+    const submitButton = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Update value",
+    ) as HTMLButtonElement | undefined;
+    expect(submitButton?.disabled).toBe(false);
+    await act(async () => {
+      submitButton?.click();
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.rotate).toHaveBeenCalledWith("secret-neon", {
+      value: "rotated-neon-admin-key",
+      providerConfigId: "vault-aws",
+    });
 
     await act(async () => {
       root.unmount();
@@ -822,7 +948,7 @@ describe("Secrets page layout", () => {
     await act(async () => {
       definitionRow?.click();
     });
-    await flushReact();
+    await waitForReact(() => document.body.textContent?.includes("Details") ?? false);
 
     expect(document.body.textContent).toContain("Personal GitHub token");
     expect(document.body.textContent).toContain("Details");
@@ -1350,8 +1476,7 @@ describe("Secrets page layout", () => {
     await act(async () => {
       companyRow?.click();
     });
-    await flushReact();
-    await flushReact();
+    await waitForReact(() => document.body.textContent?.includes("Reviewer") ?? false);
 
     // Existing access is listed right in the Details tab.
     expect(document.body.textContent).toContain("Agent access");
@@ -1506,6 +1631,7 @@ describe("Secrets folder view (PAP-14698)", () => {
   });
 
   afterEach(() => {
+    unmountActiveRoots();
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
