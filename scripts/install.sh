@@ -268,24 +268,24 @@ update_path() {
       fi
     done
 
-    # Bash login shells read the first existing file among .bash_profile,
-    # .bash_login, .profile; zsh login shells read .zprofile. When none of those
-    # login files exist, no login shell would see the PATH and fresh shells report
-    # 'paperclipai: command not found'. The loop above already added the export to
-    # any login file that exists, so only create .profile when none was present.
-    local login_present=0
-    for rc in "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
-      if [ -f "$rc" ]; then
-        login_present=1
-        break
-      fi
-    done
-    if [ "$login_present" = "0" ]; then
+    # Ensure a startup file the user's default shell actually reads exists,
+    # otherwise fresh shells won't see the PATH. POSIX/bash/dash login shells read
+    # the first of .bash_profile/.bash_login/.profile; interactive zsh shells
+    # (including login) read .zshrc. zsh does NOT read .profile, so pick the file
+    # matching $SHELL and create it only when none is already present (the loop
+    # above already added the export to any existing one).
+    local ensure_file=""
+    if [[ "${SHELL:-}" == */zsh ]]; then
+      { [ -f "${HOME}/.zshrc" ] || [ -f "${HOME}/.zprofile" ]; } || ensure_file="${HOME}/.zshrc"
+    else
+      { [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.bash_login" ] || [ -f "${HOME}/.profile" ]; } || ensure_file="${HOME}/.profile"
+    fi
+    if [ -n "$ensure_file" ]; then
       if [ "$DRY_RUN" != "1" ]; then
         # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
-        printf '\nexport PATH="%s:$PATH"\n' "$target" >> "${HOME}/.profile"
+        printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$ensure_file"
       else
-        log "[dry-run] would create ${HOME}/.profile with export PATH"
+        log "[dry-run] would create $ensure_file with export PATH"
       fi
     fi
   fi

@@ -208,6 +208,27 @@ assert_contains "$RESULTS_DIR/path-bashrc-home/.bashrc" 'export PATH="/results/p
 }
 assert_contains "$RESULTS_DIR/path-bashrc-home/.profile" 'export PATH="/results/path-bashrc-home/.local/bin:'
 
+echo "==> update_path: zsh home (no rc files) creates .zshrc, not .profile"
+mkdir -p "$RESULTS_DIR/path-zsh-home"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/path-zsh-home \
+  -e SHELL=/bin/zsh \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/path-zsh.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
+[ -f "$RESULTS_DIR/path-zsh-home/.zshrc" ] || {
+  echo "Expected .zshrc created for a zsh login shell" >&2
+  exit 1
+}
+assert_contains "$RESULTS_DIR/path-zsh-home/.zshrc" 'export PATH="/results/path-zsh-home/.local/bin:'
+[ ! -e "$RESULTS_DIR/path-zsh-home/.profile" ] || {
+  echo "Did not expect .profile for a zsh user" >&2
+  exit 1
+}
+
 echo "==> update_path: existing export is not duplicated"
 mkdir -p "$RESULTS_DIR/path-idem-home"
 # shellcheck disable=SC2016  # seed the exact export line install.sh would write
