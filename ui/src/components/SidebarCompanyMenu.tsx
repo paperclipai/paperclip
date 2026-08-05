@@ -76,8 +76,8 @@ function StackIcon({ displayName }: { displayName: string }) {
 /**
  * The switcher trigger on a Cloud instance. A Cloud tenant holds exactly one
  * company and the harness pushes the stack's uploaded workspace icon into
- * that company's branding, so the company logo is the stack logo here
- * here. The stack rows keep the monogram treatment above.
+ * that company's branding, so the company logo is the stack logo here.
+ * The stack rows keep the monogram treatment above.
  */
 function CurrentStackIcon({
   displayName,
