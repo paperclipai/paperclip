@@ -30,6 +30,8 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  /** Per-run binding. Public runs must pass null even if provider config has a global default. */
+  gitReadOnlySecretName?: string | null;
 }
 
 export function buildSandboxCrManifest(
@@ -83,6 +85,49 @@ export function buildSandboxCrManifest(
           },
           containers: [
             {
+              name: "repo-loader",
+              image: input.image,
+              imagePullPolicy: "IfNotPresent",
+              command: ["/bin/sh", "-c", "sleep infinity"],
+              env: [
+                { name: "HOME", value: "/home/loader" },
+                { name: "TMPDIR", value: "/home/loader/tmp" },
+                { name: "XDG_CONFIG_HOME", value: "/home/loader/.config" },
+                ...(input.gitReadOnlySecretName
+                  ? [
+                      {
+                        name: "GIT_USERNAME",
+                        valueFrom: {
+                          secretKeyRef: { name: input.gitReadOnlySecretName, key: "GIT_USERNAME" },
+                        },
+                      },
+                      {
+                        name: "GIT_TOKEN",
+                        valueFrom: {
+                          secretKeyRef: { name: input.gitReadOnlySecretName, key: "GIT_TOKEN" },
+                        },
+                      },
+                    ]
+                  : []),
+              ],
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                runAsGroup: 1000,
+                readOnlyRootFilesystem: true,
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ["ALL"] },
+              },
+              volumeMounts: [
+                { name: "workspace", mountPath: "/workspace" },
+                { name: "loader-home", mountPath: "/home/loader" },
+              ],
+              resources: {
+                requests: { cpu: "100m", memory: "128Mi" },
+                limits: { cpu: "500m", memory: "512Mi" },
+              },
+            },
+            {
               name: "agent",
               image: input.image,
               imagePullPolicy: "IfNotPresent",
@@ -130,6 +175,7 @@ export function buildSandboxCrManifest(
           ],
           volumes: [
             { name: "workspace", emptyDir: { sizeLimit: "8Gi" } },
+            { name: "loader-home", emptyDir: { sizeLimit: "16Mi" } },
             { name: "home", emptyDir: { sizeLimit: "1Gi" } },
             { name: "cache", emptyDir: { sizeLimit: "1Gi" } },
             { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },

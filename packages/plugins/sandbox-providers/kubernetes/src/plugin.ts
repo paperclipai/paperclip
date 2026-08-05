@@ -35,9 +35,12 @@ import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
+  waitForSandboxReady,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
+import { execInReadyPod } from "./pod-readiness.js";
+import { realizeSandboxRepository, SANDBOX_REPOSITORY_WORKSPACE } from "./sandbox-repository.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   appendNetworkEgressDenyHint,
@@ -300,6 +303,13 @@ const plugin = definePlugin({
     },
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
+    const repositoryCredentialsRequired = params.repositoryCredentialsRequired === true;
+    const gitReadOnlySecretName = repositoryCredentialsRequired
+      ? params.gitReadOnlySecretName?.trim() || null
+      : null;
+    if (repositoryCredentialsRequired && !gitReadOnlySecretName) {
+      throw new Error("Private sandbox repository runs require gitReadOnlySecretName; refusing to create a pod.");
+    }
     const namespace = deriveTenantNamespace(config, params.companyId);
 
     // The adapter for THIS run is the agent's adapter (params.adapterType) when
@@ -381,6 +391,7 @@ const plugin = definePlugin({
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
           imagePullSecrets: config.imagePullSecrets,
+          gitReadOnlySecretName,
         })
       : buildJobManifest({
           namespace,
@@ -553,18 +564,65 @@ const plugin = definePlugin({
   async onEnvironmentRealizeWorkspace(
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
-    // The agent pod already has /workspace mounted as an emptyDir at pod
-    // scheduling time (see pod-spec-builder). Nothing to provision here —
-    // we just hand back the cwd. Honor a caller-supplied remotePath if set.
-    const cwd =
-      params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
-        ? params.workspace.remotePath.trim()
-        : "/workspace";
+    const config = kubernetesProviderConfigSchema.parse(params.config);
+    if (params.driverKey !== "kubernetes") throw new Error(`Unsupported Kubernetes provider key "${params.driverKey}".`);
+    const leaseBackend = params.lease.metadata?.backend;
+    if (leaseBackend !== "sandbox-cr" || config.backend !== "sandbox-cr") {
+      throw new Error(`Sandbox-native repository realization requires backend=sandbox-cr; got ${String(leaseBackend ?? config.backend)}.`);
+    }
+    if (!params.lease.providerLeaseId) throw new Error("Sandbox repository realization requires a provider lease.");
+    const request = (params.workspace.metadata?.workspaceRealizationRequest ?? {}) as Record<string, unknown>;
+    const source = (request.source ?? {}) as Record<string, unknown>;
+    if (source.strategy !== "sandbox_repository") {
+      throw new Error("Sandbox repository realization requires strategy=sandbox_repository.");
+    }
+    const repoUrl = typeof source.repoUrl === "string" ? source.repoUrl : "";
+    const revisionSha = typeof source.repoRef === "string" ? source.repoRef : "";
+    const credentialRequired = source.credentialRequired === true;
+    const requestCredentialSecretName = typeof source.credentialSecretName === "string"
+      ? source.credentialSecretName.trim()
+      : "";
+    if (credentialRequired && !requestCredentialSecretName) {
+      throw new Error("Sandbox repository realization requires an explicit read-only Git credential binding; clone was not attempted.");
+    }
+    const namespace = typeof params.lease.metadata?.namespace === "string"
+      ? params.lease.metadata.namespace
+      : deriveTenantNamespace(config, params.companyId);
+    const kc = createKubeConfig({ inCluster: config.inCluster, kubeconfig: config.kubeconfig });
+    const clients = makeKubeClients(kc);
+    await waitForSandboxReady(clients, namespace, params.lease.providerLeaseId, {
+      timeoutMs: config.podActivityDeadlineSec * 1000,
+      pollMs: 1000,
+    });
+    const podName = typeof params.lease.metadata?.podName === "string" && params.lease.metadata.podName
+      ? params.lease.metadata.podName
+      : await sandboxCrOrchestrator.findPod(clients, namespace, params.lease.providerLeaseId);
+    if (!podName) throw new Error("Sandbox repository realization could not resolve the sandbox pod.");
+    const snapshot = await realizeSandboxRepository({
+      request: {
+        repoUrl,
+        revisionSha,
+        workspacePath: SANDBOX_REPOSITORY_WORKSPACE,
+        credentialRequired,
+        credentialSecretName: requestCredentialSecretName || null,
+      },
+      execute: async (command) => await execInReadyPod(kc, clients, namespace, podName, "repo-loader", command, undefined, config.podActivityDeadlineSec * 1000, execInPod),
+    });
     return {
-      cwd,
+      cwd: snapshot.workspacePath,
       metadata: {
         provider: "kubernetes",
-        remoteCwd: cwd,
+        backend: config.backend,
+        remoteCwd: snapshot.workspacePath,
+        workspaceMode: typeof request.requestedMode === "string" ? request.requestedMode : null,
+        repositorySnapshot: snapshot,
+        workspaceRealization: {
+          ...snapshot,
+          environmentDriver: "sandbox",
+          driver: "kubernetes",
+          backend: config.backend,
+          workspaceMode: typeof request.requestedMode === "string" ? request.requestedMode : null,
+        },
       },
     };
   },
@@ -822,14 +880,16 @@ const plugin = definePlugin({
           );
           let flushResult: { exitCode: number; stdout: string; stderr: string };
           try {
-            flushResult = await execInPod(
+            flushResult = await execInReadyPod(
               kc,
+              clients,
               namespace,
               podName,
               "agent",
               ["/bin/sh", "-c", script],
               base64Body,
               flushTimeoutMs,
+              execInPod,
             );
           } catch (err) {
             return {
@@ -890,14 +950,16 @@ const plugin = definePlugin({
 
       let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
-        execResult = await execInPod(
+        execResult = await execInReadyPod(
           kc,
+          clients,
           namespace,
           podName,
           "agent",
           execCommand,
           typeof params.stdin === "string" ? params.stdin : undefined,
           remainingTimeoutMs,
+          execInPod,
         );
       } catch (err) {
         // Watchdog-fired or WebSocket-setup error. Surface as a timeout so

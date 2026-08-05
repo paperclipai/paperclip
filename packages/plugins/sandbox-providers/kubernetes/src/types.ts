@@ -16,6 +16,11 @@ export const kubernetesProviderConfigSchema = z
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
+    // Optional Secret in the tenant namespace containing short-lived,
+    // read-only Git credentials. It is injected only into the repo-loader
+    // sidecar; the agent container never receives this Secret.
+    gitReadOnlySecretName: z.string().regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/).optional(),
+
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),

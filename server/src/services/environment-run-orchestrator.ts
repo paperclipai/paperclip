@@ -206,6 +206,8 @@ export function environmentRunOrchestrator(
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     adapterType: string | null;
+    repositoryCredentialsRequired?: boolean;
+    gitReadOnlySecretName?: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -266,6 +268,8 @@ export function environmentRunOrchestrator(
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    repositoryCredentialsRequired?: boolean;
+    gitReadOnlySecretName?: string | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -284,6 +288,8 @@ export function environmentRunOrchestrator(
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
+      repositoryCredentialsRequired: input.repositoryCredentialsRequired,
+      gitReadOnlySecretName: input.gitReadOnlySecretName,
     });
 
     // Step 3: Log lease acquisition activity
@@ -346,6 +352,7 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    repositoryCredentialSecretName?: string | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -369,6 +376,9 @@ export function environmentRunOrchestrator(
       requestedMode: persistedExecutionWorkspace?.mode ?? effectiveExecutionWorkspaceMode,
       workspace: executionWorkspace,
       workspaceConfig: persistedExecutionWorkspace?.config ?? null,
+      repositoryStrategy: environment.driver === "sandbox" ? "sandbox_repository" : null,
+      repositoryCredentialsRequired: executionWorkspace.repositoryCredentialsRequired,
+      repositoryCredentialSecretName: input.repositoryCredentialSecretName,
     });
 
     // Step 2: Realize workspace in the environment via the runtime driver

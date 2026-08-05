@@ -33,7 +33,7 @@ function cloneRecord(value: Record<string, unknown> | null | undefined): Record<
 function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrategy | null {
   const parsed = parseObject(raw);
   const type = asString(parsed.type, "");
-  if (type !== "project_primary" && type !== "git_worktree" && type !== "adapter_managed" && type !== "cloud_sandbox") {
+  if (type !== "project_primary" && type !== "git_worktree" && type !== "sandbox_repository" && type !== "adapter_managed" && type !== "cloud_sandbox") {
     return null;
   }
   return {
@@ -55,7 +55,7 @@ export function resolveEffectiveWorkspaceStrategyType(
 ): WorkspaceStrategyType {
   const workspaceStrategy = parseObject(config?.workspaceStrategy);
   const type = asString(workspaceStrategy.type, "");
-  if (type === "project_primary" || type === "git_worktree" || type === "adapter_managed" || type === "cloud_sandbox") {
+  if (type === "project_primary" || type === "git_worktree" || type === "sandbox_repository" || type === "adapter_managed" || type === "cloud_sandbox") {
     return type;
   }
   // Default mirrors workspace-runtime.ts realizeExecutionWorkspace: missing type -> "project_primary".
@@ -135,6 +135,9 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(typeof parsed.environmentId === "string" || parsed.environmentId === null
       ? { environmentId: parsed.environmentId }
       : {}),
+    ...(typeof parsed.repositoryCredentialsRequired === "boolean"
+      ? { repositoryCredentialsRequired: parsed.repositoryCredentialsRequired }
+      : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
@@ -210,6 +213,9 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
       ? { environmentId: parsed.environmentId }
+      : {}),
+    ...(typeof parsed.repositoryCredentialsRequired === "boolean"
+      ? { repositoryCredentialsRequired: parsed.repositoryCredentialsRequired }
       : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)

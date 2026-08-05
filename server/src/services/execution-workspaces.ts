@@ -679,6 +679,7 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
 
   const config: ExecutionWorkspaceConfig = {
     environmentId: readNullableString(raw.environmentId),
+    repositoryCredentialsRequired: typeof raw.repositoryCredentialsRequired === "boolean" ? raw.repositoryCredentialsRequired : undefined,
     provisionCommand: readNullableString(raw.provisionCommand),
     runtimeProvisionCommand: readNullableString(raw.runtimeProvisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
@@ -704,6 +705,7 @@ export function mergeExecutionWorkspaceConfig(
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
     environmentId: null,
+    repositoryCredentialsRequired: undefined,
     provisionCommand: null,
     runtimeProvisionCommand: null,
     teardownCommand: null,
@@ -720,6 +722,7 @@ export function mergeExecutionWorkspaceConfig(
 
   const nextConfig: ExecutionWorkspaceConfig = {
     environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
+    repositoryCredentialsRequired: patch.repositoryCredentialsRequired !== undefined ? patch.repositoryCredentialsRequired : current.repositoryCredentialsRequired,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
     runtimeProvisionCommand:
       patch.runtimeProvisionCommand !== undefined
@@ -745,6 +748,7 @@ export function mergeExecutionWorkspaceConfig(
   if (hasConfig) {
     nextMetadata.config = {
       environmentId: nextConfig.environmentId,
+      repositoryCredentialsRequired: nextConfig.repositoryCredentialsRequired,
       provisionCommand: nextConfig.provisionCommand,
       runtimeProvisionCommand: nextConfig.runtimeProvisionCommand,
       teardownCommand: nextConfig.teardownCommand,

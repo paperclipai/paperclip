@@ -3,6 +3,7 @@ import type { TrustAuthorizationPolicy } from "../trust-policy.js";
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
   | "git_worktree"
+  | "sandbox_repository"
   | "adapter_managed"
   | "cloud_sandbox";
 
@@ -84,6 +85,7 @@ export interface ExecutionWorkspaceStrategy {
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
+  repositoryCredentialsRequired?: boolean;
   provisionCommand: string | null;
   runtimeProvisionCommand?: string | null;
   teardownCommand: string | null;
@@ -156,6 +158,7 @@ export interface ProjectExecutionWorkspacePolicy {
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
   environmentId?: string | null;
+  repositoryCredentialsRequired?: boolean;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
   branchPolicy?: Record<string, unknown> | null;
@@ -169,6 +172,7 @@ export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   environmentId?: string | null;
+  repositoryCredentialsRequired?: boolean;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
   networkEgress?: {
@@ -332,7 +336,9 @@ export interface WorkspaceRealizationRequest {
     projectWorkspaceId: string | null;
     repoUrl: string | null;
     repoRef: string | null;
-    strategy: "project_primary" | "git_worktree";
+    credentialRequired: boolean;
+    credentialSecretName: string | null;
+    strategy: "project_primary" | "git_worktree" | "sandbox_repository";
     branchName: string | null;
     worktreePath: string | null;
   };

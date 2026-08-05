@@ -628,6 +628,8 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    */
   adapterType?: string;
   executionWorkspaceSettings?: Record<string, unknown> | null;
+  repositoryCredentialsRequired?: boolean;
+  gitReadOnlySecretName?: string | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
