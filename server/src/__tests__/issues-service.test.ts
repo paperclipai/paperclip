@@ -1,7 +1,7 @@
 import { readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -1211,6 +1211,39 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, source.id));
     expect(remainingRelations).toHaveLength(0);
+  });
+
+  it.each(["done", "cancelled"] as const)("cancels open liveness and stranded recovery cards when their target is %s", async (terminalStatus) => {
+    const companyId = await seedAssignableAgentCompany();
+    const source = await svc.create(companyId, {
+      title: "Source issue",
+      description: "Stalled work.",
+      status: "todo",
+      priority: "medium",
+    });
+    const liveness = await svc.create(companyId, {
+      title: "Liveness incident",
+      description: null,
+      status: "todo",
+      priority: "high",
+      originKind: "harness_liveness_escalation",
+      originId: `harness_liveness:${companyId}:${source.id}:blocked_without_actionable_blocker:${source.id}`,
+    });
+    const recovery = await svc.create(companyId, {
+      title: "Recovery courier",
+      description: null,
+      status: "todo",
+      priority: "high",
+      originKind: "stranded_issue_recovery",
+      originId: source.id,
+    });
+
+    await svc.update(source.id, { status: terminalStatus });
+
+    await expect(svc.getById(liveness.id)).resolves.toMatchObject({ status: "cancelled" });
+    await expect(svc.getById(recovery.id)).resolves.toMatchObject({ status: "cancelled" });
+    const comments = await db.select().from(issueComments).where(inArray(issueComments.issueId, [liveness.id, recovery.id]));
+    expect(comments.filter((comment) => comment.body.includes("target") && comment.body.includes("terminal state"))).toHaveLength(2);
   });
 
   it("rejects direct terminated assignees with structured conflict details", async () => {

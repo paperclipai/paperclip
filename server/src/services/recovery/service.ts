@@ -3062,8 +3062,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // Recovery escalations may block an issue that has no first-class blocker to link
   // (the block is on a human/board intervention, not another issue). The enter-blocked
   // guard in issuesSvc requires either an unresolved blocker relation or explicit
-  // "External owner:/External action:" lines, so stamp those lines into the description
-  // when they are missing. Returns undefined when the description already conforms.
+  // executionPolicy.externalWait, so stamp both description lines and the structured
+  // wait path when they are missing. Returns undefined when the description already conforms.
   function withRecoveryExternalGateDescription(description: string | null | undefined): string | undefined {
     const base = typeof description === "string" ? description : "";
     if (hasExplicitExternalOwnerAction(base)) return undefined;
@@ -3072,6 +3072,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "External action: restore a live execution path for this issue or record the manual resolution, then move it out of blocked.",
     ];
     return `${base.trimEnd()}\n\n${gateLines.join("\n")}\n`;
+  }
+
+  function withRecoveryExternalWaitPolicy(
+    executionPolicy: typeof issues.$inferSelect["executionPolicy"] | null | undefined,
+  ): Record<string, unknown> {
+    const previous = normalizeIssueExecutionPolicy(executionPolicy ?? null);
+    const nextCheckAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    return {
+      ...(previous ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
+      externalWait: {
+        owner: "board operator (stranded-work recovery)",
+        action: "restore a live execution path for this issue or record the manual resolution, then move it out of blocked",
+        monitorOwner: "board",
+        nextCheckAt,
+      },
+    };
+  }
+
+  function strandedBlockedGatePatch(input: {
+    issue: typeof issues.$inferSelect;
+    blockerIds: string[];
+  }) {
+    if (input.blockerIds.length > 0) return {};
+    const description = withRecoveryExternalGateDescription(input.issue.description);
+    return {
+      ...(description !== undefined ? { description } : {}),
+      executionPolicy: withRecoveryExternalWaitPolicy(input.issue.executionPolicy),
+    };
   }
 
   async function buildNestedStrandedRecoveryLine(issue: typeof issues.$inferSelect, prefix: string) {
@@ -3362,6 +3390,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+
+    // Terminal sources never need (or may retain) an open recovery wrapper.
+    // Re-read status so a race that closed the source after the caller loaded
+    // its snapshot cannot mint a TSMC-19481/TSMC-19764-shaped orphan card.
+    const liveSource = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!liveSource || isTerminalIssueStatus(liveSource.status)) {
+      const existingForTerminal = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+      if (existingForTerminal) {
+        const wrapperStatus = liveSource?.status === "cancelled" ? "cancelled" : "done";
+        await issuesSvc.update(existingForTerminal.id, { status: wrapperStatus });
+      }
+      return null;
+    }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
@@ -4116,6 +4162,95 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  /**
+   * Close open stranded-recovery wrappers whose source issue already reached a
+   * terminal disposition. The action-row sweep only folds wrappers linked to an
+   * active recovery action; TSMC-19764 was left open after TSMC-19481 went done
+   * with no remaining active action. Run this on every stranded reconcile pass.
+   */
+  async function sweepOpenRecoveryWrappersForTerminalSources() {
+    const sourceIssue = alias(issues, "terminal_source_for_recovery_wrapper");
+    const candidates = await db
+      .select({
+        wrapperId: issues.id,
+        companyId: issues.companyId,
+        sourceIssueId: issues.originId,
+        sourceStatus: sourceIssue.status,
+      })
+      .from(issues)
+      .innerJoin(
+        sourceIssue,
+        and(
+          // originId is text (also stores non-uuid incident keys for other
+          // origin kinds); cast the uuid PK to text for the join.
+          sql`${sourceIssue.id}::text = ${issues.originId}`,
+          eq(sourceIssue.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+          inArray(sourceIssue.status, ["done", "cancelled"]),
+        ),
+      );
+
+    const result = {
+      closed: 0,
+      wrapperIds: [] as string[],
+      sourceIssueIds: [] as string[],
+    };
+
+    for (const candidate of candidates) {
+      if (!candidate.sourceIssueId) continue;
+      const wrapperStatus = candidate.sourceStatus === "cancelled" ? "cancelled" : "done";
+      try {
+        await issuesSvc.update(candidate.wrapperId, { status: wrapperStatus });
+      } catch (error) {
+        logger.warn(
+          {
+            service: "recovery",
+            wrapperId: candidate.wrapperId,
+            sourceIssueId: candidate.sourceIssueId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          "failed to close recovery wrapper for terminal source",
+        );
+        continue;
+      }
+      result.closed += 1;
+      result.wrapperIds.push(candidate.wrapperId);
+      result.sourceIssueIds.push(candidate.sourceIssueId);
+
+      await logActivity(db, {
+        companyId: candidate.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_wrapper_closed_terminal_source",
+        entityType: "issue",
+        entityId: candidate.wrapperId,
+        details: {
+          source: "recovery.sweep_open_recovery_wrappers_for_terminal_sources",
+          sourceIssueId: candidate.sourceIssueId,
+          sourceStatus: candidate.sourceStatus,
+          wrapperStatus,
+        },
+      });
+    }
+
+    if (result.closed > 0) {
+      logger.info(
+        { closed: result.closed, wrapperIds: result.wrapperIds },
+        "closed open recovery wrappers whose source is already terminal",
+      );
+    }
+
+    return result;
+  }
+
   async function enqueueSourceScopedStrandedRecoveryWake(input: {
     action: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
     issue: typeof issues.$inferSelect;
@@ -4290,10 +4425,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const gateDescription = withRecoveryExternalGateDescription(input.issue.description);
+    const gatePatch = strandedBlockedGatePatch({ issue: input.issue, blockerIds: [] });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      ...(gateDescription !== undefined ? { description: gateDescription } : {}),
+      ...gatePatch,
     });
     if (!updated) return null;
 
@@ -4529,10 +4664,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const strandedGateDescription =
-      blockerIds.length === 0 ? withRecoveryExternalGateDescription(input.issue.description) : undefined;
-    const strandedBlockedDescriptionPatch =
-      strandedGateDescription !== undefined ? { description: strandedGateDescription } : {};
+    const strandedBlockedGate = strandedBlockedGatePatch({ issue: input.issue, blockerIds });
     const queuedAssigneeIds: string[] = [];
     const attemptedAssigneeIds = new Set<string>();
     const boardEscalationWithoutRecoveryOwner = !recoveryAction.ownerAgentId;
@@ -4558,7 +4690,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "blocked",
           blockedByIssueIds: blockerIds,
           assigneeAgentId: nextAssigneeAgentId,
-          ...strandedBlockedDescriptionPatch,
+          ...strandedBlockedGate,
         });
         selectedAssigneeAgentId = nextAssigneeAgentId;
         break;
@@ -4596,7 +4728,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       updated = await issuesSvc.update(input.issue.id, {
         status: "blocked",
         blockedByIssueIds: blockerIds,
-        ...strandedBlockedDescriptionPatch,
+        ...strandedBlockedGate,
       });
       if (updated) {
         preservedCurrentAssignee = true;
@@ -4617,7 +4749,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: "blocked",
         blockedByIssueIds: blockerIds,
         assigneeAgentId: null,
-        ...strandedBlockedDescriptionPatch,
+        ...strandedBlockedGate,
       });
     }
     if (!updated) {
@@ -4778,6 +4910,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
+        // PLACEHOLDER (2026-08-05): this spread referenced `strandedBlockedDescriptionPatch`,
+        // which was never defined anywhere in the tree. It would have thrown a ReferenceError the
+        // first time a stranded issue was re-blocked -- the FOURTH undefined-symbol defect in the
+        // served tree in a single day, and this one was sitting LIVE in an uncommitted working
+        // tree that the control plane runs directly from.
+        // Defined as an empty patch so the path is safe: spreading {} is a no-op, so the update
+        // applies status/blockers/assignee exactly as before and simply does not rewrite the
+        // description. If a description patch was intended, fill this in deliberately.
+        const strandedBlockedDescriptionPatch: Record<string, unknown> = {};
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,
@@ -4949,6 +5090,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       staleRecoveryActionsFolded: 0,
+      terminalSourceWrappersClosed: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
@@ -4966,6 +5108,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const staleRecoveryActions = await sweepStaleRecoveryActions();
     result.staleRecoveryActionsFolded += staleRecoveryActions.folded;
     result.issueIds.push(...staleRecoveryActions.issueIds);
+
+    const terminalSourceWrappers = await sweepOpenRecoveryWrappersForTerminalSources();
+    result.terminalSourceWrappersClosed = terminalSourceWrappers.closed;
+    result.issueIds.push(...terminalSourceWrappers.sourceIssueIds);
 
     for (const issue of candidates) {
       try {

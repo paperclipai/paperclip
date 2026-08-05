@@ -8345,6 +8345,68 @@ export function issueService(db: Db) {
         if (existing.status !== updated.status) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // A liveness incident or stranded-recovery card exists only while
+            // its source issue is live. Retire open cards in the same terminal
+            // transition, rather than leaving guard noise for an operator to
+            // cancel during a later sweep.
+            const staleRecoveryCards = await tx
+              .select({
+                id: issues.id,
+                identifier: issues.identifier,
+                originKind: issues.originKind,
+              })
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, updated.companyId),
+                notInArray(issues.status, ["done", "cancelled"]),
+                or(
+                  and(
+                    eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+                    like(issues.originId, `harness_liveness:${updated.companyId}:${updated.id}:%`),
+                  ),
+                  and(
+                    eq(issues.originKind, RECOVERY_ORIGIN_KINDS.strandedIssueRecovery),
+                    eq(issues.originId, updated.id),
+                  ),
+                ),
+              ));
+            for (const recoveryCard of staleRecoveryCards) {
+              await tx
+                .update(issues)
+                .set({
+                  status: "cancelled",
+                  cancelledAt: new Date(),
+                  checkoutRunId: null,
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: new Date(),
+                })
+                .where(eq(issues.id, recoveryCard.id));
+              await tx.insert(issueComments).values({
+                companyId: updated.companyId,
+                issueId: recoveryCard.id,
+                body: `Auto-cancelled: target ${updated.identifier ?? updated.id} reached terminal state (${updated.status}).`,
+                authorType: "system",
+              });
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: "system",
+                actorId: "issue_service",
+                agentId: null,
+                action: "issue.updated",
+                entityType: "issue",
+                entityId: recoveryCard.id,
+                details: {
+                  identifier: recoveryCard.identifier ?? null,
+                  status: "cancelled",
+                  source: "terminal_target_recovery_cleanup",
+                  targetIssueId: updated.id,
+                  targetIdentifier: updated.identifier ?? null,
+                  recoveryOriginKind: recoveryCard.originKind,
+                },
+              });
+            }
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
             // that never touch the HTTP routes, so pending interaction cards
