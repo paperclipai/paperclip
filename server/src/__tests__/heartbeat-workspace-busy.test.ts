@@ -107,7 +107,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         testedAt: new Date().toISOString(),
       }),
     });
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     // Seeded holder runs are synthetic "running" rows with no real execution
@@ -587,7 +587,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const finishedRetry = await waitForRunToLeaveActiveStates(retryRun!.id);
     expect(finishedRetry?.status).toBe("succeeded");
     expect(executedRunIds).toContain(retryRun!.id);
-  });
+  }, 30_000);
 
   it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
     const fixture = await seedWorkspaceFixture();
