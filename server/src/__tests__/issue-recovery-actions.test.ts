@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -2381,5 +2381,173 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("TSMC-19481 sequence: terminal source never retains or regenerates an open recovery wrapper", async () => {
+    // Specimen: source burned recovery loops, reached done, then an obsolete
+    // stranded_issue_recovery wrapper (TSMC-19764) was still open / could be
+    // re-created. Guard create + background sweep must both clear it.
+    const { companyId, managerId, coderId, sourceIssue, prefix } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "Automatic continuation recovery failed.",
+      recoveryCause: "successful_run_missing_state",
+    });
+
+    const openWrappersBefore = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, sourceIssue.id),
+      ));
+    expect(openWrappersBefore).toHaveLength(1);
+    expect(openWrappersBefore[0]?.status).not.toBe("done");
+    expect(openWrappersBefore[0]?.status).not.toBe("cancelled");
+
+    // Source reaches a terminal disposition while the wrapper is still open and
+    // the recovery action has already been resolved (no active action row left).
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssue.id));
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: "source done",
+        resolvedAt: new Date(),
+      })
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+
+    const reconcile = await recovery.reconcileStrandedAssignedIssues();
+    expect(reconcile.terminalSourceWrappersClosed).toBeGreaterThanOrEqual(1);
+
+    const wrappersAfterSweep = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, sourceIssue.id),
+      ));
+    expect(wrappersAfterSweep).toHaveLength(1);
+    expect(wrappersAfterSweep[0]?.status).toBe("done");
+
+    // Re-escalation against a terminal source must not mint a fresh open wrapper.
+    const [terminalSource] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    const reEscalated = await recovery.escalateStrandedAssignedIssue({
+      issue: terminalSource!,
+      previousStatus: "todo",
+      latestRun: {
+        ...latestRun,
+        id: randomUUID(),
+      },
+      recoveryCause: "successful_run_missing_state",
+    });
+    expect(reEscalated).toBeNull();
+
+    const openWrappersAfter = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, sourceIssue.id),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+    expect(openWrappersAfter).toHaveLength(0);
+
+    // Sanity: identifier shape matches the live specimen naming.
+    expect(wrappersAfterSweep[0]?.title).toMatch(/Recover (stalled issue|missing next step)/);
+    expect(wrappersAfterSweep[0]?.identifier).toBe(`${prefix}-2`);
+    expect(managerId).toBeTruthy();
+  });
+
+  it("caps separate recovery actions per issue/kind and forces board owner past the cap", async () => {
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const now = new Date("2026-08-05T12:00:00.000Z");
+
+    // Three prior resolved missing_disposition actions (the TSMC-19481 loop shape).
+    for (let i = 0; i < 3; i += 1) {
+      await db.insert(issueRecoveryActions).values({
+        id: randomUUID(),
+        companyId,
+        sourceIssueId: sourceIssue.id,
+        recoveryIssueId: null,
+        kind: "missing_disposition",
+        status: "resolved",
+        ownerType: "agent",
+        ownerAgentId: managerId,
+        ownerUserId: null,
+        previousOwnerAgentId: coderId,
+        returnOwnerAgentId: coderId,
+        cause: "successful_run_missing_state",
+        fingerprint: `missing-disposition:prior:${i}`,
+        evidence: {},
+        nextAction: "Choose a valid issue disposition.",
+        wakePolicy: null,
+        monitorPolicy: null,
+        attemptCount: 1,
+        maxAttempts: 1,
+        timeoutAt: null,
+        lastAttemptAt: now,
+        outcome: "restored",
+        resolutionNote: `prior loop ${i}`,
+        resolvedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "succeeded",
+        error: null,
+        errorCode: null,
+        contextSnapshot: { retryReason: "successful_run_missing_state" },
+        livenessState: null,
+      },
+      recoveryCause: "successful_run_missing_state",
+    });
+
+    const active = await recoveryActionSvc.getActiveForIssue(companyId, sourceIssue.id);
+    // Past the per-kind cap, ownerAgentId is forced null so callers board-escalate.
+    expect(active).toMatchObject({
+      kind: "missing_disposition",
+      ownerAgentId: null,
+      ownerType: "board",
+    });
+
+    const allForKind = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.sourceIssueId, sourceIssue.id),
+        eq(issueRecoveryActions.kind, "missing_disposition"),
+      ));
+    // Three priors + one active capped action (still only one active).
+    expect(allForKind.filter((row) => row.status === "active" || row.status === "escalated")).toHaveLength(1);
+    expect(allForKind.length).toBe(4);
   });
 });

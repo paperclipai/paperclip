@@ -3279,6 +3279,35 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(latestRun).toMatchObject({ status: "issue_created", linkedIssueId: routineIssues[1]?.id });
   });
 
+  it("coalesces a duplicate fallback-monitor create instead of failing the scheduled run", async () => {
+    const { agentId, companyId, issueSvc, projectId, routine, svc } = await seedFixture({ wakeup: async () => null });
+    await svc.update(routine.id, {
+      title: "fallback-monitor",
+      env: { PAPERCLIP_ROUTINE_ISSUE_MODE: { type: "plain", value: "reuse_terminal" } },
+    }, {});
+    const [fallbackRoutine] = await db.select().from(routines).where(eq(routines.id, routine.id));
+    const existing = await issueSvc.create(companyId, {
+      projectId,
+      title: "fallback-monitor",
+      description: "Existing fallback-monitor execution.",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: randomUUID(),
+    });
+    const result = await svc.run(routine.id, { source: "schedule" });
+
+    expect(result).toMatchObject({ status: "coalesced", linkedIssueId: existing.id });
+    const routineIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "fallback-monitor")));
+    expect(routineIssues).toHaveLength(1);
+    expect(fallbackRoutine?.title).toBe("fallback-monitor");
+  });
+
   it("ignores terminal routine parents by default and reuses the terminal execution issue", async () => {
     const { companyId, routine, svc, wakeups } = await seedFixture({ wakeup: async () => null });
     const parentIssueId = randomUUID();

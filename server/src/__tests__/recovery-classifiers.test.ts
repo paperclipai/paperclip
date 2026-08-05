@@ -10,6 +10,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isPlatformSelfMaintenanceOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -279,5 +280,17 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("classifies platform self-maintenance origins for blocked-count splits", () => {
+    expect(isPlatformSelfMaintenanceOriginKind("stranded_issue_recovery")).toBe(true);
+    expect(isPlatformSelfMaintenanceOriginKind("harness_liveness_escalation")).toBe(true);
+    expect(isPlatformSelfMaintenanceOriginKind("issue_productivity_review")).toBe(true);
+    expect(isPlatformSelfMaintenanceOriginKind("stale_active_run_evaluation")).toBe(true);
+    expect(isPlatformSelfMaintenanceOriginKind("restart_lane_recovery")).toBe(true);
+    expect(isPlatformSelfMaintenanceOriginKind("manual")).toBe(false);
+    expect(isPlatformSelfMaintenanceOriginKind("routine_execution")).toBe(false);
+    expect(isPlatformSelfMaintenanceOriginKind(null)).toBe(false);
+    expect(isPlatformSelfMaintenanceOriginKind(undefined)).toBe(false);
   });
 });

@@ -22,6 +22,27 @@ export function isStrandedIssueRecoveryOriginKind(originKind: string | null | un
   return originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 }
 
+/**
+ * Origin kinds that are platform self-maintenance rather than product work.
+ * Used to split blocked-count reporting so week-to-week tracking can follow
+ * product blocked issues without being dominated by recover-stalled /
+ * liveness / watchdog churn (TSMC-19763 / TSMC-19784).
+ *
+ * Includes the four recovery origin kinds plus the restart-lane recovery
+ * origin written by sweepRestartLaneRecovery.
+ */
+export const PLATFORM_SELF_MAINTENANCE_ORIGIN_KINDS = new Set<string>([
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+  "restart_lane_recovery",
+]);
+
+export function isPlatformSelfMaintenanceOriginKind(originKind: string | null | undefined): boolean {
+  return typeof originKind === "string" && PLATFORM_SELF_MAINTENANCE_ORIGIN_KINDS.has(originKind);
+}
+
 export function buildIssueGraphLivenessIncidentKey(input: {
   companyId: string;
   issueId: string;
