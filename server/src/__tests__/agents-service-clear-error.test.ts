@@ -320,6 +320,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
 
   it("revalidates a manager terminated concurrently before releasing work", async () => {
     const companyId = randomUUID();
+    const replacementManagerId = randomUUID();
     const managerId = randomUUID();
     const terminatedAgentId = randomUUID();
     const openIssueId = randomUUID();
@@ -327,6 +328,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
     const allowManagerTermination = deferred<void>();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
     await db.insert(agents).values([
+      { id: replacementManagerId, companyId, name: "Replacement manager", role: "manager", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
       { id: managerId, companyId, name: "Manager", role: "manager", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
       { id: terminatedAgentId, companyId, name: "Leaving", role: "engineer", reportsTo: managerId, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
     ]);
@@ -337,6 +339,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
       managerLocked.resolve();
       await allowManagerTermination.promise;
       await tx.update(agents).set({ status: "terminated", updatedAt: new Date() }).where(eq(agents.id, managerId));
+      await tx.update(agents).set({ reportsTo: replacementManagerId, updatedAt: new Date() }).where(eq(agents.reportsTo, managerId));
     });
     await managerLocked.promise;
     const terminateSource = agentService(db).terminate(terminatedAgentId);
@@ -344,7 +347,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await Promise.all([concurrentManagerTermination, terminateSource]);
 
     const [openIssue] = await db.select().from(issues).where(eq(issues.id, openIssueId));
-    expect(openIssue?.assigneeAgentId).toBeNull();
+    expect(openIssue?.assigneeAgentId).toBe(replacementManagerId);
   });
 
   it("releases open work to the unassigned queue when no assignable manager exists", async () => {
