@@ -147,6 +147,22 @@ describe("buildSandboxCrManifest", () => {
     expect(loader.envFrom).toBeUndefined();
   });
 
+  it("injects the repository proxy only into repo-loader", () => {
+    const cr = buildSandboxCrManifest({ ...baseInput, repositoryProxyUrl: "http://192.168.0.63:3129" });
+    const containers = cr.spec.podTemplate.spec.containers;
+    const loaderEnv = containers.find((c: { name: string }) => c.name === "repo-loader").env;
+    const agentEnv = containers.find((c: { name: string }) => c.name === "agent").env;
+    expect(loaderEnv).toEqual(expect.arrayContaining([
+      { name: "HTTP_PROXY", value: "http://192.168.0.63:3129" },
+      { name: "HTTPS_PROXY", value: "http://192.168.0.63:3129" },
+      { name: "NO_PROXY", value: "localhost,127.0.0.1" },
+    ]));
+    expect(agentEnv).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "HTTP_PROXY" }),
+      expect.objectContaining({ name: "HTTPS_PROXY" }),
+    ]));
+  });
+
   it("applies runtimeClassName when set", () => {
     const cr = buildSandboxCrManifest({
       ...baseInput,

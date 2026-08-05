@@ -32,6 +32,7 @@ export interface BuildSandboxCrManifestInput {
   imagePullSecrets?: string[];
   /** Per-run binding. Public runs must pass null even if provider config has a global default. */
   gitReadOnlySecretName?: string | null;
+  repositoryProxyUrl?: string | null;
 }
 
 export function buildSandboxCrManifest(
@@ -93,6 +94,13 @@ export function buildSandboxCrManifest(
                 { name: "HOME", value: "/home/loader" },
                 { name: "TMPDIR", value: "/home/loader/tmp" },
                 { name: "XDG_CONFIG_HOME", value: "/home/loader/.config" },
+                ...(input.repositoryProxyUrl
+                  ? [
+                      { name: "HTTP_PROXY", value: input.repositoryProxyUrl },
+                      { name: "HTTPS_PROXY", value: input.repositoryProxyUrl },
+                      { name: "NO_PROXY", value: "localhost,127.0.0.1" },
+                    ]
+                  : []),
                 ...(input.gitReadOnlySecretName
                   ? [
                       {

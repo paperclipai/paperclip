@@ -20,6 +20,7 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import {
   kubernetesProviderConfigSchema,
+  parseRepositoryProxyUrl,
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
 } from "./types.js";
@@ -303,6 +304,7 @@ const plugin = definePlugin({
     },
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
+    const repositoryProxy = parseRepositoryProxyUrl(config.repositoryProxyUrl);
     const repositoryCredentialsRequired = params.repositoryCredentialsRequired === true;
     const gitReadOnlySecretName = repositoryCredentialsRequired
       ? params.gitReadOnlySecretName?.trim() || null
@@ -354,6 +356,7 @@ const plugin = definePlugin({
       egressMode: config.egressMode,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
+      repositoryProxy,
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
     });
 
@@ -392,6 +395,7 @@ const plugin = definePlugin({
           runtimeClassName: config.runtimeClassName,
           imagePullSecrets: config.imagePullSecrets,
           gitReadOnlySecretName,
+          repositoryProxyUrl: repositoryProxy?.url ?? null,
         })
       : buildJobManifest({
           namespace,
@@ -565,6 +569,7 @@ const plugin = definePlugin({
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
+    const repositoryProxy = parseRepositoryProxyUrl(config.repositoryProxyUrl);
     if (params.driverKey !== "kubernetes") throw new Error(`Unsupported Kubernetes provider key "${params.driverKey}".`);
     const leaseBackend = params.lease.metadata?.backend;
     if (leaseBackend !== "sandbox-cr" || config.backend !== "sandbox-cr") {
@@ -575,6 +580,9 @@ const plugin = definePlugin({
     const source = (request.source ?? {}) as Record<string, unknown>;
     if (source.strategy !== "sandbox_repository") {
       throw new Error("Sandbox repository realization requires strategy=sandbox_repository.");
+    }
+    if (!repositoryProxy) {
+      throw new Error("Sandbox repository realization requires repositoryProxyUrl; clone was not attempted.");
     }
     const repoUrl = typeof source.repoUrl === "string" ? source.repoUrl : "";
     const revisionSha = typeof source.repoRef === "string" ? source.repoRef : "";
@@ -605,6 +613,7 @@ const plugin = definePlugin({
         workspacePath: SANDBOX_REPOSITORY_WORKSPACE,
         credentialRequired,
         credentialSecretName: requestCredentialSecretName || null,
+        proxyUrl: repositoryProxy.url,
       },
       execute: async (command) => await execInReadyPod(kc, clients, namespace, podName, "repo-loader", command, execInPod, undefined, config.podActivityDeadlineSec * 1000),
     });

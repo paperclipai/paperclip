@@ -13,6 +13,7 @@ export interface BuildNetworkPolicyInput {
    * "cilium"` for exact FQDN allow-listing in production.
    */
   egressAllowFqdns?: string[];
+  repositoryProxy?: { cidr: string; port: number } | null;
   name?: string;
   podSelector?: Record<string, string>;
   includeBaseRules?: boolean;
@@ -91,6 +92,10 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
           ],
           ports: [{ protocol: "TCP", port: 3100 }],
         }]),
+        ...(input.repositoryProxy ? [{
+          to: [{ ipBlock: { cidr: input.repositoryProxy.cidr } }],
+          ports: [{ protocol: "TCP", port: input.repositoryProxy.port }],
+        }] : []),
         // NOTE: operator-supplied CIDRs are intentionally NOT port-scoped —
         // operators may need them for non-HTTP services (e.g. private VCS
         // mirrors, S3 endpoints, internal artifact registries). Operators

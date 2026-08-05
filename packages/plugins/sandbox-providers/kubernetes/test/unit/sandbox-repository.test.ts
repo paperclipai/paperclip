@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { realizeSandboxRepository, validateSandboxRepositoryRequest } from "../../src/sandbox-repository.js";
 
 const sha = "0123456789abcdef0123456789abcdef01234567";
+const proxyUrl = "http://192.168.0.63:3129";
 
 describe("sandbox-native repository realization", () => {
   it("clones and verifies the exact detached SHA without using a host workspace", async () => {
     const commands: string[] = [];
     const snapshot = await realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha },
+      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, proxyUrl },
       execute: async (command) => {
         commands.push(command.join(" "));
         if (commands.length === 1) return { exitCode: 0, stdout: "", stderr: "" };
@@ -24,6 +25,7 @@ describe("sandbox-native repository realization", () => {
     expect(commands[0]).toContain("/workspace/repository");
     expect(commands[0]).not.toContain("secret");
     expect(commands[0]).toContain(`checkout --detach '${sha}'`);
+    expect(commands[0]).toContain(`HTTPS_PROXY='${proxyUrl}/'`);
     expect(commands.join("\n")).not.toContain("project_primary");
     expect(snapshot).toEqual({
       workspacePath: "/workspace/repository",
@@ -36,22 +38,22 @@ describe("sandbox-native repository realization", () => {
   });
 
   it("rejects missing repository or non-SHA revisions before executing anything", () => {
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "", revisionSha: sha })).toThrow(/repoUrl/);
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: "main" })).toThrow(/exact 40-character/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "", revisionSha: sha, proxyUrl })).toThrow(/repoUrl/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: "main", proxyUrl })).toThrow(/exact 40-character/);
   });
 
   it("fails closed before clone when credentials are required but unbound", () => {
     expect(() => validateSandboxRepositoryRequest({
       repoUrl: "https://github.com/org/private.git",
       revisionSha: sha,
-      credentialRequired: true,
+      credentialRequired: true, proxyUrl,
     })).toThrow(/explicit read-only Git credential binding/);
   });
 
   it("creates loader directories before Git and keeps public clones credential-free", async () => {
     const commands: string[] = [];
     await realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/public.git", revisionSha: sha },
+      request: { repoUrl: "https://github.com/org/public.git", revisionSha: sha, proxyUrl },
       execute: async (command) => {
         commands.push(command.join(" "));
         return commands.length === 1
@@ -66,7 +68,7 @@ describe("sandbox-native repository realization", () => {
 
   it("fails on a real SHA mismatch", async () => {
     await expect(realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha },
+      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, proxyUrl },
       execute: async (command) => command.join(" ").includes("rev-parse")
         ? { exitCode: 0, stdout: `PAPERCLIP_HEAD=${"fedcba9876543210fedcba9876543210fedcba98"}\nPAPERCLIP_STATUS_BEGIN\nPAPERCLIP_STATUS_END\n`, stderr: "" }
         : { exitCode: 0, stdout: "", stderr: "" },
@@ -75,14 +77,14 @@ describe("sandbox-native repository realization", () => {
 
   it("supports private auth without placing credentials in the URL or output", async () => {
     const error = await realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, credentialRequired: true, credentialSecretName: "git-read-only" },
+      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, credentialRequired: true, credentialSecretName: "git-read-only", proxyUrl },
       execute: async () => ({ exitCode: 128, stdout: "token=secret", stderr: "fatal: https://user:secret@github.com/org/repo.git?token=secret#frag" }),
     }).catch((err: unknown) => err as Error);
     expect(error.message).toContain("during Git preparation");
     expect(error.message).not.toMatch(/user|secret|token|\?|#/i);
 
     const snapshot = await realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, credentialRequired: true, credentialSecretName: "git-read-only" },
+      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, credentialRequired: true, credentialSecretName: "git-read-only", proxyUrl },
       execute: async (command) => command.join(" ").includes("rev-parse")
         ? { exitCode: 0, stdout: `PAPERCLIP_HEAD=${sha}\nPAPERCLIP_STATUS_BEGIN\nPAPERCLIP_STATUS_END\n`, stderr: "" }
         : { exitCode: 0, stdout: "", stderr: "" },
@@ -91,15 +93,17 @@ describe("sandbox-native repository realization", () => {
   });
 
   it("rejects invalid URLs and caller-controlled workspace paths", () => {
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "http://github.com/org/repo.git", revisionSha: sha })).toThrow(/approved HTTPS Git URL/);
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git?token=secret", revisionSha: sha })).toThrow(/without credentials/);
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha, workspacePath: "/tmp/repo" })).toThrow(/fixed \/workspace\/repository/);
-    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha, workspacePath: "/workspace" })).toThrow(/fixed \/workspace\/repository/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "http://github.com/org/repo.git", revisionSha: sha, proxyUrl })).toThrow(/approved HTTPS Git URL/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git?token=secret", revisionSha: sha, proxyUrl })).toThrow(/without credentials/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha, workspacePath: "/tmp/repo", proxyUrl })).toThrow(/fixed \/workspace\/repository/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha, workspacePath: "/workspace", proxyUrl })).toThrow(/fixed \/workspace\/repository/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha })).toThrow(/proxy/);
+    expect(() => validateSandboxRepositoryRequest({ repoUrl: "https://github.com/org/repo.git", revisionSha: sha, proxyUrl: "https://192.168.0.63:3129" })).toThrow(/proxy/);
   });
 
   it("fails on a dirty checkout", async () => {
     await expect(realizeSandboxRepository({
-      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha },
+      request: { repoUrl: "https://github.com/org/repo.git", revisionSha: sha, proxyUrl },
       execute: async (command) => command.join(" ").includes("rev-parse")
         ? { exitCode: 0, stdout: `PAPERCLIP_HEAD=${sha}\nPAPERCLIP_STATUS_BEGIN\n M file\nPAPERCLIP_STATUS_END\n`, stderr: "" }
         : { exitCode: 0, stdout: "", stderr: "" },

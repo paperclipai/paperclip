@@ -13,6 +13,8 @@ export interface SandboxRepositoryRequest {
   credentialRequired?: boolean;
   /** Presence of the configured minimal read-only Secret binding. */
   credentialSecretName?: string | null;
+  /** Operator-managed proxy required for all repository network access. */
+  proxyUrl?: string | null;
 }
 
 export interface SandboxRepositoryExecutionResult {
@@ -73,6 +75,20 @@ function validateWorkspacePath(value: string | undefined): string {
   return SANDBOX_REPOSITORY_WORKSPACE;
 }
 
+function validateProxyUrl(value: string | null | undefined): string {
+  try {
+    const url = new URL(value ?? "");
+    if (
+      url.protocol !== "http:" || url.username || url.password || url.search || url.hash ||
+      (url.pathname !== "/" && url.pathname !== "") || !/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(url.hostname) ||
+      !url.port || Number(url.port) < 1 || Number(url.port) > 65535
+    ) throw new Error("invalid proxy");
+    return url.toString();
+  } catch {
+    throw new Error("Sandbox repository realization requires a credential-free HTTP IPv4 proxy with an explicit port.");
+  }
+}
+
 export function validateSandboxRepositoryRequest(input: Partial<SandboxRepositoryRequest>): SandboxRepositoryRequest {
   const repoUrl = typeof input.repoUrl === "string" ? input.repoUrl.trim() : "";
   const revisionSha = typeof input.revisionSha === "string" ? input.revisionSha.trim() : "";
@@ -90,6 +106,7 @@ export function validateSandboxRepositoryRequest(input: Partial<SandboxRepositor
     workspacePath: validateWorkspacePath(input.workspacePath),
     credentialRequired,
     credentialSecretName: input.credentialSecretName?.trim() || null,
+    proxyUrl: validateProxyUrl(input.proxyUrl),
   };
 }
 
@@ -114,7 +131,7 @@ export async function realizeSandboxRepository(input: {
   await run(
     `mkdir -p /home/loader/tmp /home/loader/.config && ` +
       credentialSetup +
-      `export GIT_TERMINAL_PROMPT=0; ` +
+      `export GIT_TERMINAL_PROMPT=0 HTTP_PROXY=${shQuote(request.proxyUrl!)} HTTPS_PROXY=${shQuote(request.proxyUrl!)} NO_PROXY=localhost,127.0.0.1; ` +
     `mkdir -p ${shQuote(workspacePath)} && find ${shQuote(workspacePath)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && ` +
       `git clone --no-checkout -- ${shQuote(request.repoUrl)} ${shQuote(workspacePath)} && ` +
       `git -C ${shQuote(workspacePath)} fetch --no-tags origin ${shQuote(request.revisionSha)} && ` +

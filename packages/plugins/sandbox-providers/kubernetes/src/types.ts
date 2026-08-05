@@ -3,6 +3,44 @@ import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+const ipv4Regex = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+export interface RepositoryProxy {
+  url: string;
+  cidr: string;
+  port: number;
+}
+
+function isRepositoryProxyUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && (url.pathname === "/" || url.pathname === "")
+      && ipv4Regex.test(url.hostname)
+      && url.port.length > 0
+      && Number(url.port) >= 1
+      && Number(url.port) <= 65535;
+  } catch {
+    return false;
+  }
+}
+
+export function parseRepositoryProxyUrl(value: string | undefined): RepositoryProxy | null {
+  if (!value) return null;
+  if (!isRepositoryProxyUrl(value)) {
+    throw new Error("repositoryProxyUrl must be a credential-free HTTP IPv4 URL with an explicit port.");
+  }
+  const url = new URL(value);
+  return {
+    url: url.toString(),
+    cidr: `${url.hostname}/32`,
+    port: Number(url.port),
+  };
+}
 
 export const kubernetesProviderConfigSchema = z
   .object({
@@ -20,6 +58,13 @@ export const kubernetesProviderConfigSchema = z
     // read-only Git credentials. It is injected only into the repo-loader
     // sidecar; the agent container never receives this Secret.
     gitReadOnlySecretName: z.string().regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/).optional(),
+
+    // Repository realization is permitted only through this operator-managed
+    // HTTP CONNECT proxy. It is injected into repo-loader, never the agent.
+    repositoryProxyUrl: z.string().optional().refine(
+      (value) => value === undefined || isRepositoryProxyUrl(value),
+      "repositoryProxyUrl must be a credential-free HTTP IPv4 URL with an explicit port.",
+    ),
 
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
