@@ -29,6 +29,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { budgetLabel } from "../lib/token-usage";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -679,14 +680,11 @@ export function Costs() {
                           {formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
-                          {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                            ? `Budget ${formatCents(spendData.summary.budgetCents)}`
-                            : subscriptionOnlyBilling
-                              // A cents budget cannot be enforced when every run is
-                              // subscription-billed and `costCents` is always 0, so
-                              // saying "Unlimited" would read as a deliberate choice.
-                              ? "Budget not enforceable on subscription billing"
-                              : "Unlimited budget"}
+                          {budgetLabel({
+                            budgetCents: spendData?.summary.budgetCents,
+                            subscriptionOnlyBilling,
+                            formatCents,
+                          })}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">

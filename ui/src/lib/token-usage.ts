@@ -54,3 +54,26 @@ export function formatTokenBreakdown(usage: TokenUsage): string {
     `${formatTokens(usage.outputTokens)} out`
   );
 }
+
+/**
+ * Label for a monthly budget line.
+ *
+ * The subscription case is checked before the budget value on purpose. When
+ * every run is `subscription_included`, `costCents` is always 0, so a cents
+ * budget can never be consumed and can never fire. A configured budget is
+ * therefore at least as misleading as an absent one — it looks active. A budget
+ * of 0 is likewise "not set" rather than "unlimited by design".
+ */
+export function budgetLabel(input: {
+  budgetCents: number | null | undefined;
+  subscriptionOnlyBilling: boolean;
+  formatCents: (cents: number) => string;
+}): string {
+  const hasBudget = typeof input.budgetCents === "number" && input.budgetCents > 0;
+  if (input.subscriptionOnlyBilling) {
+    return hasBudget
+      ? `Budget ${input.formatCents(input.budgetCents as number)} — not enforceable on subscription billing`
+      : "Budget not enforceable on subscription billing";
+  }
+  return hasBudget ? `Budget ${input.formatCents(input.budgetCents as number)}` : "Unlimited budget";
+}

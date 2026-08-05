@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TOKEN_WEIGHTS,
+  budgetLabel,
   formatTokenBreakdown,
   hasTokenUsage,
   weightedTokens,
@@ -112,5 +113,42 @@ describe("formatTokenBreakdown", () => {
         outputTokens: 4,
       }),
     ).toBe("12 in · 0 cached · 4 out");
+  });
+});
+
+describe("budgetLabel", () => {
+  const formatCents = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  it("warns even when a budget is configured on subscription billing", () => {
+    // Regression: the subscription check must precede the budget check. A
+    // configured budget cannot be consumed when costCents is always 0, so
+    // presenting it as active is more misleading than an absent one.
+    expect(budgetLabel({ budgetCents: 250_000, subscriptionOnlyBilling: true, formatCents })).toBe(
+      "Budget $2500.00 — not enforceable on subscription billing",
+    );
+  });
+
+  it("warns when no budget is set on subscription billing", () => {
+    expect(budgetLabel({ budgetCents: 0, subscriptionOnlyBilling: true, formatCents })).toBe(
+      "Budget not enforceable on subscription billing",
+    );
+  });
+
+  it("leaves metered deployments unchanged", () => {
+    expect(budgetLabel({ budgetCents: 250_000, subscriptionOnlyBilling: false, formatCents })).toBe(
+      "Budget $2500.00",
+    );
+    expect(budgetLabel({ budgetCents: 0, subscriptionOnlyBilling: false, formatCents })).toBe(
+      "Unlimited budget",
+    );
+  });
+
+  it("treats null and undefined budgets as unset", () => {
+    expect(budgetLabel({ budgetCents: null, subscriptionOnlyBilling: false, formatCents })).toBe(
+      "Unlimited budget",
+    );
+    expect(budgetLabel({ budgetCents: undefined, subscriptionOnlyBilling: true, formatCents })).toBe(
+      "Budget not enforceable on subscription billing",
+    );
   });
 });
