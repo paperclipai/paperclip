@@ -186,6 +186,7 @@ import { stalledReviewDecisionService } from "../services/stalled-review-decisio
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
+import { scanAttachmentForSecrets, type ScanResult } from "../security/attachment-secret-scan.js";
 import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
@@ -11639,6 +11640,25 @@ export function issueRoutes(
     });
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
+      return;
+    }
+
+    // ANT-2506: content-gated pre-persist secret scan (mirror of ADR-0049 comment guard)
+    let scan: ScanResult;
+    try {
+      scan = scanAttachmentForSecrets(file.buffer);
+    } catch {
+      // fail-secure: a scanner error rejects rather than persisting unscanned bytes
+      res.status(422).json({ error: "Attachment rejected: secret scan unavailable" });
+      return;
+    }
+    if (!scan.ok) {
+      // reason kept server-side only — never echo detection-rule names to callers (oracle risk)
+      logger.warn(
+        { event: "attachment_secret_scan_rejection", reason: scan.reason, companyId, issueId },
+        "Attachment rejected: possible secret detected",
+      );
+      res.status(422).json({ error: "Attachment rejected: possible secret detected" });
       return;
     }
 
