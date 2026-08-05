@@ -2425,9 +2425,16 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const companyId = randomUUID();
       const agentId = randomUUID();
       const projectId = randomUUID();
+      const defaultResponsibleUserId = randomUUID();
       const issuePrefix = `TC${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
-      await db.insert(companies).values({ id: companyId, name: "CapCo", issuePrefix, requireBoardApprovalForNewAgents: false });
+      await db.insert(companies).values({
+        id: companyId,
+        name: "CapCo",
+        issuePrefix,
+        defaultResponsibleUserId,
+        requireBoardApprovalForNewAgents: false,
+      });
       await db.insert(agents).values({
         id: agentId,
         companyId,
@@ -2458,6 +2465,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
               invocationSource: wakeupOpts.source ?? "assignment",
               triggerDetail: wakeupOpts.triggerDetail ?? null,
               status: "queued",
+              responsibleUserId: defaultResponsibleUserId,
               contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
             });
             await db.update(issues).set({ executionRunId: queuedRunId, executionLockedAt: new Date() }).where(eq(issues.id, issueId));
@@ -2535,7 +2543,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(inboxIssues[0]?.title).toContain("CapAgent");
 
       const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
-      expect(secondRun.status).toBe("issue_created");
+      expect(secondRun.status).toBe("coalesced");
 
       const warningsAfterSecond = await db.select().from(tokenCapWarnings).where(eq(tokenCapWarnings.agentId, agentId));
       expect(warningsAfterSecond).toHaveLength(1);
