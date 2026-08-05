@@ -890,11 +890,25 @@ function hasScheduledMonitor(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
   executionPolicy?: unknown;
+  /**
+   * Epoch ms after which a monitor must fire to count. A monitor whose next check is
+   * already in the past will never wake anyone, so callers that rely on the monitor as
+   * a real timeout must pass `Date.now()` here. Omitted means "any monitor counts".
+   */
+  requireNextCheckAfter?: number;
 }) {
-  if (input.patchMonitorNextCheckAt instanceof Date && !Number.isNaN(input.patchMonitorNextCheckAt.getTime())) return true;
-  if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) return true;
+  const isLive = (value: Date) => {
+    if (Number.isNaN(value.getTime())) return false;
+    return input.requireNextCheckAfter === undefined || value.getTime() > input.requireNextCheckAfter;
+  };
+  const candidates: Date[] = [];
+  if (input.patchMonitorNextCheckAt instanceof Date) candidates.push(input.patchMonitorNextCheckAt);
+  else if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) {
+    candidates.push(input.existingMonitorNextCheckAt);
+  }
   const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
-  return Boolean(policy?.monitor?.nextCheckAt);
+  if (policy?.monitor?.nextCheckAt) candidates.push(new Date(policy.monitor.nextCheckAt));
+  return candidates.some(isLive);
 }
 
 function successfulRunHandoffStateFromActivity(row: {
@@ -3799,6 +3813,9 @@ export function issueRoutes(
         existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
         patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
         executionPolicy: input.updateFields.executionPolicy,
+        // An already-expired monitor is not a timeout: it will never fire again, so it
+        // must not suppress the fallback this path promises.
+        requireNextCheckAfter: Date.now(),
       })
     ) {
       input.updateFields.monitorNextCheckAt = new Date(Date.now() + REVIEWER_AGENT_FALLBACK_MONITOR_MS);

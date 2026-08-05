@@ -395,6 +395,54 @@ describe("issue execution policy routes", () => {
     expect(String(patch.monitorNotes)).toContain("reviewer agent");
   });
 
+  it("replaces an already-expired monitor with the reviewer fallback instead of trusting it", async () => {
+    const reviewerId = "44444444-4444-4444-8444-444444444444";
+    const expiredAt = new Date(Date.now() - 60 * 60 * 1000);
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Reviewer handoff over a dead monitor",
+      executionPolicy: null,
+      executionState: null,
+      // An expired monitor will never fire again — it is not a timeout, so it must not
+      // suppress the fallback the reviewer path promises.
+      monitorNextCheckAt: expiredAt,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      role: agentId === reviewerId ? "reviewer" : "engineer",
+      status: "active",
+      permissions: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: reviewerId });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(patch.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect((patch.monitorNextCheckAt as Date).getTime()).toBeGreaterThan(Date.now());
+  });
+
   it("rejects an agent-authored in_review transition handed to a paused reviewer agent", async () => {
     const reviewerId = "44444444-4444-4444-8444-444444444444";
     const issue = {
