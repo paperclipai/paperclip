@@ -56,6 +56,18 @@ RECLAIM_PRIMARY="${PAPERCLIP_RECLAIM_PRIMARY:-0}"
 
 log() { echo "[launchd-start $(date '+%H:%M:%S')] $*" >&2; }
 
+# Boot-time gate: dev-watch protects a running process from bad edits, but it
+# cannot protect the first import after launchd starts. Prove the full source
+# graph can load before handing it to the supervisor. The external watchdog
+# recognises the explicit failure marker and only reverts to a SHA that served.
+if [ "${PAPERCLIP_STARTUP_GATE:-1}" = "1" ]; then
+  log "startup gate: checking source graph before supervisor handoff"
+  if ! node "$ROOT/server/scripts/dev-watch-gate.mjs"; then
+    log "STARTUP_GATE_FAILURE: source graph/load smoke rejected; refusing boot"
+    exit 78
+  fi
+fi
+
 # --- Single-instance guard (macOS has no flock): atomic mkdir lock + stale detection.
 # After `exec pnpm dev` the shell is REPLACED in place, so the lock pid ($$) keeps
 # pointing at the live server for its whole lifetime. A second launchd spawn that
