@@ -1,10 +1,20 @@
 export const type = "antigravity_local";
 export const label = "Antigravity (local)";
 
-// agy model ids are the DISPLAY NAMES verbatim, effort included — that is exactly what
-// `agy --model` accepts. The dashed internal form (`claude-opus-4-6`) that appears under
-// ~/.gemini is REJECTED with "not recognized as a known model". Keep these byte-identical
-// to agy's own list.
+// `agy --model` accepts BOTH the dashed id and the display name. Verified against the live CLI
+// on 2026-08-05 — an earlier comment here claimed the dashed form was "REJECTED as not recognized",
+// and that was WRONG. It shipped, validation was built on it, and it broke four correctly
+// configured TSBC bench lanes (422 on their own current model). Do not reinstate that claim.
+//
+//   $ agy models                                   -> dashed ids are what agy reports as canonical
+//   $ agy --print … --model "gemini-3.1-pro-high"  -> OK
+//   $ agy --print … --model "Gemini 3.1 Pro (High)" -> OK
+//   $ agy --print … --model "claude-opus-4-6-thinking"
+//        -> "Individual quota reached" for the Claude band, i.e. it RESOLVED. Valid.
+//
+// The dashed ids are listed FIRST because `agy models` is the source of truth; the display names
+// follow as accepted aliases so existing lanes configured either way keep validating. If this list
+// is ever regenerated, derive it from `agy models` output — never from a hand-written display list.
 //
 // The Claude and GPT-OSS entries matter commercially, not just technically: on the Google AI
 // Pro plan they draw on usage bands SEPARATE from Gemini's. Before this list existed the
@@ -14,6 +24,19 @@ export const label = "Antigravity (local)";
 // Do not expose an unpinned session-default entry: every selectable model must be an explicit
 // `agy --model` value so Paperclip can persist and compare the declared model per run.
 export const models = [
+  // Canonical ids, exactly as `agy models` reports them.
+  { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
+  { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
+  { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
+  { id: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (High)" },
+  { id: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (Medium)" },
+  { id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (Low)" },
+  { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+  { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking) — separate usage band" },
+  { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking) — separate usage band" },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium) — separate usage band" },
+  // Accepted display-name aliases — agy takes these too, and live lanes are configured with them.
   { id: "Gemini 3.6 Flash (High)", label: "Gemini 3.6 Flash (High)" },
   { id: "Gemini 3.6 Flash (Medium)", label: "Gemini 3.6 Flash (Medium)" },
   { id: "Gemini 3.6 Flash (Low)", label: "Gemini 3.6 Flash (Low)" },
