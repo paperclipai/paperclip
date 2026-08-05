@@ -329,6 +329,34 @@ describe("attentionTaskRef", () => {
     expect(attentionTaskRef(item)?.identifier).toBe("PAP-2");
   });
 
+  it("badges the terminal blocker, not the task it blocks (PAP-16196 obs 1)", () => {
+    // Terminal-blocker card: subject = the stalled blocker the title names,
+    // relatedIssue = one task it blocks. The badge must follow the title.
+    const item = buildItem({
+      sourceKind: "blocker_attention",
+      subject: {
+        kind: "issue",
+        id: "i-blocker",
+        companyId: "c1",
+        title: "Stalled blocker",
+        identifier: "PAP-16179",
+        status: "in_progress",
+        href: "/PAP/issues/PAP-16179",
+      },
+      relatedIssue: {
+        kind: "issue",
+        id: "i-blocked",
+        companyId: "c1",
+        title: "Blocked task",
+        identifier: "PAP-15839",
+        status: "blocked",
+        href: "/PAP/issues/PAP-15839",
+      },
+      detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 5, images: [] },
+    });
+    expect(attentionTaskRef(item)).toEqual({ identifier: "PAP-16179", href: "/PAP/issues/PAP-16179" });
+  });
+
   it("returns null for rows genuinely not attached to a task", () => {
     // A hire approval: subject is the approval itself, no task anywhere.
     expect(attentionTaskRef(buildItem({ sourceKind: "approval" }))).toBeNull();

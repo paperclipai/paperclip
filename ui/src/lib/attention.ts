@@ -164,11 +164,21 @@ export function attentionStatus(item: AttentionItem): "blocked" | "in_review" {
  * populate `relatedIssue` for those.
  */
 export function attentionTaskRef(item: AttentionItem): { identifier: string; href: string | null } | null {
+  const subject = item.subject;
+  // Terminal-blocker cards title the *blocker* (the actionable subject) while
+  // relatedIssue holds the task it blocks — the badge must match the title, or
+  // the row reads as being about the wrong issue (PAP-16196 QA obs 1).
+  const subjectIsTerminalBlocker = item.detail?.kind === "blocker"
+    && typeof item.detail.blockedTaskCount === "number"
+    && subject.kind === "issue"
+    && !!subject.identifier;
+  if (subjectIsTerminalBlocker) {
+    return { identifier: subject.identifier!, href: subject.href };
+  }
   const related = item.relatedIssue;
   if (related?.identifier) {
     return { identifier: related.identifier, href: related.href };
   }
-  const subject = item.subject;
   if (subject.kind === "issue" && subject.identifier) {
     return { identifier: subject.identifier, href: subject.href };
   }

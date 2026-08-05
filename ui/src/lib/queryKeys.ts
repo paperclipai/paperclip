@@ -397,8 +397,6 @@ export const queryKeys = {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,
     detail: (id: string) => ["decisions", "detail", id] as const,
-    forTargetIssue: (companyId: string, issueId: string) =>
-      ["decisions", companyId, "target", issueId] as const,
   },
   decisionQueues: {
     list: (companyId: string) => ["decision-queues", companyId] as const,

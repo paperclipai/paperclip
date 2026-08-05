@@ -140,7 +140,6 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     queryClient.invalidateQueries({ queryKey: queryKeys.decisions.list(companyId, "decided") });
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     for (const id of Object.keys(decision?.targetSnapshots ?? {})) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.decisions.forTargetIssue(companyId, id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(id) });
     }
     onResolved?.();
