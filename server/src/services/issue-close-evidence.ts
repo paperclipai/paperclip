@@ -233,6 +233,73 @@ export function isActiveHeartbeatRunStatusBlockingDone(status: string | null | u
   return (ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE as readonly string[]).includes(status);
 }
 
+export type CloseGateRunCandidate = {
+  id: string;
+  status: string;
+  startedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+};
+
+function closeGateRunAnchorMs(run: CloseGateRunCandidate): number {
+  const started = run.startedAt ? new Date(run.startedAt).getTime() : NaN;
+  if (Number.isFinite(started)) return started;
+  const created = run.createdAt ? new Date(run.createdAt).getTime() : NaN;
+  return Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * §3 AC freshness run selection (TSMC-19840).
+ * Prefer the fresher of issue-scoped latest vs the actor close-out run.
+ * Self-exclusion is intentionally NOT applied here (only §2 active-run block excludes self).
+ */
+export function selectFreshestCloseGateRun(input: {
+  latestScoped: CloseGateRunCandidate | null | undefined;
+  actorRun: CloseGateRunCandidate | null | undefined;
+}): CloseGateRunCandidate | null {
+  const latest = input.latestScoped ?? null;
+  const actor = input.actorRun ?? null;
+  if (latest && actor) {
+    if (latest.id === actor.id) return actor;
+    return closeGateRunAnchorMs(actor) >= closeGateRunAnchorMs(latest) ? actor : latest;
+  }
+  return actor ?? latest ?? null;
+}
+
+/**
+ * Board/user comment signal for acceptance-criteria mutation (TSMC-19840).
+ *
+ * Bare "Acceptance:" operator shorthand (e.g. provider delivery receipts) is NOT
+ * an AC edit. Require stronger edit signals so close-guard §3 does not false-trip
+ * on common board prose after a prior pack-delivery run.
+ */
+export function commentSignalsAcceptanceCriteriaChange(body: string | null | undefined): boolean {
+  const text = (body ?? "").toLowerCase();
+  if (!text.includes("acceptance")) return false;
+
+  // Explicit AC section / field references.
+  if (/\bacceptance[\s_-]+criteria\b/.test(text)) return true;
+  if (/\bacceptancecriteria\b/.test(text)) return true;
+  if (/^#{1,6}\s*acceptance(\s+criteria)?\b/m.test(text)) return true;
+
+  // Edit language near "acceptance" (either order, short window).
+  if (
+    /\b(update|updated|updating|change|changed|changing|revise|revised|revising|modify|modified|modifying|edit|edited|editing|rewrite|rewrote|rewritten|replace|replaced|replacing)\b[\s\S]{0,80}\bacceptance\b/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\bacceptance\b[\s\S]{0,80}\b(update|updated|updating|change|changed|changing|revise|revised|revising|modify|modified|modifying|edit|edited|editing|rewrite|rewrote|rewritten|replace|replaced|replacing|criteria)\b/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export function acceptanceCriteriaChangedAfterRunStart(input: {
   runStartedAt: Date | string | null | undefined;
   acceptanceCriteriaDocumentUpdatedAt?: Date | string | null;
@@ -264,8 +331,7 @@ export function acceptanceCriteriaChangedAfterRunStart(input: {
   for (const comment of input.comments ?? []) {
     const authorType = (comment.authorType ?? "").toLowerCase();
     if (authorType !== "user" && authorType !== "board") continue;
-    const body = (comment.body ?? "").toLowerCase();
-    if (!body.includes("acceptance")) continue;
+    if (!commentSignalsAcceptanceCriteriaChange(comment.body)) continue;
     if (!comment.createdAt) continue;
     const commentMs = new Date(comment.createdAt).getTime();
     if (Number.isFinite(commentMs) && commentMs > runStartedMs) {
