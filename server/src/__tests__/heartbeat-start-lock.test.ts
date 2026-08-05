@@ -119,6 +119,46 @@ describe("heartbeat agent start lock", () => {
     expect(afterSettle).toHaveBeenCalledTimes(1);
   });
 
+  it("promotion is atomic: attempts scheduled around waiter promotion can never become a third start", async () => {
+    vi.useFakeTimers();
+
+    const agentId = randomUUID();
+    const hungHolder = vi.fn(() => new Promise<void>(() => undefined));
+    const hungTakeover = vi.fn(() => new Promise<void>(() => undefined));
+    const probeFn = vi.fn(async () => "probe");
+    const probeResults: Array<Promise<unknown>> = [];
+
+    void withAgentStartLock(agentId, hungHolder);
+    await Promise.resolve();
+    void withAgentStartLock(agentId, hungTakeover);
+    await Promise.resolve();
+
+    // Invariant guard: fire probes from a timer at the same instant as the
+    // waiter's stale timeout, stepping one microtask at a time. Whatever the
+    // interleaving around waiter promotion, no probe may pass admission and
+    // become a third concurrent start. (Promotion clears the waiter slot and
+    // records the in-flight start in one promise reaction, so there is no
+    // state between the two guards for a probe to observe.)
+    const probeBurst = new Promise<void>((resolve) => {
+      setTimeout(async () => {
+        for (let i = 0; i < 8; i += 1) {
+          probeResults.push(withAgentStartLock(agentId, probeFn));
+          await null;
+        }
+        resolve();
+      }, 30_000);
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await probeBurst;
+    expect(hungTakeover).toHaveBeenCalledTimes(1);
+
+    // Give any wrongly admitted probe its own stale window to fire.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all(probeResults);
+    expect(probeFn).not.toHaveBeenCalled();
+  });
+
   it("serialises cleanly when the holder finishes normally: later attempts run without skipping", async () => {
     const agentId = randomUUID();
 

@@ -68,23 +68,35 @@ export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T
     }
     pendingStartWaiters.add(agentId);
   }
-  const waitForPrevious = previous
-    ? waitForAgentStartLock(agentId, previous).finally(() => pendingStartWaiters.delete(agentId))
-    : Promise.resolve();
-  const run = waitForPrevious.then(() => {
-    activeStartCounts.set(agentId, (activeStartCounts.get(agentId) ?? 0) + 1);
-    const decrementActiveStarts = () => {
-      const remaining = (activeStartCounts.get(agentId) ?? 1) - 1;
-      if (remaining <= 0) activeStartCounts.delete(agentId);
-      else activeStartCounts.set(agentId, remaining);
-    };
-    try {
-      return fn().finally(decrementActiveStarts);
-    } catch (err) {
-      decrementActiveStarts();
+  const waitForPrevious = previous ? waitForAgentStartLock(agentId, previous) : Promise.resolve();
+  const run = waitForPrevious.then(
+    () => {
+      // Promote the waiter atomically: clear the waiter slot AND record the
+      // start as in flight inside ONE promise reaction. If these happened in
+      // separate reactions, an attempt scheduled between them would see no
+      // pending waiter and a stale active count, pass both admission guards,
+      // and become a third concurrent start.
+      if (previous) pendingStartWaiters.delete(agentId);
+      activeStartCounts.set(agentId, (activeStartCounts.get(agentId) ?? 0) + 1);
+      const decrementActiveStarts = () => {
+        const remaining = (activeStartCounts.get(agentId) ?? 1) - 1;
+        if (remaining <= 0) activeStartCounts.delete(agentId);
+        else activeStartCounts.set(agentId, remaining);
+      };
+      try {
+        return fn().finally(decrementActiveStarts);
+      } catch (err) {
+        decrementActiveStarts();
+        throw err;
+      }
+    },
+    (err) => {
+      // waitForAgentStartLock never rejects today; keep the waiter slot from
+      // leaking if that ever changes.
+      if (previous) pendingStartWaiters.delete(agentId);
       throw err;
-    }
-  });
+    },
+  );
   const marker = run.then(
     () => undefined,
     () => undefined,
