@@ -92,6 +92,7 @@ import {
   type IssueWakeDiagnosticWakeFailureClass,
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
+  AGENT_REVIEWER_ROLES,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -415,6 +416,22 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
       ...req.body,
       status: resolution.status,
     };
+  }
+  next();
+}
+
+/**
+ * `assigneeId` is not a field on any issue payload — the zod schemas strip unknown keys,
+ * so a caller aiming at `assigneeAgentId` would get a 200 and a handoff that never
+ * happened. A handoff that silently does nothing is worse than one that fails.
+ */
+function rejectIgnoredAssigneeKey(req: Request, _res: Response, next: () => void) {
+  if (req.body && typeof req.body === "object" && !Array.isArray(req.body) && "assigneeId" in req.body) {
+    throw badRequest("assigneeId is not a valid field. Use assigneeAgentId for an agent or assigneeUserId for a human.", {
+      code: "unknown_field",
+      field: "assigneeId",
+      validFields: ["assigneeAgentId", "assigneeUserId"],
+    });
   }
   next();
 }
@@ -1710,8 +1727,15 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, assign a reviewer-role agent with assigneeAgentId, " +
+  "set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+
+/**
+ * Fallback monitor attached server-side when an agent hands an issue to a reviewer
+ * agent without scheduling one itself, so an unanswered review cannot die silently.
+ */
+const REVIEWER_AGENT_FALLBACK_MONITOR_MS = 24 * 60 * 60 * 1000;
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -3621,6 +3645,7 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeUserId?: string | null;
+      assigneeAgentId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
     };
@@ -3630,6 +3655,11 @@ export function issueRoutes(
     actorAgentId?: string | null;
     actorRunId?: string | null;
     reviewInteractionId?: string;
+    /**
+     * Only the issue PATCH route persists `updateFields`, so only it may receive the
+     * fallback monitor. Other call sites validate against a throwaway patch object.
+     */
+    applyReviewerFallbackMonitor?: boolean;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
@@ -3678,6 +3708,8 @@ export function issueRoutes(
       : input.updateFields.assigneeUserId;
     if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return null;
 
+    if (await acceptReviewerAgentReviewPath(input)) return null;
+
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
       : input.updateFields.executionState;
@@ -3702,10 +3734,47 @@ export function issueRoutes(
         "pending_issue_thread_interaction",
         "linked_pending_approval",
         "human_assignee_user_id",
+        "reviewer_agent_assignee_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  /**
+   * Handing an issue to a reviewer-role agent is a real review path: someone owns the
+   * next action. Deliberately narrow — any-agent-assignee would let anything park in
+   * `in_review` forever, which is the hole this validator exists to close.
+   */
+  async function acceptReviewerAgentReviewPath(input: {
+    existing: { companyId: string; assigneeAgentId?: string | null; monitorNextCheckAt?: Date | null };
+    updateFields: Record<string, unknown>;
+    actorAgentId?: string | null;
+    applyReviewerFallbackMonitor?: boolean;
+  }) {
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId ?? null
+      : input.updateFields.assigneeAgentId;
+    if (typeof nextAssigneeAgentId !== "string" || nextAssigneeAgentId.trim().length === 0) return false;
+    // Self-assignment is not a review path — an agent cannot review its own work.
+    if (input.actorAgentId && nextAssigneeAgentId === input.actorAgentId) return false;
+
+    const reviewer = await agentsSvc.getById(nextAssigneeAgentId);
+    if (!reviewer || reviewer.companyId !== input.existing.companyId) return false;
+    const role = typeof reviewer.role === "string" ? reviewer.role.trim().toLowerCase() : "";
+    if (!AGENT_REVIEWER_ROLES.includes(role as (typeof AGENT_REVIEWER_ROLES)[number])) return false;
+
+    if (
+      input.applyReviewerFallbackMonitor
+      && !hasScheduledMonitor({
+        existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
+        patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
+        executionPolicy: input.updateFields.executionPolicy,
+      })
+    ) {
+      input.updateFields.monitorNextCheckAt = new Date(Date.now() + REVIEWER_AGENT_FALLBACK_MONITOR_MS);
+    }
+    return true;
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -9035,7 +9104,7 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validateIssueMutationBody(createIssueSchema), async (req, res) => {
+  router.post("/companies/:companyId/issues", rejectIgnoredAssigneeKey, applyCreateIssueStatusDefault, validateIssueMutationBody(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (isSkillTestScopedActor(req)) {
@@ -9371,7 +9440,7 @@ export function issueRoutes(
     });
   });
 
-  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validateIssueMutationBody(createChildIssueSchema), async (req, res) => {
+  router.post("/issues/:id/children", rejectIgnoredAssigneeKey, applyCreateIssueStatusDefault, validateIssueMutationBody(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
@@ -9920,7 +9989,7 @@ export function issueRoutes(
     },
   );
 
-  router.patch("/issues/:id", validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
+  router.patch("/issues/:id", rejectIgnoredAssigneeKey, validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
@@ -10330,6 +10399,7 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorRunId: actor.runId,
       reviewInteractionId: requestedReviewInteractionId,
+      applyReviewerFallbackMonitor: true,
     });
     const enteringReviewRequested =
       existing.status !== "in_review" && updateFields.status === "in_review";
