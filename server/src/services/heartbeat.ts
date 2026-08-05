@@ -13575,6 +13575,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
       issueContext?.executionWorkspaceSettings,
+      { includeEnvironmentId: true },
     );
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parsedIssueExecutionWorkspaceSettings
@@ -13844,6 +13845,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+      issueEnvironmentId: issueExecutionWorkspaceSettings?.environmentId ?? null,
+      projectEnvironmentId: projectExecutionWorkspacePolicy?.environmentId ?? null,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,

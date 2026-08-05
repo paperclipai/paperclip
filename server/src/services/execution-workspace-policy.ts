@@ -132,6 +132,9 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
+    ...(typeof parsed.environmentId === "string" || parsed.environmentId === null
+      ? { environmentId: parsed.environmentId }
+      : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
@@ -230,6 +233,8 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
+  | "project"
   | "agent"
   | "instance"
   | "default";
@@ -240,10 +245,18 @@ export type ExecutionWorkspaceEnvironmentResolution = {
 };
 
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  issueEnvironmentId?: string | null;
+  projectEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
 }): ExecutionWorkspaceEnvironmentResolution {
+  if (input.issueEnvironmentId) {
+    return { environmentId: input.issueEnvironmentId, source: "issue" };
+  }
+  if (input.projectEnvironmentId) {
+    return { environmentId: input.projectEnvironmentId, source: "project" };
+  }
   if (input.agentDefaultEnvironmentId) {
     return {
       environmentId: input.agentDefaultEnvironmentId,
