@@ -7,6 +7,7 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { evaluateMachineRecheckPredicate, parseBoardAskCondition, validateBoardAskCondition } from "./approval-recheck.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -256,12 +257,18 @@ export function approvalService(db: Db) {
         throw unprocessable("Only revision requested approvals can be resubmitted");
       }
 
+      const nextPayload = payload ?? existing.payload;
+      if (existing.type === "request_board_approval") {
+        const conditionError = validateBoardAskCondition(nextPayload);
+        if (conditionError) throw unprocessable(conditionError);
+      }
+
       const now = new Date();
       return db
         .update(approvals)
         .set({
           status: "pending",
-          payload: payload ?? existing.payload,
+          payload: nextPayload,
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
@@ -270,6 +277,40 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+    },
+
+    sweepOpenMachineConditions: async () => {
+      const candidates = await db
+        .select()
+        .from(approvals)
+        .where(and(
+          eq(approvals.type, "request_board_approval"),
+          inArray(approvals.status, resolvableStatuses),
+        ));
+      let evaluated = 0;
+      let rejected = 0;
+      for (const approval of candidates) {
+        const condition = parseBoardAskCondition(approval.payload);
+        if (!condition || condition.kind !== "machine") continue;
+        evaluated += 1;
+        const result = await evaluateMachineRecheckPredicate(condition);
+        if (!result.cleared) continue;
+        const now = new Date();
+        const updated = await db
+          .update(approvals)
+          .set({
+            status: "rejected",
+            decidedByUserId: "system:approval-recheck-sweeper",
+            decisionNote: result.note,
+            decidedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(approvals.id, approval.id), inArray(approvals.status, resolvableStatuses)))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (updated) rejected += 1;
+      }
+      return { evaluated, rejected };
     },
 
     listComments: async (approvalId: string) => {
