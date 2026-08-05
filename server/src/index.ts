@@ -883,6 +883,7 @@ export async function startServer(): Promise<StartedServer> {
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        const restartLaneRecovery = await heartbeat.sweepRestartLaneRecovery();
         if (
           promotion.promoted > 0 ||
           reconciled.assignmentDispatched > 0 ||
@@ -895,6 +896,9 @@ export async function startServer(): Promise<StartedServer> {
             { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
             "startup heartbeat recovery changed assigned issue state",
           );
+        }
+        if (restartLaneRecovery.candidates > 0) {
+          logger.warn({ ...restartLaneRecovery }, "startup restart-lane recovery sweep completed");
         }
 
         const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
@@ -999,6 +1003,7 @@ export async function startServer(): Promise<StartedServer> {
           .then(async (promotion) => {
             await heartbeat.resumeQueuedRuns();
             const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            const restartLaneRecovery = await heartbeat.sweepRestartLaneRecovery();
             if (
               promotion.promoted > 0 ||
               reconciled.assignmentDispatched > 0 ||
@@ -1011,6 +1016,9 @@ export async function startServer(): Promise<StartedServer> {
                 { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
                 "periodic heartbeat recovery changed assigned issue state",
               );
+            }
+            if (restartLaneRecovery.candidates > 0) {
+              logger.warn({ ...restartLaneRecovery }, "periodic restart-lane recovery sweep completed");
             }
           })
           .then(async () => {
