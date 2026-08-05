@@ -663,6 +663,24 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+/**
+ * The ACP transport reports a dev-watch restart as a turn failure rather than
+ * as a process signal.  The server has already scheduled the issue recovery
+ * path by the time this is evaluated, so preserving the agent's invokable
+ * state is both safe and necessary: an `error` lane cannot claim that retry.
+ *
+ * Keep this deliberately narrow.  A generic ACP failure remains actionable;
+ * only the observed transport-close signature gets reload semantics.
+ */
+function isRecoverableDevWatchReloadFailure(input: {
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}) {
+  if (input.errorCode !== "acpx_turn_failed") return false;
+  const message = input.errorMessage ?? "";
+  return /ACP agent disconnected.*\bconnection[_ -]?close\b/i.test(message);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -17174,7 +17192,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           keepIdleOnFailure:
             outcome === "failed" &&
             ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
+              isRecoverableDevWatchReloadFailure(adapterResult)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );

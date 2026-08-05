@@ -3210,6 +3210,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it("keeps the lane invokable after an ACP dev-watch reload disconnect", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "acpx_turn_failed",
+      errorMessage: "ACP agent disconnected during request (connection_close, exit=null, signal=null)",
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const runs = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return rows.length >= 2 ? rows : null;
+    });
+    const retryRun = runs?.find((row) => row.id !== runId);
+    expect(retryRun).toMatchObject({
+      retryOfRunId: runId,
+    });
+    await waitForRunToSettle(heartbeat, retryRun!.id);
+
+    const agent = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "idle" ? row : null;
+    });
+    expect(agent?.status).toBe("idle");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+  });
+
   it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
     const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
