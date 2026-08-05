@@ -110,6 +110,47 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
+/**
+ * Strip credential material from a git remote URL before it is copied into a
+ * transported workspace. http(s) URLs can embed a token in the userinfo part
+ * (`https://x-access-token:<token>@github.com/...`); everything else (scp-like
+ * `git@host:path`, `ssh://`, filesystem paths) carries no secret in the URL and
+ * passes through unchanged.
+ */
+export function sanitizeGitRemoteUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.username || parsed.password)) {
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+    }
+  } catch {
+    // Not URL-parseable (scp-like remote or a filesystem path) — no userinfo to scrub.
+  }
+  return trimmed;
+}
+
+/**
+ * The workspace's `origin` remote URL with credentials scrubbed, or null when
+ * the workspace has no `origin` remote (or is not a git repository).
+ */
+export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["remote", "get-url", "origin"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    return sanitizeGitRemoteUrl(result.stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -120,6 +161,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
@@ -128,6 +170,19 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 10_000,
       maxBuffer: 64 * 1024,
     });
+    if (originUrl) {
+      // The clone is what lands in the sandbox. Without `origin`, the branch
+      // there reads as an unpublishable root snapshot even though its head is a
+      // commit the upstream remote already holds — so fetch (to reconnect
+      // ancestry) and push (to publish the branch; the shallow boundary commit
+      // is already on the remote, so the pack closes) are both mechanically
+      // possible once the remote is carried over. Best-effort: a failure to
+      // record the remote must not fail the transport.
+      await runLocalGit(cloneDir, ["remote", "add", "origin", originUrl], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     await runLocalGit(cloneDir, ["fetch", "--depth=1", input.localDir, tempRef], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,

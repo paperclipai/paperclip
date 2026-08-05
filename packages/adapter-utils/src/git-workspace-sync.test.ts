@@ -14,6 +14,7 @@ import {
   isMissingGitPrerequisiteError,
   readGitWorkspaceSnapshot,
   runLocalGit,
+  sanitizeGitRemoteUrl,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 
@@ -70,6 +71,83 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["rev-list", "--count", "HEAD"])).toBe("1");
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
+    });
+  });
+
+  it("copies the workspace origin remote into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("scrubs credentials from the origin remote before copying it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-scrub-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://x-access-token:sekret@github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("leaves the shallow clone remote-less when the workspace has no origin", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
+  it("pushes new commits from the shallow clone to an origin that holds the base commit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-shallow-push-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const upstream = path.join(rootDir, "upstream.git");
+    await mkdir(upstream, { recursive: true });
+    await git(upstream, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "origin", upstream]);
+    await git(repo, ["push", "origin", "main"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await git(cloneDir, ["config", "user.name", "Paperclip Sandbox"]);
+      await git(cloneDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+      await writeFile(path.join(cloneDir, "change.txt"), "sandbox change\n", "utf8");
+      await git(cloneDir, ["add", "change.txt"]);
+      await git(cloneDir, ["commit", "-m", "sandbox change"]);
+      const cloneHead = await git(cloneDir, ["rev-parse", "HEAD"]);
+
+      // The clone is shallow (single grafted commit), but the boundary commit
+      // already exists on the origin, so the push pack closes without full
+      // ancestry — the property that makes transported branches publishable.
+      await git(cloneDir, ["push", "origin", "HEAD:refs/heads/sandbox-change"]);
+
+      expect(await git(upstream, ["rev-parse", "refs/heads/sandbox-change"])).toBe(cloneHead);
+      expect(await git(upstream, ["merge-base", "refs/heads/main", "refs/heads/sandbox-change"])).toBe(baseHead);
     });
   });
 
@@ -298,5 +376,32 @@ describe("git workspace sync", () => {
     } finally {
       await deleteLocalGitRef({ localDir: host, ref: importedRef });
     }
+  });
+});
+
+describe("sanitizeGitRemoteUrl", () => {
+  it("strips userinfo from http(s) URLs", () => {
+    expect(sanitizeGitRemoteUrl("https://x-access-token:sekret@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://sekret-token@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("http://user:pass@git.internal/example/repo.git"))
+      .toBe("http://git.internal/example/repo.git");
+  });
+
+  it("leaves credential-free and non-http remotes unchanged", () => {
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("git@github.com:example/repo.git"))
+      .toBe("git@github.com:example/repo.git");
+    expect(sanitizeGitRemoteUrl("ssh://git@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("/tmp/local/upstream.git"))
+      .toBe("/tmp/local/upstream.git");
+  });
+
+  it("returns null for empty input", () => {
+    expect(sanitizeGitRemoteUrl("")).toBeNull();
+    expect(sanitizeGitRemoteUrl("   ")).toBeNull();
   });
 });
