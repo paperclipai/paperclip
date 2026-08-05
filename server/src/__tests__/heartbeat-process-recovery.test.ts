@@ -2563,7 +2563,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain(
+      "Latest retry failure: `process_lost` - Process lost -- child pid 999999999 is no longer running.",
+    );
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
@@ -5477,13 +5479,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
+  it("surfaces an agent-paused failure after automatic dispatch recovery was already used", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
-      runErrorCode: "process_lost",
-      runError: "Authorization: Bearer sk-test-recovery-secret",
+      runErrorCode: "agent_paused",
+      runError: "Cancelled due to agent pause",
     });
     const longRecoveryOwnerName = "R".repeat(161);
     await db.update(agents).set({ name: longRecoveryOwnerName }).where(eq(agents.id, agentId));
@@ -5504,20 +5506,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
-      cause: "process_lost",
+      cause: "stranded_assigned_issue",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain(
+      "Latest retry failure: `agent_paused` - Cancelled due to agent pause.",
+    );
+    expect(comments[0]?.body).not.toContain("Latest retry failure details were withheld");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain(`Recovery owner: [${longRecoveryOwnerName}]`);
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",
-      title: `${`Recovery: retries exhausted — moved to blocked (owner: ${longRecoveryOwnerName})`.slice(0, 159)}…`,
+      title: `${`Recovery: execution path recovery failed — moved to blocked (owner: ${longRecoveryOwnerName})`.slice(0, 159)}…`,
       density: "compact",
     });
     expect(comments[0]?.metadata).toMatchObject({
@@ -5525,7 +5530,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sections: [expect.objectContaining({
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
-          expect.objectContaining({ type: "key_value", label: "Cause", value: "process_lost" }),
+          expect.objectContaining({ type: "key_value", label: "Cause", value: "stranded_assigned_issue" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "R".repeat(160) }),
         ]),
       })],
@@ -5933,12 +5938,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain(
+      "Latest retry failure: `process_lost` - run failed before issue advanced.",
+    );
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
-  it("redacts error-code-only stranded recovery failures in issue copy", async () => {
+  it("surfaces error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -5966,7 +5973,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest retry failure: `adapter_exit_code`.");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
   });
 
@@ -6327,7 +6334,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain(
+      "Latest retry failure: `process_lost` - run failed before issue advanced.",
+    );
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
@@ -6419,7 +6428,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
-    expect(comments[1]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments.some((comment) => comment.body.includes(
+      "Latest retry failure: `adapter_failed` - adapter failed while retrying recovery issue.",
+    ))).toBe(true);
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {

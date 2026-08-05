@@ -306,9 +306,23 @@ function readNonEmptyString(value: unknown): string | null {
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
-  if (readNonEmptyString(run.error) || readNonEmptyString(run.errorCode)) {
-    return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
-  }
+  const errorCode = readNonEmptyString(run.errorCode)?.trim() ?? null;
+  const rawError = readNonEmptyString(run.error);
+  const safeError = rawError ? redactSensitiveText(rawError).trim() : null;
+  const apiMessageMatch = safeError?.match(/"message"\s*:\s*"([^"]+)"/);
+  const firstLine = safeError
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? null;
+  const summarySource = apiMessageMatch?.[1] ?? firstLine;
+  const summary =
+    summarySource && summarySource.length > 240
+      ? `${summarySource.slice(0, 237)}...`
+      : summarySource;
+
+  if (errorCode && summary) return ` Latest retry failure: \`${errorCode}\` - ${summary}.`;
+  if (errorCode) return ` Latest retry failure: \`${errorCode}\`.`;
+  if (summary) return ` Latest retry failure: ${summary}.`;
   return null;
 }
 
