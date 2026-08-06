@@ -26,7 +26,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
-import { logger } from "./middleware/logger.js";
+import { logger, rateLimitedError } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -581,9 +581,13 @@ export async function startServer(): Promise<StartedServer> {
           if (result.enqueued > 0) {
             logger.info({ ...result }, "heartbeat timer tick enqueued runs");
           }
+          rateLimitedError.success("heartbeat timer tick");
         })
         .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
+          const logged = rateLimitedError.error(err, "heartbeat timer tick failed");
+          if (!logged) {
+            rateLimitedError.recordFailure("heartbeat timer tick failed");
+          }
         });
 
       void routines
@@ -592,18 +596,25 @@ export async function startServer(): Promise<StartedServer> {
           if (result.triggered > 0) {
             logger.info({ ...result }, "routine scheduler tick enqueued runs");
           }
+          rateLimitedError.success("routine scheduler tick");
         })
         .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
+          const logged = rateLimitedError.error(err, "routine scheduler tick failed");
+          if (!logged) {
+            rateLimitedError.recordFailure("routine scheduler tick failed");
+          }
         });
-  
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
+          const logged = rateLimitedError.error(err, "periodic heartbeat recovery failed");
+          if (!logged) {
+            rateLimitedError.recordFailure("periodic heartbeat recovery failed");
+          }
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

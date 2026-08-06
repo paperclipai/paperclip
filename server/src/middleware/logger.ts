@@ -43,6 +43,62 @@ export const logger = pino({
   ],
 }));
 
+/**
+ * Rate-limited error logger for recurring background tasks.
+ *
+ * Prevents log flooding when a recurring operation (e.g., heartbeat timer tick)
+ * fails repeatedly due to an external dependency being unavailable.
+ *
+ * Behaviour:
+ * - Logs the first error immediately (with full details).
+ * - Subsequent errors with the same key are suppressed until
+ *   `cooldownMs` has elapsed since the last log.
+ * - When a previously-failing operation succeeds, the counter resets.
+ * - Returns `true` when the error was actually logged.
+ */
+function createRateLimitedErrorLogger() {
+  const lastLoggedBy = new Map<string, number>();
+  const failureCountBy = new Map<string, number>();
+  const cooldownMs = 5 * 60 * 1000; // 5 minutes
+
+  const rle = {
+    error(err: unknown, msg: string) {
+      const now = Date.now();
+      const lastLogged = lastLoggedBy.get(msg) ?? 0;
+      const shouldLog = (now - lastLogged) >= cooldownMs;
+
+      if (shouldLog) {
+        lastLoggedBy.set(msg, now);
+        failureCountBy.set(msg, 0);
+        logger.error({ err }, msg);
+        return true;
+      }
+      return false;
+    },
+
+    success(msg: string) {
+      const count = failureCountBy.get(msg) ?? 0;
+      if (count > 0) {
+        logger.info({ suppressedErrors: count }, `${msg}: recovered`);
+        failureCountBy.set(msg, 0);
+      }
+    },
+
+    recordFailure(msg: string) {
+      failureCountBy.set(msg, (failureCountBy.get(msg) ?? 0) + 1);
+    },
+
+    reset() {
+      lastLoggedBy.clear();
+      failureCountBy.clear();
+    },
+  };
+
+  return rle;
+}
+
+export const rateLimitedError = createRateLimitedErrorLogger();
+
 export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
