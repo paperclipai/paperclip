@@ -5696,6 +5696,11 @@ export function recoveryService(
       cleared: 0,
       issueIds: [] as string[],
       terminalizedRunIds: [] as string[],
+      // ADR-0001 Fix D-obs (VIR-296): zombie references detected before
+      // cleanup. Each entry is one (issueId, runId) pair whose run is
+      // terminal/missing — the team consumes these in the periodic sweep
+      // logger.warn so they see zombies before the next heartbeat wedges.
+      zombieRefs: [] as Array<{ issueId: string; runId: string; runStatus: string | null }>,
     };
 
     const candidates = await db
@@ -5787,6 +5792,44 @@ export function recoveryService(
       return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
     };
 
+    // ADR-0001 Fix D-obs (VIR-296): emit a structured WARN log per issue whose
+    // `executionRunId`/`checkoutRunId` references a heartbeat run whose status
+    // is terminal (failed/cancelled/timed_out/etc) or whose row is missing.
+    // This is the "zombie detector" — the team sees zombies before the next
+    // heartbeat wedges on a 409. Logged BEFORE the cleanup runs so the WARN is
+    // emitted even if the cleanup UPDATE races a concurrent adoption and does
+    // not actually clear the lock.
+    for (const issue of candidates) {
+      const refs: Array<{ runId: string; status: string | null }> = [];
+      if (issue.executionRunId) {
+        const status = runStatusById.get(issue.executionRunId) ?? null;
+        if (isCleanable(issue.executionRunId)) refs.push({ runId: issue.executionRunId, status });
+      }
+      if (issue.checkoutRunId && issue.checkoutRunId !== issue.executionRunId) {
+        const status = runStatusById.get(issue.checkoutRunId) ?? null;
+        if (isCleanable(issue.checkoutRunId)) refs.push({ runId: issue.checkoutRunId, status });
+      }
+      for (const ref of refs) {
+        const entry = {
+          issueId: issue.id,
+          runId: ref.runId,
+          runStatus: ref.status,
+        };
+        result.zombieRefs.push(entry);
+        logger.warn(
+          {
+            event: "zombie_executionRunId_detected",
+            issueId: issue.id,
+            runId: ref.runId,
+            runStatus: ref.status,
+            companyId: issue.companyId,
+            source: "recovery.sweepStaleIssueLocks",
+          },
+          "zombie executionRunId/checkoutRunId reference detected before cleanup",
+        );
+      }
+    }
+
     for (const issue of candidates) {
       if (
         !isCleanable(issue.checkoutRunId) ||
@@ -5849,6 +5892,20 @@ export function recoveryService(
           terminalizedRunIds: result.terminalizedRunIds,
         },
         "swept stale issue lock columns",
+      );
+    }
+
+    // ADR-0001 Fix D-obs (VIR-296): summary-level WARN so dashboards can
+    // alert on counts >0 without scraping per-issue logs above.
+    if (result.zombieRefs.length > 0) {
+      logger.warn(
+        {
+          event: "zombie_executionRunId_count",
+          zombieCount: result.zombieRefs.length,
+          issueIds: result.zombieRefs.map((z) => z.issueId),
+          runIds: result.zombieRefs.map((z) => z.runId),
+        },
+        "zombie executionRunId/checkoutRunId references seen during stale-issue-lock sweep",
       );
     }
 

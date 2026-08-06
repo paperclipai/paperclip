@@ -101,6 +101,10 @@ import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
+  isRunHandleLost,
+  type RunHandleLostInput,
+} from "./run-handle-registry.js";
+import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
@@ -6482,9 +6486,124 @@ async function countBlockedInboxIssues(
   }, 0);
 }
 
-export function issueService(db: Db) {
+export type IssueServiceDeps = {
+  /**
+   * Best-effort transition of a heartbeat run from `running` to
+   * `failed`/`process_lost`. Injected by `heartbeatService` (which owns the
+   * full `setRunStatus` path: live-event publish + runtime-status clear +
+   * plugin-domain event). When absent (e.g. construction without a heartbeat
+   * partner), the issue ownership recovery path falls back to a direct
+   * best-effort UPDATE so the ADR-0001 Fix A self-heal still works in tests.
+   *
+   * Resolves to `true` when the run row was transitioned to a terminal
+   * status, `false` otherwise (already terminal, racing, or missing).
+   *
+   * See ADR-0001 (VIR-295 / VIR-296) for the design rationale.
+   */
+  markRunFailedProcessLost?: (runId: string, errorMessage: string) => Promise<boolean>;
+};
+
+export function issueService(db: Db, deps: IssueServiceDeps = {}) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const markRunFailedProcessLost = deps.markRunFailedProcessLost ?? (async (runId: string, errorMessage: string) => {
+    // Direct best-effort fallback used when no heartbeat partner injected the
+    // full `setRunStatus` path. Only marks the row terminal; the reaper and
+    // the periodic sweepStaleIssueLocks will pick up side effects later.
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: errorMessage,
+        errorCode: "process_lost",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          notInArray(heartbeatRuns.status, [
+            "succeeded",
+            "interrupted",
+            "failed",
+            "cancelled",
+            "timed_out",
+          ]),
+        ),
+      )
+      .returning({ id: heartbeatRuns.id })
+      .then((rows) => rows[0] ?? null);
+    return Boolean(updated);
+  });
+
+  /**
+   * ADR-0001 Fix A — detect a heartbeat run whose DB row still claims
+   * `running` but whose process handle is lost (no in-memory supervision +
+   * dead PID/group) and force it to `failed`/`process_lost` so the existing
+   * `clearExecutionRunIfTerminal`/`clearCheckoutRunIfTerminal`/adoption paths
+   * take over. Returns the new `heartbeatRunIsTerminalOrMissing` verdict so
+   * callers can branch the same way they would for a long-dead run.
+   */
+  async function promoteLostRunningRunToTerminalIfNeeded(runId: string): Promise<boolean> {
+    // Look up the run + adapter type (joined for the PID/group tracked check).
+    const row = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
+        adapterType: agents.adapterType,
+      })
+      .from(heartbeatRuns)
+      .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return true; // missing run row → already "terminal/missing"
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(row.status)) return true;
+    if (row.status !== "running") return false; // queued/etc → do not touch
+
+    const lost = isRunHandleLost({
+      runId: row.id,
+      adapterType: row.adapterType,
+      processPid: row.processPid,
+      processGroupId: row.processGroupId,
+    } satisfies RunHandleLostInput);
+    if (!lost) return false;
+
+    const errorMessage = "Process lost -- child process handle no longer reachable; ownership recovery promoted run to failed (ADR-0001 Fix A)";
+    let transitioned = false;
+    try {
+      transitioned = await markRunFailedProcessLost(row.id, errorMessage);
+    } catch (err) {
+      // Never let the recovery path itself throw the mutate-path into a 500:
+      // log and proceed (the existing terminal path may still handle it, or
+      // the reaper will on the next tick).
+      logger.warn(
+        {
+          runId: row.id,
+          issueRunId: runId,
+          err: err instanceof Error ? { message: err.message } : String(err),
+        },
+        "ADR-0001 Fix A: markRunFailedProcessLost raised; falling back to existing ownership path",
+      );
+      return false;
+    }
+    if (transitioned) {
+      logger.warn(
+        {
+          event: "run_liveness_invalidated",
+          issueRunId: runId,
+          runId: row.id,
+          cause: "stale_running_handle_lost",
+          errorCode: "process_lost",
+        },
+        "ownership recovery promoted stale running run to failed (ADR-0001 Fix A)",
+      );
+    }
+    return transitioned;
+  }
+
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -7541,7 +7660,23 @@ export function issueService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) {
+        // ADR-0001 Fix A (VIR-296): the run row still says non-terminal, but
+        // the control plane may have lost the in-memory handle to it
+        // (process_lost from the adapter, before the scheduler reap marks the
+        // row failed). Detect that "zombie running" state and promote the run
+        // to `failed`/`process_lost` so the terminal-clear branch below can
+        // take over. We log the recovery so the failure path stays observable
+        // (no silent bypass of ownership). See ADR-0001 in VIR-295.
+        const promoted = await promoteLostRunningRunToTerminalIfNeeded(issue.executionRunId);
+        if (!promoted) return false;
+        const recheck = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.executionRunId))
+          .then((rows) => rows[0] ?? null);
+        if (recheck && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(recheck.status)) return false;
+      }
 
       const updated = await tx
         .update(issues)
@@ -7592,7 +7727,16 @@ export function issueService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) {
+        const promoted = await promoteLostRunningRunToTerminalIfNeeded(issue.checkoutRunId);
+        if (!promoted) return false;
+        const recheck = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+        if (recheck && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(recheck.status)) return false;
+      }
 
       if (
         issue.executionRunId &&
@@ -7606,11 +7750,19 @@ export function issueService(db: Db) {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (
-          executionRun &&
-          !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
-        )
-          return false;
+        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) {
+          // ADR-0001 Fix A (VIR-296): same zombie-running promotion as above,
+          // applied to the bundled executionRunId when it differs from the
+          // checkoutRunId.
+          const promoted = await promoteLostRunningRunToTerminalIfNeeded(issue.executionRunId);
+          if (!promoted) return false;
+          const recheck = await tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, issue.executionRunId))
+            .then((rows) => rows[0] ?? null);
+          if (recheck && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(recheck.status)) return false;
+        }
       }
 
       const updated = await tx
