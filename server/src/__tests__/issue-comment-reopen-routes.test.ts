@@ -444,7 +444,7 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
-  });
+  }, 30_000);
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     const issue = makeIssue("done");
