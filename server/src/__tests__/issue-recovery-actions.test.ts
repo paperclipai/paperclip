@@ -411,6 +411,18 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       maxAttempts: 3,
       wakePolicy: { type: "board_escalation", reason: "no_invokable_recovery_owner" },
     });
+    // TSMC-20155/20183 (Path A): a no_invokable_recovery_owner board hand-off must
+    // carry a board-visible receipt, not a silent NULL recovery_issue_id.
+    expect(firstAction.recoveryIssueId).toBeTruthy();
+    const [firstBoardReceipt] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, firstAction.recoveryIssueId!));
+    expect(firstBoardReceipt).toMatchObject({
+      assigneeAgentId: null,
+      originKind: "recovery_loop_cap_escalation",
+    });
+    expect(firstBoardReceipt.title).toContain("No invokable recovery owner");
     expect(actionWakeCalls(enqueueWakeup)).toHaveLength(0);
 
     await db
@@ -2549,5 +2561,147 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // Three priors + one active capped action (still only one active).
     expect(allForKind.filter((row) => row.status === "active" || row.status === "escalated")).toHaveLength(1);
     expect(allForKind.length).toBe(4);
+  });
+
+  it("backfills board-visible receipts for existing null-receipt board actions (both kinds), idempotently", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+
+    // A second source for the liveness row so the two receipts are independent.
+    const livenessSourceId = randomUUID();
+    await db.insert(issues).values({
+      id: livenessSourceId,
+      companyId,
+      title: "Blocked liveness leaf",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${sourceIssue.identifier?.split("-")[0] ?? "RA"}-2`,
+    });
+
+    const strandedActionId = randomUUID();
+    const livenessActionId = randomUUID();
+    const now = new Date("2026-08-06T00:00:00.000Z");
+    const incidentKey = `harness_liveness:${companyId}:${livenessSourceId}:blocked_by_uninvokable_assignee:${livenessSourceId}`;
+
+    // Insert the two silent board escalations directly, exactly as the historical
+    // (pre-fix) writers left them: owner_type='board', recovery_issue_id NULL. Raw
+    // inserts bypass the (now broadened) write-boundary guard on purpose — these
+    // rows already exist in production and the backfill must be able to repair them.
+    await db.insert(issueRecoveryActions).values([
+      {
+        id: strandedActionId,
+        companyId,
+        sourceIssueId,
+        recoveryIssueId: null,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "board",
+        ownerAgentId: null,
+        cause: "stranded_assigned_issue",
+        fingerprint: `stranded:${strandedActionId}`,
+        evidence: {},
+        nextAction: "Restore a live execution path.",
+        wakePolicy: { type: "board_escalation", reason: "no_invokable_recovery_owner" },
+        attemptCount: 1,
+        maxAttempts: 3,
+        lastAttemptAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: livenessActionId,
+        companyId,
+        sourceIssueId: livenessSourceId,
+        recoveryIssueId: null,
+        kind: "issue_graph_liveness",
+        status: "escalated",
+        ownerType: "board",
+        ownerAgentId: null,
+        cause: "issue_graph_liveness:blocked_by_uninvokable_assignee",
+        fingerprint: `liveness:${livenessActionId}`,
+        evidence: {
+          incidentKey,
+          state: "blocked_by_uninvokable_assignee",
+          cappedAtAttempts: 3,
+        },
+        nextAction: "Manual intervention required.",
+        attemptCount: 3,
+        maxAttempts: 3,
+        lastAttemptAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const first = await recovery.backfillBoardOwnedRecoveryReceipts();
+    expect(first.scanned).toBe(2);
+    expect(first.linked).toBe(2);
+    expect(first.linkedByKind).toMatchObject({
+      stranded_assigned_issue: 1,
+      issue_graph_liveness: 1,
+    });
+
+    const [strandedAfter] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, strandedActionId));
+    const [livenessAfter] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, livenessActionId));
+    expect(strandedAfter!.recoveryIssueId).toBeTruthy();
+    expect(livenessAfter!.recoveryIssueId).toBeTruthy();
+
+    // Both receipts are board-owned (unassigned), board-visible issues.
+    const [strandedReceipt] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, strandedAfter!.recoveryIssueId!));
+    const [livenessReceipt] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, livenessAfter!.recoveryIssueId!));
+    expect(strandedReceipt).toMatchObject({
+      assigneeAgentId: null,
+      originKind: "recovery_loop_cap_escalation",
+    });
+    expect(livenessReceipt).toMatchObject({
+      assigneeAgentId: null,
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+    });
+
+    // Invariant: no board-owned action retains a NULL receipt anymore.
+    const remainingNull = await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.ownerType, "board"),
+      ));
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.ownerType, "board"),
+      ));
+    expect(remainingNull.length).toBe(2);
+    expect(rows.every((r) => r.recoveryIssueId !== null)).toBe(true);
+
+    // Idempotent: a second pass links nothing new and reuses the same receipts.
+    const second = await recovery.backfillBoardOwnedRecoveryReceipts();
+    expect(second.scanned).toBe(0);
+    expect(second.linked).toBe(0);
+
+    const [strandedFinal] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, strandedActionId));
+    expect(strandedFinal!.recoveryIssueId).toBe(strandedAfter!.recoveryIssueId);
   });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -1304,6 +1304,29 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       ownerAgentId: null,
       attemptCount: 3,
     });
+    // TSMC-20155/20183 (Path B): a capped liveness escalation is a board hand-off,
+    // so it must carry a board-visible receipt rather than a silent NULL. The prior
+    // escalation was marked done, so the capped branch mints a fresh board-owned
+    // receipt and links the action to it.
+    expect(cappedAction!.recoveryIssueId).toBeTruthy();
+    const [cappedReceipt] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, cappedAction!.recoveryIssueId!));
+    expect(cappedReceipt).toMatchObject({
+      originKind: "harness_liveness_escalation",
+      assigneeAgentId: null,
+    });
+    expect(["todo", "in_progress", "blocked"]).toContain(cappedReceipt!.status);
+    // The source is now first-class blocked by the board receipt (relation-level).
+    const cappedBlockRelations = await db
+      .select({ issueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+        eq(issueRelations.type, "blocks"),
+      ));
+    expect(cappedBlockRelations.map((r) => r.issueId)).toContain(cappedAction!.recoveryIssueId);
 
     const sourceComments = await db
       .select({ body: issueComments.body })
@@ -1311,9 +1334,26 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueComments.issueId, blockedIssueId));
     expect(sourceComments.filter((comment) => comment.body.includes("stopped automatic liveness retry creation"))).toHaveLength(1);
 
+    // Second capped tick reuses the same board receipt (existing branch) instead of
+    // re-minting; it neither creates a new escalation nor re-comments.
     const secondCappedRetry = await heartbeat.reconcileIssueGraphLiveness();
     expect(secondCappedRetry.escalationsCreated).toBe(0);
-    expect(secondCappedRetry.skippedRateLimited).toBe(1);
+
+    const [reusedAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, activeAction!.id));
+    expect(reusedAction!.recoveryIssueId).toBe(cappedAction!.recoveryIssueId);
+
+    const liveEscalations = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "harness_liveness_escalation"),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+    expect(liveEscalations).toHaveLength(1);
 
     const commentsAfterSecondCap = await db
       .select({ body: issueComments.body })

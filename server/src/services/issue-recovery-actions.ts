@@ -102,14 +102,15 @@ function assertBoardOwnedActionHasArtifact(input: UpsertIssueRecoveryActionInput
   // there is a durable, board-visible issue carrying the requested action.
   // Keep this at the write boundary so a new caller cannot recreate the
   // owner-without-receipt state that made capped recoveries invisible.
-  // `recovery_loop_cap` is the only board hand-off created through this
-  // source-scoped writer. Legacy no-invokable-owner actions are repaired by
-  // their existing liveness path and retain their compatibility contract.
-  if (
-    ownerType === "board" &&
-    input.wakePolicy?.reason === "recovery_loop_cap" &&
-    !input.recoveryIssueId
-  ) {
+  //
+  // INVARIANT (TSMC-20155/20183): ANY board-owned write MUST carry a linked
+  // recovery issue. TSMC-19842 scoped this to `recovery_loop_cap` only, on the
+  // assumption that the no-invokable-owner and issue-graph-liveness capped
+  // branches were repaired by their existing paths. They were not — both minted
+  // silent owner_type='board' + recovery_issue_id NULL rows (the inverse
+  // stranded-recovery class). Those writers now supply a receipt; this backstop
+  // enforces the invariant for every board write so the class cannot regress.
+  if (ownerType === "board" && !input.recoveryIssueId) {
     throw new Error(
       `Board-owned recovery action for source issue ${input.sourceIssueId} requires a linked recovery issue`,
     );

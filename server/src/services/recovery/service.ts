@@ -3632,7 +3632,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     kind: string;
     recoveryCause: StrandedRecoveryCause;
     priorActionCount: number;
+    // TSMC-20155/20183: the same signature-scoped board card carries both the
+    // loop-cap hand-off and the no_invokable_recovery_owner hand-off. Default to
+    // the historical reason so existing callers are unchanged; the title/body
+    // reflect the actual reason so a pre-cap escalation is not mislabelled.
+    escalationReason?: "recovery_loop_cap" | "no_invokable_recovery_owner";
   }) {
+    const escalationReason = input.escalationReason ?? "recovery_loop_cap";
     const originId = `${input.kind}:${input.recoveryCause}`;
     const existing = await db
       .select()
@@ -3649,23 +3655,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (existing) return existing;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const title = escalationReason === "no_invokable_recovery_owner"
+      ? `BOARD ACTION REQUIRED: No invokable recovery owner — ${input.recoveryCause}`
+      : `BOARD ACTION REQUIRED: Recovery loop cap reached — ${input.recoveryCause}`;
+    const summaryLine = escalationReason === "no_invokable_recovery_owner"
+      ? "Automatic recovery has no invokable owner to dispatch and has escalated to the board."
+      : "Automatic recovery has stopped after the same exit signature repeatedly failed.";
     return issuesSvc.create(input.issue.companyId, {
-      title: `BOARD ACTION REQUIRED: Recovery loop cap reached — ${input.recoveryCause}`,
+      title,
       description: [
-        "Automatic recovery has stopped after the same exit signature repeatedly failed.",
+        summaryLine,
         "",
         "## Root signature",
         "",
+        `- Escalation reason: \`${escalationReason}\``,
         `- Recovery kind: \`${input.kind}\``,
         `- Recovery cause: \`${input.recoveryCause}\``,
-        `- Cap: ${MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND} prior actions`,
+        ...(escalationReason === "recovery_loop_cap"
+          ? [`- Cap: ${MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND} prior actions`]
+          : []),
         `- First source observed: ${issueUiLink(input.issue, prefix)}`,
         `- Prior actions on that source: ${input.priorActionCount}`,
         "",
         "## Required board action",
         "",
         "- Assign an invokable owner for the underlying runtime/exit-path defect, or record an intentional manual resolution.",
-        "- This is a single root escalation; additional capped sources with the same signature link here rather than creating more board cards.",
+        "- This is a single root escalation; additional sources with the same signature link here rather than creating more board cards.",
       ].join("\n"),
       status: "todo",
       priority: "critical",
@@ -3724,12 +3739,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const recoveryLoopCapExceeded = priorActionCount >= MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND;
     const ownerAgentId = recoveryLoopCapExceeded ? null : routing.ownerAgentId;
-    const recoveryIssueId = recoveryLoopCapExceeded
+    // Resolve the eventual ownerType up front so any board hand-off is given a
+    // board-visible receipt BEFORE the row is written. A board owner is not an
+    // execution destination; without a linked recovery issue the source goes
+    // silent. TSMC-19842 minted the receipt only on the loop-cap branch, leaving
+    // the no_invokable_recovery_owner branch (loop cap NOT yet exceeded but no
+    // routable owner) writing owner_type='board' with recovery_issue_id NULL —
+    // the inverse stranded-recovery class (TSMC-20155/20183). Cover both here.
+    const resolvedOwnerType = recoveryCause === "provider_quota" && !ownerAgentId
+      ? "system"
+      : ownerAgentId
+        ? "agent"
+        : "board";
+    const needsBoardReceipt = recoveryLoopCapExceeded || resolvedOwnerType === "board";
+    const recoveryIssueId = needsBoardReceipt
       ? (await ensureRecoveryLoopCapEscalationIssue({
         issue: input.issue,
         kind: strandedRecoveryActionKind(recoveryCause),
         recoveryCause,
         priorActionCount,
+        escalationReason: recoveryLoopCapExceeded
+          ? "recovery_loop_cap"
+          : "no_invokable_recovery_owner",
       })).id
       : null;
     if (recoveryLoopCapExceeded) {
@@ -3753,7 +3784,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       sourceIssueId: input.issue.id,
       recoveryIssueId,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: recoveryCause === "provider_quota" && !ownerAgentId ? "system" : ownerAgentId ? "agent" : "board",
+      ownerType: resolvedOwnerType,
       ownerAgentId,
       previousOwnerAgentId: input.issue.assigneeAgentId,
       returnOwnerAgentId: routing.returnOwnerAgentId,
@@ -6430,6 +6461,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  // TSMC-20155/20183: reuse an open liveness escalation that shares the coarser
+  // leaf fingerprint (company+state+leaf) even when the incidentKey differs, so a
+  // backfill/receipt write does not collide on issues_active_liveness_recovery_leaf_uq.
+  async function findOpenLivenessEscalationByLeafFingerprint(companyId: string, leafFingerprint: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originFingerprint, leafFingerprint),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findOpenLivenessRecoveryIssueForLeaf(finding: IssueLivenessFinding) {
     const byFingerprint = await db
       .select()
@@ -6979,6 +7030,58 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  // TSMC-20155/20183: mint (or reuse) a BOARD-visible receipt issue for a capped
+  // liveness incident. The normal escalation path (createIssueGraphLivenessEscalation)
+  // only runs when an invokable owner exists; the attempt-cap branch has none, so it
+  // handed the issue to the board with recovery_issue_id NULL — a silent escalation.
+  // This creates a board-owned (unassigned) escalation issue deduped on the same
+  // incidentKey/leaf-fingerprint keys the reconcile loop already uses, so the next
+  // tick reuses it via findOpenLivenessEscalation instead of duplicating.
+  async function ensureLivenessBoardEscalationIssue(input: {
+    issue: typeof issues.$inferSelect;
+    finding: IssueLivenessFinding;
+    recoveryIssue: typeof issues.$inferSelect;
+  }) {
+    const existing =
+      await findOpenLivenessEscalation(input.issue.companyId, input.finding.incidentKey) ??
+      await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+    if (existing) return existing;
+
+    try {
+      return await issuesSvc.create(input.issue.companyId, {
+        title: `BOARD ACTION REQUIRED: Liveness incident needs a human owner — ${input.issue.identifier ?? input.issue.id}`,
+        description: [
+          buildLivenessEscalationDescription(input.finding),
+          "",
+          "## Board escalation",
+          "",
+          `- Automatic liveness retries were exhausted after ${ISSUE_GRAPH_LIVENESS_MAX_ATTEMPTS} attempts with no invokable recovery owner.`,
+          "- This card is the board-visible receipt for that capped escalation; assign an invokable owner or record an intentional manual resolution.",
+        ].join("\n"),
+        status: "todo",
+        priority: "high",
+        parentId: input.recoveryIssue.id,
+        projectId: input.recoveryIssue.projectId,
+        goalId: input.recoveryIssue.goalId,
+        assigneeAgentId: null,
+        originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+        originId: input.finding.incidentKey,
+        originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
+        billingCode: input.recoveryIssue.billingCode,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+      });
+    } catch (error) {
+      if (!isUniqueLivenessRecoveryConflict(error)) throw error;
+      const raced =
+        await findOpenLivenessEscalation(input.issue.companyId, input.finding.incidentKey) ??
+        await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+      if (!raced) throw error;
+      return raced;
+    }
+  }
+
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
     runId?: string | null;
@@ -7057,12 +7160,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (latestRecoveryAction) {
       const maxAttempts = latestRecoveryAction.maxAttempts ?? ISSUE_GRAPH_LIVENESS_MAX_ATTEMPTS;
       if (latestRecoveryAction.attemptCount >= maxAttempts) {
+        // TSMC-20155/20183: a capped liveness escalation is a board hand-off. The
+        // upsert below and the throttle that follows previously wrote
+        // owner_type='board' with recovery_issue_id NULL — a silent escalation the
+        // Operator Console / first-class wait path cannot surface (the inverse
+        // stranded-recovery class). Mint (or reuse) a board-visible receipt issue
+        // BEFORE the upsert so both the durable action and the throttle carry a
+        // non-null recovery_issue_id, and block the source by it so the wait is
+        // first-class.
+        const boardEscalation = await ensureLivenessBoardEscalationIssue({
+          issue,
+          finding: input.finding,
+          recoveryIssue,
+        });
         const durableAction = activeRecoveryAction?.kind === "issue_graph_liveness"
           ? activeRecoveryAction
           : await recoveryActionsSvc.upsertSourceScoped({
             companyId: issue.companyId,
             sourceIssueId: issue.id,
-            recoveryIssueId: null,
+            recoveryIssueId: boardEscalation.id,
             kind: "issue_graph_liveness",
             ownerType: "board",
             ownerAgentId: null,
@@ -7073,6 +7189,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               state: input.finding.state,
               dependencyPath: input.finding.dependencyPath,
               cappedAtAttempts: maxAttempts,
+              openEscalationIssueId: boardEscalation.id,
             },
             nextAction:
               `Manual intervention required. Automatic liveness retries stopped after ${maxAttempts} attempts for ${input.finding.incidentKey}.`,
@@ -7085,7 +7202,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         await ensureLivenessNeedsHumanThrottle({
           finding: input.finding,
           actionId: durableAction.id,
-          currentRecoveryIssueId: durableAction.recoveryIssueId ?? null,
+          // Always propagate the freshly ensured OPEN board receipt. Reaching the
+          // capped branch means findOpenLivenessEscalation returned null, so any
+          // pre-existing durableAction.recoveryIssueId points at a done/cancelled
+          // escalation (stale) and must not be preserved (TSMC-20155/20183).
+          currentRecoveryIssueId: boardEscalation.id,
+          runId: input.runId ?? null,
+        });
+        await ensureIssueBlockedByEscalation({
+          issue,
+          escalationIssueId: boardEscalation.id,
+          finding: input.finding,
           runId: input.runId ?? null,
         });
         return { kind: "capped" as const };
@@ -8145,6 +8272,175 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  /**
+   * TSMC-20155/20183 ONE-TIME BACKFILL (idempotent, all companies).
+   *
+   * The two board-escalation writers above (Path A: no_invokable_recovery_owner;
+   * Path B: liveness attempt-cap) historically minted owner_type='board' rows with
+   * recovery_issue_id NULL — silent board escalations the Operator Console / first
+   * class wait path cannot surface (the inverse stranded-recovery class). The code
+   * fix stops NEW ones; this clears the EXISTING stock by minting/linking a
+   * board-visible receipt for each, using the SAME dedup keys the live paths use so
+   * a subsequent reconcile tick reuses (not duplicates) them.
+   *
+   * Idempotent: the query only matches rows still lacking a receipt, and the
+   * ensure/find helpers reuse an open escalation for the incident/signature, so
+   * re-running is a no-op. Safe to run repeatedly and across all companies.
+   */
+  async function backfillBoardOwnedRecoveryReceipts(opts?: {
+    companyId?: string;
+    limit?: number;
+  }) {
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.ownerType, "board"),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        isNull(issueRecoveryActions.recoveryIssueId),
+        ...(opts?.companyId ? [eq(issueRecoveryActions.companyId, opts.companyId)] : []),
+      ))
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(opts?.limit ?? 500);
+
+    const result = {
+      scanned: rows.length,
+      linked: 0,
+      skipped: 0,
+      linkedByKind: {} as Record<string, number>,
+      links: [] as { actionId: string; sourceIssueId: string; kind: string; recoveryIssueId: string }[],
+    };
+
+    for (const action of rows) {
+      const [sourceIssue] = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, action.companyId), eq(issues.id, action.sourceIssueId)))
+        .limit(1);
+      if (!sourceIssue) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const evidence = parseObject(action.evidence);
+      const incidentKey = readNonEmptyString(evidence.incidentKey);
+      let receiptId: string | null = null;
+
+      if (action.kind === "issue_graph_liveness" && incidentKey) {
+        const parsed = parseIssueGraphLivenessIncidentKey(incidentKey);
+        const state = readNonEmptyString(evidence.state) ?? parsed?.state ?? "unknown";
+        const leafIssueId = parsed?.leafIssueId ?? sourceIssue.id;
+        const leafFingerprint = buildIssueGraphLivenessLeafKey({
+          companyId: action.companyId,
+          state,
+          leafIssueId,
+        });
+        // Dedup on BOTH keys the platform's two partial-unique liveness indexes
+        // enforce: the exact incidentKey AND the coarser leaf fingerprint
+        // (company+state+leaf). A different incident sharing the same leaf already
+        // has an open escalation; reuse it rather than colliding on the leaf index.
+        const findOpenReceipt = async () =>
+          (await findOpenLivenessEscalation(action.companyId, incidentKey)) ??
+          (await findOpenLivenessEscalationByLeafFingerprint(action.companyId, leafFingerprint));
+        const existing = await findOpenReceipt();
+        if (existing) {
+          receiptId = existing.id;
+        } else {
+          try {
+            const created = await issuesSvc.create(action.companyId, {
+              title: `BOARD ACTION REQUIRED: Liveness incident needs a human owner — ${sourceIssue.identifier ?? sourceIssue.id}`,
+              description: [
+                "Automatic liveness retries were exhausted with no invokable recovery owner; this incident was handed to the board.",
+                "",
+                "## Root signature",
+                "",
+                `- Incident key: \`${incidentKey}\``,
+                `- Detected invariant: \`${state}\``,
+                `- Source issue: ${sourceIssue.identifier ?? sourceIssue.id}`,
+                "",
+                "## Required board action",
+                "",
+                "- Assign an invokable owner for the underlying liveness fault, or record an intentional manual resolution.",
+                "- Backfilled receipt for a previously silent board escalation (TSMC-20155/20183).",
+              ].join("\n"),
+              status: "todo",
+              priority: "high",
+              projectId: sourceIssue.projectId,
+              goalId: sourceIssue.goalId,
+              assigneeAgentId: null,
+              originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+              originId: incidentKey,
+              originFingerprint: buildIssueGraphLivenessLeafKey({
+                companyId: action.companyId,
+                state,
+                leafIssueId,
+              }),
+              billingCode: sourceIssue.billingCode,
+              executionWorkspaceId: null,
+              executionWorkspacePreference: null,
+              executionWorkspaceSettings: null,
+            });
+            receiptId = created.id;
+          } catch (error) {
+            if (!isUniqueLivenessRecoveryConflict(error)) throw error;
+            const raced = await findOpenReceipt();
+            if (!raced) throw error;
+            receiptId = raced.id;
+          }
+        }
+      } else {
+        // stranded_assigned_issue and other stranded kinds — reuse the signature
+        // scoped board card. escalationReason follows the row's own wake policy.
+        const escalationReason = readNonEmptyString(parseObject(action.wakePolicy).reason) === "recovery_loop_cap"
+          ? "recovery_loop_cap"
+          : "no_invokable_recovery_owner";
+        const receipt = await ensureRecoveryLoopCapEscalationIssue({
+          issue: sourceIssue,
+          kind: action.kind,
+          recoveryCause: action.cause as StrandedRecoveryCause,
+          priorActionCount: action.attemptCount ?? 0,
+          escalationReason,
+        });
+        receiptId = receipt.id;
+      }
+
+      if (!receiptId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Link idempotently: only stamp rows still lacking a receipt so a concurrent
+      // reconcile that already linked one is not clobbered.
+      const [linked] = await db
+        .update(issueRecoveryActions)
+        .set({ recoveryIssueId: receiptId, updatedAt: new Date() })
+        .where(and(
+          eq(issueRecoveryActions.id, action.id),
+          isNull(issueRecoveryActions.recoveryIssueId),
+        ))
+        .returning({ id: issueRecoveryActions.id });
+
+      if (linked) {
+        result.linked += 1;
+        result.linkedByKind[action.kind] = (result.linkedByKind[action.kind] ?? 0) + 1;
+        result.links.push({
+          actionId: action.id,
+          sourceIssueId: action.sourceIssueId,
+          kind: action.kind,
+          recoveryIssueId: receiptId,
+        });
+      } else {
+        result.skipped += 1;
+      }
+    }
+
+    logger.warn(
+      { scanned: result.scanned, linked: result.linked, skipped: result.skipped, linkedByKind: result.linkedByKind },
+      "backfilled board-owned recovery receipts (TSMC-20155/20183)",
+    );
+    return result;
+  }
+
   return {
     buildRunOutputSilenceBatch,
     buildRunOutputSilence,
@@ -8159,6 +8455,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,
     reconcileIssueGraphLiveness,
+    backfillBoardOwnedRecoveryReceipts,
     readRecoveryTimerIntervalMs,
   };
 }
