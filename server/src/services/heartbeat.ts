@@ -14094,6 +14094,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           && readNonEmptyString(context.interactionStatus) === "accepted"
         )
       : false;
+    const executionResumedWake = readNonEmptyString(context.wakeReason) === "execution_resumed";
     const acceptedPlanWakeRoutingDecision = issueContext
       ? await resolveAcceptedPlanWakeRoutingDecision({
           db,
@@ -14693,7 +14694,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskSessionParams: taskSession?.sessionParamsJson ?? taskSessionDecodedParams,
       configMetadata: sessionConfigMetadata,
       wakeResetReason: wakeSessionResetReason,
-      preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
+      preserveLegacySessionWithoutConfigMetadata: (acceptedPlanContinuationWake || executionResumedWake)
+        && !acceptedPlanWakeRoutingDecision,
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
