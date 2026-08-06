@@ -2439,6 +2439,7 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  sourceScopedIdempotencyOutcome?: { accepted?: boolean };
 }
 
 type UsageTotals = {
@@ -17453,6 +17454,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        // Source-scoped recovery attempts use a stable key for the lifetime of
+        // one unchanged incident. The issue-row lock above serializes competing
+        // recovery scans; rechecking under that lock makes check-and-enqueue
+        // atomic without imposing a global uniqueness rule on every wake type.
+        if (reason === "source_scoped_recovery_action" && opts.idempotencyKey) {
+          const existingRecoveryWake = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existingRecoveryWake) {
+            if (opts.sourceScopedIdempotencyOutcome) {
+              opts.sourceScopedIdempotencyOutcome.accepted = false;
+            }
+            return { kind: "skipped" as const };
+          }
+          if (opts.sourceScopedIdempotencyOutcome) {
+            opts.sourceScopedIdempotencyOutcome.accepted = true;
+          }
         }
 
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {

@@ -182,6 +182,12 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // Stable active incidents keep their attempt identity while still
+      // refreshing volatile routing and evidence. A row that changed state
+      // between the read and update must fail the guarded update and retry.
+      const unchangedActiveFingerprint =
+        existing.status === "active" && existing.fingerprint === input.fingerprint;
+
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -199,7 +205,9 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
+          attemptCount: unchangedActiveFingerprint
+            ? existing.attemptCount
+            : existing.attemptCount + 1,
           maxAttempts: input.maxAttempts ?? null,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,

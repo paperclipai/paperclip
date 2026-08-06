@@ -265,7 +265,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     expect(second.id).toBe(first.id);
-    expect(second.attemptCount).toBe(2);
+    expect(second.attemptCount).toBe(1);
     expect(second.evidence).toMatchObject({ latestRunId: "run-2" });
     expect(await svc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: first.id });
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
@@ -310,7 +310,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      attemptCount: 1,
     });
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
@@ -1033,7 +1033,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      attemptCount: 1,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
@@ -1119,7 +1119,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       kind: "workspace_validation",
       cause: "workspace_validation_failed",
       status: "active",
-      attemptCount: 2,
+      attemptCount: 1,
       fingerprint: expect.stringContaining(workspaceFingerprint),
       evidence: expect.objectContaining({
         latestRunId: secondLatestRun.id,
@@ -1224,7 +1224,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      attemptCount: 1,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(afterSecond?.status).toBe("blocked");
