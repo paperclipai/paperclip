@@ -76,6 +76,7 @@ type InteractionActor = {
   runId?: string | null;
   userId?: string | null;
   systemId?: string | null;
+  reviewVerdictAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -248,6 +249,16 @@ export function resolveInteractionPolicy(args: {
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (!actor.agentId) return;
   if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
+  if (
+    current.kind === "request_confirmation"
+    && current.payload
+    && typeof current.payload === "object"
+    && "toolAction" in current.payload
+    && current.payload.toolAction !== undefined
+  ) {
+    throw forbidden("Tool-action confirmations are always board-only");
+  }
+  if (actor.reviewVerdictAuthorized && isRequestConfirmationLikeKind(current.kind)) return;
   if (current.effectiveResolverPolicy !== "board_or_agents") {
     throw forbidden("This issue-thread interaction is board-only");
   }
@@ -259,15 +270,6 @@ function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor:
   }
   if (current.sourceRunId && current.sourceRunId === actor.runId) {
     throw forbidden("Agents cannot resolve interactions created by the same run");
-  }
-  if (
-    current.kind === "request_confirmation"
-    && current.payload
-    && typeof current.payload === "object"
-    && "toolAction" in current.payload
-    && current.payload.toolAction !== undefined
-  ) {
-    throw forbidden("Tool-action confirmations are always board-only");
   }
 }
 

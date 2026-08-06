@@ -4044,11 +4044,13 @@ export function issueRoutes(
       effectiveResolverPolicy: string;
       addresseeAgentId?: string | null;
       kind: string;
+      status: string;
       payload?: unknown;
     },
   ) {
     if (req.actor.type !== "agent") {
       assertBoard(req);
+      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
       return true;
     }
     const actorAgentId = req.actor.agentId;
@@ -4061,6 +4063,18 @@ export function issueRoutes(
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    const isReviewConfirmationVerdict = isPendingReviewConfirmationVerdict(issue, interaction);
+    const payload = interaction.payload && typeof interaction.payload === "object"
+      ? interaction.payload as { toolAction?: unknown }
+      : null;
+    if (interaction.kind === "request_confirmation" && payload?.toolAction !== undefined) {
+      res.status(403).json({ error: "Tool-action confirmations are always board-only" });
+      return false;
+    }
+    if (isReviewConfirmationVerdict) {
+      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
+      return true;
+    }
     if (interaction.effectiveResolverPolicy !== "board_or_agents") {
       res.status(403).json({ error: "This issue-thread interaction is board-only" });
       return false;
@@ -4077,14 +4091,19 @@ export function issueRoutes(
       res.status(403).json({ error: "Agents cannot resolve interactions created by the same run" });
       return false;
     }
-    const payload = interaction.payload && typeof interaction.payload === "object"
-      ? interaction.payload as { toolAction?: unknown }
-      : null;
-    if (interaction.kind === "request_confirmation" && payload?.toolAction !== undefined) {
-      res.status(403).json({ error: "Tool-action confirmations are always board-only" });
-      return false;
-    }
     return true;
+  }
+
+  function isPendingReviewConfirmationVerdict(
+    issue: { status: string },
+    interaction: { kind: string; status: string },
+  ) {
+    return issue.status === "in_review"
+      && interaction.status === "pending"
+      && (
+        interaction.kind === "request_confirmation"
+        || interaction.kind === "request_checkbox_confirmation"
+      );
   }
 
   async function assertPendingReviewInteractionVerdictAllowed(
@@ -10146,13 +10165,15 @@ export function issueRoutes(
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        ...(actor.actorType === "agent" && isPendingReviewConfirmationVerdict(issue, current)
+          ? { reviewVerdictAuthorized: true }
+          : {}),
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
@@ -10299,13 +10320,15 @@ export function issueRoutes(
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        ...(actor.actorType === "agent" && isPendingReviewConfirmationVerdict(issue, current)
+          ? { reviewVerdictAuthorized: true }
+          : {}),
       });
 
       await logActivity(db, {
@@ -10493,6 +10516,7 @@ export function issueRoutes(
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
+      await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
