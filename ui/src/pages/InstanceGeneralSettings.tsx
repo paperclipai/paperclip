@@ -48,9 +48,12 @@ export function InstanceGeneralSettings() {
 
   const updateGeneralMutation = useMutation({
     mutationFn: instanceSettingsApi.updateGeneral,
-    onSuccess: async () => {
+    onMutate: () => {
       setActionError(null);
       signOutMutation.reset();
+    },
+    onSuccess: async () => {
+      setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
@@ -92,10 +95,11 @@ export function InstanceGeneralSettings() {
 
       {(actionError || signOutMutation.error) && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError
-            ?? (signOutMutation.error instanceof Error
+          {signOutMutation.error
+            ? (signOutMutation.error instanceof Error
               ? signOutMutation.error.message
-              : "Failed to sign out.")}
+              : "Failed to sign out.")
+            : actionError}
         </div>
       )}
 
