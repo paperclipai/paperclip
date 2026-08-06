@@ -298,6 +298,13 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
   const segments = path.split("/").filter(Boolean);
 
   if (segments[0] === "mcp") return denied(method, "/mcp/{*path}");
+  // Top-level (non-/api) surfaces mounted directly on the app. These are
+  // reachable routes, so they are explicitly denied rather than left
+  // undeclared: board keys never reach the MCP gateway protocol, the plugin
+  // UI static asset server, or the public LLM discovery files. Any other
+  // non-/api path stays undeclared and fails closed.
+  if (segments[0] === "_plugins") return denied(method, "/_plugins/{*path}");
+  if (segments[0] === "llms") return denied(method, "/llms/{*path}");
   if (segments[0] !== "api") {
     return declared(method, path, "deny", "undeclared", "none", { concealment: "forbidden" });
   }

@@ -1,69 +1,52 @@
-import fs from "node:fs";
-import path from "node:path";
-import { describe, expect, it } from "vitest";
+import type { Express } from "express";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BOARD_API_KEY_PERMISSION_KEYS } from "@paperclipai/shared";
 import { lookupBoardKeyRoute } from "./board-key-route-registry.js";
+import {
+  BOARD_KEY_ROUTE_INVENTORY,
+  BOARD_KEY_RUNTIME_ROUTE_SURFACES,
+  collectMountedRoutes,
+  installRouteInventoryProbe,
+  inventoryTuple,
+  inventoryTuples,
+  type RuntimeRoute,
+} from "./board-key-route-inventory.js";
 
-const ROUTES_DIR = path.resolve(import.meta.dirname, "../routes");
-const ROUTE_REGISTRATION = /\b(?:router|routes)\.(get|post|put|patch|delete)\s*\(\s*(["'`])([^"'`]+)\2/g;
-const ROUTE_CALL = /\b(?:router|routes)\.(?:get|post|put|patch|delete)\s*\(/g;
-const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
+// The inventory is derived from the real Express router `createApp` mounts, not
+// from source regexes. The probe must be installed before `createApp` builds
+// its routers so Express 5 mount prefixes are recoverable, so the app is built
+// once here and shared across the inventory assertions.
+let app: Express;
+let restoreProbe: () => void;
 
-type InventoriedRoute = { file: string; method: string; path: string };
+beforeAll(async () => {
+  restoreProbe = installRouteInventoryProbe();
+  const { createApp } = await import("../app.js");
+  app = (await createApp({} as never, {
+    uiMode: "none",
+    serverPort: 0,
+    storageService: {} as never,
+    deploymentMode: "local_trusted",
+    deploymentExposure: "private",
+    allowedHostnames: [],
+    bindHost: "127.0.0.1",
+    authReady: true,
+    companyDeletionEnabled: false,
+    // Mount every optionally-gated router so the inventory reflects production.
+    // The Better Auth handler is injected with `app.all(...)`; it is covered by
+    // BOARD_KEY_RUNTIME_ROUTE_SURFACES rather than mounted here.
+    databaseBackupService: { runManualBackup: async () => ({}) },
+    decisionServiceOptions: {} as never,
+  } as never)) as unknown as Express;
+}, 120_000);
 
-function mountedPath(file: string, routePath: string) {
-  const mount = file === "companies.ts"
-    ? "/api/companies"
-    : file === "auth.ts"
-      ? "/api/auth"
-      : file === "health.ts"
-        ? "/api/health"
-        : file === "cloud.ts"
-          ? "/api/cloud"
-          : routePath.startsWith("/mcp")
-            ? ""
-            : "/api";
-  const joined = `${mount}${routePath === "/" ? "" : routePath}` || "/";
-  return joined
-    .replace(/:[A-Za-z][A-Za-z0-9_]*/g, SAMPLE_UUID)
-    .replace(/\{\*[^}]+\}/g, "inventory-tail");
-}
+afterAll(() => {
+  restoreProbe?.();
+});
 
-function inventoryRoutes() {
-  const inventory: InventoriedRoute[] = [];
-  const unsupported: string[] = [];
-  for (const file of fs.readdirSync(ROUTES_DIR).filter((name) => name.endsWith(".ts") && !name.includes(".test."))) {
-    const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
-    const calls = source.match(ROUTE_CALL)?.length ?? 0;
-    let captured = 0;
-    for (const match of source.matchAll(ROUTE_REGISTRATION)) {
-      captured += 1;
-      const routePath = match[3]!;
-      if (routePath.includes("${")) {
-        unsupported.push(`${file}: dynamic template route ${routePath}`);
-        continue;
-      }
-      inventory.push({
-        file,
-        method: match[1]!.toUpperCase(),
-        path: mountedPath(file, routePath),
-      });
-    }
-    // companies.ts has one frozen constant route: COMPANY_IMPORT_ROUTE_PATH.
-    const allowedNonLiteralCalls = file === "companies.ts" ? 1 : 0;
-    if (calls - captured !== allowedNonLiteralCalls) {
-      unsupported.push(`${file}: ${calls - captured} route registration(s) do not use a literal path`);
-    }
-  }
-  inventory.push({ file: "companies.ts", method: "POST", path: "/api/companies/import" });
-  const unique = new Map<string, InventoriedRoute>();
-  const duplicates: InventoriedRoute[] = [];
-  for (const route of inventory) {
-    const key = `${route.method} ${route.path}`;
-    if (unique.has(key)) duplicates.push(route);
-    else unique.set(key, route);
-  }
-  return { inventory: [...unique.values()], unsupported, duplicates };
+function runtimeInventory(extra: readonly RuntimeRoute[] = []): string[] {
+  const routes = [...collectMountedRoutes(app), ...BOARD_KEY_RUNTIME_ROUTE_SURFACES, ...extra];
+  return [...new Set(inventoryTuples(routes).map((entry) => entry.tuple))].sort();
 }
 
 describe("board-key route registry", () => {
@@ -78,28 +61,62 @@ describe("board-key route registry", () => {
     expect(lookupBoardKeyRoute(method, routePath)).toMatchObject({ action, classification });
   });
 
-  it("inventories every checked-in route registration with an explicit policy", () => {
-    const { inventory, unsupported, duplicates } = inventoryRoutes();
-    const undeclared = inventory
-      .map((route) => ({ ...route, metadata: lookupBoardKeyRoute(route.method, route.path) }))
-      .filter((route) => route.metadata.classification === "undeclared");
-    const unsafeDuplicates = duplicates.filter(
-      (route) => lookupBoardKeyRoute(route.method, route.path).classification !== "board_key_denied",
-    );
+  it("enumerates the real createApp route stack, including nested routers", () => {
+    const routes = collectMountedRoutes(app);
+    // Sanity: this is the whole mounted API surface, not a handful of files.
+    expect(routes.length).toBeGreaterThan(500);
+    // Nested routers resolve to fully-qualified paths, not bare sub-paths.
+    const paths = routes.map((route) => route.path);
+    expect(paths).toContain("/api/companies/:companyId/issues");
+    expect(paths.some((path) => path.startsWith("/api/companies/:companyId/skills/:skillId/"))).toBe(true);
+    expect(paths.every((path) => path.startsWith("/api/") || path.startsWith("/_plugins/")
+      || path.startsWith("/llms/") || path.startsWith("/mcp/"))).toBe(true);
+  });
 
-    expect(inventory.length).toBeGreaterThan(500);
-    expect(unsupported).toEqual([]);
-    // cases.ts and pipelines.ts intentionally overlap while both experimental
-    // surfaces are hard-denied. A duplicate on an allowed route is unsafe.
-    expect(unsafeDuplicates).toEqual([]);
-    expect(undeclared).toEqual([]);
-    expect(inventory.map((route) => ({
-      ...route,
-      metadata: lookupBoardKeyRoute(route.method, route.path),
-    }))).toMatchSnapshot();
-    for (const route of inventory) {
-      const { action } = lookupBoardKeyRoute(route.method, route.path);
+  it("declares an explicit policy for every reachable route", () => {
+    const entries = inventoryTuples([
+      ...collectMountedRoutes(app),
+      ...BOARD_KEY_RUNTIME_ROUTE_SURFACES,
+    ]);
+    // Missing metadata: no reachable route may fall through to `undeclared`.
+    const undeclared = entries.filter((entry) => entry.metadata.classification === "undeclared");
+    expect(undeclared.map((entry) => entry.metadata.routePattern)).toEqual([]);
+    // Every action is either an explicit deny or a real board-key permission.
+    for (const entry of entries) {
+      const { action } = entry.metadata;
       expect(action === "deny" || BOARD_API_KEY_PERMISSION_KEYS.includes(action)).toBe(true);
     }
+  });
+
+  it("matches the explicit registry inventory bidirectionally", () => {
+    const runtime = runtimeInventory();
+    const declared = [...new Set(BOARD_KEY_ROUTE_INVENTORY)].sort();
+    // Missing metadata (runtime rows absent from the registry) and stale
+    // metadata (registry rows with no live route) both surface as a set diff.
+    const missing = runtime.filter((tuple) => !declared.includes(tuple));
+    const stale = declared.filter((tuple) => !runtime.includes(tuple));
+    expect({ missing, stale }).toEqual({ missing: [], stale: [] });
+  });
+
+  it("fails when a direct app.post is registered without metadata", () => {
+    // Regression for the PoC: a route added straight onto the app (bypassing the
+    // route modules the old regex scanned) must be seen by the inventory and
+    // must fail the gate as undeclared until it is classified.
+    const before = runtimeInventory();
+    expect(before).toEqual([...new Set(BOARD_KEY_ROUTE_INVENTORY)].sort());
+
+    (app as unknown as { post: (path: string, handler: () => void) => void })
+      .post("/api/security-review-poc", () => {});
+
+    const pocRoute = collectMountedRoutes(app).find((route) => route.path === "/api/security-review-poc");
+    expect(pocRoute).toBeDefined();
+    expect(inventoryTuple("POST", "/api/security-review-poc").metadata.classification).toBe("undeclared");
+
+    const after = runtimeInventory();
+    // The gate now fails: an undeclared row appears that the registry never declared.
+    expect(after).not.toEqual(before);
+    expect(after).toContain("undeclared | deny | /api/security-review-poc");
+    expect(after.filter((tuple) => !BOARD_KEY_ROUTE_INVENTORY.includes(tuple)))
+      .toEqual(["undeclared | deny | /api/security-review-poc"]);
   });
 });
