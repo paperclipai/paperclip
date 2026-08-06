@@ -1130,7 +1130,8 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="in_progress" />
-                <PriorityIcon priority="high" />
+                {/* PAP-411: PriorityIcon hidden behind SHOW_TASK_PRIORITY_UI. */}
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="high" />}
               </>
             }
             identifier="PAP-001"
@@ -1143,7 +1144,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="done" />
-                <PriorityIcon priority="medium" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="medium" />}
               </>
             }
             identifier="PAP-002"
@@ -1156,7 +1157,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="todo" />
-                <PriorityIcon priority="low" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="low" />}
               </>
             }
             identifier="PAP-003"
@@ -1168,7 +1169,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="blocked" />
-                <PriorityIcon priority="critical" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="critical" />}
               </>
             }
             identifier="PAP-004"
@@ -1439,10 +1440,13 @@ export function DesignGuide() {
             <span className="text-xs text-muted-foreground">Status</span>
             <StatusBadge status="active" />
           </div>
-          <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Priority</span>
-            <PriorityIcon priority="high" />
-          </div>
+          {/* PAP-411: priority metadata row hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && (
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-xs text-muted-foreground">Priority</span>
+              <PriorityIcon priority="high" />
+            </div>
+          )}
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
@@ -1510,14 +1514,15 @@ export function DesignGuide() {
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
+            {/* PAP-411: leading PriorityIcon hidden behind SHOW_TASK_PRIORITY_UI. */}
             <EntityRow
-              leading={<PriorityIcon priority="high" />}
+              leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="high" /> : undefined}
               identifier="PAP-101"
               title="Build agent heartbeat system"
               onClick={() => {}}
             />
             <EntityRow
-              leading={<PriorityIcon priority="medium" />}
+              leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="medium" /> : undefined}
               identifier="PAP-102"
               title="Add cost tracking dashboard"
               onClick={() => {}}

@@ -3,7 +3,6 @@ import {
   type CompanySearchSort,
 } from "@paperclipai/shared";
 import type { ParsedSearchQuery } from "./search-query-parser";
-import { SHOW_TASK_PRIORITY_UI } from "./ui-flags";
 
 /**
  * The issue-scoped filter model for /search. This is the SAME shape the query
@@ -137,23 +136,23 @@ export function buildFilterChips(filters: SearchFilters, lookups: FilterChipLook
       },
     });
   }
-  // PAP-411: priority chips suppressed while SHOW_TASK_PRIORITY_UI is off so the
-  // active-filter row stays consistent with the hidden priority controls. The
-  // underlying priority filter DSL is untouched.
-  if (SHOW_TASK_PRIORITY_UI) {
-    for (const priority of filters.priority ?? []) {
-      chips.push({
-        id: `priority:${priority}`,
-        label: `Priority: ${humanize(priority)}`,
-        remove: (current) => {
-          const next = { ...current };
-          const remaining = (current.priority ?? []).filter((value) => value !== priority);
-          if (remaining.length > 0) next.priority = remaining;
-          else delete next.priority;
-          return next;
-        },
-      });
-    }
+  // PAP-411: priority controls are hidden from the UI, but the priority filter
+  // DSL (`priority:high`) stays functional at the data layer per board decision.
+  // A priority filter can therefore still enter the query via URL round-trip or
+  // typed DSL, so we always render a removable chip for it — otherwise a restored
+  // priority filter would silently narrow results with no way to see or clear it.
+  for (const priority of filters.priority ?? []) {
+    chips.push({
+      id: `priority:${priority}`,
+      label: `Priority: ${humanize(priority)}`,
+      remove: (current) => {
+        const next = { ...current };
+        const remaining = (current.priority ?? []).filter((value) => value !== priority);
+        if (remaining.length > 0) next.priority = remaining;
+        else delete next.priority;
+        return next;
+      },
+    });
   }
   if (filters.assigneeAgentId !== undefined || filters.assigneeUserId) {
     chips.push({
