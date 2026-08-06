@@ -1144,6 +1144,44 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sessionId).toMatch(/^paperclip-/);
     });
 
+    it("opens one session when two first commands overlap", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      // Hold the first session create open, so the second first command reaches
+      // the session store before the first create resolves. Without a single
+      // flight guard, both commands would open a session for one lease and the
+      // first session id would leak.
+      let releaseCreate: () => void = () => {};
+      const createGate = new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      sandbox.process.createSession.mockImplementationOnce(async () => {
+        await createGate;
+      });
+
+      const first = plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const second = plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      // Flush the pending microtasks, so both commands park on the held create.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releaseCreate();
+      await Promise.all([first, second]);
+
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      // Teardown deletes the same single session id, so no session leaks.
+      await plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+      });
+      expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+    });
+
     it("opens no session when the session model is off", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();

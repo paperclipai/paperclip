@@ -1213,6 +1213,10 @@ const sandboxHandleWritableDirs = (() => {
 // never a handle, a credential, or a command.
 const sandboxHandleSessionStore = (() => {
   const idByKey = new Map<string, string>();
+  // In-flight session creates, keyed the same way as `idByKey`. A create records
+  // its promise here for the time it runs, then removes it. The map lets two
+  // overlapping first commands for one lease share one create. See `runSingle`.
+  const pendingByKey = new Map<string, Promise<string>>();
 
   function get(scope: SandboxScope): string | undefined {
     return idByKey.get(sandboxHandleCacheKey(scope));
@@ -1226,11 +1230,32 @@ const sandboxHandleSessionStore = (() => {
     idByKey.delete(sandboxHandleCacheKey(scope));
   }
 
-  function reset(): void {
-    idByKey.clear();
+  // Single-flight guard for the first-command session create. Two overlapping
+  // first commands for one lease must open at most one live session. The first
+  // caller runs `create` and records its in-flight promise; every concurrent
+  // caller awaits the same promise instead of a second `create`. The store keeps
+  // the promise only while `create` runs, then removes it, so a later command
+  // (for example, after a resume clears the id) can open a fresh session. A
+  // failed `create` removes the promise too, so the next command retries.
+  function runSingle(scope: SandboxScope, create: () => Promise<string>): Promise<string> {
+    const key = sandboxHandleCacheKey(scope);
+    const inFlight = pendingByKey.get(key);
+    if (inFlight) return inFlight;
+    const promise = create();
+    pendingByKey.set(key, promise);
+    const settle = (): void => {
+      pendingByKey.delete(key);
+    };
+    promise.then(settle, settle);
+    return promise;
   }
 
-  return { get, set, clear, reset };
+  function reset(): void {
+    idByKey.clear();
+    pendingByKey.clear();
+  }
+
+  return { get, set, clear, runSingle, reset };
 })();
 
 /**
@@ -1305,16 +1330,22 @@ function evictSandboxHandle(scope: SandboxScope): void {
 async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promise<string> {
   const existing = sandboxHandleSessionStore.get(scope);
   if (existing) return existing;
-  const sessionId = `paperclip-${randomUUID()}`;
-  // Wrap the session create in a short `session.setup` provider span. The span
-  // carries no session id and no command text, only the provider family. The
-  // host maps the name to `sandbox.provider.session.setup`.
-  await withProviderSpan({
-    name: "session.setup",
-    run: () => sandbox.process.createSession(sessionId),
+  // Single-flight the first-command create. Two overlapping first commands for
+  // one lease share one create promise, so the lease opens at most one live
+  // session. The guard checks and starts the create in one synchronous step, so
+  // no second command can slip in between the store read and the create start.
+  return sandboxHandleSessionStore.runSingle(scope, async () => {
+    const sessionId = `paperclip-${randomUUID()}`;
+    // Wrap the session create in a short `session.setup` provider span. The span
+    // carries no session id and no command text, only the provider family. The
+    // host maps the name to `sandbox.provider.session.setup`.
+    await withProviderSpan({
+      name: "session.setup",
+      run: () => sandbox.process.createSession(sessionId),
+    });
+    sandboxHandleSessionStore.set(scope, sessionId);
+    return sessionId;
   });
-  sandboxHandleSessionStore.set(scope, sessionId);
-  return sessionId;
 }
 
 // Delete the persistent session for a lease and clear its stored id. Each
