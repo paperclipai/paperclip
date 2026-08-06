@@ -1504,27 +1504,33 @@ const MAX_SESSION_STREAM_RECONNECTS = 1;
 // multibyte UTF-8 character whole per chunk and per stream, so the delivered
 // byte count always lands on a character boundary and the byte-offset split is
 // safe.
+//
+// The buffer stores each new tail as a separate chunk and joins the chunks one
+// time at read. It does not copy the earlier output on each append, so total
+// buffering work stays linear in the output size, not quadratic.
 function createSessionStreamBuffer() {
   const streams = {
-    stdout: { data: Buffer.alloc(0), connectionBytes: 0 },
-    stderr: { data: Buffer.alloc(0), connectionBytes: 0 },
+    stdout: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
+    stderr: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
   };
 
-  function append(stream: { data: Buffer; connectionBytes: number }, chunk: string): void {
+  function append(
+    stream: { chunks: Buffer[]; length: number; connectionBytes: number },
+    chunk: string,
+  ): void {
     const buf = Buffer.from(chunk, "utf8");
     const start = stream.connectionBytes;
     stream.connectionBytes = start + buf.length;
     // The whole chunk falls before the delivered byte count, so it is a replay.
-    if (start + buf.length <= stream.data.length) {
+    if (start + buf.length <= stream.length) {
       return;
     }
-    // The whole chunk is new.
-    if (start >= stream.data.length) {
-      stream.data = Buffer.concat([stream.data, buf]);
-      return;
-    }
-    // The chunk straddles the delivered byte count. Keep only the new tail.
-    stream.data = Buffer.concat([stream.data, buf.subarray(stream.data.length - start)]);
+    // Keep only the new tail. When the whole chunk is new, `start >=
+    // stream.length` and the tail is the whole chunk. When the chunk straddles
+    // the delivered byte count, the tail starts after the replayed prefix.
+    const tail = start >= stream.length ? buf : buf.subarray(stream.length - start);
+    stream.chunks.push(tail);
+    stream.length += tail.length;
   }
 
   return {
@@ -1537,10 +1543,10 @@ function createSessionStreamBuffer() {
       streams.stderr.connectionBytes = 0;
     },
     get stdout(): string {
-      return streams.stdout.data.toString("utf8");
+      return Buffer.concat(streams.stdout.chunks).toString("utf8");
     },
     get stderr(): string {
-      return streams.stderr.data.toString("utf8");
+      return Buffer.concat(streams.stderr.chunks).toString("utf8");
     },
   };
 }
