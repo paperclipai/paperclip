@@ -2215,6 +2215,63 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons).toEqual([]);
   });
 
+  it("preserves execution-resumed sessions across workspace realization without masking workspace settings", async () => {
+    const base = await buildSessionConfigMetadata();
+    const realizedWorkspace = await buildSessionConfigMetadata({
+      workspaceRealization: {
+        existingExecutionWorkspace: {
+          id: "workspace-1",
+          mode: "shared",
+          strategyType: "managed",
+          projectWorkspaceId: null,
+          repoUrl: null,
+          baseRef: null,
+          branchName: null,
+          config: { desiredState: "running" },
+        },
+      },
+    });
+
+    const realizationDecision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: realizedWorkspace,
+      ignoredChangedCategories: ["workspaceRealization"],
+    });
+
+    expect(realizationDecision).toMatchObject({
+      reset: false,
+      changedCategories: [],
+    });
+
+    const changedWorkspaceConfig = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "isolated_workspace",
+        effectiveMode: "isolated_workspace",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+      },
+      workspaceRealization: {
+        existingExecutionWorkspace: {
+          id: "workspace-1",
+          mode: "isolated_workspace",
+        },
+      },
+    });
+    const settingsDecision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(realizedWorkspace),
+      configMetadata: changedWorkspaceConfig,
+      ignoredChangedCategories: ["workspaceRealization"],
+    });
+
+    expect(settingsDecision).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig", "workspaceRealization"],
+    });
+  });
+
   it("names safe categories for model profile, issue override, env, secret, and runtime skill drift", async () => {
     const base = await buildSessionConfigMetadata();
     const cases: Array<{
