@@ -29,6 +29,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { budgetIsEnforceable, budgetLabel } from "../lib/token-usage";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -415,7 +416,9 @@ export function Costs() {
     const map = new Map<string, boolean>();
     if (preset !== "mtd") return map;
     const budget = spendData?.summary.budgetCents ?? 0;
-    if (budget <= 0) return map;
+    // Pace against a budget that cannot be consumed is meaningless: spend is
+    // always 0 on subscription billing, so every provider reads "under pace".
+    if (budget <= 0 || subscriptionOnlyBilling) return map;
     const totalSpend = spendData?.summary.spendCents ?? 0;
     const now = new Date();
     const daysElapsed = now.getDate();
@@ -519,6 +522,31 @@ export function Costs() {
       0,
     );
 
+  // Every metered run being `subscription_included` means `costCents` is forced
+  // to 0 at write time, so a cents budget cannot be enforced on this deployment
+  // and must not be presented as one. Derived from `byAgentModel` because it is
+  // always loaded here, unlike the provider/biller queries.
+  const subscriptionOnlyBilling = useMemo(() => {
+    const rows = spendData?.byAgentModel ?? [];
+    return rows.length > 0 && rows.every((row) => row.billingType === "subscription_included");
+  }, [spendData?.byAgentModel]);
+
+  // Utilization, pace, and threshold colours are only meaningful when the budget
+  // can actually be consumed. On subscription-only billing spend is always 0, so
+  // every one of those would read a permanent healthy 0% and contradict the
+  // "not enforceable" label next to them.
+  const budgetEnforceable = budgetIsEnforceable({
+    budgetCents: spendData?.summary.budgetCents,
+    subscriptionOnlyBilling,
+  });
+
+  // Child cards (provider quota, biller spend) already treat 0 as "no cap
+  // configured" and hide their budget UI on it. Passing 0 when the budget
+  // cannot be enforced reuses that existing contract, so the suppression is
+  // decided once here rather than re-derived in every card — and any card added
+  // to this page later inherits it.
+  const enforceableBudgetCents = budgetEnforceable ? (spendData?.summary.budgetCents ?? 0) : 0;
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -590,16 +618,20 @@ export function Costs() {
             <MetricTile
               label="Budget"
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
-                spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                  ? `${spendData.summary.utilizationPercent}%`
-                  : "Open"
+                budgetEnforceable
+                  ? `${spendData?.summary.utilizationPercent}%`
+                  : subscriptionOnlyBilling
+                    ? "n/a"
+                    : "Open"
               )}
               subtitle={
                 activeBudgetIncidents.length > 0
                   ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
-                  : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                    ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
-                    : "No monthly cap configured"
+                  : budgetEnforceable
+                    ? `${formatCents(spendData?.summary.spendCents ?? 0)} of ${formatCents(spendData?.summary.budgetCents ?? 0)}`
+                    : subscriptionOnlyBilling
+                      ? "Not enforceable on subscription billing"
+                      : "No monthly cap configured"
               }
               icon={Coins}
             />
@@ -670,9 +702,11 @@ export function Costs() {
                           {formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
-                          {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                            ? `Budget ${formatCents(spendData.summary.budgetCents)}`
-                            : "Unlimited budget"}
+                          {budgetLabel({
+                            budgetCents: spendData?.summary.budgetCents,
+                            subscriptionOnlyBilling,
+                            formatCents,
+                          })}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
@@ -682,7 +716,7 @@ export function Costs() {
                         </div>
                       </div>
                     </div>
-                    {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
+                    {budgetEnforceable && spendData ? (
                       <div className="space-y-2">
                         <div className="h-2 overflow-hidden bg-muted">
                           <div
@@ -921,6 +955,7 @@ export function Costs() {
                         {rows.map((summary) => (
                           <BudgetPolicyCard
                             key={summary.policyId}
+                            enforceable={!subscriptionOnlyBilling}
                             summary={summary}
                             isSaving={policyMutation.isPending}
                             onSave={(amount) =>
@@ -967,7 +1002,7 @@ export function Costs() {
                           key={provider}
                           provider={provider}
                           rows={byProvider.get(provider) ?? []}
-                          budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                          budgetMonthlyCents={enforceableBudgetCents}
                           totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                           weekSpendCents={weekSpendByProvider.get(provider) ?? 0}
                           windowRows={windowSpendByProvider.get(provider) ?? []}
@@ -987,7 +1022,7 @@ export function Costs() {
                     <ProviderQuotaCard
                       provider={provider}
                       rows={byProvider.get(provider) ?? []}
-                      budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                      budgetMonthlyCents={enforceableBudgetCents}
                       totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                       weekSpendCents={weekSpendByProvider.get(provider) ?? 0}
                       windowRows={windowSpendByProvider.get(provider) ?? []}
@@ -1026,7 +1061,7 @@ export function Costs() {
                             key={biller}
                             row={row}
                             weekSpendCents={weekSpendByBiller.get(biller) ?? 0}
-                            budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                            budgetMonthlyCents={enforceableBudgetCents}
                             totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                             providerRows={providerRows}
                           />
@@ -1045,7 +1080,7 @@ export function Costs() {
                       <BillerSpendCard
                         row={row}
                         weekSpendCents={weekSpendByBiller.get(biller) ?? 0}
-                        budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
+                        budgetMonthlyCents={enforceableBudgetCents}
                         totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
                         providerRows={providerRows}
                       />
