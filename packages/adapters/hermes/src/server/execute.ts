@@ -240,19 +240,26 @@ interface ParsedOutput {
 
 /** Strip noise lines from a Hermes response (tool output, system messages, etc.) */
 function cleanResponse(raw: string): string {
-  return raw
+  // Strip "Query: <prompt>" echo block — Hermes prints "Query: <full prompt>" to stdout in
+  // non-quiet mode as a session-start progress indicator.  This appears ONLY at the very
+  // beginning of the stdout stream (before any real output), so we strip it as a leading
+  // block rather than filtering every line, avoiding false-positives on agent responses that
+  // legitimately contain "Query:" mid-text.
+  // "Warning: Unknown toolsets: <name>" is similarly a session-start diagnostic line emitted
+  // before the agent produces any response.
+  // (See: SSC-1832 raw_prompt_echo sightings, 2026-08-01 → 2026-08-05)
+  const withoutLeadingEcho = raw.replace(
+    /^(?:Warning: Unknown toolsets:[^\n]*\n|Query:[^\n]*\n)*/,
+    ""
+  );
+
+  return withoutLeadingEcho
     .split("\n")
     .filter((line) => {
       const t = line.trim();
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
-      // Strip "Query: <prompt>" echo — Hermes prints this to stdout in non-quiet mode when
-      // starting a new session. It is progress output, not a response, and makes the entire
-      // system prompt appear verbatim as an auto-comment. "Warning: Unknown toolsets:" has the
-      // same root cause (toolset resolution failure) and is equally noisy in Paperclip comments.
-      // (See: SSC-1832 raw_prompt_echo sightings, 2026-08-01 → 2026-08-05)
-      if (t.startsWith("Query:") || t.startsWith("Warning: Unknown toolsets:")) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
