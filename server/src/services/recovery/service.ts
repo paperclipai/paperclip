@@ -5599,6 +5599,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           eq(heartbeatRuns.agentId, updated.agentId),
+          eq(heartbeatRuns.companyId, updated.companyId),
           eq(heartbeatRuns.status, "running"),
         ),
       );
