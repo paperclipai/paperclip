@@ -11,6 +11,7 @@ on:
         options:
           - canary
           - nightly
+          - beta
           - latest
       host_port:
         description: Host port for the Docker smoke container

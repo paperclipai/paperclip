@@ -7,9 +7,11 @@ The release model is now commit-driven:
 1. Every push to `master` publishes a canary automatically.
 2. Once a night, the newest master commit with a green canary publish is
    smoke-tested and republished as the nightly.
-3. Stable releases are manually promoted from a chosen tested commit or canary tag.
-4. Stable release notes live in `releases/vYYYY.MDD.P.md`.
-5. Only stable releases get GitHub Releases.
+3. Betas are manual, human-approved promotions of a chosen nightly.
+4. Stable releases promote a beta that has soaked for at least 3 days
+   (bypass requires a written justification).
+5. Stable release notes live in `releases/vYYYY.MDD.P.md`.
+6. Only stable releases get GitHub Releases.
 
 The user-facing guide to the channels is [`CHANNELS.md`](CHANNELS.md).
 
@@ -20,6 +22,7 @@ Paperclip uses calendar versions that still fit semver syntax:
 - stable: `YYYY.MDD.P`
 - canary: `YYYY.MDD.P-canary.N`
 - nightly: `YYYY.MDD.P-nightly.N`
+- beta: `YYYY.MDD.P-beta.N`
 
 Examples:
 
@@ -27,10 +30,11 @@ Examples:
 - second stable on March 18, 2026: `2026.318.1`
 - fourth canary for the `2026.318.1` line: `2026.318.1-canary.3`
 - first nightly cut on March 18, 2026: `2026.318.1-nightly.0`
+- first beta promoted on March 18, 2026: `2026.318.1-beta.0`
 
-A nightly republishes the exact source commit of an existing canary; its
-version dates the nightly cut (the scheduled run's UTC date), not the source
-canary.
+A promotion republishes the exact source commit of the previous lane's build
+(canary → nightly → beta); the version dates the promotion, not the source
+build.
 
 Important constraints:
 
@@ -51,8 +55,8 @@ Every stable release has four separate surfaces:
 
 A stable release is done only when all four surfaces are handled.
 
-Canaries and nightlies only cover the first two surfaces plus an internal
-traceability tag.
+Canaries, nightlies, and betas only cover the first two surfaces plus an
+internal traceability tag.
 
 ## Core Invariants
 
@@ -60,13 +64,18 @@ traceability tag.
 - nightlies republish a commit that already shipped a canary (the commit must
   carry a `canary/v*` tag), and only after the release smoke suite passes
   against that exact published canary
-- stables publish from an explicitly chosen source ref
+- betas republish a commit that already shipped a nightly (the commit must
+  carry a `nightly/v*` tag), behind the `npm-beta` approval gate, and the
+  published beta is re-smoked
+- stables publish from an explicitly chosen source ref, which must have
+  shipped as a beta at least 3 days earlier unless a written justification
+  is provided
 - tags point at the original source commit, not a generated release commit
 - stable notes are always `releases/vYYYY.MDD.P.md`
-- canaries and nightlies never create GitHub Releases
-- canaries and nightlies never require changelog generation
+- canaries, nightlies, and betas never create GitHub Releases
+- canaries, nightlies, and betas never require changelog generation
 - Docker `:latest` moves only on stable releases; master builds publish
-  `:canary` and nightly builds publish `:nightly`
+  `:canary`, nightly builds `:nightly`, and beta builds `:beta`
 
 ## TL;DR
 
@@ -128,6 +137,31 @@ Users install nightlies with:
 npx paperclipai@nightly onboard
 ```
 
+### Beta
+
+Betas are manual promotions. Dispatch
+[`release.yml`](../.github/workflows/release.yml) with `channel: beta`.
+
+- leave `source_version` empty to promote the newest nightly, or set it to an
+  exact nightly version such as `2026.807.0-nightly.0`
+- the selection job resolves the nightly's source commit and fails loudly if
+  it does not exist or already shipped as a beta
+- the publish waits for approval in the **`npm-beta` environment** — its
+  required reviewers are the promotion gate
+- the same commit is republished as `YYYY.MDD.P-beta.N` under the npm
+  dist-tag `beta`, tagged `beta/vYYYY.MDD.P-beta.N`, and `docker.yml` is
+  dispatched at that tag to publish the `:beta` images
+- after publishing, the release smoke suite runs against the exact published
+  beta version as verification
+- `dry_run: true` previews the publish and skips the tag push, Docker
+  dispatch, and post-publish smoke
+
+Users install betas with:
+
+```bash
+npx paperclipai@beta onboard
+```
+
 ### Stable
 
 Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
@@ -137,22 +171,31 @@ Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the
 Inputs:
 
 - `channel`
-  - `stable` (the default) for a stable release; `nightly` forces a nightly
-    run (see above)
+  - `stable` (the default) for a stable release; `beta` and `nightly` run
+    those lanes instead (see above)
 - `source_ref`
   - commit SHA, branch, or tag
 - `stable_date`
   - optional UTC date override in `YYYY-MM-DD`
   - enter a date like `2026-03-18`, not a version like `2026.318.0`
+- `skip_soak_justification`
+  - written reason for releasing a stable whose source has not soaked as a
+    beta for 3 days; leave empty for normal releases
 - `dry_run`
   - preview only when true
 
+The stable preflight enforces the beta soak: the source commit must carry a
+`beta/v*` tag whose npm publish time is at least 3 days old. If it is not,
+the run fails unless `skip_soak_justification` is provided; the justification
+is echoed into the job summary. Dry runs report soak state without blocking.
+
 Before running stable:
 
-1. pick the canary commit or tag you trust
-2. resolve the target stable version with `./scripts/release.sh stable --date "$(date +%F)" --print-version`
-3. create or update `releases/vYYYY.MDD.P.md` on that source ref
-4. run the stable workflow from that source ref
+1. pick the beta you are promoting (its source commit is the `source_ref`)
+2. confirm the beta has soaked for 3 days with no open blockers
+3. resolve the target stable version with `./scripts/release.sh stable --date "$(date +%F)" --print-version`
+4. create or update `releases/vYYYY.MDD.P.md` on that source ref
+5. run the stable workflow from that source ref
 
 Example:
 
@@ -179,6 +222,7 @@ image and the `-cloud` variant with the same lane mapping:
 | --- | --- |
 | `master` push | `:canary`, `:sha-<short>` |
 | `nightly/v*` tag | `:nightly`, `:sha-<short>` |
+| `beta/v*` tag | `:beta`, `:sha-<short>` |
 | `v*` tag (stable) | `:latest`, `:YYYY.MDD.P`, `:YYYY.MDD`, `:sha-<short>` |
 
 Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
@@ -201,6 +245,15 @@ Requires HEAD to be a commit that already shipped a canary (it must carry a
 
 ```bash
 ./scripts/release.sh nightly --dry-run
+```
+
+### Preview a beta locally
+
+Requires HEAD to be a commit that already shipped a nightly (it must carry a
+`nightly/v*` tag):
+
+```bash
+./scripts/release.sh beta --dry-run
 ```
 
 ### Preview a stable locally
@@ -266,11 +319,13 @@ Automated browser smoke is also available:
 ```bash
 gh workflow run release-smoke.yml -f paperclip_version=canary
 gh workflow run release-smoke.yml -f paperclip_version=nightly
+gh workflow run release-smoke.yml -f paperclip_version=beta
 gh workflow run release-smoke.yml -f paperclip_version=latest
 ```
 
 The nightly lane runs this same suite automatically against its candidate
-before publishing.
+before publishing, and the beta lane runs it against the published beta as
+post-publish verification.
 
 Minimum checks:
 
@@ -320,6 +375,16 @@ force one: dispatch `release.yml` with `channel: nightly` (optionally pinning
 
 If the nightly published to npm but the tag push or Docker dispatch failed,
 push the `nightly/v*` tag manually and run `docker.yml` at that tag.
+
+### If a beta looks bad during soak
+
+Do not promote it to stable. Fix forward: land the fix on `master`, let it
+ship through canary and nightly, and promote a new beta. The soak clock
+starts over for the new beta.
+
+If the published beta is actively harmful to beta users, move the `beta`
+dist-tag back to the previous beta version with `npm dist-tag add` per
+package, and re-point the `:beta` Docker tags at the previous beta's images.
 
 ### If stable npm publish succeeds but tag push or GitHub release creation fails
 

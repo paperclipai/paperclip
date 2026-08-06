@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - stable
+          - beta
           - nightly
         default: stable
       source_ref:
@@ -27,7 +28,11 @@ on:
         required: false
         type: string
       source_version:
-        description: (nightly) Explicit canary version to promote, for example 2026.806.0-canary.7. Leave empty to select the newest canary on master.
+        description: For nightly, the explicit canary version to promote (empty selects the newest canary on master). For beta, the explicit nightly version to promote (empty selects the newest nightly on master).
+        required: false
+        type: string
+      skip_soak_justification:
+        description: (stable) Written justification for publishing a stable whose source has not soaked as a beta for 3 days. Leave empty for normal releases.
         required: false
         type: string
       dry_run:
@@ -314,10 +319,285 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           gh workflow run docker.yml --ref "refs/tags/${tag}" --repo "$GITHUB_REPOSITORY"
 
+  # ----- Beta lane --------------------------------------------------------
+  # Beta is a manual, human-approved promotion of a nightly. Unlike the
+  # scheduled nightly lane, a beta dispatch is explicit operator intent, so
+  # selection problems fail the run loudly instead of skipping quietly. The
+  # publish runs behind the npm-beta environment, whose required reviewers
+  # are the approval gate.
+
+  select_beta:
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.select.outputs.sha }}
+      nightly_version: ${{ steps.select.outputs.nightly_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Select beta candidate
+        id: select
+        env:
+          EXPLICIT_NIGHTLY_VERSION: ${{ inputs.source_version }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin --tags --prune --quiet
+
+          if [ -n "${EXPLICIT_NIGHTLY_VERSION:-}" ]; then
+            tag="nightly/v${EXPLICIT_NIGHTLY_VERSION}"
+            sha="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+            if [ -z "$sha" ]; then
+              echo "Error: tag $tag does not exist." >&2
+              exit 1
+            fi
+          else
+            # Newest nightly-tagged commit on master.
+            sha="$(grep -m1 -F \
+              -f <(git for-each-ref 'refs/tags/nightly/v*' --format='%(objectname)') \
+              <(git rev-list origin/master -n 2000) || true)"
+
+            if [ -z "$sha" ]; then
+              echo "Error: no nightly/v* tag found on the last 2000 commits of master. Publish a nightly first, or pass source_version." >&2
+              exit 1
+            fi
+
+            tag="$(git tag --points-at "$sha" | grep '^nightly/v' | sort -V | tail -1)"
+          fi
+
+          nightly_version="${tag#nightly/v}"
+
+          existing_beta="$(git tag --points-at "$sha" | grep '^beta/v' | head -1 || true)"
+          if [ -n "$existing_beta" ]; then
+            echo "Error: candidate $sha (nightly $nightly_version) already shipped as $existing_beta." >&2
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "nightly_version=$nightly_version" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Beta candidate"
+            echo ""
+            echo "- Source SHA: \`$sha\`"
+            echo "- Source nightly: \`$nightly_version\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish_beta:
+    needs: select_beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-beta
+    # Serialize beta publishes so two dispatches cannot race to the same next
+    # -beta.N version; release.sh additionally refuses to double-publish a
+    # commit that already carries a beta tag.
+    concurrency:
+      group: release-publish-beta
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    outputs:
+      beta_version: ${{ steps.result.outputs.beta_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.select_beta.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Restore tracked install-time changes
+        run: git checkout -- pnpm-lock.yaml
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish beta
+        env:
+          GITHUB_ACTIONS: "true"
+        run: |
+          args=(beta --skip-verify)
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          ./scripts/release.sh "${args[@]}"
+
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
+          done
+
+      - name: Push beta tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^beta/v' | head -1)"
+          if [ -z "$tag" ]; then
+            echo "Error: no beta tag points at HEAD after release." >&2
+            exit 1
+          fi
+          git push origin "refs/tags/${tag}"
+
+      # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
+      # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
+      # pushes), so dispatch the image build at the new tag explicitly.
+      - name: Build Docker images for the beta tag
+        id: result
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^beta/v' | head -1)"
+          echo "beta_version=${tag#beta/v}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Beta published"
+            echo ""
+            echo "- Source SHA: \`${{ needs.select_beta.outputs.sha }}\`"
+            echo "- Source nightly: \`${{ needs.select_beta.outputs.nightly_version }}\`"
+            echo "- Published beta: \`${tag#beta/v}\`"
+            echo "- Docker build dispatched at \`${tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run docker.yml --ref "refs/tags/${tag}" --repo "$GITHUB_REPOSITORY"
+
+  # Post-publish verification: run the release smoke suite against the exact
+  # beta version that was just published.
+  smoke_beta:
+    needs: publish_beta
+    if: ${{ !inputs.dry_run }}
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      paperclip_version: ${{ needs.publish_beta.outputs.beta_version }}
+      artifact_name: beta-release-smoke
+
   # ----- Stable lane ------------------------------------------------------
+
+  # Stable releases promote a soaked beta. The preflight enforces that the
+  # source commit shipped as a beta at least 3 days ago (measured from the
+  # npm publish time of that beta version), unless a written justification
+  # is provided. Dry runs report soak state without blocking.
+  preflight_stable:
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Check beta soak
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          JUSTIFICATION: ${{ inputs.skip_soak_justification }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin --tags --prune --quiet
+
+          sha="$(git rev-parse --verify "${SOURCE_REF}^{commit}" 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
+            git fetch origin "$SOURCE_REF" --quiet || true
+            sha="$(git rev-parse --verify "FETCH_HEAD^{commit}" 2>/dev/null || true)"
+          fi
+          if [ -z "$sha" ]; then
+            echo "Error: could not resolve source_ref '$SOURCE_REF' to a commit." >&2
+            exit 1
+          fi
+
+          fail_or_justify() {
+            if [ -n "${JUSTIFICATION:-}" ]; then
+              {
+                echo "## Stable soak gate bypassed"
+                echo ""
+                echo "$1"
+                echo ""
+                echo "Justification: ${JUSTIFICATION}"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Soak gate bypassed: $1"
+              return 0
+            fi
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "::warning::Soak gate would block a real release: $1"
+              {
+                echo "## Stable soak gate (dry run)"
+                echo ""
+                echo "A real release would be blocked: $1"
+              } >> "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
+            echo "Error: $1" >&2
+            echo "Pass skip_soak_justification with a written reason to release anyway." >&2
+            exit 1
+          }
+
+          beta_tag="$(git tag --points-at "$sha" | grep '^beta/v' | sort -V | tail -1 || true)"
+          if [ -z "$beta_tag" ]; then
+            fail_or_justify "source commit $sha never shipped as a beta (no beta/v* tag)."
+            exit 0
+          fi
+
+          beta_version="${beta_tag#beta/v}"
+          publish_time="$(npm view "paperclipai@${beta_version}" time --json 2>/dev/null \
+            | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const t=JSON.parse(d);process.stdout.write(typeof t === "string" ? t : (t[process.argv[1]] ?? ""))})' "$beta_version" || true)"
+          if [ -z "$publish_time" ]; then
+            fail_or_justify "could not determine the npm publish time of beta ${beta_version}."
+            exit 0
+          fi
+
+          age_seconds="$(node -e 'process.stdout.write(String(Math.floor((Date.now() - Date.parse(process.argv[1])) / 1000)))' "$publish_time")"
+          min_seconds=$((3 * 24 * 60 * 60))
+          age_days="$(node -e 'process.stdout.write((Number(process.argv[1]) / 86400).toFixed(1))' "$age_seconds")"
+
+          if [ "$age_seconds" -lt "$min_seconds" ]; then
+            fail_or_justify "beta ${beta_version} has only soaked ${age_days} days (minimum is 3)."
+            exit 0
+          fi
+
+          {
+            echo "## Stable soak gate passed"
+            echo ""
+            echo "- Source beta: \`${beta_version}\`"
+            echo "- Soak time: ${age_days} days"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   verify_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    needs: preflight_stable
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ inputs.source_ref }}

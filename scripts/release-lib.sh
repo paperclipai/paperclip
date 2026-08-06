@@ -199,7 +199,7 @@ NODE
 
 require_prerelease_channel() {
   case "$1" in
-    canary|nightly) ;;
+    canary|nightly|beta) ;;
     *) release_fail "unknown prerelease channel: $1" ;;
   esac
 }

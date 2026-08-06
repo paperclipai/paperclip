@@ -7,6 +7,7 @@ on:
     tags:
       - "v*"
       - "nightly/v*"
+      - "beta/v*"
   # Release workflows push lane tags with GITHUB_TOKEN, and GitHub suppresses
   # push-triggered runs for those, so release.yml dispatches this workflow at
   # the new tag ref instead. The tag mapping below keys off github.ref either
@@ -51,6 +52,9 @@ jobs:
               # Lane tags carry the exact published version; stamp it verbatim
               # instead of describing drift from the nearest stable tag.
               version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
               ;;
             *)
               version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
@@ -157,6 +161,7 @@ jobs:
           tags: |
             type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -222,6 +227,9 @@ jobs:
               # Lane tags carry the exact published version; stamp it verbatim
               # instead of describing drift from the nearest stable tag.
               version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
               ;;
             *)
               version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
@@ -330,6 +338,7 @@ jobs:
           tags: |
             type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}

@@ -7,14 +7,20 @@ install.
 | Channel | What it is | Updates | npm | Docker |
 | --- | --- | --- | --- | --- |
 | `stable` | The recommended release | every week or two | `paperclipai@latest` | `ghcr.io/paperclipai/paperclip:latest` |
-| `beta` | Release candidates soaking before stable | when promoted | *(coming soon)* | *(coming soon)* |
+| `beta` | Release candidates soaking before stable | when promoted | `paperclipai@beta` | `ghcr.io/paperclipai/paperclip:beta` |
 | `nightly` | Yesterday's merges, smoke-tested as a unit | once a night | `paperclipai@nightly` | `ghcr.io/paperclipai/paperclip:nightly` |
 | `canary` | Every merge to `master`, as it happens | many times a day | `paperclipai@canary` | `ghcr.io/paperclipai/paperclip:canary` |
 
 ## Choosing a channel
 
 **stable** is the right choice for almost everyone. It only moves when a
-release has been explicitly vetted and promoted by a maintainer.
+release has been explicitly vetted and promoted by a maintainer, and every
+stable must first soak as a beta for at least 3 days.
+
+**beta** is for people who want the next stable early. A beta is a nightly
+that a maintainer hand-picked and explicitly promoted behind an approval
+gate, and it is re-smoked after publishing. Betas are the release candidates:
+what you run on beta today is what stable becomes a few days later.
 
 **nightly** is for people who want new features quickly but not the churn of
 tracking every merge. Once a night, the newest master build that published
@@ -33,6 +39,7 @@ npm / npx:
 
 ```bash
 npx paperclipai@latest onboard    # stable
+npx paperclipai@beta onboard
 npx paperclipai@nightly onboard
 npx paperclipai@canary onboard
 ```
@@ -41,6 +48,7 @@ Docker:
 
 ```bash
 docker pull ghcr.io/paperclipai/paperclip:latest    # stable
+docker pull ghcr.io/paperclipai/paperclip:beta
 docker pull ghcr.io/paperclipai/paperclip:nightly
 docker pull ghcr.io/paperclipai/paperclip:canary
 ```
@@ -61,17 +69,19 @@ directory before switching down.
 The version tells you which channel a build came from:
 
 - `2026.807.0` — stable, published Aug 7 2026
+- `2026.807.0-beta.0` — beta promoted on Aug 7 2026
 - `2026.807.0-nightly.0` — nightly cut on Aug 7 2026
 - `2026.807.0-canary.4` — the fifth canary for the Aug 7 line
 
-A nightly republishes the exact source commit of a specific canary; the
-version dates the nightly cut, and the two share a source SHA (visible in the
-release job summary and as git tags on the commit).
+Each promotion republishes the exact source commit of the previous lane's
+build: a nightly shares its source SHA with a canary, and a beta with a
+nightly. The version dates the promotion, and the shared SHA is visible in
+the release job summaries and as git tags on the commit.
 
 One quirk to be aware of: npm's semver ordering compares prerelease names
-alphabetically, so `-canary.N` sorts *below* `-nightly.N` for the same base
-version. This never matters when installing by dist-tag (the recommended way),
-only if you write version ranges by hand.
+alphabetically, so `-beta.N` sorts below `-canary.N`, which sorts below
+`-nightly.N` for the same base version. This never matters when installing by
+dist-tag (the recommended way), only if you write version ranges by hand.
 
 ## For maintainers
 

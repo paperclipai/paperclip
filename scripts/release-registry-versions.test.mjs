@@ -217,6 +217,27 @@ test("next_prerelease_version counts per channel so nightly numbering ignores ca
   assert.doesNotMatch(result.calls, /npm view/);
 });
 
+test("next_prerelease_version counts beta numbering independently of other channels", () => {
+  const fixture = makeFixture();
+  const versionsFile = join(fixture.fixtureDir, "versions.json");
+  writeFileSync(
+    versionsFile,
+    JSON.stringify({
+      "@paperclipai/a": ["2026.707.1-canary.4", "2026.707.1-nightly.3", "2026.707.1-beta.0"],
+    }),
+  );
+
+  const result = runReleaseLibHelper(
+    'next_prerelease_version beta 2026.707.1 "@paperclipai/a"',
+    fixture,
+    { RELEASE_PACKAGE_VERSIONS_FILE: versionsFile },
+  );
+
+  assert.equal(result.status, 0);
+  assert.equal(result.output, "2026.707.1-beta.1");
+  assert.doesNotMatch(result.calls, /npm view/);
+});
+
 test("next_prerelease_version rejects unknown channels", () => {
   const fixture = makeFixture();
   const result = runReleaseLibHelper(
