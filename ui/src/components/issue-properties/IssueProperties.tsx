@@ -186,8 +186,9 @@ export function IssueProperties({
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
   }, [taskChatRedesignEnabled, inline]);
-  // Plan/Artifacts only earn a tab when they have content; with neither, the
-  // header bar shows a plain "Properties" title instead of a one-tab strip.
+  // Plan earns a tab as soon as an issue is in planning mode, even before the
+  // plan document arrives. This keeps an expected plan surface visible and
+  // lets its diagnostic empty state explain what is missing.
   // Same query keys as the tab bodies, so these share their cached fetches.
   const { data: paneTabPlanDocument } = useIssuePlanDocument(
     taskChatRedesignEnabled ? issue.id : null,
@@ -202,7 +203,10 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatRedesignEnabled,
   });
-  const hasPlanTab = Boolean(paneTabPlanDocument) || (paneTabAcceptedPlans?.length ?? 0) > 0;
+  const hasPlanTab =
+    Boolean(paneTabPlanDocument)
+    || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || issue.workMode === "planning";
   const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
   const [paneTab, setPaneTab] = useState("properties");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
