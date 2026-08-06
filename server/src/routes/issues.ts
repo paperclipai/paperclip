@@ -8890,6 +8890,39 @@ export function issueRoutes(
         ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
         : svc.update(id, issueUpdateData);
     };
+    const persistBoundReviewActivity = async (
+      tx: Parameters<typeof svc.update>[2],
+      updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
+    ) => {
+      if (!reviewInteractionId) return;
+      const changes = updated.changes ?? {};
+      const previous = Object.fromEntries(
+        Object.entries(changes).map(([key, change]) => [key, change.from]),
+      );
+      await logActivity(tx as unknown as Db, {
+        companyId: updated.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          ...updateFields,
+          identifier: updated.identifier,
+          authorizationReason: issueMutationAuthorizationReason,
+          changes,
+          reviewInteractionId,
+          ...(commentBody ? { source: "comment" } : {}),
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+          _previous: Object.keys(changes).length > 0 ? previous : undefined,
+        },
+      }, postCommitActivityPublications);
+    };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
@@ -8915,6 +8948,8 @@ export function issueRoutes(
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           }
 
+          await persistBoundReviewActivity(tx, updated);
+
           return updated;
         });
       } else if (shouldRelayStop) {
@@ -8922,6 +8957,14 @@ export function issueRoutes(
           const updated = await updateIssue(tx);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+          await persistBoundReviewActivity(tx, updated);
+          return updated;
+        });
+      } else if (reviewInteractionId) {
+        issue = await db.transaction(async (tx) => {
+          const updated = await updateIssue(tx);
+          if (!updated) return null;
+          await persistBoundReviewActivity(tx, updated);
           return updated;
         });
       } else {
@@ -9107,7 +9150,7 @@ export function issueRoutes(
         activeRecoveryAction: null,
       };
     }
-    await logActivity(db, {
+    if (!reviewInteractionId) await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
