@@ -249,6 +249,7 @@ function Harness({
   historicalPreview = false,
   locationHash = "",
   initialPanelOpen = false,
+  panelPlacement,
 }: {
   doc: IssueDocument;
   draftDirty?: boolean;
@@ -256,6 +257,7 @@ function Harness({
   historicalPreview?: boolean;
   locationHash?: string;
   initialPanelOpen?: boolean;
+  panelPlacement?: "floating" | "inline";
 }) {
   const [open, setOpen] = useState(initialPanelOpen);
   return (
@@ -276,6 +278,7 @@ function Harness({
         locationHash={locationHash}
         panelOpen={open}
         onPanelOpenChange={setOpen}
+        panelPlacement={panelPlacement}
       >
         <p>Body content</p>
       </IssueDocumentAnnotations>
@@ -327,6 +330,30 @@ describe("IssueDocumentAnnotations", () => {
     expect(anchor).not.toBeNull();
     expect(anchor?.className).toContain("fixed");
     expect(anchor?.className).toContain("z-(--z-60)");
+  });
+
+  it("stacks an inline panel below the document instead of floating over its host", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={doc} initialPanelOpen panelPlacement="inline" />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const inlinePanel = container.querySelector('[data-testid="document-annotation-panel-inline"]');
+    const floatingAnchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]');
+    const panel = container.querySelector('[data-testid="document-annotation-panel"]');
+    expect(inlinePanel).not.toBeNull();
+    expect(floatingAnchor).toBeNull();
+    expect(panel?.className).toContain("w-full");
   });
 
   it("keeps the desktop annotation panel inside the issue content area when properties are visible", async () => {
