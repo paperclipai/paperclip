@@ -15,7 +15,7 @@ export const issueThreadInteractions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    issueId: uuid("issue_id").notNull().references(() => issues.id),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
     status: text("status").notNull().default("pending"),
     continuationPolicy: text("continuation_policy").notNull().default("wake_assignee"),
