@@ -19,6 +19,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
+  issueComments,
   issueDocuments,
   issuePlanDecompositions,
   issueRelations,
@@ -32,6 +33,8 @@ import {
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import {
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS,
   issueService,
@@ -63,6 +66,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issuePlanDecompositions);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(issues);
     await db.delete(documentRevisions);
@@ -342,6 +346,40 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("revalidates the creator reporting line inside the create transaction", async () => {
+    const companyId = await seedCompany();
+    const owner = await seedAgent(companyId);
+    const creator = await seedAgent(companyId);
+
+    await expect(issueService(db).create(companyId, {
+      title: "Transactionally guarded blocked owner authorization",
+      status: "blocked",
+      createdByAgentId: creator.id,
+      unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the unblock request" },
+    })).rejects.toMatchObject({ status: 422 });
+
+    expect(await db.select().from(issues)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("allows a creator to retain an invokable reporting-line manager as unblock owner", async () => {
+    const companyId = await seedCompany();
+    const manager = await seedAgent(companyId);
+    const creator = await seedAgent(companyId, manager.id);
+
+    const created = await issueService(db).create(companyId, {
+      title: "Transactionally authorized blocked owner",
+      status: "blocked",
+      createdByAgentId: creator.id,
+      unblockDescriptor: { owner: { agentId: manager.id }, action: "Review the unblock request" },
+    });
+
+    expect(created).toMatchObject({
+      status: "blocked",
+      createdByAgentId: creator.id,
+    });
+  });
+
   it("keeps a post-commit owner pause unnotified and recovers after resume", async () => {
     const companyId = await seedCompany();
     const owner = await seedAgent(companyId);
@@ -516,6 +554,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     expect(response.body.blockedOwnerNotifiedAt).toBeNull();
     expect(wakeRequests).toContainEqual({ reason: "issue_assigned" });
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
   });
 
   it("reconciles an accepted wake after a pre-notification crash without duplicating it", async () => {
