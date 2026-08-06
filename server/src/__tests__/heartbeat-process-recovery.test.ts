@@ -5701,11 +5701,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.unreachableBlockedRepaired).toBe(1);
     expect(result.issueIds).toContain(decayedIssueId);
 
+    // The repair itself is what this test pins: `todo` is the honest state, because nothing
+    // is gating the work any more. Assert it on the activity row rather than on the issue,
+    // because the repair happens at the top of the sweep and the repaired row therefore
+    // re-enters the same sweep's todo/in_progress/in_review candidate set — an assigned-todo
+    // dispatch can legitimately advance it to `in_progress` before the read below.
+    const repairActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, decayedIssueId))
+      .then((rows) =>
+        rows.find((row) => {
+          const details = row.details as { source?: string; status?: string; previousStatus?: string } | null;
+          return details?.source === "recovery.reconcile_unreachable_blocked";
+        }) ?? null,
+      );
+    expect(repairActivity).not.toBeNull();
+    expect((repairActivity?.details as { previousStatus?: string }).previousStatus).toBe("blocked");
+    expect((repairActivity?.details as { status?: string }).status).toBe("todo");
+
     const repaired = await db.select().from(issues).where(eq(issues.id, decayedIssueId))
       .then((rows) => rows[0] ?? null);
-    // `todo` is the honest state: nothing is gating the work any more, and unlike
-    // `blocked` it is a status the wake path can reach.
-    expect(repaired?.status).toBe("todo");
+    // Whatever it advanced to, the one status that must never survive the sweep is the
+    // unreachable one — that is the invariant, and `blocked` is the only status the wake
+    // path cannot reach from here.
+    expect(repaired?.status).not.toBe("blocked");
+    expect(["todo", "in_progress"]).toContain(repaired?.status);
 
     const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     for (const row of followupRuns) {
