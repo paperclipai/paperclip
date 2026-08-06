@@ -3105,6 +3105,10 @@ const issueListSelect = {
   reviewPolicy: issues.reviewPolicy,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
+  // Degraded-roster marker (RBR-796). Selected on the list path so a board or sweep can
+  // see which rows landed on an owner that was not invokable at creation time without a
+  // second round trip. NULL on the healthy path.
+  assigneeFallbackReason: issues.assigneeFallbackReason,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
@@ -7605,6 +7609,30 @@ export function issueService(db: Db) {
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
+      // RBR-813: an explicitly chosen owner is by definition not a degraded-roster
+      // fallback, so `assigneeFallbackReason` is stale the moment that write lands.
+      // This must happen here, on the shared update path, rather than at each caller:
+      // `scripts/rbr767-sweep.ts` gates its re-route on `isNotNull(assigneeFallbackReason)`
+      // for degraded rows that already have an assignee, and nothing else on the
+      // update/reassign path clears the flag. Leaving it set means the next sweep
+      // overwrites the explicit assignment with its own ladder-computed owner, forever.
+      // Clearing on explicit assignment is what makes that predicate's premise
+      // ("still-degraded means nobody has claimed it") actually true.
+      //
+      // Only a non-null assignee clears the flag. Un-assigning (assignee -> null)
+      // deliberately leaves it set: that row is genuinely ownerless again and should be
+      // picked up by the sweep's unassigned branch. A caller that passes
+      // `assigneeFallbackReason` explicitly (the create paths, or a future repair job)
+      // still wins -- we never clobber an intentional write.
+      if (issueData.assigneeFallbackReason === undefined) {
+        const explicitAgentAssignment =
+          issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== null;
+        const explicitUserAssignment =
+          issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== null;
+        if (explicitAgentAssignment || explicitUserAssignment) {
+          patch.assigneeFallbackReason = null;
+        }
+      }
 
       const runUpdate = async (tx: any) => {
         // The receipt baseline must be read under the same row lock as the
@@ -7985,6 +8013,13 @@ export function issueService(db: Db) {
         .set({
           assigneeAgentId: agentId,
           assigneeUserId: null,
+          // RBR-813: checkout is the strongest possible acceptance signal -- an agent is
+          // claiming this row and starting work on it right now -- so a lingering
+          // `assigneeFallbackReason` is stale here for the same reason it is stale on the
+          // shared update path. Left set, the next `rbr767-sweep --apply` would match this
+          // row on its `isNotNull(assigneeFallbackReason)` branch and reassign live,
+          // in-progress work to a ladder-computed owner who never claimed it.
+          assigneeFallbackReason: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
           status: "in_progress",
@@ -8084,6 +8119,14 @@ export function issueService(db: Db) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
+            // RBR-813: adoption writes an explicit assignee exactly like the primary
+            // checkout branch does, so the stale-flag reasoning is identical and the
+            // clear has to happen on both. Missing it here would leave the worst
+            // instance of the defect live on the recovery path specifically: an agent
+            // adopting an abandoned run is picking up in-flight work, and a lingering
+            // `assigneeFallbackReason` would let the next `rbr767-sweep --apply` hand
+            // that work to a ladder-computed owner who never claimed it.
+            assigneeFallbackReason: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,

@@ -1231,6 +1231,21 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    // RBR-796 §3: authorization must be evaluated BEFORE business validation on every
+    // path. The assignee-fallback resolver briefly ran ahead of this guard, so an actor we
+    // intended to refuse got a 422 whose `details.candidatesConsidered` carried live agent
+    // UUIDs -- a request we meant to refuse outright was returning internal roster
+    // structure. Assert the refusal is clean, not merely that it is a refusal.
+    expect(res.body.details?.candidatesConsidered).toBeUndefined();
+    const serializedBody = JSON.stringify(res.body);
+    // No agent identifiers may appear. `issueId`/`runId` are legitimately echoed back --
+    // they are the caller's own request context, not internal roster structure.
+    for (const agentIdentifier of [ownerAgentId, peerAgentId]) {
+      expect(serializedBody).not.toContain(agentIdentifier);
+    }
+    // And nothing that looks like a roster listing, whatever key a future guard puts it under.
+    expect(serializedBody).not.toMatch(/creator:|creator_manager:|company_root:|parent:/);
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {

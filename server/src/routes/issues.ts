@@ -165,6 +165,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { resolveIssueAssigneeFallbackFromDb } from "../services/issue-assignee-fallback.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -7669,6 +7670,49 @@ export function issueRoutes(
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });
     const actor = getActorInfo(req);
+    // AUTHORIZATION BEFORE BUSINESS VALIDATION.
+    //
+    // This guard used to run *after* the assignee fallback resolver below. That ordering was
+    // a security defect: an actor we intended to refuse outright (403) instead received the
+    // resolver's 422, whose body carried `candidatesConsidered` -- a list of live agent
+    // UUIDs. A request that is not authorized must not reach code that can emit internal
+    // roster structure, so the guard is hoisted above every resolver on this path.
+    //
+    // The guard only inspects `assigneeAdapterOverrides`, which comes straight off the raw
+    // request body, so it does not depend on anything the fallback resolver computes. Pass
+    // `rawCreateBody` rather than the assembled `createBody` for exactly that reason.
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, rawCreateBody))) return;
+    // The parent rung of the fallback ladder needs the parent's assignee. Agent actors
+    // already loaded it above for authorization; load it here for other actor types.
+    if (!createParent && effectiveParentId) {
+      const parentForFallback = await svc.getById(effectiveParentId);
+      if (parentForFallback && parentForFallback.companyId === companyId) {
+        createParent = parentForFallback;
+      }
+    }
+    // An issue with no agent and no user assignee is picked up by no heartbeat, ever --
+    // it is invisible work. Route it to a deterministic owner at creation time.
+    //
+    // THIS ROUTE NEVER REFUSES TO WRITE FOR A ROSTER REASON. When the roster is degraded
+    // we assign the owner of last resort and flag the row. When the company has zero
+    // agents we create the issue *unassigned* and flag it `no_agents_in_company`. Zero
+    // agents is not an impossibility -- it is the bootstrap state of every company, and
+    // someone has to be able to file the first issue, including "hire the first agent."
+    // An unassigned issue in an empty company is the correct record: the work exists, it
+    // is queryable, and `scripts/rbr767-sweep.ts` gives it an owner on first hire.
+    const assigneeFallback = await resolveIssueAssigneeFallbackFromDb(db, {
+      companyId,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+      assigneeUserId: rawCreateBody.assigneeUserId as string | null | undefined,
+      parentAssigneeAgentId: createParent?.assigneeAgentId ?? null,
+      createdByAgentId: actor.agentId ?? null,
+    });
+    const fallbackAssigneeAgentId = assigneeFallback.applied ? assigneeFallback.assigneeAgentId : null;
+    // `applied: false` with a `degradedReason` means "flag," not "reject": no owner could
+    // be named, so the row is written unassigned and carries the flag instead.
+    const assigneeFallbackDegradedReason = assigneeFallback.applied
+      ? (assigneeFallback.degraded ? assigneeFallback.degradedReason : null)
+      : (assigneeFallback.reason === "no_agents_in_company" ? assigneeFallback.degradedReason : null);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
@@ -7676,6 +7720,8 @@ export function issueRoutes(
       ...rawCreateBody,
       parentId: effectiveParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(fallbackAssigneeAgentId ? { assigneeAgentId: fallbackAssigneeAgentId } : {}),
+      ...(assigneeFallbackDegradedReason ? { assigneeFallbackReason: assigneeFallbackDegradedReason } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
@@ -7703,7 +7749,10 @@ export function issueRoutes(
         }
         : {}),
     };
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
+    // Guard already ran above, before the fallback resolver, so an unauthorized actor never
+    // reaches resolver output. `createBody` adds nothing this guard inspects
+    // (`assigneeAdapterOverrides` is copied verbatim from `rawCreateBody`), so re-running it
+    // here would be redundant.
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
@@ -7711,7 +7760,13 @@ export function issueRoutes(
         parentIssueId: createBody.parentId,
       }),
       parentIssueId: createBody.parentId ?? null,
-      assigneeAgentId: createBody.assigneeAgentId ?? null,
+      // Authorization evaluates what the *actor asked for*, not what the fallback ladder
+      // derived. `createBody.assigneeAgentId` may now hold a system-chosen fallback owner
+      // the caller never named; feeding that to an authorization guard would let a
+      // system-derived value widen or narrow the actor's own permission check. Same class
+      // of defect as the ordering bug above: authorization decisions must not be computed
+      // from business-logic output.
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
       assigneeUserId: rawCreateBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, companyId, createAssignmentScope);
@@ -7724,7 +7779,13 @@ export function issueRoutes(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    // Same class as the ordering defect above: authorize what the actor *requested*, never
+    // what the fallback ladder derived. This guard grants when the actor IS the assignee, and
+    // the `creator` rung of the ladder can name the actor itself -- so passing the derived
+    // `createBody.assigneeAgentId` would let an agent silently widen its own permission by
+    // simply omitting the assignee field. Authorization must not be computed from
+    // business-logic output.
+    await assertCanManageIssueMonitor(access, req, companyId, normalizedAssigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
@@ -7795,6 +7856,29 @@ export function issueRoutes(
           }
           : {}),
         ...buildCreateIssueActivityStatusDetails(issue, res),
+        ...(assigneeFallback.applied
+          ? {
+            assigneeFallbackApplied: true,
+            assigneeFallbackReason: assigneeFallback.reason,
+            assigneeFallbackAgentId: assigneeFallback.assigneeAgentId,
+            ...(assigneeFallback.degraded
+              ? {
+                assigneeFallbackDegraded: true,
+                assigneeFallbackDegradedReason: assigneeFallback.degradedReason,
+                assigneeFallbackCandidatesConsidered: assigneeFallback.candidatesConsidered,
+              }
+              : {}),
+          }
+          : assigneeFallback.reason === "no_agents_in_company"
+            ? {
+              // No owner could be named, so the row was written unassigned and flagged.
+              // Recorded as degraded so the same operator query finds it. There are no
+              // candidate identifiers here because there are no agents to name.
+              assigneeFallbackApplied: false,
+              assigneeFallbackDegraded: true,
+              assigneeFallbackDegradedReason: assigneeFallback.degradedReason,
+            }
+            : {}),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -7889,16 +7973,47 @@ export function issueRoutes(
       parentIssueId: parent.id,
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });
+    // AUTHORIZATION BEFORE BUSINESS VALIDATION.
+    //
+    // Hoisted above the fallback resolver for the same reason as the create path: the
+    // resolver's error body used to carry `candidatesConsidered` (live agent UUIDs), and an
+    // actor destined for a 403 must never reach code that can emit internal roster
+    // structure. This is the exact ordering the negative test
+    // "blocks cheap status-only recovery runs from propagating cheap profile through issue
+    // create" asserts on -- it saw 422 where it required 403.
+    //
+    // The guard reads only `assigneeAdapterOverrides`, which the resolver does not touch,
+    // so `sanitizedBody` carries everything it needs.
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, sanitizedBody))) return;
+    const childAssigneeFallback = await resolveIssueAssigneeFallbackFromDb(db, {
+      companyId: parent.companyId,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+      assigneeUserId: sanitizedBody.assigneeUserId as string | null | undefined,
+      parentAssigneeAgentId: parent.assigneeAgentId ?? null,
+      createdByAgentId: getActorInfo(req).agentId ?? null,
+    });
+    // As on the create path: no roster condition refuses the write. Zero agents means the
+    // child is created unassigned and flagged `no_agents_in_company` for the sweep.
+    const childAssigneeFallbackDegradedReason = childAssigneeFallback.applied
+      ? (childAssigneeFallback.degraded ? childAssigneeFallback.degradedReason : null)
+      : (childAssigneeFallback.reason === "no_agents_in_company"
+        ? childAssigneeFallback.degradedReason
+        : null);
     const createBody = {
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(childAssigneeFallback.applied ? { assigneeAgentId: childAssigneeFallback.assigneeAgentId } : {}),
+      ...(childAssigneeFallbackDegradedReason
+        ? { assigneeFallbackReason: childAssigneeFallbackDegradedReason }
+        : {}),
     };
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
       projectId: createBody.projectId ?? parent.projectId ?? null,
       parentIssueId: parent.id,
-      assigneeAgentId: createBody.assigneeAgentId ?? null,
-      assigneeUserId: createBody.assigneeUserId ?? null,
+      // As on the create path: authorize what the actor requested, never the fallback
+      // ladder's derived owner.
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+      assigneeUserId: sanitizedBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, parent.companyId, childAssignmentScope);
     if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
@@ -7915,7 +8030,10 @@ export function issueRoutes(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    await assertCanManageIssueMonitor(access, req, parent.companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    // As on the create path: authorize the requested assignee, not the ladder's derived one.
+    // The `parent` and `creator` rungs can both name the acting agent, which would otherwise
+    // satisfy this guard's "actor IS the assignee" grant for free.
+    await assertCanManageIssueMonitor(access, req, parent.companyId, normalizedAssigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,

@@ -37,6 +37,12 @@ export const issues = pgTable(
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
+    /**
+     * Set when the RBR-767 fallback ladder had to assign an owner that was not invokable
+     * at creation time (degraded roster). First-class rather than activity-only so the
+     * repair sweep can query it directly. NULL on the healthy path.
+     */
+    assigneeFallbackReason: text("assignee_fallback_reason"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     executionAgentNameKey: text("execution_agent_name_key"),
@@ -107,6 +113,11 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    // Sweep input: find issues whose owner was assigned off a degraded roster. Partial so
+    // it stays tiny -- the healthy path leaves this column NULL.
+    assigneeFallbackReasonIdx: index("issues_company_assignee_fallback_reason_idx")
+      .on(table.companyId, table.assigneeFallbackReason)
+      .where(sql`${table.assigneeFallbackReason} is not null`),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
