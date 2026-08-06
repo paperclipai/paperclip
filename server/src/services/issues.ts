@@ -100,6 +100,11 @@ import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { insertRowsInChunks } from "./batch-insert.js";
+import {
+  resolveLiveAssigneeAgentId,
+  buildLiveAssigneeSubstitutionComment,
+  type LiveAssigneeResolution,
+} from "./live-assignee-resolution.js";
 import type {
   ImportIssueRow,
   ImportIssueCommentRow,
@@ -7807,6 +7812,28 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        // TSMC-19788: dispatch-time live-assignee resolution (flag-gated, default off).
+        // Static assigneeAgentId values from pollers/webhooks/routine fires silently
+        // park work on paused/error/terminated lanes. When enabled, substitute the
+        // first invokable fallback sister, else the company stranded-recovery owner,
+        // before the card is stored so every created card has a live owner. The
+        // resolver preserves the original assignee when no live substitute exists.
+        let liveAssigneeResolution: LiveAssigneeResolution | null = null;
+        if (
+          process.env.FEATURE_LIVE_ASSIGNEE_RESOLUTION === "on" &&
+          values.assigneeAgentId &&
+          !values.assigneeUserId
+        ) {
+          liveAssigneeResolution = await resolveLiveAssigneeAgentId(
+            tx as unknown as Db,
+            companyId,
+            values.assigneeAgentId,
+          );
+          if (liveAssigneeResolution.substituted && liveAssigneeResolution.resolvedAgentId) {
+            values.assigneeAgentId = liveAssigneeResolution.resolvedAgentId;
+          }
+        }
+
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
@@ -7818,6 +7845,17 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (liveAssigneeResolution?.substituted) {
+          const substitutionBody = buildLiveAssigneeSubstitutionComment(liveAssigneeResolution);
+          if (substitutionBody) {
+            await tx.insert(issueComments).values({
+              companyId,
+              issueId: issue.id,
+              authorType: "system",
+              body: substitutionBody,
+            });
+          }
+        }
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
             companyId,
