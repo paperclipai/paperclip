@@ -41,6 +41,10 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export {
+  assertIssueReviewVerdictActorAllowed,
+  type IssueReviewVerdictActor,
+} from "./issue-review-policy.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
