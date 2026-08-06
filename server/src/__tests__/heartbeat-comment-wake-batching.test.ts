@@ -2064,7 +2064,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 20_000);
 
-  it("uses a run-log-attributed issue comment instead of queuing a missing-comment retry", async () => {
+  it("does not use run-log-attributed issue comments to satisfy the missing-comment policy", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -2123,6 +2123,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           issueId,
           taskId: issueId,
           wakeReason: "issue_assigned",
+          skipIssueComment: true,
         },
         requestedByActorType: "system",
         requestedByActorId: null,
@@ -2180,7 +2181,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, firstRun!.id))
           .then((rows) => rows[0] ?? null);
-        return sourceRun?.status === "succeeded" && sourceRun.issueCommentStatus === "satisfied";
+        return sourceRun?.status === "succeeded" && sourceRun.issueCommentStatus === "retry_queued";
       });
 
       const sourceRun = await db
@@ -2189,15 +2190,15 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(heartbeatRuns.id, firstRun!.id))
         .then((rows) => rows[0] ?? null);
 
-      expect(sourceRun?.issueCommentStatus).toBe("satisfied");
-      expect(sourceRun?.issueCommentSatisfiedByCommentId).toBe(comment.id);
+      expect(sourceRun?.issueCommentStatus).toBe("retry_queued");
+      expect(sourceRun?.issueCommentSatisfiedByCommentId).toBeNull();
 
       const wakeups = await db
         .select()
         .from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
 
-      expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
+      expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

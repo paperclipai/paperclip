@@ -944,6 +944,30 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
   });
 
+  it("rejects the checked-out owner without a run id on issue comments (401)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      // intentionally no runId
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Completion comment without run id." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());
 

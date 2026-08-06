@@ -8864,6 +8864,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (
+      req.actor.type === "agent" &&
+      !req.actor.runId &&
+      req.actor.agentId &&
+      issue.assigneeAgentId === req.actor.agentId &&
+      (issue.checkoutRunId || issue.executionRunId)
+    ) {
+      res.status(401).json({ error: "Agent run id required" });
+      return;
+    }
+
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
