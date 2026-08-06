@@ -247,6 +247,12 @@ function cleanResponse(raw: string): string {
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
+      // Strip "Query: <prompt>" echo — Hermes prints this to stdout in non-quiet mode when
+      // starting a new session. It is progress output, not a response, and makes the entire
+      // system prompt appear verbatim as an auto-comment. "Warning: Unknown toolsets:" has the
+      // same root cause (toolset resolution failure) and is equally noisy in Paperclip comments.
+      // (See: SSC-1832 raw_prompt_echo sightings, 2026-08-01 → 2026-08-05)
+      if (t.startsWith("Query:") || t.startsWith("Warning: Unknown toolsets:")) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
