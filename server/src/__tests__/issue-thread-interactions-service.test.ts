@@ -2524,6 +2524,130 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("rejects creating a plan confirmation against a stale document revision and accepts the current one", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Stale plan confirmation",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    // Document is already at revision 2 — revision 1 is stale.
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values([
+      {
+        id: revisionId,
+        companyId,
+        documentId,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "v1",
+      },
+      {
+        id: nextRevisionId,
+        companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "v2",
+      },
+    ]);
+
+    const staleTarget = {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+
+    // The revision check runs inside the create transaction (locking the
+    // document row), so a target pointing at an older revision is rejected
+    // atomically with the would-be insert rather than by a racy pre-check.
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: staleTarget,
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("current issue document revision"),
+    });
+
+    const noRows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(noRows).toHaveLength(0);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: {
+          ...staleTarget,
+          revisionId: nextRevisionId,
+          revisionNumber: 2,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+    expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
+  });
+
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
