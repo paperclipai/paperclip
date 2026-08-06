@@ -4218,6 +4218,7 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "instructions",
   "issueOverrides",
   "workspaceConfig",
+  "workspaceRealization",
   "environment",
   "envBindings",
   "secrets",
@@ -4441,6 +4442,7 @@ const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionCo
   instructions: "instructions",
   issueOverrides: "issue overrides",
   workspaceConfig: "workspace config",
+  workspaceRealization: "workspace realization",
   environment: "environment",
   envBindings: "env bindings",
   secrets: "secrets",
@@ -4747,6 +4749,7 @@ function buildSessionConfigCategoryValues(input: {
   instructions: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
+  workspaceRealization: unknown;
   environment: unknown;
   environmentEnv: unknown;
   projectEnv: unknown;
@@ -4767,6 +4770,7 @@ function buildSessionConfigCategoryValues(input: {
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
     workspaceConfig: input.workspaceConfig,
+    workspaceRealization: input.workspaceRealization,
     environment: input.environment,
     envBindings: {
       environment: { env: input.environmentEnv },
@@ -4785,6 +4789,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   modelProfile: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
+  workspaceRealization?: unknown;
   environment: unknown;
   environmentEnv: unknown;
   projectEnv: unknown;
@@ -4803,6 +4808,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     instructions,
     issueOverrides: input.issueOverrides,
     workspaceConfig: input.workspaceConfig,
+    workspaceRealization: input.workspaceRealization ?? null,
     environment: input.environment,
     environmentEnv: input.environmentEnv,
     projectEnv: input.projectEnv,
@@ -5111,6 +5117,7 @@ export function resolveTaskSessionConfigFreshness(input: {
   configMetadata: EffectiveRunSessionConfigMetadata | null;
   wakeResetReason?: string | null;
   preserveLegacySessionWithoutConfigMetadata?: boolean;
+  ignoredChangedCategories?: EffectiveRunSessionConfigCategory[];
 }): TaskSessionConfigFreshnessDecision {
   if (!input.hasTaskSession) {
     return {
@@ -5144,13 +5151,20 @@ export function resolveTaskSessionConfigFreshness(input: {
         `effective run configuration fingerprint version changed from ${storedConfig.version} to ${input.configMetadata.version}`,
       );
     } else if (storedConfig && storedConfig.fingerprint !== input.configMetadata.fingerprint) {
-      changedCategories = changedEffectiveRunSessionConfigCategories({
+      const detectedChangedCategories = changedEffectiveRunSessionConfigCategories({
         previous: storedConfig.categoryFingerprints,
         next: input.configMetadata.categoryFingerprints,
       });
-      reasons.push(
-        `effective run configuration changed: ${describeEffectiveRunConfigCategories(changedCategories)}`,
-      );
+      const ignoredChangedCategories = new Set(input.ignoredChangedCategories ?? []);
+      const onlyIgnoredCategoriesChanged =
+        detectedChangedCategories.length > 0 &&
+        detectedChangedCategories.every((category) => ignoredChangedCategories.has(category));
+      if (!onlyIgnoredCategoriesChanged) {
+        changedCategories = detectedChangedCategories;
+        reasons.push(
+          `effective run configuration changed: ${describeEffectiveRunConfigCategories(changedCategories)}`,
+        );
+      }
     }
   }
 
@@ -14146,6 +14160,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
+      },
+      // The realized workspace identity/config is operational state. It is not a
+      // user-selected workspace setting, and a lifecycle continuation may reuse
+      // its task session when this state first materializes after review.
+      workspaceRealization: {
         existingExecutionWorkspace: reusableExistingExecutionWorkspace
           ? {
               id: reusableExistingExecutionWorkspace.id,
@@ -14197,6 +14216,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeResetReason: wakeSessionResetReason,
       preserveLegacySessionWithoutConfigMetadata: (acceptedPlanContinuationWake || executionResumedWake)
         && !acceptedPlanWakeRoutingDecision,
+      ignoredChangedCategories: executionResumedWake ? ["workspaceRealization"] : [],
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
