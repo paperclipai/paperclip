@@ -41,6 +41,9 @@ function redactText(input: string, values: string[]) {
 
 export function redactRegisteredSecretValues<T>(input: T, values: string[]): T {
   if (typeof input === "string") return redactText(input, values) as T;
+  // Non-plain objects carry their value in internal slots, not in own enumerable
+  // properties, so the Object.entries walk below would flatten them to `{}`.
+  if (input instanceof Date) return input;
   if (Array.isArray(input)) return input.map((value) => redactRegisteredSecretValues(value, values)) as T;
   const record = asRecord(input);
   if (!record) return input;
