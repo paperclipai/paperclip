@@ -77,16 +77,18 @@ Two paths cover the common cases:
 Browse, inspect, and install catalog skills before reaching for an external
 source. Bundled skills are the curated defaults for any company; optional
 skills are role- or domain-specific.
-
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Write auth to a mode-600 config file so the token never appears in curl argv
+# (/proc/*/cmdline is world-readable on Linux). Reused across the calls below.
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled"
 
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow"
+
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
   -H "Content-Type: application/json" \
   -d '{
     "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow"
@@ -114,10 +116,11 @@ Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a 
 **Critical:** If a user gives you a `https://skills.sh/...` URL, use that URL or its key-style equivalent (`org/repo/skill-name`) as the `source`. Do **not** convert it to a GitHub URL — skills.sh is the managed registry and the source of truth for versioning, discovery, and updates.
 
 ### Example: skills.sh import (preferred)
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://skills.sh/google-labs-code/stitch-skills/design-md"
@@ -125,10 +128,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
 ```
 
 Or equivalently using the key-style string:
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "google-labs-code/stitch-skills/design-md"
@@ -136,10 +140,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/
 ```
 
 ### Example: GitHub import
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://github.com/vercel-labs/agent-browser"
@@ -153,29 +158,32 @@ You can also use source strings such as:
 - `npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser`
 
 If the task is to discover skills from the company project workspaces first:
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
 ## Inspect What Was Installed
-
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills"
 ```
 
 Read the skill entry and its `SKILL.md`:
-
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>"
+
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md"
 ```
 
 ## Assign Skills To An Existing Agent
@@ -187,10 +195,11 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 - exact slug when it is unique in the company
 
 The server persists canonical company skill keys.
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Content-Type: application/json" \
   -d '{
     "desiredSkills": [
@@ -200,19 +209,21 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
 ```
 
 If you need the current state first:
-
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills"
 ```
 
 ## Include Skills During Hire Or Create
 
 Use the same company skill keys or references in `desiredSkills` when hiring or creating an agent:
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",
@@ -228,10 +239,11 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
 ```
 
 For direct create without approval:
-
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",

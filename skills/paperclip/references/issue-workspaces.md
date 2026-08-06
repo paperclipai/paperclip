@@ -5,9 +5,13 @@ Use this reference when an issue has an isolated execution workspace and you nee
 ## Discover the Workspace
 
 Start from the issue, not from memory:
-
 ```sh
-curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Write auth to a mode-600 config file so the token never appears in curl argv
+# (/proc/*/cmdline is world-readable on Linux).
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/heartbeat-context"
 ```
 
@@ -23,35 +27,36 @@ If `currentExecutionWorkspace` is `null`, the issue does not currently have a re
 ## Control Services
 
 Prefer Paperclip-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.
-
 ```sh
+# Write auth to a mode-600 config file so the token never appears in curl argv
+# (/proc/*/cmdline is world-readable on Linux). Reused across the calls below.
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+
 # Start all configured services; waits for configured readiness checks.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+_auth | curl -sS -X POST --config - \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
   -d '{}'
 
 # Restart all configured services.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+_auth | curl -sS -X POST --config - \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
   -d '{}'
 
 # Stop all running services.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+_auth | curl -sS -X POST --config - \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/stop" \
   -d '{}'
 ```
 
 To target a configured service, pass one of:
-
 ```json
 { "workspaceCommandId": "web" }
 { "runtimeServiceId": "<runtime-service-id>" }

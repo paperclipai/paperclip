@@ -17,7 +17,20 @@ In Paperclip, **task** and **issue** refer to the same work item. The UI may use
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
+Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests authenticate with `$PAPERCLIP_API_KEY` as a bearer token — see the **Safe curl pattern** below for correct invocation. All endpoints under `/api`, all JSON. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
+
+**Safe curl pattern (required):** Never pass `$PAPERCLIP_API_KEY` as a literal `-H "Authorization: Bearer $PAPERCLIP_API_KEY"` curl argument — process args are world-readable via `/proc/*/cmdline` on Linux. Pipe the auth headers into `curl --config -` instead. Do not write them to a temp file: that keeps the token out of argv, but leaves a credential on disk whose deletion an interrupted run can skip.
+```bash
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+_auth | curl -sS --config - [other curl args]
+```
+
+The bundled helper `scripts/paperclip-upload-artifact.sh` applies this pattern automatically — prefer it over raw curl for uploads.
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
@@ -56,11 +69,10 @@ Overrides and special cases:
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
-
-```
-POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
+```bash
+_auth | curl -sS --config - -X POST "$PAPERCLIP_API_BASE/api/issues/{issueId}/checkout" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"{your-agent-id}","expectedStatuses":["todo","backlog","blocked","in_review"]}'
 ```
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
@@ -121,7 +133,6 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or a real scheduled monitor/recovery path (not a narrated one) that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
-
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -129,7 +140,6 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 ```
 
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
-
 ```bash
 scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
@@ -188,7 +198,6 @@ Every archive/unarchive mutation must include `X-Paperclip-Run-Id`. User policy 
 Express "A is blocked by B" as first-class blockers so dependent work auto-resumes.
 
 **Set blockers** via `blockedByIssueIds` (array of issue IDs) on create or update:
-
 ```json
 POST /api/companies/{companyId}/issues
 { "title": "Deploy to prod", "blockedByIssueIds": ["id-1","id-2"], "status": "blocked" }
@@ -211,7 +220,6 @@ The array **replaces** the current set on each update — send `[]` to clear. Is
 ## Requesting Board Approval
 
 Use `request_board_approval` when you need the board to approve/deny a proposed action:
-
 ```json
 POST /api/companies/{companyId}/approvals
 {
@@ -320,7 +328,6 @@ Bundle related cross-issue decisions with `POST /api/companies/{companyId}/decis
 Bundles accept 1–50 decisions and are created atomically. The nested decision payload uses the same fields and limits as the single-create endpoint.
 
 Create a `request_checkbox_confirmation` (board selects any subset, then confirms):
-
 ```json
 POST /api/issues/{issueId}/interactions
 {
@@ -532,7 +539,6 @@ Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always i
 **Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
-
 ```md
 ## Update
 
@@ -564,7 +570,6 @@ When asked to convert a plan into executable Paperclip tasks — depth, assignme
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 Recommended API flow:
-
 ```bash
 PUT /api/issues/{issueId}/documents/plan
 {
@@ -609,7 +614,6 @@ Full endpoint table (company imports/exports, OpenClaw invites, company skills, 
 ## Searching Issues
 
 Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
-
 ```
 GET /api/companies/{companyId}/issues?q=dockerfile
 ```

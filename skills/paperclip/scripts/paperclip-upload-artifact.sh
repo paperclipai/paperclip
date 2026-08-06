@@ -2,6 +2,15 @@
 
 set -euo pipefail
 
+# The bearer token is never written to disk and never passed as a curl argument
+# (see write_auth_config). What remains under this workspace is curl response
+# bodies, which hold no credential. A main-shell trap clears them on exit and on
+# catchable interruption; the trap is best-effort tidying, not a security
+# control, so the deferred-trap and SIGKILL cases below cost nothing.
+_WORKDIR="$(mktemp -d)"
+cleanup_workdir() { rm -rf "$_WORKDIR"; }
+trap cleanup_workdir EXIT INT TERM
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -83,6 +92,26 @@ detect_content_type() {
   esac
 }
 
+write_auth_config() {
+  # Emits a curl config carrying the auth headers on stdout, to be piped into
+  # `curl --config -`.
+  #
+  # Two properties matter, and a temp file buys only the first:
+  #
+  #  - The token never appears in curl argv. Process arguments are
+  #    world-readable through /proc/*/cmdline on Linux, so
+  #    `-H "Authorization: Bearer $TOKEN"` hands the credential to every
+  #    process on the host.
+  #  - The token never touches disk at all. A mode-600 temp file still has to
+  #    be deleted, and any deletion can be skipped. A supervisor that signals
+  #    this script's PID does not interrupt curl, and bash defers a trap until
+  #    its foreground child returns, so cleanup can be postponed for as long as
+  #    the request hangs; SIGKILL skips it outright. Passing the config through
+  #    a pipe removes the file, and with it the whole class of problem.
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+
 request_json() {
   local method="$1"
   local url="$2"
@@ -90,22 +119,20 @@ request_json() {
   local response_file
   local status_code
 
-  response_file="$(mktemp)"
+  response_file="$(mktemp -p "$_WORKDIR")"
   if [[ -n "$body" ]]; then
     status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+      write_auth_config | curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+        --config - \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
   else
     status_code="$(
-      curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+      write_auth_config | curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+        --config - \
+        "$url"
     )"
   fi
 
@@ -131,12 +158,11 @@ upload_file() {
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
-  response_file="$(mktemp)"
+  response_file="$(mktemp -p "$_WORKDIR")"
   status_code="$(
-    curl -sS -X POST -w '%{http_code}' -o "$response_file" \
+    write_auth_config | curl -sS -X POST -w '%{http_code}' -o "$response_file" \
+      --config - \
       "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )"
 
