@@ -31,15 +31,19 @@ async function findReviewRequester(
       eq(activityLog.entityType, "issue"),
       eq(activityLog.entityId, issue.id),
       eq(activityLog.action, "issue.updated"),
-      sql`coalesce(
-        ${activityLog.details} ->> 'status',
-        ${activityLog.details} -> 'changes' -> 'status' ->> 'to'
-      ) = 'in_review'`,
-      sql`coalesce(
-        ${activityLog.details} -> '_previous' ->> 'status',
-        ${activityLog.details} -> 'changes' -> 'status' ->> 'from',
-        ''
-      ) <> 'in_review'`,
+      sql`(
+        (
+          ${activityLog.details} ->> 'status' = 'in_review'
+          AND ${activityLog.details} -> '_previous' ->> 'status' IS NOT NULL
+          AND ${activityLog.details} -> '_previous' ->> 'status' <> 'in_review'
+        )
+        OR
+        (
+          ${activityLog.details} -> 'changes' -> 'status' ->> 'to' = 'in_review'
+          AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' IS NOT NULL
+          AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' <> 'in_review'
+        )
+      )`,
     ))
     .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
     .limit(1)

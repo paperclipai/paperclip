@@ -123,6 +123,46 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     })).resolves.toBeUndefined();
   });
 
+  it("ignores later in-review snapshots that did not record a status transition", async () => {
+    const seeded = await seedReview("not_creator");
+    await db.insert(activityLog).values([
+      {
+        companyId: seeded.companyId,
+        actorType: "agent",
+        actorId: seeded.requesterAgentId,
+        agentId: seeded.requesterAgentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: seeded.issue.id,
+        details: { status: "in_review", _previous: { status: "in_progress" } },
+        createdAt: new Date("2026-08-06T00:00:00.000Z"),
+      },
+      {
+        companyId: seeded.companyId,
+        actorType: "agent",
+        actorId: seeded.peerAgentId,
+        agentId: seeded.peerAgentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: seeded.issue.id,
+        details: { status: "in_review", priority: "high" },
+        createdAt: new Date("2026-08-06T00:01:00.000Z"),
+      },
+    ]);
+
+    await expect(assertIssueReviewVerdictActorAllowed(db, {
+      issue: seeded.issue,
+      actor: { type: "agent", id: seeded.requesterAgentId },
+    })).rejects.toMatchObject<HttpError>({
+      status: 403,
+      details: expect.objectContaining({ code: "review_policy_denied" }),
+    });
+    await expect(assertIssueReviewVerdictActorAllowed(db, {
+      issue: seeded.issue,
+      actor: { type: "agent", id: seeded.peerAgentId },
+    })).resolves.toBeUndefined();
+  });
+
   it("uses authenticated principal type for human_only", async () => {
     const seeded = await seedReview("human_only");
     expect(seeded.issue.reviewPolicy).toBe("human_only");
