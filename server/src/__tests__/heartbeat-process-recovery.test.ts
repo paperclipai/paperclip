@@ -4965,7 +4965,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(action?.resolutionNote).toContain("source issue is now todo");
   });
 
-  it("sweeps active liveness recovery after the recovery issue becomes terminal", async () => {
+  it("sweeps active liveness recovery after the recovery issue becomes terminal and releases stranded blocked sources (TSMC-20058)", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
@@ -4999,6 +4999,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       maxAttempts: 3,
       lastAttemptAt: new Date("2026-03-19T00:05:00.000Z"),
     });
+    // Source was parked blocked only on the recovery wrapper — no independent
+    // first-class blockers. Pre-TSMC-20058 the sweep folded the action and left
+    // the source stranded blocked (guard red).
     await db
       .update(issues)
       .set({
@@ -5007,11 +5010,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         updatedAt: new Date("2026-03-19T00:06:00.000Z"),
       })
       .where(eq(issues.id, issueId));
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: recoveryIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.staleRecoveryActionsFolded).toBe(1);
+    expect(result.staleRecoverySourcesReleased).toBe(1);
     expect(result.issueIds).toContain(issueId);
 
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
@@ -5022,6 +5032,99 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       maxAttempts: 3,
     });
     expect(action?.resolutionNote).toContain("recovery issue is now terminal (done)");
+    expect(action?.resolutionNote).toContain("source released to todo");
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.status).toBe("todo");
+  });
+
+  it("keeps source blocked when terminal recovery sweep still has independent unresolved blockers (TSMC-20058)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const recoveryIssueId = randomUUID();
+    const independentBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Unblock liveness incident",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: "REC-2",
+      },
+      {
+        id: independentBlockerId,
+        companyId,
+        title: "Independent upstream blocker",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 3,
+        identifier: "BLK-3",
+      },
+    ]);
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "no_progress_continuation",
+      fingerprint: `harness_stranded:${companyId}:${issueId}:${recoveryIssueId}`,
+      evidence: { state: "stranded_assigned_issue" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner", reason: "stranded_assigned_issue", ownerAgentId: agentId },
+      attemptCount: 1,
+      maxAttempts: 3,
+      lastAttemptAt: new Date("2026-03-19T00:05:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        checkoutRunId: null,
+        updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueRelations).values([
+      { companyId, issueId: recoveryIssueId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: independentBlockerId, relatedIssueId: issueId, type: "blocks" },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.staleRecoveryActionsFolded).toBe(1);
+    expect(result.staleRecoverySourcesReleased).toBe(0);
+
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+    });
+    expect(action?.resolutionNote).toContain("recovery issue is now terminal (done)");
+    expect(action?.resolutionNote).not.toContain("source released to todo");
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.status).toBe("blocked");
+    const remainingBlockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(remainingBlockers.map((row) => row.blockerIssueId)).toEqual([independentBlockerId]);
   });
 
   it("folds missing-disposition recovery when an event-driven hub idle path is present", async () => {

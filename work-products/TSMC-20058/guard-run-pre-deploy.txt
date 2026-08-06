@@ -1,0 +1,52 @@
+=== stranded-recovery-guard (report-only) ===
+Issues blocked with NO live blocker and an already-resolved recovery action: 5
+
+  co    issue       assignee              stranded  loops  blocks_n title
+  TSMC  TSMC-19466  Postiz-Stager         3.1h      5      3        BOARD ACTION REQUIRED: Restore governed Postiz promo <-- LOOPING
+  TSMC  TSMC-19533  Engineer-Hermes       26.9h     5      2        Consolidated repair: TSMC orphan-blocked state recon <-- LOOPING
+  DP    DP-3826     CTO                   1.6h      1      7        Pinterest production unlock: Standard-access packet 
+  DP    DP-3854     CMO                   2.1h      4      1        AA revenue product steer — validate “Your Aroid as a <-- LOOPING
+  TSC   TSC-7206    MIDAS-Hermes          34.5h     6      0        Risk-monitor BTC far-band [0.200%,inf) NO paper A/B <-- LOOPING
+
+Each row is an issue that cannot legitimately be in this state: it is `blocked`, nothing
+unresolved is blocking it, and the recovery action that was supposed to own it has already
+closed. Nothing will re-fire on these — they sit until a human notices.
+
+`blocks_n` = how many OTHER issues it is holding up; work the high ones first.
+`loops`    = how many times an AGENT was dispatched at this issue (owner_type='agent' only).
+             Board-escalated actions are excluded: past the cap of 3 (6e68b1eb8) the platform stops
+             dispatching agents and hands the issue to the board, so counting those rows would
+             report a correctly-escalated issue as still looping. >1 means re-dispatching
+             it ALONE does not fix it — the lane exits without a disposition every time, so a
+             plain bounce back to `todo` just re-enters the trap. Fix the exit, not the status.
+
+REMEDY (per issue): confirm the work state, then give it a real disposition —
+  - deliverable is finished  -> `done`
+  - work remains             -> `todo`, so the assignee's normal pick-work path takes it
+  - genuinely blocked        -> `blocked` WITH first-class `blockedByIssueIds`, never free text
+
+⛔ THE LINE: this guard reports. It does not re-dispose issues, because choosing between
+"finished" and "work remains" requires reading the actual deliverable. Route each one to its
+assignee lane; do not guess on their behalf.
+
+Platform defect behind this class: TSMC-17880.
+
+=== board-owned recovery without linked artifact (TSMC-19842 inverse) ===
+Live board-owned actions with recovery_issue_id NULL: 9
+
+  co    issue       kind                        reason                      status    next/title
+  TSMC  TSMC-18963  issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSMC  TSMC-19364  issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSMC  TSMC-19352  issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSMC  TSMC-19465  issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSK   TSK-5829    issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSC   TSC-7354    stranded_assigned_issue     no_invokable_recovery_owner active    Restore a live execution path, fix the runtime/adapter failu
+  TSC   TSC-7355    stranded_assigned_issue     no_invokable_recovery_owner active    Restore a live execution path, fix the runtime/adapter failu
+  TSK   TSK-6072    issue_graph_liveness                                    escalated Manual intervention required. Automatic liveness retries sto
+  TSBC  TSBC-2035   stranded_assigned_issue     no_invokable_recovery_owner active    Restore a live execution path, fix the runtime/adapter failu
+
+Each row is a silent board escalation: owner_type=board but no recovery_issue_id receipt.
+Operator Console / first-class wait path cannot surface it. Prefer one root escalation per
+exit signature (origin_kind=recovery_loop_cap_escalation) over per-source board cards.
+
+Platform defect behind this class: TSMC-19842.

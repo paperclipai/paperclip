@@ -4225,6 +4225,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  /**
+   * TSMC-20058 / sibling of TSMC-17880.
+   *
+   * Folding a recovery action because its recovery *wrapper* went terminal is only
+   * safe when the source already has an independent disposition. If the source is
+   * still `blocked` and the terminal recovery issue was its only live wait path
+   * (or the wait was pure recovery-stamped external-gate prose with no first-class
+   * blockers), resolving the action without releasing the source recreates the
+   * stranded-recovery-guard contradiction: blocked + no live blockers + resolved
+   * recovery action. Release the source back to `todo` so the assignee pick-work
+   * path can take it; keep it blocked only when independent unresolved blockers remain.
+   */
+  async function releaseSourceAfterTerminalRecoveryIssue(input: {
+    companyId: string;
+    sourceIssueId: string;
+    recoveryIssueId: string | null;
+  }): Promise<"released" | "still_blocked" | "unchanged"> {
+    const source = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.sourceIssueId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!source || source.status !== "blocked") return "unchanged";
+
+    const unresolvedBlockerIds = await existingUnresolvedBlockerIssueIds(input.companyId, source.id);
+    const independentUnresolvedBlockerIds = input.recoveryIssueId
+      ? unresolvedBlockerIds.filter((blockerId) => blockerId !== input.recoveryIssueId)
+      : unresolvedBlockerIds;
+
+    // Always drop a terminal recovery wrapper from the wait set when present.
+    // unresolved* already excludes done/cancelled rows, so a bare unresolved
+    // check would leave the dead recovery edge attached while independent
+    // blockers remain (test: keeps source blocked with independent blockers).
+    const allBlockerIds = await existingBlockerIssueIds(input.companyId, source.id);
+    const remainingBlockerIds = input.recoveryIssueId
+      ? allBlockerIds.filter((blockerId) => blockerId !== input.recoveryIssueId)
+      : allBlockerIds;
+    const recoveryEdgePresent = Boolean(
+      input.recoveryIssueId && allBlockerIds.includes(input.recoveryIssueId),
+    );
+
+    if (independentUnresolvedBlockerIds.length > 0) {
+      if (recoveryEdgePresent) {
+        await issuesSvc.update(source.id, { blockedByIssueIds: remainingBlockerIds });
+      }
+      return "still_blocked";
+    }
+
+    // No independent live wait remains. Drop the terminal recovery blocker (if any)
+    // and restore the normal pick-work path. Do not leave recovery-stamped external
+    // gate prose as a silent permanent block with no live recovery owner.
+    await issuesSvc.update(source.id, {
+      status: "todo",
+      blockedByIssueIds: remainingBlockerIds,
+    });
+    return "released";
+  }
+
   async function sweepStaleRecoveryActions() {
     const recoveryIssue = alias(issues, "stale_recovery_issue");
     const candidates = await db
@@ -4270,10 +4332,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       folded: 0,
       actionIds: [] as string[],
       issueIds: [] as string[],
+      sourcesReleased: 0,
     };
 
     for (const candidate of candidates) {
       const recoveryIssueTerminal = candidate.recoveryIssueStatus === "done" || candidate.recoveryIssueStatus === "cancelled";
+
+      // Sibling of TSMC-17880: do not fold a terminal-recovery-issue action into
+      // "restored" while leaving the source stranded blocked with no independent
+      // wait path. Release first when needed, then fold.
+      let sourceRelease: "released" | "still_blocked" | "unchanged" = "unchanged";
+      if (recoveryIssueTerminal && candidate.sourceStatus === "blocked") {
+        sourceRelease = await releaseSourceAfterTerminalRecoveryIssue({
+          companyId: candidate.companyId,
+          sourceIssueId: candidate.sourceIssueId,
+          recoveryIssueId: candidate.recoveryIssueId,
+        });
+        if (sourceRelease === "released") result.sourcesReleased += 1;
+      }
+
       const folded = await recoveryActionsSvc.resolveActiveForIssue({
         companyId: candidate.companyId,
         sourceIssueId: candidate.sourceIssueId,
@@ -4281,7 +4358,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: "resolved",
         outcome: "restored",
         resolutionNote: recoveryIssueTerminal
-          ? `Recovery action swept because the recovery issue is now terminal (${candidate.recoveryIssueStatus}).`
+          ? sourceRelease === "released"
+            ? `Recovery action swept because the recovery issue is now terminal (${candidate.recoveryIssueStatus}); source released to todo (no independent live blockers).`
+            : `Recovery action swept because the recovery issue is now terminal (${candidate.recoveryIssueStatus}).`
           : candidate.kind === "missing_disposition"
             ? `Missing-disposition recovery swept because the source issue is now ${candidate.sourceStatus}.`
             : `Recovery action swept because the source issue is now terminal (${candidate.sourceStatus}).`,
@@ -4320,6 +4399,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           recoveryActionKind: candidate.kind,
           sourceStatus: candidate.sourceStatus,
           recoveryIssueStatus: candidate.recoveryIssueStatus,
+          sourceRelease,
         },
       });
     }
@@ -5325,6 +5405,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       staleRecoveryActionsFolded: 0,
+      // TSMC-20058: sources released from stranded blocked when a terminal recovery
+      // wrapper was the only wait path (sibling of the missing_disposition 17880 exit).
+      staleRecoverySourcesReleased: 0,
       terminalSourceWrappersClosed: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
@@ -5342,6 +5425,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const staleRecoveryActions = await sweepStaleRecoveryActions();
     result.staleRecoveryActionsFolded += staleRecoveryActions.folded;
+    result.staleRecoverySourcesReleased += staleRecoveryActions.sourcesReleased;
     result.issueIds.push(...staleRecoveryActions.issueIds);
 
     const terminalSourceWrappers = await sweepOpenRecoveryWrappersForTerminalSources();
@@ -6524,6 +6608,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
     if (!blockerIds.includes(recovery.id)) return false;
     const remainingBlockerIds = blockerIds.filter((blockerId) => blockerId !== recovery.id);
+    // TSMC-20058: when the recovery escalation was the only wait path, always
+    // release the source. Recovery writers stamp external-gate prose so a bare
+    // blocker-relation patch can succeed while leaving the source blocked with
+    // no live owner — the stranded-recovery-guard contradiction. Prefer the
+    // intentional release over relying on the enter-blocked 422 path.
+    const unresolvedRemaining = await existingUnresolvedBlockerIssueIds(
+      sourceIssue.companyId,
+      sourceIssue.id,
+    ).then((ids) => ids.filter((blockerId) => blockerId !== recovery.id));
+    if (sourceIssue.status === "blocked" && unresolvedRemaining.length === 0) {
+      await issuesSvc.update(sourceIssue.id, {
+        blockedByIssueIds: remainingBlockerIds,
+        status: "todo",
+      });
+      return true;
+    }
     try {
       await issuesSvc.update(sourceIssue.id, { blockedByIssueIds: remainingBlockerIds });
     } catch (error) {
