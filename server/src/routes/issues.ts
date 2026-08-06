@@ -156,6 +156,11 @@ import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
+  ISSUE_LIST_QUERY_PARAM_HINTS,
+  ISSUE_LIST_SUPPORTED_QUERY_PARAM_SET,
+  rejectUnsupportedQueryParams,
+} from "./query-params.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -5324,6 +5329,16 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (isTaskBridgeKeyActor(req)) {
       res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
+      return;
+    }
+    if (
+      rejectUnsupportedQueryParams(
+        req,
+        res,
+        ISSUE_LIST_SUPPORTED_QUERY_PARAM_SET,
+        ISSUE_LIST_QUERY_PARAM_HINTS,
+      )
+    ) {
       return;
     }
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
