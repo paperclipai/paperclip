@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, afterEach } from "vitest";
 import postgres from "postgres";
 import {
@@ -44,5 +46,20 @@ d("heartbeat context_snapshot expression index migration", () => {
     );
     const wakeText = wakePlan.map((r) => Object.values(r)[0]).join("\n");
     expect(wakeText).toContain("agent_wakeup_requests_company_payload_issue_idx");
+
+    // Idempotency: re-running the migration statements against an already
+    // migrated database must be a no-op, not an error.
+    const migrationSql = await readFile(
+      fileURLToPath(new URL("./migrations/0209_heartbeat_context_snapshot_indexes.sql", import.meta.url)),
+      "utf8",
+    );
+    const statements = migrationSql
+      .split("--> statement-breakpoint")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      await sql.unsafe(statement);
+    }
   }, 240_000);
 });
