@@ -74,6 +74,10 @@ export function resetBoardKeyAuthFailureRateLimitForTests() {
   boardKeyAuthFailureRateLimiter.reset();
 }
 
+export function snapshotBoardKeyAuthFailureRateLimitForTests() {
+  return boardKeyAuthFailureRateLimiter.snapshot();
+}
+
 async function auditBoardKeyAuthenticationFailure(
   db: Db,
   req: Request,
@@ -356,46 +360,43 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         next(tooManyRequests("Too many authentication failures"));
         return;
       }
-      let authentication: Awaited<ReturnType<typeof boardAuth.authenticateBoardApiKey>>;
       try {
-        authentication = await boardAuth.authenticateBoardApiKey(token);
-      } catch (error) {
-        admission.release();
-        throw error;
-      }
-      if (!authentication.ok) {
-        const limited = boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity);
-        try {
+        const authentication = await boardAuth.authenticateBoardApiKey(token);
+        if (!authentication.ok) {
+          const limited = boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity);
           await auditBoardKeyAuthenticationFailure(db, req, authentication);
-        } finally {
-          admission.release();
+          next(limited ? tooManyRequests("Too many authentication failures") : unauthorized());
+          return;
         }
-        next(limited ? tooManyRequests("Too many authentication failures") : unauthorized());
+
+        const { key: boardKey, access, scopeConfig } = authentication;
+        const effectiveCompanyIds = scopeConfig
+          ? scopeConfig.companyIds.filter((companyId) => access.companyIds.includes(companyId))
+          : access.companyIds;
+        req.actor = {
+          type: "board",
+          userId: boardKey.userId,
+          userName: access.user.name ?? null,
+          userEmail: access.user.email ?? null,
+          companyIds: effectiveCompanyIds,
+          memberships: access.memberships.filter((membership) => effectiveCompanyIds.includes(membership.companyId)),
+          isInstanceAdmin: access.isInstanceAdmin,
+          keyId: boardKey.id,
+          boardKeyOwnerId: boardKey.userId,
+          boardKeyScope: scopeConfig,
+          boardKeyPrefix: boardKey.tokenPrefix,
+          boardKeyLegacyUnrestricted: boardKey.legacyUnrestricted,
+          runId: runIdHeader || undefined,
+          source: "board_key",
+        };
+        next();
         return;
+      } finally {
+        // Authentication, failure accounting, denial auditing, principal
+        // construction, and downstream dispatch all share one release boundary.
+        // No future statement in the admitted region can leak limiter capacity.
+        admission.release();
       }
-      admission.release();
-      const { key: boardKey, access, scopeConfig } = authentication;
-      const effectiveCompanyIds = scopeConfig
-        ? scopeConfig.companyIds.filter((companyId) => access.companyIds.includes(companyId))
-        : access.companyIds;
-      req.actor = {
-        type: "board",
-        userId: boardKey.userId,
-        userName: access.user.name ?? null,
-        userEmail: access.user.email ?? null,
-        companyIds: effectiveCompanyIds,
-        memberships: access.memberships.filter((membership) => effectiveCompanyIds.includes(membership.companyId)),
-        isInstanceAdmin: access.isInstanceAdmin,
-        keyId: boardKey.id,
-        boardKeyOwnerId: boardKey.userId,
-        boardKeyScope: scopeConfig,
-        boardKeyPrefix: boardKey.tokenPrefix,
-        boardKeyLegacyUnrestricted: boardKey.legacyUnrestricted,
-        runId: runIdHeader || undefined,
-        source: "board_key",
-      };
-      next();
-      return;
     }
 
     const tokenHash = hashToken(token);
