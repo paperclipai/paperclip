@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { MCP_HTTP_ACCEPT, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "../services/mcp-http.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  closeMcpSession,
+  initializeMcpSession,
+  MCP_HTTP_ACCEPT,
+  MCP_PROTOCOL_VERSION,
+  mcpHttpRequestHeaders,
+  parseMcpHttpResponseBody,
+} from "../services/mcp-http.js";
 
 describe("mcpHttpRequestHeaders", () => {
   it("advertises both JSON and SSE on every request", () => {
@@ -15,6 +22,89 @@ describe("mcpHttpRequestHeaders", () => {
       accept: "application/json, text/event-stream",
       Authorization: "Bearer x",
     });
+  });
+});
+
+describe("initializeMcpSession", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("runs the initialize handshake first and returns the assigned session id", async () => {
+    const calls: Array<{ body: Record<string, unknown>; headers: Record<string, string> }> = [];
+    globalThis.fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      calls.push({ body, headers: init.headers as Record<string, string> });
+      if (body.method === "initialize") {
+        return new Response(
+          `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream", "mcp-session-id": "sess-123" } },
+        );
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+
+    const sessionId = await initializeMcpSession("https://mcp.example/mcp", { Authorization: "Bearer x" });
+
+    expect(sessionId).toBe("sess-123");
+    // First call is `initialize` with the required Accept header and protocol version.
+    expect(calls[0].body.method).toBe("initialize");
+    expect((calls[0].body.params as Record<string, unknown>).protocolVersion).toBe(MCP_PROTOCOL_VERSION);
+    expect(calls[0].headers.accept).toBe("application/json, text/event-stream");
+    expect(calls[0].headers.Authorization).toBe("Bearer x");
+    // Then `notifications/initialized`, echoing the session id back.
+    expect(calls[1].body.method).toBe("notifications/initialized");
+    expect(calls[1].headers["mcp-session-id"]).toBe("sess-123");
+  });
+
+  it("returns null for a stateless server that omits the session id", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    ) as typeof fetch;
+    expect(await initializeMcpSession("https://mcp.example/mcp")).toBeNull();
+  });
+
+  it("returns null when the handshake is rejected, deferring to the follow-up request", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
+    expect(await initializeMcpSession("https://mcp.example/mcp")).toBeNull();
+  });
+
+  it("returns null on a network failure", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    expect(await initializeMcpSession("https://mcp.example/mcp")).toBeNull();
+  });
+});
+
+describe("closeMcpSession", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("sends DELETE with the session id to tear the session down", async () => {
+    let request: { method?: string; headers: Record<string, string> } | undefined;
+    globalThis.fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      request = { method: init.method, headers: init.headers as Record<string, string> };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await closeMcpSession("https://mcp.example/mcp", { Authorization: "Bearer x" }, "sess-123");
+
+    expect(request?.method).toBe("DELETE");
+    expect(request?.headers["mcp-session-id"]).toBe("sess-123");
+    expect(request?.headers.Authorization).toBe("Bearer x");
+  });
+
+  it("swallows errors (teardown is best-effort)", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    await expect(closeMcpSession("https://mcp.example/mcp", undefined, "sess-123")).resolves.toBeUndefined();
   });
 });
 
