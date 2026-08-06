@@ -32,6 +32,7 @@ import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { PriorityIcon } from "./PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
@@ -512,7 +513,8 @@ function TaskTreeNode({
               ) : null}
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  {node.task.priority ? (
+                  {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+                  {SHOW_TASK_PRIORITY_UI && node.task.priority ? (
                     <PriorityIcon
                       priority={node.task.priority}
                       className="mt-px"

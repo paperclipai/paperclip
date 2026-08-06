@@ -125,6 +125,7 @@ import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
 import { ActionCard, ActionCardMobile, BindingsTable } from "@/components/actions/ActionCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
@@ -384,7 +385,10 @@ export function DesignGuide() {
   );
   const [filters, setFilters] = useState<FilterValue[]>([
     { key: "status", label: "Status", value: "Active" },
-    { key: "priority", label: "Priority", value: "High" },
+    // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
+    ...(SHOW_TASK_PRIORITY_UI
+      ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+      : []),
   ]);
   const [allowExternal, setAllowExternal] = useState(false);
   const [allowUnpinned, setAllowUnpinned] = useState(false);
@@ -637,6 +641,8 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        {/* PAP-411: PriorityIcon showcase gated behind SHOW_TASK_PRIORITY_UI per board decision. */}
+        {SHOW_TASK_PRIORITY_UI && (
         <SubSection title="PriorityIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
@@ -651,6 +657,7 @@ export function DesignGuide() {
             <span className="text-sm">Click the icon to change (current: {priority})</span>
           </div>
         </SubSection>
+        )}
 
         <SubSection title="Agent status dots">
           <div className="flex items-center gap-4 flex-wrap">
@@ -1249,7 +1256,10 @@ export function DesignGuide() {
             onClick={() =>
               setFilters([
                 { key: "status", label: "Status", value: "Active" },
-                { key: "priority", label: "Priority", value: "High" },
+                // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
+                ...(SHOW_TASK_PRIORITY_UI
+                  ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+                  : []),
               ])
             }
           >
