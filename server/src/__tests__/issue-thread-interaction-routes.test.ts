@@ -34,7 +34,6 @@ const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => 
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-const mockBuildPlanReviewContext = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{ companyId: "company-1", agentId: CREATED_AGENT_ID, contextSnapshot: null }]).then(
@@ -69,12 +68,6 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/plan-review-context.js", async () => {
-    const actual = await vi.importActual<typeof import("../services/plan-review-context.js")>(
-      "../services/plan-review-context.js",
-    );
-    return { ...actual, buildPlanReviewContext: mockBuildPlanReviewContext };
-  });
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -255,7 +248,6 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:00:00.000Z",
     });
-    mockBuildPlanReviewContext.mockResolvedValue(null);
     mockInteractionService.acceptInteraction.mockResolvedValue({
       interaction: {
         id: "interaction-1",
@@ -1051,7 +1043,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
-  it("rejects plan confirmations when the issue has no matching plan revision", async () => {
+  it("forwards plan-document confirmations to the interaction service for revision validation", async () => {
     const app = await createApp();
 
     const res = await request(app)
@@ -1072,14 +1064,24 @@ describe.sequential("issue thread interaction routes", () => {
         },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("existing plan document and its latest revision");
-    expect(mockBuildPlanReviewContext).toHaveBeenCalledWith(expect.objectContaining({
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      includeForIssueComment: true,
-    }));
-    expect(mockInteractionService.create).not.toHaveBeenCalled();
+    // The route delegates plan-target validation to the service, which rejects a
+    // stale/missing revision atomically inside its insert transaction
+    // (assertRequestConfirmationTargetIsCurrent). The route must pass the target
+    // through unchanged rather than pre-checking it non-atomically.
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      expect.objectContaining({
+        kind: "request_confirmation",
+        payload: expect.objectContaining({
+          target: expect.objectContaining({
+            key: "plan",
+            revisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
   });
 
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {
