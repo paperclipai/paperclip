@@ -1,14 +1,14 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
-import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
+import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
-import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -28,6 +28,12 @@ if (worktreeEnvBootstrap.missingEnv) {
   );
   process.exit(1);
 }
+if (isWorktreeSeedPending(repoRoot)) {
+  console.error(
+    "[paperclip] this worktree database is seed-pending. Run `pnpm paperclipai worktree ensure-seeded` before `pnpm dev`.",
+  );
+  process.exit(1);
+}
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -36,6 +42,7 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
@@ -46,6 +53,7 @@ const watchedDirectories = [
   "packages/adapter-utils",
   "packages/adapters",
   "packages/db",
+  "packages/skills-catalog",
   "packages/plugins/sdk",
   "packages/shared",
 ].map((relativePath) => path.join(repoRoot, relativePath));
@@ -70,6 +78,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -258,68 +267,14 @@ function exitForSignal(signal: NodeJS.Signals) {
   process.exit(1);
 }
 
-function toRelativePath(absolutePath: string) {
-  return path.relative(repoRoot, absolutePath).split(path.sep).join("/");
-}
-
-function readSignature(absolutePath: string) {
-  const stats = statSync(absolutePath);
-  return `${Math.trunc(stats.mtimeMs)}:${stats.size}`;
-}
-
-function addFileToSnapshot(snapshot: Map<string, string>, absolutePath: string) {
-  const relativePath = toRelativePath(absolutePath);
-  if (ignoredRelativePaths.has(relativePath)) return;
-  if (!shouldTrackDevServerPath(relativePath)) return;
-  snapshot.set(relativePath, readSignature(absolutePath));
-}
-
-function walkDirectory(snapshot: Map<string, string>, absoluteDirectory: string) {
-  if (!existsSync(absoluteDirectory)) return;
-
-  for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
-    if (ignoredDirectoryNames.has(entry.name)) continue;
-
-    const absolutePath = path.join(absoluteDirectory, entry.name);
-    if (entry.isDirectory()) {
-      walkDirectory(snapshot, absolutePath);
-      continue;
-    }
-    if (entry.isFile() || entry.isSymbolicLink()) {
-      addFileToSnapshot(snapshot, absolutePath);
-    }
-  }
-}
-
 function collectWatchedSnapshot() {
-  const snapshot = new Map<string, string>();
-
-  for (const absoluteDirectory of watchedDirectories) {
-    walkDirectory(snapshot, absoluteDirectory);
-  }
-  for (const absoluteFile of watchedFiles) {
-    if (!existsSync(absoluteFile)) continue;
-    addFileToSnapshot(snapshot, absoluteFile);
-  }
-
-  return snapshot;
-}
-
-function diffSnapshots(previous: Map<string, string>, next: Map<string, string>) {
-  const changed = new Set<string>();
-
-  for (const [relativePath, signature] of next) {
-    if (previous.get(relativePath) !== signature) {
-      changed.add(relativePath);
-    }
-  }
-  for (const relativePath of previous.keys()) {
-    if (!next.has(relativePath)) {
-      changed.add(relativePath);
-    }
-  }
-
-  return [...changed].sort();
+  return collectDevServerWatchedSnapshot({
+    repoRoot,
+    watchedDirectories,
+    watchedFiles,
+    ignoredDirectoryNames,
+    ignoredRelativePaths,
+  }) as Map<string, string>;
 }
 
 function ensureDevStatusDirectory() {
@@ -348,6 +303,13 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -633,7 +595,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequested = consumeDevServerRestartRequest();
+  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -645,11 +608,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }

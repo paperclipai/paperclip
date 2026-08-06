@@ -7,7 +7,9 @@ import { assetsApi } from "@/api/assets";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,7 +37,8 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
@@ -156,11 +159,11 @@ export function ProfileSettings() {
       ) : null}
 
       <section className="space-y-8">
-        <div className="relative overflow-hidden rounded-[28px] border border-border/70 bg-card shadow-sm">
-          <div className="absolute inset-x-0 top-0 h-32 bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_58%,color-mix(in_oklab,hsl(var(--background))_76%,white_24%)_100%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.22),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.08),transparent_36%)]" />
+        <Card className="block relative overflow-hidden rounded-(--rad-28) border-border/70">
+          <div className="absolute inset-x-0 top-0 h-32 bg-(image:--gradient-extract-26)" />
+          <div className="absolute inset-0 bg-(image:--gradient-extract-7)" />
           <div className="relative p-6 pt-10">
-            <div className="flex flex-wrap items-end gap-5 rounded-[24px] border border-border/70 bg-background/92 p-5 shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)] backdrop-blur-sm">
+            <div className="flex flex-wrap items-end gap-5 rounded-(--rad-24) border border-border/70 bg-background/92 p-5 shadow-(--shadow-extract-18) backdrop-blur-sm">
               <div className="space-y-3">
                 <label
                   htmlFor={avatarInputId}
@@ -224,7 +227,7 @@ export function ProfileSettings() {
               </div>
             </div>
           </div>
-        </div>
+        </Card>
 
         <form
           className="grid gap-6 md:grid-cols-2"
@@ -267,6 +270,10 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        <Card className="rounded-(--rad-28) border-border/70 p-6">
+          <InboxAgentPolicyControl companyId={selectedCompanyId} />
+        </Card>
       </section>
     </div>
   );

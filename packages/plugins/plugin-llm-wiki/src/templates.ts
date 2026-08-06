@@ -46,7 +46,7 @@ export const DEFAULT_AGENT_INSTRUCTIONS = DEFAULT_AGENT_INSTRUCTION_FILES["AGENT
 export const DEFAULT_IDEA = templateFile("IDEA.md");
 export const DEFAULT_INDEX = templateFile("wiki/index.md");
 export const DEFAULT_LOG = templateFile("wiki/log.md");
-export const DEFAULT_GITIGNORE = templateFile(".gitignore");
+export const DEFAULT_GITIGNORE = templateFile("gitignore.template");
 
 export const QUERY_PROMPT = `Answer from the LLM Wiki using the installed wiki-query skill.
 

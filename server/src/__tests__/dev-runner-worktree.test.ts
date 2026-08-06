@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bootstrapDevRunnerWorktreeEnv,
+  isWorktreeSeedPending,
   isLinkedGitWorktreeCheckout,
   resolveWorktreeEnvFilePath,
 } from "../dev-runner-worktree.ts";
@@ -24,6 +25,17 @@ function createTempRoot(prefix: string): string {
 }
 
 describe("dev-runner worktree env bootstrap", () => {
+  it("guards seed-pending worktrees until a seed-complete marker exists", () => {
+    const root = createTempRoot("paperclip-dev-runner-seed-pending-");
+    fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".paperclip", "seed-pending"), "{}\n", "utf8");
+
+    expect(isWorktreeSeedPending(root)).toBe(true);
+
+    fs.writeFileSync(path.join(root, ".paperclip", "seed-complete"), "{}\n", "utf8");
+    expect(isWorktreeSeedPending(root)).toBe(false);
+  });
+
   it("detects linked git worktrees from .git files", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-");
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");
@@ -61,6 +73,42 @@ describe("dev-runner worktree env bootstrap", () => {
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("already-set");
     expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
     expect(env.PAPERCLIP_OPTIONAL).toBe("");
+  });
+
+  it("repairs stale migrated config paths before loading worktree env", () => {
+    const root = createTempRoot("paperclip-dev-runner-worktree-migrated-env-");
+    const localConfigPath = path.join(root, ".paperclip", "config.json");
+    const worktreesDir = path.join(root, ".paperclip-worktrees");
+    fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");
+    fs.writeFileSync(localConfigPath, "{}\n", "utf8");
+    fs.writeFileSync(
+      resolveWorktreeEnvFilePath(root),
+      [
+        "PAPERCLIP_HOME=/old/home/.paperclip-worktrees",
+        "PAPERCLIP_INSTANCE_ID=feature-worktree",
+        "PAPERCLIP_CONFIG=/old/home/paperclip/.paperclip/worktrees/feature/.paperclip/config.json",
+        "PAPERCLIP_CONTEXT=/old/home/.paperclip-worktrees/context.json",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=feature-worktree",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const env: NodeJS.ProcessEnv = {
+      PAPERCLIP_WORKTREES_DIR: worktreesDir,
+    };
+    const result = bootstrapDevRunnerWorktreeEnv(root, env);
+
+    expect(result).toEqual({
+      envPath: resolveWorktreeEnvFilePath(root),
+      missingEnv: false,
+    });
+    expect(env.PAPERCLIP_HOME).toBe(worktreesDir);
+    expect(env.PAPERCLIP_CONFIG).toBe(localConfigPath);
+    expect(env.PAPERCLIP_CONTEXT).toBe(path.join(worktreesDir, "context.json"));
+    expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree");
   });
 
   it("reports uninitialized linked worktrees so dev runner can fail fast", () => {

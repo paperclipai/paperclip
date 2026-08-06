@@ -13,8 +13,10 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -32,6 +34,8 @@ const workspacePaths = [
   "packages/adapter-utils",
   "packages/adapters/claude-local",
   "packages/adapters/codex-local",
+  "packages/adapters/hermes-gateway",
+  "packages/adapters/hermes",
   "packages/adapters/opencode-local",
   "packages/adapters/openclaw-gateway",
 ];
@@ -53,6 +57,7 @@ for (const pkgPath of workspacePaths) {
 
   for (const [name, version] of Object.entries(deps)) {
     if (name.startsWith("@paperclipai/") && !externalWorkspacePackages.has(name)) continue;
+    if (bundledCliNpmDependencies.has(name)) continue;
     // For external workspace packages, read their version directly
     if (externalWorkspacePackages.has(name)) {
       const pkgDirMap = { "@paperclipai/server": "server" };
@@ -69,6 +74,15 @@ for (const pkgPath of workspacePaths) {
   for (const [name, version] of Object.entries(optDeps)) {
     allOptionalDeps[name] = version;
   }
+}
+
+if (bundledCliNpmDependencies.has("embedded-postgres")) {
+  const requireFromDb = createRequire(resolve(repoRoot, "packages/db/package.json"));
+  const embeddedPostgresRoot = dirname(requireFromDb.resolve("embedded-postgres"));
+  const embeddedPostgresPackage = JSON.parse(
+    readFileSync(resolve(embeddedPostgresRoot, "..", "package.json"), "utf8"),
+  );
+  Object.assign(allOptionalDeps, embeddedPostgresPackage.optionalDependencies ?? {});
 }
 
 // Sort alphabetically

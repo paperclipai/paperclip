@@ -6,9 +6,23 @@ import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
+import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
+import {
+  mergeRunLogChunks,
+  parsePersistedLogContent,
+  readChunkSeq,
+} from "../../lib/run-log-chunks";
 
+// TODO(perf): this whole hook polls the log/runs endpoints on an interval. The
+// durable fix is server push (SSE/websocket) for transcript deltas so idle tabs
+// do no periodic work at all; the constants below only reduce the churn of the
+// current polling approach.
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+// When realtime websocket updates are enabled, the frequent log poll is
+// redundant with the live stream; keep only a slow safety-net poll to cover
+// gaps and reconnects instead of polling every couple of seconds.
+const REALTIME_FALLBACK_POLL_INTERVAL_MS = 30_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
 export interface RunTranscriptSource {
@@ -34,7 +48,7 @@ function readString(value: unknown): string | null {
 }
 
 function isTerminalStatus(status: string): boolean {
-  return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+  return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
 
 function runKnownLogBytes(run: RunTranscriptSource): number | null {
@@ -48,42 +62,6 @@ export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: nu
   const knownBytes = runKnownLogBytes(run);
   if (knownBytes === null) return 0;
   return Math.max(0, knownBytes - Math.max(0, limitBytes));
-}
-
-function parsePersistedLogContent(
-  runId: string,
-  content: string,
-  pendingByRun: Map<string, string>,
-): Array<RunLogChunk & { dedupeKey: string }> {
-  if (!content) return [];
-
-  const pendingKey = `${runId}:records`;
-  const combined = `${pendingByRun.get(pendingKey) ?? ""}${content}`;
-  const split = combined.split("\n");
-  pendingByRun.set(pendingKey, split.pop() ?? "");
-
-  const parsed: Array<RunLogChunk & { dedupeKey: string }> = [];
-  for (const line of split) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
-      const stream = raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
-      const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
-      const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
-      if (!chunk) continue;
-      parsed.push({
-        ts,
-        stream,
-        chunk,
-        dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
-      });
-    } catch {
-      // Ignore malformed log rows.
-    }
-  }
-
-  return parsed;
 }
 
 export function useLiveRunTranscripts({
@@ -110,6 +88,10 @@ export function useLiveRunTranscripts({
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
   const seenChunkKeysRef = useRef(new Set<string>());
+  // Highest sequenced chunk trimmed out of a run's retained window; older
+  // records re-delivered by the other transport are dropped instead of being
+  // re-inserted ahead of newer output.
+  const trimmedSeqFloorByRunRef = useRef(new Map<string, number>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
@@ -143,22 +125,20 @@ export function useLiveRunTranscripts({
   const appendChunks = (runId: string, chunks: Array<RunLogChunk & { dedupeKey: string }>) => {
     if (chunks.length === 0) return;
     setChunksByRun((prev) => {
-      const next = new Map(prev);
-      const existing = [...(next.get(runId) ?? [])];
-      let changed = false;
-
-      for (const chunk of chunks) {
-        if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
-        seenChunkKeysRef.current.add(chunk.dedupeKey);
-        existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
-        changed = true;
-      }
-
+      const prevChunks = prev.get(runId) ?? [];
+      const { chunks: merged, changed } = mergeRunLogChunks(
+        runId,
+        prevChunks,
+        chunks,
+        {
+          seenChunkKeys: seenChunkKeysRef.current,
+          trimmedSeqFloorByRun: trimmedSeqFloorByRunRef.current,
+        },
+        maxChunksPerRun,
+      );
       if (!changed) return prev;
-      if (seenChunkKeysRef.current.size > 12000) {
-        seenChunkKeysRef.current.clear();
-      }
-      next.set(runId, existing.slice(-maxChunksPerRun));
+      const next = new Map(prev);
+      next.set(runId, merged);
       return next;
     });
   };
@@ -193,6 +173,11 @@ export function useLiveRunTranscripts({
     for (const runId of logOffsetByRunRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
         logOffsetByRunRef.current.delete(runId);
+      }
+    }
+    for (const runId of trimmedSeqFloorByRunRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        trimmedSeqFloorByRunRef.current.delete(runId);
       }
     }
     for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
@@ -252,17 +237,23 @@ export function useLiveRunTranscripts({
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
-    const interval = activeRuns.length > 0 && logPollIntervalMs > 0
+    // The realtime websocket is the primary live source when enabled, so the
+    // recurring poll only needs to run as a slow fallback rather than doubling
+    // the live update work every couple of seconds.
+    const effectivePollMs = enableRealtimeUpdates
+      ? Math.max(logPollIntervalMs, REALTIME_FALLBACK_POLL_INTERVAL_MS)
+      : logPollIntervalMs;
+    const interval = activeRuns.length > 0 && effectivePollMs > 0
       ? window.setInterval(() => {
           void Promise.all(activeRuns.map((run) => readRunLog(run)));
-        }, logPollIntervalMs)
+        }, effectivePollMs)
       : null;
 
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 
   useEffect(() => {
     if (!enableRealtimeUpdates) return;
@@ -279,8 +270,9 @@ export function useLiveRunTranscripts({
 
     const connect = () => {
       if (closed) return;
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(companyId)}/events/ws`;
+      const url = buildSameOriginWebSocketUrl(
+        `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
+      );
       socket = new WebSocket(url);
 
       socket.onmessage = (message) => {
@@ -314,6 +306,7 @@ export function useLiveRunTranscripts({
             ts,
             stream,
             chunk,
+            seq: readChunkSeq(payload["seq"]),
             dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
           }]);
           return;

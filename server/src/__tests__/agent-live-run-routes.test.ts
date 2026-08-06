@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
@@ -25,6 +26,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getExperimental: vi.fn(),
   getGeneral: vi.fn(),
   listCompanyIds: vi.fn(),
+}));
+
+const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
@@ -48,11 +53,25 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/run-secret-redaction.js", () => ({
+    createRunSecretRedactionRegistry: () => mockRunSecretRedactionRegistry,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
-    accessService: () => ({}),
+    accessService: () => ({
+      canUser: vi.fn(async () => true),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })),
+      hasPermission: vi.fn(async () => true),
+    }),
     approvalService: () => ({}),
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
@@ -185,6 +204,11 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
+    }));
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -247,6 +271,8 @@ describe("agent live run routes", () => {
       agentName: "Builder",
       adapterType: "codex_local",
       outputSilence: null,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
@@ -291,6 +317,35 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
+    });
+  });
+
+  it("includes ephemeral current status fields on active run polling", async () => {
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: new Date("2026-04-10T09:30:05.000Z"),
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: new Date("2026-04-10T09:30:06.000Z"),
+    }));
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
+      { companyId: "company-1", issueId: "issue-1" },
+    );
+    expect(res.body).toMatchObject({
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: "2026-04-10T09:30:06.000Z",
     });
   });
 

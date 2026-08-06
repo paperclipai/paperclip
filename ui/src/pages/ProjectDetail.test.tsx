@@ -2,7 +2,8 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
-import { act, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectDetail } from "./ProjectDetail";
@@ -24,9 +25,14 @@ const mockBudgetsApi = vi.hoisted(() => ({ overview: vi.fn(), upsertPolicy: vi.f
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
+const mockResourceMembershipsApi = vi.hoisted(() => ({
+  listMine: vi.fn(),
+  updateProject: vi.fn(),
+}));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -36,6 +42,7 @@ vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
+vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -75,6 +82,12 @@ vi.mock("../components/InlineEditor", () => ({
 vi.mock("../components/ProjectWorkspacesContent", () => ({
   ProjectWorkspacesContent: () => <div data-testid="project-workspaces" />,
 }));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card">Project summary card</div>;
+  },
+}));
 vi.mock("../components/PageTabBar", () => ({
   PageTabBar: ({ items }: { items: Array<{ value: string; label: string }> }) => (
     <div>{items.map((item) => <button key={item.value}>{item.label}</button>)}</div>
@@ -86,6 +99,14 @@ vi.mock("../components/IssuesList", () => ({
     return <div data-testid="issues-list" />;
   },
 }));
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 function project(overrides: Partial<Project> = {}): Project {
   const now = new Date("2026-05-01T00:00:00Z");
@@ -102,6 +123,7 @@ function project(overrides: Partial<Project> = {}): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#14b8a6",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -152,10 +174,21 @@ describe("ProjectDetail", () => {
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    });
+    mockResourceMembershipsApi.updateProject.mockResolvedValue({
+      resourceType: "project",
+      resourceId: "project-1",
+      state: "left",
+      updatedAt: new Date("2026-05-01T00:00:00Z"),
+    });
   });
 
-  afterEach(() => {
-    act(() => root?.unmount());
+  afterEach(async () => {
+    await act(() => root?.unmount());
     root = null;
     container.remove();
     vi.clearAllMocks();
@@ -178,6 +211,16 @@ describe("ProjectDetail", () => {
     });
 
     expect(container.textContent).toContain("Managed by Missions");
+    expect(container.textContent).toContain("Project summary card");
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "project",
+      scopeId: "project-1",
+      title: "Project summary",
+    }));
+    const titleEditor = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Managed Project");
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(titleEditor && summaryCard ? Boolean(titleEditor.compareDocumentPosition(summaryCard) & Node.DOCUMENT_POSITION_FOLLOWING) : false).toBe(true);
     expect(container.textContent).toContain("Plugin operations");
     expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",

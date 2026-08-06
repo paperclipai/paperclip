@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -354,7 +355,7 @@ export function activityService(db: Db) {
             ...conditions,
             or(
               sql`${activityLog.entityType} != 'issue'`,
-              isNull(issues.hiddenAt),
+              visibleIssueCondition(),
             ),
           ),
         )
@@ -387,6 +388,8 @@ export function activityService(db: Db) {
           finishedAt: heartbeatRuns.finishedAt,
           createdAt: heartbeatRuns.createdAt,
           invocationSource: heartbeatRuns.invocationSource,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+          errorCode: heartbeatRuns.errorCode,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
@@ -399,7 +402,6 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -542,7 +544,7 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, run.companyId),
             eq(activityLog.runId, runId),
             eq(activityLog.entityType, "issue"),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .orderBy(issueIdAsText);
@@ -568,7 +570,7 @@ export function activityService(db: Db) {
           and(
             eq(issues.companyId, run.companyId),
             eq(issues.id, contextIssueId),
-            isNull(issues.hiddenAt),
+            visibleIssueCondition(),
           ),
         )
         .then((rows) => rows[0] ?? null);

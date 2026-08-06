@@ -64,7 +64,7 @@ describe("issue tree control routes", () => {
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
-  it("rejects cross-company preview requests before calling the preview service", async () => {
+  it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -77,7 +77,7 @@ describe("issue tree control routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-control/preview")
       .send({ mode: "pause" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockTreeControlService.preview).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
@@ -98,6 +98,27 @@ describe("issue tree control routes", () => {
     expect(res.status).toBe(403);
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockTreeControlService.createHold).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed tree hold IDs before querying the hold service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const getRes = await request(app)
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds/null");
+    const releaseRes = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds/null/release")
+      .send({ reason: "bad hold id" });
+
+    expect(getRes.status).toBe(400);
+    expect(releaseRes.status).toBe(400);
+    expect(mockTreeControlService.getHold).not.toHaveBeenCalled();
+    expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
   });
 
   it("cancels active descendant runs when creating a pause hold", async () => {

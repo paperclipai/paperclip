@@ -1,7 +1,6 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  agents,
   companyMemberships,
   instanceUserRoles,
   issues,
@@ -9,6 +8,9 @@ import {
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { assertAssignableAgent } from "./agent-assignability.js";
+import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
+import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -24,6 +26,8 @@ type MemberArchiveInput = {
 };
 
 export function accessService(db: Db) {
+  const authorization = authorizationService(db);
+
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
     const row = await db
@@ -58,21 +62,13 @@ export function accessService(db: Db) {
     principalId: string,
     permissionKey: PermissionKey,
   ): Promise<boolean> {
-    const membership = await getMembership(companyId, principalType, principalId);
-    if (!membership || membership.status !== "active") return false;
-    const grant = await db
-      .select({ id: principalPermissionGrants.id })
-      .from(principalPermissionGrants)
-      .where(
-        and(
-          eq(principalPermissionGrants.companyId, companyId),
-          eq(principalPermissionGrants.principalType, principalType),
-          eq(principalPermissionGrants.principalId, principalId),
-          eq(principalPermissionGrants.permissionKey, permissionKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    return Boolean(grant);
+    return authorization.decidePrincipalGrant({
+      companyId,
+      principalType,
+      principalId,
+      permissionKey,
+      action: permissionKey,
+    }).then((decision) => decision.allowed);
   }
 
   async function canUser(
@@ -80,9 +76,20 @@ export function accessService(db: Db) {
     userId: string | null | undefined,
     permissionKey: PermissionKey,
   ): Promise<boolean> {
-    if (!userId) return false;
-    if (await isInstanceAdmin(userId)) return true;
-    return hasPermission(companyId, "user", userId, permissionKey);
+    return authorization.decide({
+      actor: { type: "board", userId },
+      action: permissionKey,
+      resource: { type: "company", companyId },
+    }).then((decision) => decision.allowed);
+  }
+
+  async function decide(input: {
+    actor: AuthorizationActor;
+    action: Parameters<typeof authorization.decide>[0]["action"];
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }) {
+    return authorization.decide(input);
   }
 
   async function listMembers(companyId: string) {
@@ -308,21 +315,7 @@ export function accessService(db: Db) {
       return;
     }
 
-    const agent = await tx
-      .select({
-        id: agents.id,
-        companyId: agents.companyId,
-        status: agents.status,
-      })
-      .from(agents)
-      .where(eq(agents.id, input.assigneeAgentId!))
-      .then((rows) => rows[0] ?? null);
-    if (!agent || agent.companyId !== companyId) {
-      throw conflict("Replacement agent must belong to the same company");
-    }
-    if (agent.status === "pending_approval" || agent.status === "terminated") {
-      throw conflict("Replacement agent must be assignable");
-    }
+    await assertAssignableAgent(tx as Db, companyId, input.assigneeAgentId, { kind: "work" });
   }
 
   async function archiveMember(companyId: string, memberId: string, input: MemberArchiveInput = {}) {
@@ -616,8 +609,28 @@ export function accessService(db: Db) {
         membership.membershipRole,
         "active",
       );
+      await ensureHumanRoleDefaultGrants(db, {
+        companyId: targetCompanyId,
+        principalId: membership.principalId,
+        membershipRole: membership.membershipRole,
+        grantedByUserId: null,
+      });
     }
     return sourceMemberships;
+  }
+
+  async function ensureRoleDefaultGrants(
+    companyId: string,
+    principalId: string,
+    membershipRole: string | null | undefined,
+    grantedByUserId: string | null,
+  ) {
+    return ensureHumanRoleDefaultGrants(db, {
+      companyId,
+      principalId,
+      membershipRole,
+      grantedByUserId,
+    });
   }
 
   async function listPrincipalGrants(
@@ -768,6 +781,7 @@ export function accessService(db: Db) {
 
   return {
     isInstanceAdmin,
+    decide,
     canUser,
     hasPermission,
     getMembership,
@@ -776,6 +790,7 @@ export function accessService(db: Db) {
     listMembers,
     listActiveUserMemberships,
     copyActiveUserMemberships,
+    ensureRoleDefaultGrants,
     archiveMember,
     setMemberPermissions,
     updateMemberAndPermissions,

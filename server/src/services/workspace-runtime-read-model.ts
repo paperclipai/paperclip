@@ -1,8 +1,13 @@
 import type { Db } from "@paperclipai/db";
 import { workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  listWorkspaceServiceCommandDefinitions,
+  matchWorkspaceRuntimeServiceToCommand,
+} from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type RuntimeServiceReadDb = Pick<Db, "select">;
 
 function runtimeServiceIdentityKey(row: WorkspaceRuntimeServiceRow) {
   if (row.reuseKey) return row.reuseKey;
@@ -26,8 +31,44 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
   return [...current.values()];
 }
 
+export function selectConfiguredRuntimeServiceRows(
+  rows: WorkspaceRuntimeServiceRow[],
+  workspaceRuntime: Record<string, unknown> | null | undefined,
+) {
+  const availableRows = selectCurrentRuntimeServiceRows(rows).map((row) => ({
+    ...row,
+    configIndex: null as number | null,
+  }));
+  const selectedRows: Array<WorkspaceRuntimeServiceRow & { configIndex: number | null }> = [];
+
+  for (const command of listWorkspaceServiceCommandDefinitions(workspaceRuntime)) {
+    const reuseScope = command.rawConfig.reuseScope;
+    const expectedScope =
+      reuseScope === "project_workspace" ||
+      reuseScope === "execution_workspace" ||
+      reuseScope === "agent" ||
+      reuseScope === "run"
+        ? reuseScope
+        : command.lifecycle === "shared"
+          ? "project_workspace"
+          : "run";
+    const matchedRow = matchWorkspaceRuntimeServiceToCommand(
+      command,
+      availableRows.filter((row) => row.scopeType === expectedScope),
+    );
+    if (!matchedRow) continue;
+    selectedRows.push({
+      ...matchedRow,
+      configIndex: command.serviceIndex,
+    });
+    availableRows.splice(availableRows.indexOf(matchedRow), 1);
+  }
+
+  return selectedRows;
+}
+
 export async function listCurrentRuntimeServicesForProjectWorkspaces(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   projectWorkspaceIds: string[],
 ) {
@@ -62,7 +103,7 @@ export async function listCurrentRuntimeServicesForProjectWorkspaces(
 }
 
 export async function listCurrentRuntimeServicesForExecutionWorkspaces(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   executionWorkspaceIds: string[],
 ) {

@@ -12,6 +12,7 @@ import {
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 
 // -- Tree types --------------------------------------------------------------
 
@@ -224,7 +225,7 @@ export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
   status: "Status",
   description: "Description",
   priority: "Priority",
-  assignee: "Assignee",
+  assignee: "Responsible",
   project: "Project",
   recurring: "Recurring",
   targetDate: "Target date",
@@ -357,14 +358,14 @@ export function FileTree({
           className="flex min-h-9 items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
         >
           <div className="flex min-w-0 items-center gap-2">
-            <span
+            <Badge variant="ghost"
               className={cn(
-                "inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
+                "px-2.5",
                 statusBadge.error ?? statusBadgeDefault,
               )}
             >
               error
-            </span>
+            </Badge>
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
           {error.retry && (
@@ -417,8 +418,8 @@ export function FileTree({
             className={cn(
               node.kind === "dir"
                 ? showCheckboxes
-                  ? "group grid w-full grid-cols-[auto_minmax(0,1fr)_2.25rem] items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-                  : "group grid w-full grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground max-[480px]:grid-cols-[minmax(0,1fr)]"
+                  ? "group grid w-full grid-cols-(--gtc-2) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+                  : "group grid w-full grid-cols-(--gtc-3) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground max-[480px]:grid-cols-(--gtc-4)"
                 : "group flex w-full items-center gap-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground cursor-pointer",
               TREE_ROW_HEIGHT_CLASS,
               isSelected && "text-foreground bg-accent/20",
@@ -464,21 +465,21 @@ export function FileTree({
               </span>
             </span>
             {badge && (
-              <span
+              <Badge variant="ghost"
                 className={cn(
-                  "ml-3 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                  "ml-3 text-(length:--text-nano) uppercase tracking-wide",
                   statusBadge[badge.status] ?? statusBadgeDefault,
                 )}
                 title={badge.tooltip}
               >
                 {badge.label}
-              </span>
+              </Badge>
             )}
             {node.kind === "file" && renderFileExtra?.(node, allChecked)}
             {node.kind === "dir" && (
               <button
                 type="button"
-                className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 max-[480px]:hidden"
+                className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 max-[480px]:hidden"
                 onClick={(event) => {
                   event.stopPropagation();
                   onToggleDir(node.path);

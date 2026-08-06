@@ -67,6 +67,9 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   executionWorkspaceService: () => ({}),
   goalService: () => ({
     getById: vi.fn(),
@@ -84,7 +87,13 @@ vi.mock("../services/index.js", () => ({
     getActiveForIssue: vi.fn(async () => null),
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
+  issueThreadInteractionService: () => ({
+    listForIssue: vi.fn(async () => []),
+    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+    expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  }),
   documentService: () => ({}),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   routineService: () => ({}),
   workProductService: () => ({}),
 }));

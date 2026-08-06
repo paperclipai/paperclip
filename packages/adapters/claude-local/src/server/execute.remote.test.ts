@@ -169,15 +169,25 @@ describe("claude remote execution", () => {
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
     }));
-    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    // One sync per registered runtime asset: skills and mcp-config.
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
+      followSymlinks: true,
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
       followSymlinks: true,
     }));
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[2]).toContain("--allowedTools");
+    expect(call?.[2]).toContain(
+      "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
+    );
+    expect(call?.[2]).not.toContain("--dangerously-skip-permissions");
     expect(call?.[2]).toContain("--append-system-prompt-file");
     expect(call?.[2]).toContain(
       `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,
@@ -229,12 +239,12 @@ describe("claude remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "session-123",
+        sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
-          sessionId: "session-123",
+          sessionId: "12345678-1234-4abc-9def-123456789012",
           cwd: "/remote/workspace",
         },
-        sessionDisplayId: "session-123",
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
       config: {
@@ -283,9 +293,9 @@ describe("claude remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "session-123",
+        sessionId: "12345678-1234-4abc-9def-123456789012",
         sessionParams: {
-          sessionId: "session-123",
+          sessionId: "12345678-1234-4abc-9def-123456789012",
           cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
@@ -295,7 +305,7 @@ describe("claude remote execution", () => {
             remoteCwd: managedRemoteWorkspace,
           },
         },
-        sessionDisplayId: "session-123",
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
         taskKey: null,
       },
       config: {
@@ -325,7 +335,7 @@ describe("claude remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
-    expect(call?.[2]).toContain("session-123");
+    expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
 
 });

@@ -1,33 +1,132 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, Fragment, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  type InteractionResolverGovernance,
+  type IssueThreadInteractionKind,
+  type IssueThreadInteractionResolverPolicy,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
-import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
+import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Settings, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
-  HintIcon,
 } from "../components/agent-config-primitives";
-
-type AgentSnippetInput = {
-  onboardingTextUrl: string;
-  connectionCandidates?: string[] | null;
-  testResolutionUrl?: string | null;
-};
 
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+
+const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
+  suggest_tasks: "Suggested tasks",
+  ask_user_questions: "Ask user questions",
+  request_confirmation: "Confirmations",
+  request_checkbox_confirmation: "Checkbox confirmations",
+  request_item_verdicts: "Item verdicts",
+};
+
+// Sentinel for "no override" — Radix Select disallows empty-string item values.
+const GOVERNANCE_UNSET = "default";
+type GovernanceSelectValue = typeof GOVERNANCE_UNSET | IssueThreadInteractionResolverPolicy;
+
+const GOVERNANCE_POLICY_OPTIONS: { value: GovernanceSelectValue; label: string }[] = [
+  { value: GOVERNANCE_UNSET, label: "Company default" },
+  { value: "board_only", label: "Board only" },
+  { value: "board_or_agents", label: "Board or agents" },
+];
+
+function toSelectValue(policy: IssueThreadInteractionResolverPolicy | undefined): GovernanceSelectValue {
+  return policy ?? GOVERNANCE_UNSET;
+}
+
+/**
+ * Apply a single (kind, field) change to a governance map immutably, pruning
+ * empty entries so the persisted object stays sparse (only real overrides).
+ */
+function applyGovernanceChange(
+  current: InteractionResolverGovernance,
+  kind: IssueThreadInteractionKind,
+  field: "defaultPolicy" | "cap",
+  value: GovernanceSelectValue,
+): InteractionResolverGovernance {
+  const next: InteractionResolverGovernance = { ...current };
+  const entry = { ...(next[kind] ?? {}) };
+  if (value === GOVERNANCE_UNSET) {
+    delete entry[field];
+  } else {
+    entry[field] = value;
+  }
+  if (entry.defaultPolicy === undefined && entry.cap === undefined) {
+    delete next[kind];
+  } else {
+    next[kind] = entry;
+  }
+  return next;
+}
+function GovernanceSelect({
+  value,
+  onChange,
+  disabled,
+  testId,
+  ariaLabel,
+  mobileLabel,
+}: {
+  value: GovernanceSelectValue;
+  onChange: (value: GovernanceSelectValue) => void;
+  disabled?: boolean;
+  testId?: string;
+  ariaLabel: string;
+  mobileLabel: string;
+}) {
+  return (
+    <div className="min-w-0">
+      {/*
+       * Below `sm` the governance grid collapses to a single column (see the
+       * grid classes on the panel), detaching each select from its column
+       * header. Surface a mobile-only inline label so the control stays
+       * self-describing for sighted users, and always carry `aria-label` for
+       * screen-reader pairing. WCAG 2.1 SC 1.4.10 (Reflow) — design review R2.
+       */}
+      <span className="mb-1 block text-xs font-medium text-muted-foreground uppercase tracking-wide sm:hidden">
+        {mobileLabel}
+      </span>
+      <Select value={value} onValueChange={(v) => onChange(v as GovernanceSelectValue)} disabled={disabled}>
+        <SelectTrigger
+          size="sm"
+          aria-label={ariaLabel}
+          className="w-full min-w-0 text-xs sm:w-(--sz-170px)"
+          data-testid={testId}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {GOVERNANCE_POLICY_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value} className="text-xs">
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 export function CompanySettings() {
   const {
     companies,
@@ -44,6 +143,7 @@ export function CompanySettings() {
   const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
 
   // Sync local state from selected company
   useEffect(() => {
@@ -53,12 +153,8 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setGovernance(selectedCompany.interactionResolverGovernance ?? {});
   }, [selectedCompany]);
-
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
-  const [snippetCopied, setSnippetCopied] = useState(false);
-  const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
   const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
   const attachmentMaxValid =
@@ -95,58 +191,24 @@ export function CompanySettings() {
     }
   });
 
-  const inviteMutation = useMutation({
-    mutationFn: () =>
-      accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
-    onSuccess: async (invite) => {
-      setInviteError(null);
-      const base = window.location.origin.replace(/\/+$/, "");
-      const onboardingTextLink =
-        invite.onboardingTextUrl ??
-        invite.onboardingTextPath ??
-        `/api/invites/${invite.token}/onboarding.txt`;
-      const absoluteUrl = onboardingTextLink.startsWith("http")
-        ? onboardingTextLink
-        : `${base}${onboardingTextLink}`;
-      setSnippetCopied(false);
-      setSnippetCopyDelightId(0);
-      let snippet: string;
-      try {
-        const manifest = await accessApi.getInviteOnboarding(invite.token);
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates:
-            manifest.onboarding.connectivity?.connectionCandidates ?? null,
-          testResolutionUrl:
-            manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
-        });
-      } catch {
-        snippet = buildAgentSnippet({
-          onboardingTextUrl: absoluteUrl,
-          connectionCandidates: null,
-          testResolutionUrl: null
-        });
-      }
-      setInviteSnippet(snippet);
-      try {
-        await navigator.clipboard.writeText(snippet);
-        setSnippetCopied(true);
-        setSnippetCopyDelightId((prev) => prev + 1);
-        setTimeout(() => setSnippetCopied(false), 2000);
-      } catch {
-        /* clipboard may not be available */
-      }
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
-      });
-    },
-    onError: (err) => {
-      setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
-      );
+  const governanceMutation = useMutation({
+    mutationFn: (next: InteractionResolverGovernance) =>
+      companiesApi.update(selectedCompanyId!, { interactionResolverGovernance: next }),
+    onSuccess: (company) => {
+      setGovernance(company.interactionResolverGovernance ?? {});
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  function handleGovernanceChange(
+    kind: IssueThreadInteractionKind,
+    field: "defaultPolicy" | "cap",
+    value: GovernanceSelectValue,
+  ) {
+    const next = applyGovernanceChange(governance, kind, field, value);
+    setGovernance(next);
+    governanceMutation.mutate(next);
+  }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
@@ -183,13 +245,6 @@ export function CompanySettings() {
   function handleClearLogo() {
     clearLogoMutation.mutate();
   }
-
-  useEffect(() => {
-    setInviteError(null);
-    setInviteSnippet(null);
-    setSnippetCopied(false);
-    setSnippetCopyDelightId(0);
-  }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
     mutationFn: ({
@@ -284,7 +339,7 @@ export function CompanySettings() {
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
-                className="rounded-[14px]"
+                className="rounded-(--rad-14)"
               />
             </div>
             <div className="flex-1 space-y-3">
@@ -334,6 +389,7 @@ export function CompanySettings() {
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
               >
                 <div className="flex items-center gap-2">
+                  {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
                   <input
                     type="color"
                     value={brandColor || "#6366f1"}
@@ -432,80 +488,71 @@ export function CompanySettings() {
         </div>
       </div>
 
-      {/* Invites */}
-      <div className="space-y-4" data-testid="company-settings-invites-section">
+      {/* Interaction governance */}
+      <div className="space-y-4" data-testid="company-settings-interaction-governance-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          Interaction governance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
-            </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              data-testid="company-settings-invites-generate-button"
-              size="sm"
-              onClick={() => inviteMutation.mutate()}
-              disabled={inviteMutation.isPending}
-            >
-              {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
-            </Button>
-          </div>
-          {inviteError && (
-            <p className="text-sm text-destructive">{inviteError}</p>
-          )}
-          {inviteSnippet && (
-            <div
-              className="rounded-md border border-border bg-muted/30 p-2"
-              data-testid="company-settings-invites-snippet"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
-                </div>
-                {snippetCopied && (
-                  <span
-                    key={snippetCopyDelightId}
-                    className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
-                  >
-                    <Check className="h-3 w-3" />
-                    Copied
-                  </span>
-                )}
-              </div>
-              <div className="mt-1 space-y-1.5">
-                <textarea
-                  data-testid="company-settings-invites-snippet-textarea"
-                  className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
-                  value={inviteSnippet}
-                  readOnly
-                />
-                <div className="flex justify-end">
-                  <Button
-                    data-testid="company-settings-invites-copy-button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(inviteSnippet);
-                        setSnippetCopied(true);
-                        setSnippetCopyDelightId((prev) => prev + 1);
-                        setTimeout(() => setSnippetCopied(false), 2000);
-                      } catch {
-                        /* clipboard may not be available */
-                      }
-                    }}
-                  >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
-                  </Button>
-                </div>
-              </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Control who may resolve each kind of thread interaction.{" "}
+            <span className="font-medium text-foreground">Default policy</span> is the
+            resolver policy new interactions request;{" "}
+            <span className="font-medium text-foreground">Cap</span> is the maximum a
+            request may reach — set it to{" "}
+            <span className="font-medium text-foreground">Board only</span> to always
+            require the board. Tool-approval confirmations always stay board-only
+            regardless of these settings.
+          </p>
+          {/*
+           * Responsive: below `sm` the row collapses to a single column so the
+           * two 170px selects never force horizontal overflow on a ~390px
+           * viewport (WCAG 2.1 SC 1.4.10 Reflow — design review R2). Each kind
+           * then stacks as: label → Default policy → Cap, each full-width with
+           * its own inline label. At `sm`+ it restores the aligned 3-col grid.
+           */}
+          <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-x-4 sm:gap-y-2.5">
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Kind
             </div>
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Default policy
+            </div>
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Cap
+            </div>
+            {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
+              const entry = governance[kind] ?? {};
+              const kindLabel = INTERACTION_KIND_LABELS[kind];
+              return (
+                <Fragment key={kind}>
+                  <div className="text-sm font-medium sm:font-normal">{kindLabel}</div>
+                  <GovernanceSelect
+                    testId={`governance-${kind}-default`}
+                    ariaLabel={`Default resolver policy for ${kindLabel}`}
+                    mobileLabel="Default policy"
+                    value={toSelectValue(entry.defaultPolicy)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "defaultPolicy", v)}
+                  />
+                  <GovernanceSelect
+                    testId={`governance-${kind}-cap`}
+                    ariaLabel={`Resolver cap for ${kindLabel}`}
+                    mobileLabel="Cap"
+                    value={toSelectValue(entry.cap)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "cap", v)}
+                  />
+                </Fragment>
+              );
+            })}
+          </div>
+          {governanceMutation.isError && (
+            <span className="text-xs text-destructive">
+              {governanceMutation.error instanceof Error
+                ? governanceMutation.error.message
+                : "Failed to save interaction governance"}
+            </span>
           )}
         </div>
       </div>
@@ -516,22 +563,18 @@ export function CompanySettings() {
           Company Packages
         </div>
         <div className="rounded-md border border-border px-4 py-4">
-          <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/export">
+              <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Export
-              </a>
+              </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/import">
+              <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
-              </a>
+              </Link>
             </Button>
           </div>
         </div>
@@ -591,118 +634,4 @@ export function CompanySettings() {
       </div>
     </div>
   );
-}
-
-function buildAgentSnippet(input: AgentSnippetInput) {
-  const candidateUrls = buildCandidateOnboardingUrls(input);
-  const resolutionTestUrl = buildResolutionTestUrl(input);
-
-  const candidateList =
-    candidateUrls.length > 0
-      ? candidateUrls.map((u) => `- ${u}`).join("\n")
-      : "- (No candidate URLs available yet.)";
-
-  const connectivityBlock =
-    candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
-Suggested steps:
-- choose a hostname that resolves to the Paperclip host from your runtime
-- run: pnpm paperclipai allowed-hostname <host>
-- restart Paperclip
-- verify with: curl -fsS http://<host>:3100/api/health
-- regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
-Suggested command:
-- pnpm paperclipai allowed-hostname <host>
-Then verify with: curl -fsS <base-url>/api/health`;
-
-  const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
-    : "";
-
-  return `You're invited to join a Paperclip organization.
-
-The URLs you should try are:
-${candidateList}
-
-Connectivity guidance:
-If you are running on a different machine than Paperclip, Paperclip must be reachable at one of the hostnames used above.
-Verify the hostname works from your runtime with: GET <base-url>/api/health
-
-${connectivityBlock}
-
-For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
-You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
-
----
-
-This onboarding flow is for OpenClaw Gateway.
-When you submit the join request, use:
-- \`adapterType: "openclaw_gateway"\`
-- \`agentDefaultsPayload.url\` as your \`ws://\` or \`wss://\` gateway URL
-- \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token
-- (legacy accepted) \`agentDefaultsPayload.headers["x-openclaw-auth"]\`
-- Keep device auth enabled (recommended). If \`devicePrivateKeyPem\` is omitted, Paperclip will generate and persist one during join so pairing approvals remain stable.
-- Only use \`disableDeviceAuth=true\` for special environments where pairing cannot be completed.
-
-Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
-
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
-
-Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
-
-`;
-}
-
-function buildCandidateOnboardingUrls(input: AgentSnippetInput): string[] {
-  const candidates = (input.connectionCandidates ?? [])
-    .map((candidate) => candidate.trim())
-    .filter(Boolean);
-  const urls = new Set<string>();
-  let onboardingUrl: URL | null = null;
-
-  try {
-    onboardingUrl = new URL(input.onboardingTextUrl);
-    urls.add(onboardingUrl.toString());
-  } catch {
-    const trimmed = input.onboardingTextUrl.trim();
-    if (trimmed) {
-      urls.add(trimmed);
-    }
-  }
-
-  if (!onboardingUrl) {
-    for (const candidate of candidates) {
-      urls.add(candidate);
-    }
-    return Array.from(urls);
-  }
-
-  const onboardingPath = `${onboardingUrl.pathname}${onboardingUrl.search}`;
-  for (const candidate of candidates) {
-    try {
-      const base = new URL(candidate);
-      urls.add(`${base.origin}${onboardingPath}`);
-    } catch {
-      urls.add(candidate);
-    }
-  }
-
-  return Array.from(urls);
-}
-
-function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
-  const explicit = input.testResolutionUrl?.trim();
-  if (explicit) return explicit;
-
-  try {
-    const onboardingUrl = new URL(input.onboardingTextUrl);
-    const testPath = onboardingUrl.pathname.replace(
-      /\/onboarding\.txt$/,
-      "/test-resolution"
-    );
-    return `${onboardingUrl.origin}${testPath}`;
-  } catch {
-    return null;
-  }
 }

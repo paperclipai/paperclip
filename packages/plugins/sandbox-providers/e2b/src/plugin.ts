@@ -34,11 +34,11 @@ function parseDriverConfig(raw: Record<string, unknown>): E2bDriverConfig {
   const template = typeof raw.template === "string" && raw.template.trim().length > 0
     ? raw.template.trim()
     : "base";
-  const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const timeoutMs = Number(raw.timeoutMs ?? 3_600_000);
   return {
     template,
     apiKey: typeof raw.apiKey === "string" && raw.apiKey.trim().length > 0 ? raw.apiKey.trim() : null,
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 3_600_000,
     reuseLease: raw.reuseLease === true,
   };
 }
@@ -152,13 +152,13 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-// Mirror SSH's buildSshSpawnTarget: source the user's login profiles (and nvm)
-// before exec so commands run with the same PATH the user sees in an
-// interactive shell. e2b's `sandbox.commands.run` otherwise spawns a
-// non-login, non-interactive shell whose PATH does not include npm-globals,
-// nvm shims, or anything else the template installs via .profile/.bashrc —
-// which makes the hello probe fail with `exec: <cli>: not found` even when
-// the binary is on disk.
+// Source the user's login profiles before exec so commands run with the same
+// PATH the user sees in an interactive shell. e2b's `sandbox.commands.run`
+// otherwise spawns a non-login, non-interactive shell whose PATH does not
+// include npm-globals or anything else the template installs via
+// .profile/.bashrc — which makes the hello probe fail with
+// `exec: <cli>: not found` even when the binary is on disk. The wrapper no
+// longer sources `nvm.sh`; the sandbox image supplies `node` on the PATH.
 function buildLoginShellScript(input: {
   command: string;
   args: string[];
@@ -186,8 +186,6 @@ function buildLoginShellScript(input: {
     // .bash_profile -> .bashrc.
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     execLine,
   ].join(" && ");
 }
@@ -391,6 +389,18 @@ const plugin = definePlugin({
 
     const config = parseDriverConfig(params.config);
     const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
+    // Refresh the sandbox death clock on every command. E2B's `timeoutMs` is
+    // the absolute sandbox lifetime from create/connect; without this, a run
+    // longer than `config.timeoutMs` will have its sandbox killed mid-command
+    // and the next call throws "Sandbox is probably not running anymore".
+    // The refresh is best-effort: the sandbox is already healthy at this
+    // point, so a transient API error on setTimeout should not block the
+    // command from running. Worst case the existing lifetime stands.
+    try {
+      await sandbox.setTimeout(config.timeoutMs);
+    } catch {
+      // ignore — keep going with the existing sandbox lifetime
+    }
     const baseCommand = buildLoginShellScript({
       command: params.command,
       args: params.args ?? [],

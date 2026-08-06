@@ -319,7 +319,10 @@ export interface PaperclipPluginManifestV1 {
   version: string;
   displayName: string;
   description: string;
+  author: string;
   categories: Array<"connector" | "workspace" | "automation" | "ui">;
+  minimumHostVersion?: string;
+  /** @deprecated Use `minimumHostVersion` instead. Retained for backwards compatibility. */
   minimumPaperclipVersion?: string;
   capabilities: string[];
   entrypoints: {
@@ -335,15 +338,42 @@ export interface PaperclipPluginManifestV1 {
     description: string;
     parametersSchema: JsonSchema;
   }>;
+  database?: PluginDatabaseDeclaration;
+  apiRoutes?: PluginApiRouteDeclaration[];
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  agents?: PluginManagedAgentDeclaration[];
+  projects?: PluginManagedProjectDeclaration[];
+  routines?: PluginManagedRoutineDeclaration[];
+  skills?: PluginManagedSkillDeclaration[];
+  localFolders?: PluginLocalFolderDeclaration[];
+  /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
+  launchers?: PluginLauncherDeclaration[];
   ui?: {
+    launchers?: PluginLauncherDeclaration[];
     slots: Array<{
-      type: "page" | "detailTab" | "dashboardWidget" | "sidebar" | "settingsPage";
+      type: "page"
+        | "detailTab"
+        | "taskDetailView"
+        | "dashboardWidget"
+        | "sidebar"
+        | "routeSidebar"
+        | "sidebarPanel"
+        | "projectSidebarItem"
+        | "globalToolbarButton"
+        | "toolbarButton"
+        | "contextMenuItem"
+        | "commentAnnotation"
+        | "commentContextMenuItem"
+        | "settingsPage"
+        | "companySettingsPage";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** For page and companySettingsPage: single route segment */
+      routePath?: string;
     }>;
   };
 }
@@ -354,10 +384,17 @@ Rules:
 - `id` must be globally unique
 - `id` should normally equal the npm package name
 - `apiVersion` must match the host-supported plugin API version
+- `minimumHostVersion` is preferred, with `minimumPaperclipVersion` retained for
+  backwards compatibility
 - `capabilities` must be static and install-time visible
 - config schema must be JSON Schema compatible
 - `entrypoints.ui` points to the directory containing the built UI bundle
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- declare managed declarations with the matching `*.managed` capability:
+  - `agents` → `agents.managed`
+  - `projects` → `projects.managed`
+  - `routines` → `routines.managed`
+  - `skills` → `skills.managed`
 
 ## 11. Agent Tools
 
@@ -519,11 +556,12 @@ Returns:
 
 ### 13.4 `configChanged`
 
-Called when the operator updates the plugin's instance config at runtime.
+Called when the operator updates a plugin config for a specific company at runtime.
 
 Input includes:
 
 - new resolved config
+- `companyId` for the company-scoped config row
 
 If the worker implements this method, it applies the new config without restarting. If the worker does not implement this method, the host restarts the worker process with the new config (graceful shutdown then restart).
 
@@ -631,6 +669,22 @@ Plugins that need filesystem, git, terminal, or process operations handle those 
 
 Trusted orchestration plugins can create and update Paperclip issues through `ctx.issues` instead of importing server internals. The public issue contract includes parent/project/goal links, board or agent assignees, blocker IDs, labels, billing code, request depth, execution workspace inheritance, and plugin origin metadata.
 
+Plugins that perform durable work should declare managed Paperclip resources rather than using private plugin state:
+
+- `agents` + `ctx.agents.managed.*` for named, invokable operators (`agents.managed` required)
+- `projects` + `ctx.projects.managed.*` for stable, scoped issue/workspace ownership (`projects.managed` required)
+- `routines` + `ctx.routines.managed.*` for schedule/webhook/manual execution with issue trails (`routines.managed` required)
+- `skills` + `ctx.skills.managed.*` for reusable agent capabilities (`skills.managed` required)
+
+The LLM Wiki plugin is the current reference for this pattern: it declares managed
+agents, projects, routines, and skills in manifest, reconciles them per company,
+and uses managed routines for periodic wiki maintenance and ingest operations.
+Content-oriented plugins should follow the same model instead of running
+unmanaged background loops: make the LLM-facing worker an operator-visible
+managed agent, attach reusable prompt/tool guidance as managed skills, keep
+operation issues in a managed project, and drive recurring work through managed
+routines.
+
 Origin rules:
 
 - Built-in core issues keep built-in origins such as `manual` and `routine_execution`.
@@ -652,6 +706,7 @@ Governance helpers:
 - `ctx.issues.assertCheckoutOwner({ issueId, companyId, actorAgentId, actorRunId })` lets plugin actions preserve agent-run checkout ownership.
 - `ctx.issues.requestWakeup(issueId, companyId, options)` requests assignment wakeups through host heartbeat semantics, including terminal-status, blocker, assignee, and budget hard-stop checks.
 - `ctx.issues.requestWakeups(issueIds, companyId, options)` applies the same host-owned wakeup semantics to a batch and may use an idempotency key prefix for stable coordinator retries.
+- `ctx.issues.createComment(issueId, body, companyId, options)` posts a comment attributed to the plugin's own agent by default (`options.authorAgentId`). Passing `options.actorUserId` instead attributes the comment to that human company member — this requires `issue.comments.create_human_attributed` in addition to `issue.comments.create`, and the host independently verifies `actorUserId` is an active human member of the company before applying it, so a plugin can never forge attribution to an arbitrary or inactive user. A human-attributed comment on a non-terminal-status issue with an assignee also triggers the same assignee wakeup a board user's comment gets.
 
 Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
 
@@ -678,7 +733,10 @@ export { z } from "zod";
 export interface PluginContext {
   manifest: PaperclipPluginManifestV1;
   config: {
-    get(): Promise<Record<string, unknown>>;
+    get(companyId: string): Promise<Record<string, unknown>>;
+  };
+  secrets: {
+    resolve(secretRef: { type: "secret_ref"; secretId: string; version?: number | "latest" }, options: { companyId: string; configPath?: string }): Promise<string>;
   };
   events: {
     on(name: string, fn: (event: unknown) => Promise<void>): void;
@@ -746,20 +804,39 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `activity.read`
 - `costs.read`
 - `issues.orchestration.read`
+- `database.namespace.read`
 
 ### Data Write
 
 - `issues.create`
 - `issues.update`
 - `issue.comments.create`
+- `issue.comments.create_human_attributed`
+- `issue.interactions.create`
 - `issue.documents.write`
 - `issue.relations.write`
 - `issues.checkout`
 - `issues.wakeup`
-- `assets.write`
-- `assets.read`
 - `activity.log.write`
 - `metrics.write`
+- `telemetry.track`
+- `assets.read`
+- `assets.write`
+- `database.namespace.migrate`
+- `database.namespace.write`
+- `goals.create`
+- `goals.update`
+- `projects.managed`
+- `routines.managed`
+- `skills.managed`
+- `agents.managed`
+- `agents.pause`
+- `agents.resume`
+- `agents.invoke`
+- `agent.sessions.create`
+- `agent.sessions.list`
+- `agent.sessions.send`
+- `agent.sessions.close`
 
 ### Plugin State
 
@@ -772,8 +849,10 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `events.emit`
 - `jobs.schedule`
 - `webhooks.receive`
+- `local.folders`
 - `http.outbound`
 - `secrets.read-ref`
+- `environment.drivers.register`
 
 ### Agent Tools
 
@@ -786,6 +865,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.page.register`
 - `ui.detailTab.register`
 - `ui.dashboardWidget.register`
+- `ui.commentAnnotation.register`
 - `ui.action.register`
 
 ## 15.2 Forbidden Capabilities
@@ -894,6 +974,7 @@ Job rules:
 3. The host prevents overlapping execution of the same plugin/job combination unless explicitly allowed later.
 4. Every job run is recorded in Postgres.
 5. Failed jobs are retryable.
+6. For recurring business workflows that should create visible Paperclip work, prefer managed routines and managed resources over jobs. Jobs remain useful for private plugin-runtime maintenance tasks.
 
 ## 18. Webhooks
 
@@ -1056,6 +1137,27 @@ Plugins may add sidebar links to:
 - global plugin settings
 - company-context plugin pages
 
+### 19.5.1 Route Sidebars (`routeSidebar`)
+
+A `routeSidebar` slot supplies a contextual sidebar for a plugin page route
+(matched by `routePath`). It **coexists** with the main app sidebar rather than
+replacing it: while the route is active the host collapses the app `<Sidebar/>`
+to its 64px icon rail (still hover/peek-able) and renders the plugin's
+`routeSidebar` in a secondary pane, producing the layout
+`[ app rail ][ route sidebar ][ content ]`. The same model applies to the
+host's own company-settings sidebar.
+
+The host owns the collapse. Plugins must not mount `RequestCollapsedSidebar` or
+otherwise attempt to collapse the app sidebar from a `routeSidebar` — the host
+applies the collapse while the route is mounted and restores the previous state
+on navigation away. The collapse is a **hard invariant**: while a secondary
+sidebar is shown the app rail is forced collapsed and its expand/toggle
+affordance is hidden, *overriding* any user pin. Crucially, this force is
+ephemeral — it never mutates the user's persisted expanded/collapsed preference,
+so navigating back to a normal route restores exactly what the user chose.
+Precedence is therefore: secondary-sidebar force > explicit user pin >
+route-requested collapse (`RequestCollapsedSidebar`) > default expanded.
+
 ## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
 
 The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
@@ -1119,20 +1221,22 @@ The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` c
 
 ## 19.8 Plugin Settings UI
 
-Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema.
+Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated company-scoped settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema for the selected company.
 
 The auto-generated form supports:
 
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the Paperclip secret provider system rather than a plain text input
+- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that stores the shared `{ type: "secret_ref", secretId, version? }` object shape and resolves through the Paperclip secret provider system rather than a plain text input
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
 For plugins that need richer settings UX beyond what JSON Schema can express, the plugin may declare a `settingsPage` slot in `ui.slots`. When present, the host renders the plugin's own React component instead of the auto-generated form. The plugin component communicates with its worker through the standard bridge to read and write config.
 
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
+
+For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
 
 ## 20. Local Tooling
 
@@ -1185,11 +1289,16 @@ Indexes:
 ### `plugin_config`
 
 - `id` uuid pk
-- `plugin_id` uuid fk `plugins.id` unique not null
+- `plugin_id` uuid fk `plugins.id` not null
+- `company_id` uuid fk `companies.id` not null
 - `config_json` jsonb not null
 - `created_at` timestamptz not null
 - `updated_at` timestamptz not null
 - `last_error` text null
+
+Constraints:
+
+- unique `(plugin_id, company_id)`
 
 ### `plugin_state`
 
@@ -1327,10 +1436,11 @@ Plugin config must never persist raw secret values.
 
 Rules:
 
-1. Plugin config stores secret refs only.
-2. Secret refs resolve through the existing Paperclip secret provider system.
-3. Plugin workers receive resolved secrets only at execution time.
-4. Secret values must never be written to:
+1. Plugin config stores shared `{ type: "secret_ref", secretId, version? }` refs only. Legacy UUID string refs are rejected.
+2. Save-time validation rejects refs to secrets outside the selected company.
+3. Secret refs resolve through the existing Paperclip secret provider system using explicit `companyId`.
+4. Plugin workers receive resolved secrets only at execution time, and resolution writes `secret_access_events` with `consumerType: "plugin_worker"`.
+5. Secret values must never be written to:
    - plugin config JSON
    - activity logs
    - webhook delivery rows
@@ -1382,6 +1492,14 @@ Each plugin may expose a company-context main page:
 - `/:companyPrefix/plugins/:pluginId`
 
 This page is where board users do most day-to-day work.
+
+## 24.4 Company Settings Plugin Page
+
+Each ready plugin may expose a company settings page:
+
+- `/:companyPrefix/company/settings/:routePath`
+
+The host adds a matching Company Settings sidebar item using the slot `displayName`. Plugin settings route segments are single-segment slugs and must not collide with core company settings pages.
 
 ## 25. Uninstall And Data Lifecycle
 
@@ -1454,12 +1572,13 @@ When a plugin is upgraded at runtime:
 
 #### 25.4.4 Hot Config Change
 
-When an operator updates a plugin's instance config at runtime:
+When an operator updates a plugin config for a company at runtime:
 
-1. The host writes the new config to `plugin_config`.
-2. The host sends a `configChanged` notification to the running worker via IPC.
-3. The worker receives the new config through `ctx.config` and applies it without restarting. If the plugin needs to re-initialize connections (e.g. a new API token), it does so internally.
-4. If the plugin does not handle `configChanged`, the host restarts the worker process with the new config (graceful shutdown then restart).
+1. The host validates that any shared `{ type: "secret_ref", secretId, version? }` refs belong to that company, then writes the new config to `plugin_config`.
+2. The host syncs plugin secret bindings in `company_secret_bindings` under `(company_id, target_type = "plugin", target_id = plugin_id)`.
+3. The host sends a `configChanged` notification with `companyId` to the running worker via IPC.
+4. The worker reads the config through `ctx.config.get(companyId)` and applies it without restarting. If the plugin needs to re-initialize connections (e.g. a new API token), it does so internally.
+5. If the plugin does not handle `configChanged`, the host restarts the worker process; the worker must still request company-scoped config explicitly.
 
 #### 25.4.5 Frontend Cache Invalidation
 

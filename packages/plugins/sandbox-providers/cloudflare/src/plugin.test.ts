@@ -62,7 +62,7 @@ describe("Cloudflare sandbox provider plugin", () => {
         bridgeAuthToken: "secret-ref://bridge-token",
         reuseLease: true,
         keepAlive: true,
-        sleepAfter: "10m",
+        sleepAfter: "1h",
         normalizeId: false,
         requestedCwd: "/workspace/custom",
         sessionStrategy: "default",
@@ -143,6 +143,29 @@ describe("Cloudflare sandbox provider plugin", () => {
       issueId: "issue-1",
       requestedCwd: "/workspace/paperclip",
     });
+  });
+
+  it("defaults the sleepAfter passed to the bridge to 1h so long runs don't idle out", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        providerLeaseId: "pc-run-1-abcd1234",
+        metadata: { provider: "cloudflare", remoteCwd: "/workspace/paperclip", resumedLease: false },
+      }),
+    );
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "cloudflare",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      requestedCwd: "/workspace/paperclip",
+      config: {
+        bridgeBaseUrl: "https://bridge.example.workers.dev",
+        bridgeAuthToken: "resolved-token",
+      },
+    });
+
+    expect(requestBodyAt()).toMatchObject({ sleepAfter: "1h" });
   });
 
   it("returns expired lease semantics when resume reports lost state", async () => {

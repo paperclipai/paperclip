@@ -28,7 +28,7 @@ describe("claude local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("defaults to mounting all built-in Paperclip skills when no explicit selection exists", async () => {
+  it("reports built-in Paperclip skills as available when no explicit selection exists", async () => {
     const snapshot = await listClaudeSkills({
       agentId: "agent-1",
       companyId: "company-1",
@@ -38,9 +38,8 @@ describe("claude local skill sync", () => {
 
     expect(snapshot.mode).toBe("ephemeral");
     expect(snapshot.supported).toBe(true);
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.desiredSkills).toEqual([]);
+    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("available");
   });
 
   it("respects an explicit desired skill list without mutating a persistent home", async () => {
@@ -57,7 +56,7 @@ describe("claude local skill sync", () => {
 
     expect(snapshot.desiredSkills).toContain(paperclipKey);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("configured");
+    expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("available");
   });
 
   it("normalizes legacy flat Paperclip skill refs to canonical keys", async () => {

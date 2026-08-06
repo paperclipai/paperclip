@@ -64,13 +64,27 @@ describe("redaction", () => {
     });
   });
 
+  it("preserves authorization decision reasons in audit payloads", () => {
+    expect(redactEventPayload({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: "Bearer secret",
+      surface: "issue.comment.create",
+    })).toEqual({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: REDACTED_EVENT_VALUE,
+      surface: "issue.comment.create",
+    });
+  });
+
   it("redacts common secret shapes from unstructured text", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
     const input = [
       "Authorization: Bearer live-bearer-token-value",
       `payload {"apiKey":"json-secret-value"}`,
+      `paperclip {"PAPERCLIP_API_KEY":"paperclip-json-secret"}`,
       `escaped {\\"apiKey\\":\\"escaped-json-secret\\"}`,
+      `export PAPERCLIP_API_KEY='paperclip-shell-secret'`,
       `GITHUB_TOKEN=${githubToken}`,
       `session=${jwt}`,
     ].join("\n");
@@ -80,7 +94,9 @@ describe("redaction", () => {
     expect(result).toContain(REDACTED_EVENT_VALUE);
     expect(result).not.toContain("live-bearer-token-value");
     expect(result).not.toContain("json-secret-value");
+    expect(result).not.toContain("paperclip-json-secret");
     expect(result).not.toContain("escaped-json-secret");
+    expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
   });

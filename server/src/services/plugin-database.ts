@@ -19,6 +19,9 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
 
 type SqlRef = { schema: string; table: string; keyword: string };
+type QualifiedRefPattern =
+  | { pattern: RegExp; groups: "keyword-schema-table" }
+  | { pattern: RegExp; groups: "schema-table"; keyword: string };
 
 export type PluginDatabaseRuntimeResult<T = Record<string, unknown>> = {
   rows?: T[];
@@ -123,14 +126,29 @@ function normaliseSql(input: string): string {
 
 function extractQualifiedRefs(statement: string): SqlRef[] {
   const refs: SqlRef[] = [];
-  const patterns = [
-    /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
-    /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+  const patterns: QualifiedRefPattern[] = [
+    {
+      pattern: /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "keyword-schema-table",
+    },
+    {
+      pattern: /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "keyword-schema-table",
+    },
+    {
+      pattern: /\bcreate\s+(?:unique\s+)?index(?:\s+concurrently)?\s+(?:if\s+not\s+exists\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s+on\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+      groups: "schema-table",
+      keyword: "create index",
+    },
   ];
 
-  for (const pattern of patterns) {
+  for (const { pattern, ...mapping } of patterns) {
     for (const match of statement.matchAll(pattern)) {
-      refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      if (mapping.groups === "keyword-schema-table") {
+        refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      } else {
+        refs.push({ keyword: mapping.keyword, schema: match[1]!, table: match[2]! });
+      }
     }
   }
   return refs;
@@ -182,13 +200,35 @@ export function validatePluginMigrationStatement(
     throw new Error("Destructive plugin migrations are not allowed in Phase 1");
   }
 
-  const ddlAllowed = /^(create|alter|comment)\b/.test(normalized);
-  if (!ddlAllowed) {
-    throw new Error("Plugin migrations may contain DDL statements only");
+  if (/\bdelete\s+from\b/.test(normalized)) {
+    throw new Error("Plugin migrations cannot delete data");
+  }
+
+  const ddlOrBackfillAllowed =
+    /^(create|alter|comment)\b/.test(normalized) ||
+    /^(insert\s+into|update)\b/.test(normalized) ||
+    (normalized.startsWith("with ") && /\b(insert\s+into|update)\b/.test(normalized));
+  if (!ddlOrBackfillAllowed) {
+    throw new Error("Plugin migrations may contain DDL or namespace-scoped backfill statements only");
   }
 
   const refs = extractQualifiedRefs(statement);
   if (refs.length === 0 && !normalized.startsWith("comment ")) {
+    throw new Error("Plugin migration objects must use fully qualified schema names");
+  }
+
+  const objectRefKeywords = new Set([
+    "alter table",
+    "create index",
+    "create table",
+    "create view",
+    "drop table",
+    "into",
+    "truncate table",
+    "update",
+  ]);
+  const hasQualifiedObjectRef = refs.some((ref) => objectRefKeywords.has(ref.keyword));
+  if (!hasQualifiedObjectRef && !normalized.startsWith("comment ")) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
   }
 

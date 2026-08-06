@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { collectLiveIssueIds } from "./liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts } from "./liveIssueIds";
 
 describe("collectLiveIssueIds", () => {
   it("keeps only runs linked to issues", () => {
@@ -73,5 +73,51 @@ describe("collectLiveIssueIds", () => {
     ];
 
     expect([...collectLiveIssueIds(liveRuns)]).toEqual(["issue-1", "issue-2"]);
+  });
+});
+
+describe("collectSubtreeLiveCounts", () => {
+  const tree = [
+    { id: "root", parentId: null },
+    { id: "child-a", parentId: "root" },
+    { id: "child-b", parentId: "root" },
+    { id: "grandchild", parentId: "child-a" },
+  ];
+
+  it("rolls a live descendant up to every ancestor without crediting itself", () => {
+    const counts = collectSubtreeLiveCounts(tree, new Set(["grandchild"]));
+    expect(counts.get("root")).toBe(1);
+    expect(counts.get("child-a")).toBe(1);
+    expect(counts.has("child-b")).toBe(false);
+    // The live issue itself never appears in its own subtree count.
+    expect(counts.has("grandchild")).toBe(false);
+  });
+
+  it("counts multiple live descendants under a shared ancestor", () => {
+    const counts = collectSubtreeLiveCounts(tree, new Set(["child-b", "grandchild"]));
+    expect(counts.get("root")).toBe(2);
+    expect(counts.get("child-a")).toBe(1);
+    expect(counts.has("child-b")).toBe(false);
+  });
+
+  it("ignores live issues that are not part of the loaded tree", () => {
+    const counts = collectSubtreeLiveCounts(tree, new Set(["not-loaded"]));
+    expect(counts.size).toBe(0);
+  });
+
+  it("returns an empty map when nothing is live", () => {
+    expect(collectSubtreeLiveCounts(tree, new Set()).size).toBe(0);
+    expect(collectSubtreeLiveCounts(undefined, new Set(["x"])).size).toBe(0);
+  });
+
+  it("does not infinite-loop on a cyclic parent chain", () => {
+    const cyclic = [
+      { id: "a", parentId: "b" },
+      { id: "b", parentId: "a" },
+    ];
+    const counts = collectSubtreeLiveCounts(cyclic, new Set(["a"]));
+    // a -> b counted once; the cycle back to a is guarded by the seen set.
+    expect(counts.get("b")).toBe(1);
+    expect(counts.has("a")).toBe(false);
   });
 });

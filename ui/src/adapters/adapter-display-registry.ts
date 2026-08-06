@@ -16,19 +16,24 @@ import {
   Cpu,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
-import { HermesIcon } from "@/components/HermesIcon";
 
 // ---------------------------------------------------------------------------
 // Type suffix parsing
 // ---------------------------------------------------------------------------
 
-const TYPE_SUFFIXES: Record<string, string> = {
-  _local: "local",
+// Suffixes stripped from type ids when deriving a human-readable label for
+// unknown (plugin) adapter types. "_local" is a legacy qualifier from before
+// first-class Environments and is never displayed; "_gateway" is re-appended
+// as " (gateway)" to disambiguate gateway variants. Known adapters in
+// `adapterDisplayMap` have final labels and never get a derived suffix.
+const STRIPPED_TYPE_SUFFIXES = ["_local", "_gateway"] as const;
+
+const DISPLAY_SUFFIXES: Record<string, string> = {
   _gateway: "gateway",
 };
 
 function getTypeSuffix(type: string): string | null {
-  for (const [suffix, mode] of Object.entries(TYPE_SUFFIXES)) {
+  for (const [suffix, mode] of Object.entries(DISPLAY_SUFFIXES)) {
     if (type.endsWith(suffix)) return mode;
   }
   return null;
@@ -55,47 +60,59 @@ export interface AdapterDisplayInfo {
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   acpx_local: {
-    label: "ACPX",
-    description: "Experimental local ACPX multi-agent adapter",
+    label: "ACPX (retired)",
+    description: "Retired standalone ACPX adapter",
     icon: Bot,
-    experimental: true,
+    comingSoon: true,
+    disabledLabel: "Use Claude Code or Codex with the ACP engine",
     hideFromVisualSelection: true,
   },
   claude_local: {
     label: "Claude Code",
-    description: "Local Claude agent",
+    description: "Claude Code CLI harness",
     icon: Sparkles,
     recommended: true,
   },
   codex_local: {
     label: "Codex",
-    description: "Local Codex agent",
+    description: "Codex CLI harness",
     icon: Code,
     recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
-    description: "Local Gemini agent",
+    description: "Gemini CLI harness",
     icon: Gem,
+  },
+  grok_local: {
+    label: "Grok Build",
+    description: "Grok Build harness",
+    icon: Bot,
+  },
+  hermes_gateway: {
+    label: "Hermes Gateway",
+    description: "Remote Hermes API server",
+    icon: Bot,
+    hideFromVisualSelection: true,
+  },
+  hermes_local: {
+    label: "Hermes",
+    description: "Hermes harness",
+    icon: Bot,
   },
   opencode_local: {
     label: "OpenCode",
-    description: "Local multi-provider agent",
+    description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
-  },
-  hermes_local: {
-    label: "Hermes Agent",
-    description: "Local Hermes CLI agent",
-    icon: HermesIcon,
   },
   pi_local: {
     label: "Pi",
-    description: "Local Pi agent",
+    description: "Pi harness",
     icon: Terminal,
   },
   cursor: {
     label: "Cursor",
-    description: "Local Cursor agent",
+    description: "Cursor CLI harness",
     icon: MousePointer2,
   },
   cursor_cloud: {
@@ -105,10 +122,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
-    description: "Invoke OpenClaw via gateway protocol",
+    description: "External gateway adapter",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: "Configure OpenClaw within the App",
+    disabledLabel: "Invite external agents from the add-agent modal",
+    hideFromVisualSelection: true,
   },
   process: {
     label: "Process",
@@ -131,7 +149,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
 function humanizeType(type: string): string {
   // Strip known type suffixes so "droid_local" → "Droid", not "Droid Local"
   let base = type;
-  for (const suffix of Object.keys(TYPE_SUFFIXES)) {
+  for (const suffix of STRIPPED_TYPE_SUFFIXES) {
     if (base.endsWith(suffix)) {
       base = base.slice(0, -suffix.length);
       break;
@@ -141,16 +159,20 @@ function humanizeType(type: string): string {
 }
 
 export function getAdapterLabel(type: string): string {
-  const base = adapterDisplayMap[type]?.label ?? humanizeType(type);
-  return withSuffix(base, getTypeSuffix(type));
+  // Known labels are final — only unknown (plugin) types get a derived
+  // suffix, so labels like "OpenClaw Gateway" don't become
+  // "OpenClaw Gateway (gateway)".
+  const known = adapterDisplayMap[type];
+  if (known) return known.label;
+  return withSuffix(humanizeType(type), getTypeSuffix(type));
 }
 
 export function getAdapterLabels(): Record<string, string> {
-  const suffixed: Record<string, string> = {};
+  const labels: Record<string, string> = {};
   for (const [type, info] of Object.entries(adapterDisplayMap)) {
-    suffixed[type] = withSuffix(info.label, getTypeSuffix(type));
+    labels[type] = info.label;
   }
-  return suffixed;
+  return labels;
 }
 
 export function getAdapterDisplay(type: string): AdapterDisplayInfo {
