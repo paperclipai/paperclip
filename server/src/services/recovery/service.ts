@@ -4320,6 +4320,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         monitorAttemptCount: issues.monitorAttemptCount,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(

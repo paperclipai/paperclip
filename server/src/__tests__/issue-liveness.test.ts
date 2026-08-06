@@ -627,4 +627,32 @@ describe("issue graph liveness classifier", () => {
       recoveryIssueId: reviewIssueId,
     });
   });
+
+  it("reports an in-progress issue when only a different agent has an active run", () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: blockerId,
+          identifier: "PAP-2281",
+          title: "Executor routing stalled",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+          updatedAt: new Date(now.getTime() - 16 * 60 * 1000),
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      activeRuns: [{ companyId, issueId: blockerId, agentId: managerId, status: "running" }],
+      now,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockerId,
+      state: "in_progress_without_execution_path",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: coderId,
+    });
+  });
 });
