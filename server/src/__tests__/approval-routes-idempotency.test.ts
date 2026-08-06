@@ -455,6 +455,67 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("fences a task_bridge-scoped requester from withdrawing its parent agent's own approval card", async () => {
+    const pending = {
+      id: "approval-scoped-tb",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue(pending);
+    // A task_bridge key acts AS its parent agent, so the bare requester identity check
+    // (actor.agentId === requestedByAgentId) passes. The real decideTaskBridgeAccess denies
+    // company_scope:read; mirror that here so the boundary gate must run BEFORE the requester
+    // branch to fence the key. Against 4388a9ea (no gate) the requester branch withdraws → 200.
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) =>
+      action === "company_scope:read"
+        ? { allowed: false, action, reason: "deny_scope", explanation: "Task bridge keys cannot use company-wide APIs." }
+        : { allowed: true, action, reason: "allow_test", explanation: "Allowed by test mock." },
+    );
+
+    const res = await request(await createAgentApp({
+      actorOverrides: { keyScope: { kind: "task_bridge", keyId: "key-tb-1" } },
+    }))
+      .post("/api/approvals/approval-scoped-tb/withdraw")
+      .send({ reason: "Suppress parent homework" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Approvals are outside this actor's authorization boundary");
+    expect(mockApprovalService.withdraw).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("fences a skill_test-scoped requester from withdrawing its parent agent's own approval card", async () => {
+    const pending = {
+      id: "approval-scoped-st",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue(pending);
+    // Same fence for skill_test run tokens: decideSkillTestAccess denies company_scope:read.
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) =>
+      action === "company_scope:read"
+        ? { allowed: false, action, reason: "deny_scope", explanation: "Skill-test run tokens cannot use company-wide APIs." }
+        : { allowed: true, action, reason: "allow_test", explanation: "Allowed by test mock." },
+    );
+
+    const res = await request(await createAgentApp({
+      actorOverrides: { keyScope: { kind: "skill_test", issueId: "issue-harness-1" } },
+    }))
+      .post("/api/approvals/approval-scoped-st/withdraw")
+      .send({ reason: "Suppress parent homework" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Approvals are outside this actor's authorization boundary");
+    expect(mockApprovalService.withdraw).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("wakes a linked issue assignee when withdrawal removes its review path", async () => {
     const pending = {
       id: "approval-linked",
@@ -505,12 +566,13 @@ describe("approval routes idempotent retries", () => {
       payload: {},
       requestedByAgentId: "agent-2",
     });
-    mockAccessService.decide.mockResolvedValue({
-      allowed: false,
-      action: "approval.withdraw:any",
-      reason: "deny_missing_grant",
-      explanation: "Missing permission",
-    });
+    // Full-privilege agent: passes the company_scope:read boundary gate but lacks the
+    // approval.withdraw:any grant, so it is denied at the non-requester branch.
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) =>
+      action === "approval.withdraw:any"
+        ? { allowed: false, action, reason: "deny_missing_grant", explanation: "Missing permission" }
+        : { allowed: true, action, reason: "allow_test", explanation: "Allowed by test mock." },
+    );
 
     const res = await request(await createAgentApp({ actorOverrides: { role: "ceo" } }))
       .post("/api/approvals/approval-other/withdraw")

@@ -291,6 +291,14 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!existing) return;
+    // Route the requester branch through the same company_scope:read boundary the GET/create
+    // approval routes already enforce. company_scope:read is a company-wide action that
+    // decideTaskBridgeAccess / decideSkillTestAccess (and decideLowTrustAccess) deny, so this
+    // fences task_bridge / skill_test tokens acting AS their parent agent from satisfying the
+    // bare requester identity check and withdrawing the parent's own pending cards. Full-privilege
+    // agents already pass company_scope:read on the sibling routes, so legitimate requesters are
+    // unaffected. (FAI-9589 — scope-fence bypass hardening.)
+    if (!(await assertApprovalAccessAllowed(req, res, existing.companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
 
     let authorizationMode: "requester" | "scoped_cleanup";
