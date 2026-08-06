@@ -51,6 +51,10 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   model: "test-model",
 })));
 
+function testCodexAdapterConfig() {
+  return { env: { CODEX_HOME: path.join(os.tmpdir(), "paperclip-test-codex-home") } };
+}
+
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
     type: "codex_local",
@@ -283,6 +287,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
     const agentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const reviewStageId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -300,7 +306,27 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      // The adapter is mocked below; point Codex at a test-owned non-managed
+      // home so launchability does not depend on host authentication.
+      adapterConfig: testCodexAdapterConfig(),
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -320,19 +346,43 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       identifier: "PAP-RESUME",
+      executionPolicy: {
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          onApprove: "return_to_executor",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        }],
+      },
       createdAt: new Date("2026-07-28T00:00:00.000Z"),
       updatedAt: new Date("2026-07-28T00:00:00.000Z"),
     });
 
-    adapterExecute.mockImplementationOnce(async () => {
+    adapterExecute.mockImplementationOnce(async ({ runId }: { runId: string }) => {
       await db.insert(issueComments).values({
         companyId,
         issueId,
         body: "Execution prepared for review.",
         createdByAgentId: agentId,
+        createdByRunId: runId,
       });
       await db.update(issues).set({
         status: "in_review",
+        assigneeAgentId: reviewerAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+          changesRequestedCount: 0,
+        },
         updatedAt: new Date("2026-07-28T00:00:01.000Z"),
       }).where(eq(issues.id, issueId));
       return {
@@ -374,6 +424,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     await db.update(issues).set({
       status: "in_progress",
+      assigneeAgentId: agentId,
       executionState: {
         status: "execution_pending",
         currentStageId: null,
@@ -382,19 +433,22 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         currentParticipant: null,
         returnAssignee: { type: "agent", agentId },
         reviewRequest: null,
-        completedStageIds: [randomUUID()],
+        completedStageIds: [reviewStageId],
+        continuationStageIds: [],
         lastDecisionId: randomUUID(),
         lastDecisionOutcome: "approved",
+        monitor: null,
       },
       updatedAt: new Date("2026-07-28T00:00:02.000Z"),
     }).where(eq(issues.id, issueId));
 
-    adapterExecute.mockImplementationOnce(async () => {
+    adapterExecute.mockImplementationOnce(async ({ runId }: { runId: string }) => {
       await db.insert(issueComments).values({
         companyId,
         issueId,
         body: "Execution completed after review.",
         createdByAgentId: agentId,
+        createdByRunId: runId,
       });
       await db.update(issues).set({
         status: "done",
@@ -494,7 +548,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -668,7 +722,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -895,7 +949,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -1054,7 +1108,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -1214,7 +1268,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),

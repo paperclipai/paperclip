@@ -4286,12 +4286,14 @@ const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
 const SESSION_CONFIG_FINGERPRINT_VERSION_KEY = "__paperclipConfigFingerprintVersion";
 const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
 const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY = "__paperclipConfigCategoryFingerprints";
+const SESSION_EXECUTION_WORKSPACE_BINDING_FINGERPRINT_KEY = "__paperclipExecutionWorkspaceBindingFingerprint";
 const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
   SESSION_CONFIGURED_MODEL_KEY,
   SESSION_CONFIG_FINGERPRINT_KEY,
   SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
   SESSION_CONFIG_CATEGORIES_KEY,
   SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
+  SESSION_EXECUTION_WORKSPACE_BINDING_FINGERPRINT_KEY,
 ]);
 const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
@@ -4327,6 +4329,7 @@ type EffectiveRunSessionConfigMetadata = {
   fingerprint: string;
   categories: EffectiveRunSessionConfigCategory[];
   categoryFingerprints: Record<EffectiveRunSessionConfigCategory, string>;
+  legacyUnrealizedWorkspaceConfigFingerprint: string | null;
   fingerprints: EffectiveRunConfigFingerprints;
 };
 
@@ -4880,6 +4883,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   issueOverrides: unknown;
   workspaceConfig: unknown;
   workspaceRealization?: unknown;
+  legacyUnrealizedWorkspaceConfig?: unknown;
   environment: unknown;
   environmentEnv: unknown;
   projectEnv: unknown;
@@ -4917,11 +4921,19 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     subcategories: EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES,
     secretManifest,
   });
+  const legacyUnrealizedWorkspaceConfigFingerprint = input.legacyUnrealizedWorkspaceConfig === undefined
+    ? null
+    : createEffectiveRunConfigSubcategoryFingerprints({
+        category: "session",
+        value: { workspaceConfig: input.legacyUnrealizedWorkspaceConfig },
+        subcategories: ["workspaceConfig"] as const,
+      }).workspaceConfig;
   return {
     version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
     fingerprint: fingerprints.sessionFingerprint.fingerprint,
     categories: [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES],
     categoryFingerprints,
+    legacyUnrealizedWorkspaceConfigFingerprint,
     fingerprints,
   };
 }
@@ -5147,10 +5159,44 @@ function readConfiguredModelFromAdapterConfig(
   return readNonEmptyString(adapterConfig?.model);
 }
 
+export function fingerprintExecutionWorkspaceSessionBinding(workspace: {
+  id: string;
+  mode: string;
+  strategyType: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  cwd: string | null;
+  providerRef: string | null;
+  repoUrl: string | null;
+  baseRef: string | null;
+  branchName: string | null;
+  config: unknown;
+} | null | undefined) {
+  if (!workspace) return null;
+  const digest = createHash("sha256")
+    .update(stableStringifyForFingerprint({
+      version: 1,
+      id: workspace.id,
+      mode: workspace.mode,
+      strategyType: workspace.strategyType,
+      projectId: workspace.projectId,
+      projectWorkspaceId: workspace.projectWorkspaceId,
+      cwd: workspace.cwd,
+      providerRef: workspace.providerRef,
+      repoUrl: workspace.repoUrl,
+      baseRef: workspace.baseRef,
+      branchName: workspace.branchName,
+      config: workspace.config,
+    }))
+    .digest("hex");
+  return `v1:sha256:${digest}`;
+}
+
 function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
   configMetadata?: EffectiveRunSessionConfigMetadata | null,
+  executionWorkspaceBindingFingerprint?: string | null,
 ) {
   if (!configuredModel && !configMetadata) return sessionParams ?? null;
   const next = { ...(sessionParams ?? {}) };
@@ -5161,6 +5207,13 @@ function attachPaperclipSessionMetadataToSessionParams(
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
     next[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY] = configMetadata.categoryFingerprints;
   }
+  if (executionWorkspaceBindingFingerprint !== undefined) {
+    if (executionWorkspaceBindingFingerprint) {
+      next[SESSION_EXECUTION_WORKSPACE_BINDING_FINGERPRINT_KEY] = executionWorkspaceBindingFingerprint;
+    } else {
+      delete next[SESSION_EXECUTION_WORKSPACE_BINDING_FINGERPRINT_KEY];
+    }
+  }
   return next;
 }
 
@@ -5168,6 +5221,12 @@ function readConfiguredModelFromSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
 ) {
   return readNonEmptyString(sessionParams?.[SESSION_CONFIGURED_MODEL_KEY]);
+}
+
+function readExecutionWorkspaceBindingFingerprintFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  return readNonEmptyString(sessionParams?.[SESSION_EXECUTION_WORKSPACE_BINDING_FINGERPRINT_KEY]);
 }
 
 export function shouldResetTaskSessionForModelChange(input: {
@@ -5208,6 +5267,8 @@ export function resolveTaskSessionConfigFreshness(input: {
   wakeResetReason?: string | null;
   preserveLegacySessionWithoutConfigMetadata?: boolean;
   ignoredChangedCategories?: EffectiveRunSessionConfigCategory[];
+  executionWorkspaceBindingFingerprint?: string | null;
+  legacyUnrealizedWorkspaceConfigFingerprint?: string | null;
 }): TaskSessionConfigFreshnessDecision {
   if (!input.hasTaskSession) {
     return {
@@ -5222,6 +5283,9 @@ export function resolveTaskSessionConfigFreshness(input: {
   const reasons: string[] = [];
   const storedConfig = readConfigFingerprintFromSessionParams(input.taskSessionParams);
   const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(input.taskSessionParams);
+  const storedExecutionWorkspaceBindingFingerprint = readExecutionWorkspaceBindingFingerprintFromSessionParams(
+    input.taskSessionParams,
+  );
   const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
     configuredModel: input.configuredModel,
     taskSessionParams: input.taskSessionParams,
@@ -5241,11 +5305,26 @@ export function resolveTaskSessionConfigFreshness(input: {
         `effective run configuration fingerprint version changed from ${storedConfig.version} to ${input.configMetadata.version}`,
       );
     } else if (storedConfig && storedConfig.fingerprint !== input.configMetadata.fingerprint) {
-      const detectedChangedCategories = changedEffectiveRunSessionConfigCategories({
+      let detectedChangedCategories = changedEffectiveRunSessionConfigCategories({
         previous: storedConfig.categoryFingerprints,
         next: input.configMetadata.categoryFingerprints,
       });
       const ignoredChangedCategories = new Set(input.ignoredChangedCategories ?? []);
+      const preSplitUnrealizedWorkspaceConfigMatches =
+        storedConfig.version === 1
+        && !storedConfig.categories.includes("workspaceRealization")
+        && storedConfig.categoryFingerprints.workspaceConfig === input.legacyUnrealizedWorkspaceConfigFingerprint
+        && ignoredChangedCategories.has("workspaceRealization");
+      if (preSplitUnrealizedWorkspaceConfigMatches) {
+        // Before workspace realization became its own category, v1 sessions
+        // included an unrealized execution workspace (null) in workspaceConfig.
+        // A matching legacy projection proves the user-selected workspace
+        // settings are unchanged, so only the structural category migration is
+        // safe to ignore for this lifecycle continuation.
+        detectedChangedCategories = detectedChangedCategories.filter(
+          (category) => category !== "workspaceConfig",
+        );
+      }
       const onlyIgnoredCategoriesChanged =
         detectedChangedCategories.length > 0 &&
         detectedChangedCategories.every((category) => ignoredChangedCategories.has(category));
@@ -5256,6 +5335,23 @@ export function resolveTaskSessionConfigFreshness(input: {
         );
       }
     }
+  }
+
+  // A session created before runtime workspace materialization has no binding
+  // fingerprint and can complete that one lifecycle continuation. Once a
+  // persisted binding has been recorded, however, changing or rebinding its
+  // execution target must always start a fresh adapter session. This catches
+  // binding fields such as cwd/providerRef that are intentionally not exposed
+  // in the session-config fingerprint.
+  const executionWorkspaceBindingChanged =
+    input.executionWorkspaceBindingFingerprint !== undefined &&
+    storedExecutionWorkspaceBindingFingerprint !== null &&
+    storedExecutionWorkspaceBindingFingerprint !== input.executionWorkspaceBindingFingerprint;
+  if (executionWorkspaceBindingChanged) {
+    if (!changedCategories.includes("workspaceRealization")) {
+      changedCategories.push("workspaceRealization");
+    }
+    reasons.push("persisted execution workspace binding changed");
   }
 
   if (input.wakeResetReason) reasons.push(input.wakeResetReason);
@@ -14642,40 +14738,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
+    const sessionWorkspaceConfig = {
+      requestedMode: requestedExecutionWorkspaceMode,
+      effectiveMode: effectiveExecutionWorkspaceMode,
+      // Status, comments, and execution-stage decisions update issues.updatedAt but do not
+      // change the effective workspace/session configuration fingerprinted below.
+      projectConfigRevisionAt: projectContext?.updatedAt instanceof Date
+        ? projectContext.updatedAt.toISOString()
+        : projectContext?.updatedAt ?? null,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
+    };
+    const sessionWorkspaceRealization = {
+      existingExecutionWorkspace: reusableExistingExecutionWorkspace
+        ? {
+            id: reusableExistingExecutionWorkspace.id,
+            mode: reusableExistingExecutionWorkspace.mode,
+            strategyType: reusableExistingExecutionWorkspace.strategyType,
+            projectId: reusableExistingExecutionWorkspace.projectId,
+            projectWorkspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
+            cwd: reusableExistingExecutionWorkspace.cwd,
+            providerRef: reusableExistingExecutionWorkspace.providerRef,
+            repoUrl: reusableExistingExecutionWorkspace.repoUrl,
+            baseRef: reusableExistingExecutionWorkspace.baseRef,
+            branchName: reusableExistingExecutionWorkspace.branchName,
+            config: reusableExistingExecutionWorkspace.config,
+          }
+        : null,
+    };
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
       effectiveAdapterConfig: runtimeConfig,
       agentRuntimeConfig: agent.runtimeConfig,
       modelProfile: modelProfileMetadata,
       issueOverrides: issueAssigneeOverrides,
-      workspaceConfig: {
-        requestedMode: requestedExecutionWorkspaceMode,
-        effectiveMode: effectiveExecutionWorkspaceMode,
-        // Status, comments, and execution-stage decisions update issues.updatedAt but do not
-        // change the effective workspace/session configuration fingerprinted below.
-        projectConfigRevisionAt: projectContext?.updatedAt instanceof Date
-          ? projectContext.updatedAt.toISOString()
-          : projectContext?.updatedAt ?? null,
-        projectPolicy: projectExecutionWorkspacePolicy,
-        issueSettings: issueExecutionWorkspaceSettings,
-        reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
-      },
+      workspaceConfig: sessionWorkspaceConfig,
       // The realized workspace identity/config is operational state. It is not a
       // user-selected workspace setting, and a lifecycle continuation may reuse
       // its task session when this state first materializes after review.
-      workspaceRealization: {
-        existingExecutionWorkspace: reusableExistingExecutionWorkspace
-          ? {
-              id: reusableExistingExecutionWorkspace.id,
-              mode: reusableExistingExecutionWorkspace.mode,
-              strategyType: reusableExistingExecutionWorkspace.strategyType,
-              projectWorkspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
-              repoUrl: reusableExistingExecutionWorkspace.repoUrl,
-              baseRef: reusableExistingExecutionWorkspace.baseRef,
-              branchName: reusableExistingExecutionWorkspace.branchName,
-              config: reusableExistingExecutionWorkspace.config,
-            }
-          : null,
+      workspaceRealization: sessionWorkspaceRealization,
+      legacyUnrealizedWorkspaceConfig: {
+        ...sessionWorkspaceConfig,
+        existingExecutionWorkspace: null,
       },
       environment: {
         selectionSource: environmentResolution.source,
@@ -14716,6 +14821,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       preserveLegacySessionWithoutConfigMetadata: (acceptedPlanContinuationWake || executionResumedWake)
         && !acceptedPlanWakeRoutingDecision,
       ignoredChangedCategories: executionResumedWake ? ["workspaceRealization"] : [],
+      legacyUnrealizedWorkspaceConfigFingerprint:
+        sessionConfigMetadata.legacyUnrealizedWorkspaceConfigFingerprint,
+      executionWorkspaceBindingFingerprint: fingerprintExecutionWorkspaceSessionBinding(
+        reusableExistingExecutionWorkspace,
+      ),
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
@@ -16450,6 +16560,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 nextSessionState.params,
                 configuredModel,
                 sessionConfigMetadata,
+                fingerprintExecutionWorkspaceSessionBinding(persistedExecutionWorkspace),
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
@@ -16584,6 +16695,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               previousSessionParams,
               configuredModel,
               sessionConfigMetadata,
+              fingerprintExecutionWorkspaceSessionBinding(persistedExecutionWorkspace),
             ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
