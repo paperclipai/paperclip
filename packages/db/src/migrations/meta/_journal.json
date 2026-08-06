@@ -1450,6 +1450,13 @@
       "when": 1785988680096,
       "tag": "0208_keen_sharon_carter",
       "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1786020026023,
+      "tag": "0209_heartbeat_context_snapshot_indexes",
+      "breakpoints": true
     }
   ]
 }
