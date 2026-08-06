@@ -1313,15 +1313,31 @@ function createSandboxEnvironmentDriver(
     async execute(input) {
       // Plugin-backed sandbox providers: delegate command execution.
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
+        // Read the active run-parent context once. The host mints the plugin
+        // RPC `traceparent` from this same context, so a provider `session.setup`
+        // span parents to the run trace only when this context is present.
+        const activeStep = getActiveStepContext();
         // Record the run-time exec parent context for this lease, so a later
         // lease-release RPC that emits the provider `session.teardown` span can
         // parent to the same run trace. This is the same context the
         // `sandbox.exec` span reads. Keep only a defined context; a local or SSH
         // target with no host trace context yields undefined and stores nothing.
-        const execParentContext = getActiveStepContext()?.parentContext;
+        const execParentContext = activeStep?.parentContext;
         if (execParentContext !== undefined) {
           runExecParentByLeaseId.set(input.lease.id, execParentContext);
         }
+        // Bypass the persistent session for any command that runs with no active
+        // run-parent context. Such a command runs before the run trace is active:
+        // the workspace provision command, the CLI install command, the
+        // resolvability probe, and the agent process launch all run at the top of
+        // the adapter execute, outside a measured step and outside the run
+        // trace. A session opened on such a command emits a `session.setup` span
+        // with no host-minted parent, and the span backend drops it. So run the
+        // command one-shot and keep the session closed; the session then opens on
+        // the first in-run command that carries a run parent (an agent tool
+        // command runs under the run trace), whose setup span parents to the run
+        // trace. A command that sets `bypassSession` explicitly always bypasses.
+        const bypassSession = input.bypassSession === true || activeStep === null;
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey = readString(input.lease.metadata?.provider);
         if (pluginId && providerKey) {
@@ -1348,11 +1364,13 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
-            // Forward the session-bypass flag so a provider that opens a
-            // persistent session skips it for a pre-run command (the workspace
-            // provision command). The session then opens on the first in-run
-            // command, whose setup span parents to the run trace.
-            bypassSession: input.bypassSession,
+            // Forward the effective session-bypass flag so a provider that opens
+            // a persistent session skips it for a pre-run or context-less command
+            // (the workspace provision command, the CLI install command, the
+            // resolvability probe, the agent process launch). The session then
+            // opens on the first in-run command that carries a run parent, whose
+            // setup span parents to the run trace.
+            bypassSession,
           }, resolvePluginExecuteRpcTimeoutMs({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,

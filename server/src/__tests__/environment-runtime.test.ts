@@ -928,8 +928,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       persistedExecutionWorkspace: null,
     });
 
-    // A pre-run command (the provision command) sets bypassSession; an in-run
-    // command leaves it unset.
+    // A pre-run command (the provision command) sets bypassSession explicitly.
     await runtimeWithPlugin.execute({
       environment,
       lease: acquired.lease,
@@ -940,20 +939,86 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       timeoutMs: 1000,
       bypassSession: true,
     });
+    // An in-run command runs under the run-parent context, so the host does not
+    // bypass the session and the provider opens/uses the session.
+    const runParent: StartupSpanContext = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "0af7651916cd43dd8448eb211c80319c",
+      spanId: "b7ad6b7169203331",
+      traceFlags: 1,
+      isRemote: false,
+    });
+    await runWithRuntimeParent(runParent, () =>
+      runtimeWithPlugin.execute({
+        environment,
+        lease: acquired.lease,
+        command: "printf",
+        args: ["ok"],
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+      }),
+    );
+
+    expect(executeParams).toHaveLength(2);
+    expect(executeParams[0]?.bypassSession).toBe(true);
+    // An in-run command carries a run parent, so it does not bypass the session.
+    expect(executeParams[1]?.bypassSession).toBe(false);
+  });
+
+  it("bypasses the session for a context-less command so the setup span keeps a run parent", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    // Capture the params of each environmentExecute RPC, so the test can assert
+    // the host derives `bypassSession` from the active run-parent context.
+    const executeParams: Array<Record<string, unknown>> = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          executeParams.push(params);
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "ok\n", stderr: "" };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // A command with no active run-parent context (a pre-run install/probe or
+    // the agent process launch) runs before the run trace is active. The host
+    // mints no plugin RPC traceparent for it, so a session opened here would drop
+    // its setup span. The host bypasses the session for such a command.
     await runtimeWithPlugin.execute({
       environment,
       lease: acquired.lease,
-      command: "printf",
-      args: ["ok"],
+      command: "sh",
+      args: ["-c", "command -v claude"],
       cwd: "/workspace",
       env: {},
       timeoutMs: 1000,
     });
 
-    expect(executeParams).toHaveLength(2);
+    expect(executeParams).toHaveLength(1);
     expect(executeParams[0]?.bypassSession).toBe(true);
-    // An in-run command carries no bypass, so the provider opens/uses the session.
-    expect(executeParams[1]?.bypassSession).toBeUndefined();
   });
 
   it("builds the workspace-realization record with referenced sources for a plugin-backed sandbox realize", async () => {
