@@ -3367,11 +3367,37 @@ export function issueRoutes(
     actorType: string;
     actorAgentId?: string | null;
     actorRunId?: string | null;
+    reviewInteractionId?: string;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
     if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return null;
+
+    const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
+    const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
+    if (input.reviewInteractionId) {
+      const designatedReviewConfirmation = pendingInteractions.find((interaction) =>
+        interaction.id === input.reviewInteractionId
+        && (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
+        && interaction.createdByAgentId === input.actorAgentId
+        && interaction.sourceRunId === input.actorRunId
+        && !(
+          interaction.kind === "request_confirmation"
+          && interaction.payload
+          && typeof interaction.payload === "object"
+          && "toolAction" in interaction.payload
+          && interaction.payload.toolAction !== undefined
+        )
+      );
+      if (!designatedReviewConfirmation) {
+        throw unprocessable("reviewInteractionId must identify a pending non-tool confirmation created by this agent run", {
+          code: "invalid_review_interaction",
+          reviewInteractionId: input.reviewInteractionId,
+        });
+      }
+      return designatedReviewConfirmation.id;
+    }
 
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId
@@ -3390,16 +3416,7 @@ export function issueRoutes(
       executionPolicy: nextExecutionPolicy,
     })) return null;
 
-    const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
-    const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
-    if (pendingInteractions.length > 0) {
-      const reviewConfirmations = pendingInteractions.filter((interaction) =>
-        (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
-        && interaction.createdByAgentId === input.actorAgentId
-        && interaction.sourceRunId === input.actorRunId
-      );
-      return reviewConfirmations.length === 1 ? reviewConfirmations[0]!.id : null;
-    }
+    if (pendingInteractions.length > 0) return null;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
     if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return null;
@@ -8443,6 +8460,7 @@ export function issueRoutes(
         : null;
     const {
       comment: commentBody,
+      reviewInteractionId: requestedReviewInteractionId,
       reviewRequest,
       reopen: reopenRequested,
       resume: resumeRequested,
@@ -8792,6 +8810,7 @@ export function issueRoutes(
       actorType: req.actor.type,
       actorAgentId: actor.agentId,
       actorRunId: actor.runId,
+      reviewInteractionId: requestedReviewInteractionId,
     });
 
     const nextAssigneeAgentId =

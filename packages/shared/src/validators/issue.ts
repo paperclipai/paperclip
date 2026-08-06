@@ -545,6 +545,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
+  reviewInteractionId: z.string().uuid().optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
