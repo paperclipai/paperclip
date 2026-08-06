@@ -18,6 +18,12 @@ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
+/** Task identifier rendered in gray monospace between the glyph and the title. */
+function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  if (!identifier) return null;
+  return <span className="shrink-0 font-mono text-muted-foreground">{identifier}</span>;
+}
+
 function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
@@ -85,6 +91,7 @@ export function BreadcrumbBar() {
           {breadcrumbs[0].leading ? (
             <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
               <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+              <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
               <span className="truncate">{breadcrumbs[0].label}</span>
             </h1>
           ) : (
@@ -115,6 +122,7 @@ export function BreadcrumbBar() {
                       crumb.leading ? (
                         <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
                           <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                          <CrumbIdentifier identifier={crumb.identifier} />
                           <span className="truncate">{crumb.label}</span>
                         </BreadcrumbPage>
                       ) : (
@@ -125,6 +133,7 @@ export function BreadcrumbBar() {
                         {crumb.leading ? (
                           <Link to={crumb.href} className="flex items-center gap-1.5">
                             <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                            <CrumbIdentifier identifier={crumb.identifier} />
                             <span className="truncate">{crumb.label}</span>
                           </Link>
                         ) : (
