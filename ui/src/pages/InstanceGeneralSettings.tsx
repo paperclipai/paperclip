@@ -50,6 +50,7 @@ export function InstanceGeneralSettings() {
     mutationFn: instanceSettingsApi.updateGeneral,
     onSuccess: async () => {
       setActionError(null);
+      signOutMutation.reset();
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {

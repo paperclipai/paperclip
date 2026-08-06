@@ -131,4 +131,20 @@ describe("InstanceGeneralSettings sign-out", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
     expect(container.textContent).not.toContain("Settings update failed");
   });
+
+  it("clears a stale sign-out failure after a settings update succeeds", async () => {
+    mockAuthApi.signOut.mockRejectedValue(new Error("Sign-out request failed"));
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    flushSync(() => signOutButton()?.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
+
+    const keyboardToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle keyboard shortcuts"]',
+    );
+    flushSync(() => keyboardToggle?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(container.textContent).not.toContain("Sign-out request failed"));
+  });
 });
