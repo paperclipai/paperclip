@@ -789,3 +789,46 @@ def test_successful_submit_resets_failed_submit_counter(monkeypatch, tmp_path):
     assert job_state.get("issue-1")["prompt_id"] == "prompt-ok"
     assert job_state.failed_submit_count("issue-1") == 0
     assert api.status == {}   # kein falscher Abbruch trotz der Vorgeschichte
+
+
+# --- Abschlusspruefung Befund 3 (WICHTIG): Paperclip-Fehler beim Hochladen ---
+# --- entkommen nicht mehr und mailen nicht mehr im Minutentakt -------------
+
+def test_edit_paperclip_error_on_list_attachments_counts_instead_of_escaping(monkeypatch, tmp_path):
+    """Ohne Fix liefe eine dauerhaft scheiternde list_attachments() (Asset
+    geloescht, Storage antwortet 500) als PaperclipError bis submit_phase
+    durch und loeste dort JEDEN Zyklus eine Alarmmail aus, ohne dass der
+    Auftrag je endet. render_edit muss den Fehler selbst abfangen und ueber
+    denselben Zaehler wie Befund 2 nach ein paar Versuchen abbrechen."""
+    api = setup(monkeypatch, tmp_path)
+
+    def boom(issue_id):
+        raise bild_service.api.PaperclipError("Paperclip GET .../attachments: HTTP 500")
+
+    monkeypatch.setattr(bild_service.api, "list_attachments", boom)
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES - 1):
+        bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+    assert "issue-1" not in api.status
+    assert api.mails == []
+
+    bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)
+    assert api.status["issue-1"] == "cancelled"
+    assert job_state.failed_submit_count("issue-1") == 0
+    assert api.mails
+
+
+def test_edit_auth_error_on_list_attachments_still_escapes(monkeypatch, tmp_path):
+    """AuthError (abgelaufenes Board-Token) muss weiterhin nach oben
+    durchschlagen -- der Dienst beendet sich dann bewusst (siehe run_once),
+    statt mit ungueltigem Token weiterzulaufen."""
+    setup(monkeypatch, tmp_path)
+
+    def boom(issue_id):
+        raise bild_service.api.AuthError("Board-Token abgelaufen")
+
+    monkeypatch.setattr(bild_service.api, "list_attachments", boom)
+    with pytest.raises(bild_service.api.AuthError):
+        bild_service.render_edit(COMPANY, {"id": "issue-1"}, EDIT_BRIEF, now=1000.0)

@@ -172,6 +172,18 @@ def render_edit(company, issue, brief, now):
         namen, fehler = upload_sources(iid)
     except comfy_client.ComfyError:
         return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
+    except api.PaperclipError:
+        # Befund 3: list_attachments()/fetch_attachment() koennen genauso an
+        # Paperclip scheitern (Asset geloescht, Storage antwortet 500) wie
+        # der Knoten. Unbehandelt liefe das bis submit_phase durch und
+        # loeste dort JEDEN Zyklus eine Alarmmail aus, ohne dass der Auftrag
+        # je endet. AuthError erbt NICHT von PaperclipError und schlaegt
+        # bewusst weiter nach oben durch -- der Dienst beendet sich dann
+        # (siehe run_once), statt mit abgelaufenem Token weiterzulaufen.
+        _bump_failure_or_cancel(iid,
+            "Quellbilder konnten nicht von Paperclip geladen werden "
+            "(z.B. ein gelöschtes Asset oder ein Storage-Fehler).")
+        return
     if fehler:
         api.add_comment(iid, "⚠️ Bild nicht erzeugt: %s" % fehler)
         api.patch_status(iid, "cancelled")
