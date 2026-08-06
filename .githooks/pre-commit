@@ -4,6 +4,13 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Literal-variable / candidate-PII write-path guard (TSMC-19768). Fast, dependency-free,
+# runs first so an unsafe path is rejected before the slower build/typecheck gates.
+# Rejects staged paths like `$PAPERCLIP_WORK_PRODUCTS_DIR/...` (an unexpanded variable
+# used as a literal write path) and candidate/PII deliverables leaking into the tree.
+echo "[pre-commit] checking staged write paths (literal-var / candidate-PII guard)"
+node "$repo_root/scripts/check-literal-var-write-paths.mjs"
+
 echo "[pre-commit] running pnpm --filter sdk build"
 pnpm --filter sdk build
 
