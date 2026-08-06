@@ -215,7 +215,6 @@ describeEmbeddedPostgres("board-key allow audit / mutation atomicity", () => {
     });
     await settleBoardKeyAuditContext(db, context, 200);
 
-    expect(context.untransacted).toBe(false);
     expect(await committedAudit(values.boardApiKeyId)).toEqual([
       {
         decision: "allow",
@@ -248,9 +247,9 @@ describeEmbeddedPostgres("board-key allow audit / mutation atomicity", () => {
     ]);
   }, 60_000);
 
-  it("marks a mutation that ran outside any transaction as uncoupled", async () => {
+  it("moves a direct mutation into the transaction that persists its allow disposition", async () => {
     const values = stagedAllow();
-    const marker = `untransacted-${randomUUID()}`;
+    const marker = `direct-${randomUUID()}`;
     const context = createBoardKeyAuditContext();
 
     await runWithBoardKeyAuditContext(context, async () => {
@@ -259,15 +258,75 @@ describeEmbeddedPostgres("board-key allow audit / mutation atomicity", () => {
     });
     await settleBoardKeyAuditContext(db, context, 201);
 
-    expect(context.untransacted).toBe(true);
+    expect(context.flushed).toBe(true);
     expect(await committedProbe(marker)).toHaveLength(1);
     expect(await committedAudit(values.boardApiKeyId)).toEqual([
       {
         decision: "allow",
         reason: "authorized",
-        details: { coupling: BOARD_KEY_AUDIT_COUPLINGS.untransacted },
+        details: { coupling: BOARD_KEY_AUDIT_COUPLINGS.transaction },
       },
     ]);
+  }, 60_000);
+
+  it("rolls back a direct mutation when its coupled audit persistence fails", async () => {
+    const values = stagedAllow({ action: null as unknown as string });
+    const marker = `direct-audit-failure-${randomUUID()}`;
+    const context = createBoardKeyAuditContext();
+
+    await expect(runWithBoardKeyAuditContext(context, async () => {
+      stageBoardKeyAllowAudit(values);
+      await db.insert(probe).values({ value: marker });
+    })).rejects.toThrow();
+
+    expect(context.flushed).toBe(false);
+    expect(await committedProbe(marker)).toHaveLength(0);
+    expect(await committedAudit(values.boardApiKeyId)).toHaveLength(0);
+  }, 60_000);
+
+  it("couples direct update, delete, and mutating raw SQL entry points", async () => {
+    const updateFrom = `direct-update-from-${randomUUID()}`;
+    const updateTo = `direct-update-to-${randomUUID()}`;
+    const deleteMarker = `direct-delete-${randomUUID()}`;
+    await outside.insert(probe).values([
+      { value: updateFrom },
+      { value: deleteMarker },
+    ]);
+
+    const updateAudit = stagedAllow();
+    const updateContext = createBoardKeyAuditContext();
+    const [updated] = await runWithBoardKeyAuditContext(updateContext, async () => {
+      stageBoardKeyAllowAudit(updateAudit);
+      return await db
+        .update(probe)
+        .set({ value: updateTo })
+        .where(eq(probe.value, updateFrom))
+        .returning({ value: probe.value });
+    });
+    expect(updated).toEqual({ value: updateTo });
+    expect(await committedAudit(updateAudit.boardApiKeyId)).toHaveLength(1);
+
+    const deleteAudit = stagedAllow();
+    const deleteContext = createBoardKeyAuditContext();
+    const [deleted] = await runWithBoardKeyAuditContext(deleteContext, async () => {
+      stageBoardKeyAllowAudit(deleteAudit);
+      return await db
+        .delete(probe)
+        .where(eq(probe.value, deleteMarker))
+        .returning({ value: probe.value });
+    });
+    expect(deleted).toEqual({ value: deleteMarker });
+    expect(await committedAudit(deleteAudit.boardApiKeyId)).toHaveLength(1);
+
+    const rawAudit = stagedAllow();
+    const rawContext = createBoardKeyAuditContext();
+    const rawMarker = `direct-raw-${randomUUID()}`;
+    await runWithBoardKeyAuditContext(rawContext, async () => {
+      stageBoardKeyAllowAudit(rawAudit);
+      await db.execute(sql`INSERT INTO board_key_atomicity_probe (value) VALUES (${rawMarker})`);
+    });
+    expect(await committedProbe(rawMarker)).toHaveLength(1);
+    expect(await committedAudit(rawAudit.boardApiKeyId)).toHaveLength(1);
   }, 60_000);
 
   describe("through the live request pipeline", () => {
@@ -338,14 +397,12 @@ describeEmbeddedPostgres("board-key allow audit / mutation atomicity", () => {
       expect(await committedAudit(keyId)).toHaveLength(0);
     }, 60_000);
 
-    it("refuses to commit the mutation when the coupled audit write fails", async () => {
+    it("refuses to commit a direct mutation when the coupled audit write fails", async () => {
       const marker = `pipeline-audit-failure-${randomUUID()}`;
       // `board_api_key_id` is a uuid column, so this key identity makes the
-      // coupled audit insert fail inside the controller's own transaction.
+      // coupled audit insert fail inside the direct mutation's boundary.
       const app = createApp("not-a-uuid", async (_req, res) => {
-        await db.transaction(async (tx) => {
-          await tx.insert(probe).values({ value: marker });
-        });
+        await db.insert(probe).values({ value: marker });
         res.status(201).json({ ok: true });
       });
 

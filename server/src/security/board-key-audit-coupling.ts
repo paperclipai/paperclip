@@ -32,8 +32,6 @@ export const BOARD_KEY_AUDIT_COUPLINGS = {
   transaction: "transaction",
   /** The authorized request completed without mutating anything. */
   noMutation: "no_mutation",
-  /** A mutation ran outside any transaction, so it could not be coupled. */
-  untransacted: "untransacted",
   /** No request context was active (direct gate invocation, not a live route). */
   detached: "detached",
 } as const;
@@ -48,8 +46,6 @@ export type BoardKeyAuditContext = {
   flushed: boolean;
   /** A domain mutation was issued at least once during this request. */
   mutationAttempted: boolean;
-  /** A domain mutation was issued outside any transaction. */
-  untransacted: boolean;
   /** Settlement already ran; further mutation marks are gate-owned writes. */
   settled: boolean;
 };
@@ -59,7 +55,29 @@ const store = new AsyncLocalStorage<BoardKeyAuditContext>();
 // Mutating entry points on both the database handle and a transaction client.
 // `execute` covers raw SQL, which is also how several services mutate.
 const MUTATION_METHODS = ["insert", "update", "delete", "execute"] as const;
+type MutationMethod = (typeof MUTATION_METHODS)[number];
 const INSTRUMENTED = Symbol.for("paperclip.boardKeyAuditInstrumented");
+
+// Direct Drizzle mutation builders are lazy. Record only the fluent methods we
+// know how to replay on a transaction client, then execute the completed query
+// inside the same transaction as its allow disposition. Unknown terminals such
+// as `prepare` fail before any SQL is issued instead of escaping the boundary.
+const DIRECT_MUTATION_FLUENT_METHODS = new Set<PropertyKey>([
+  "values",
+  "select",
+  "overridingSystemValue",
+  "onConflictDoNothing",
+  "onConflictDoUpdate",
+  "set",
+  "from",
+  "leftJoin",
+  "rightJoin",
+  "innerJoin",
+  "fullJoin",
+  "where",
+  "returning",
+  "$dynamic",
+]);
 
 // Raw SQL is the one entry point that can be read-only, so classify it instead
 // of reporting every `execute` as a mutation. Anything unrecognised counts as a
@@ -87,7 +105,6 @@ export function createBoardKeyAuditContext(): BoardKeyAuditContext {
     pending: null,
     flushed: false,
     mutationAttempted: false,
-    untransacted: false,
     settled: false,
   };
 }
@@ -112,17 +129,18 @@ export function stageBoardKeyAllowAudit(values: BoardKeyAuditValues): boolean {
   return true;
 }
 
-function markMutation(context: BoardKeyAuditContext | undefined, transactional: boolean) {
+function markMutation(context: BoardKeyAuditContext | undefined) {
   // Only requests carrying an uncoupled allow disposition need tracking, and
   // gate-owned settlement writes must never count as domain mutations.
   if (!context || !context.pending || context.settled) return;
   context.mutationAttempted = true;
-  if (!transactional) context.untransacted = true;
 }
 
 type MutatingClient = Record<string | symbol, unknown> & {
   transaction?: (fn: (tx: unknown) => unknown, config?: unknown) => unknown;
 };
+
+type MutationInterception = { value: unknown };
 
 /**
  * Replace a client's mutating methods with hooked versions. The replacements are
@@ -130,7 +148,10 @@ type MutatingClient = Record<string | symbol, unknown> & {
  */
 function shadowMutationMethods(
   client: object,
-  onMutation: (method: string, args: readonly unknown[]) => void,
+  onMutation: (
+    method: MutationMethod,
+    args: readonly unknown[],
+  ) => MutationInterception | undefined,
 ) {
   const target = client as MutatingClient;
   for (const method of MUTATION_METHODS) {
@@ -142,7 +163,9 @@ function shadowMutationMethods(
       enumerable: false,
       writable: true,
       value: (...args: unknown[]) => {
-        if (method !== "execute" || rawStatementMutates(args)) onMutation(method, args);
+        if (method === "execute" && !rawStatementMutates(args)) return bound(...args);
+        const intercepted = onMutation(method, args);
+        if (intercepted) return intercepted.value;
         return bound(...args);
       },
     });
@@ -166,7 +189,10 @@ function instrumentTransactionClient<T extends object>(
   client: T,
   onMutation: () => void,
 ): T {
-  shadowMutationMethods(client, onMutation);
+  shadowMutationMethods(client, () => {
+    onMutation();
+    return undefined;
+  });
   const target = client as unknown as MutatingClient;
   const nested = target.transaction;
   if (typeof nested === "function") {
@@ -193,11 +219,30 @@ export function instrumentDbForBoardKeyAudit<T extends Db>(db: T): T {
   if (target[INSTRUMENTED] === true) return db;
   Object.defineProperty(target, INSTRUMENTED, { value: true, enumerable: false });
 
-  shadowMutationMethods(db, () => markMutation(store.getStore(), false));
-
   const originalTransaction = target.transaction;
   if (typeof originalTransaction === "function") {
     const boundTransaction = originalTransaction.bind(db);
+
+    // A direct mutation is otherwise committed before response settlement can
+    // persist its allow disposition. Lazily replay it inside a transaction so
+    // audit failure aborts the domain write instead of producing an unaudited
+    // success. Every direct mutation gets this boundary, including later ones
+    // in the same request after an earlier audit row has committed.
+    shadowMutationMethods(db, (method, args) => {
+      const context = store.getStore();
+      const pending = context?.pending;
+      if (!context || !pending || context.settled) return undefined;
+      return {
+        value: createCoupledDirectMutation(
+          boundTransaction,
+          method,
+          args,
+          context,
+          pending,
+        ),
+      };
+    });
+
     Object.defineProperty(target, "transaction", {
       configurable: true,
       enumerable: false,
@@ -212,6 +257,104 @@ export function instrumentDbForBoardKeyAudit<T extends Db>(db: T): T {
   }
 
   return db;
+}
+
+type RecordedMutationCall = {
+  property: PropertyKey;
+  args: readonly unknown[];
+};
+
+/**
+ * Preserve Drizzle's lazy fluent mutation API while moving execution onto a
+ * transaction client. Merely constructing a query neither mutates nor audits;
+ * `await`/`then`/`execute` starts the coupled transaction exactly once.
+ */
+function createCoupledDirectMutation(
+  boundTransaction: (fn: (tx: unknown) => unknown, config?: unknown) => unknown,
+  method: MutationMethod,
+  initialArgs: readonly unknown[],
+  context: BoardKeyAuditContext,
+  pending: BoardKeyAuditValues,
+): unknown {
+  if (method === "execute") {
+    return runCoupledTransaction(
+      boundTransaction,
+      (tx) => {
+        const execute = (tx as MutatingClient).execute;
+        if (typeof execute !== "function") {
+          throw new Error("Transaction client does not implement db.execute");
+        }
+        return execute.apply(tx, initialArgs);
+      },
+      undefined,
+      context,
+      pending,
+    );
+  }
+
+  const calls: RecordedMutationCall[] = [];
+  let execution: Promise<unknown> | null = null;
+  let proxy: object;
+
+  const run = (executeArgs?: readonly unknown[]) => {
+    if (!execution) {
+      execution = runCoupledTransaction(
+        boundTransaction,
+        async (tx) => {
+          const mutation = (tx as MutatingClient)[method];
+          if (typeof mutation !== "function") {
+            throw new Error(`Transaction client does not implement db.${method}`);
+          }
+          let query = mutation.apply(tx, initialArgs);
+          for (const call of calls) {
+            const next = Reflect.get(query as object, call.property);
+            if (typeof next !== "function") {
+              throw new Error(
+                `Board-key direct db.${method} mutation cannot replay ${String(call.property)}`,
+              );
+            }
+            query = next.apply(query, call.args);
+          }
+          if (executeArgs) {
+            const execute = Reflect.get(query as object, "execute");
+            if (typeof execute !== "function") {
+              throw new Error(`Board-key direct db.${method} mutation is not executable`);
+            }
+            return await execute.apply(query, executeArgs);
+          }
+          return await query;
+        },
+        undefined,
+        context,
+        pending,
+      );
+    }
+    return execution;
+  };
+
+  proxy = new Proxy(Object.create(null) as object, {
+    get(_target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        const promise = run();
+        return promise[property].bind(promise);
+      }
+      if (property === "execute") return (...args: unknown[]) => run(args);
+      if (property === Symbol.toStringTag) return "Promise";
+      if (!DIRECT_MUTATION_FLUENT_METHODS.has(property)) {
+        throw new Error(
+          `Board-key direct db.${method} mutation cannot use ${String(property)} outside db.transaction`,
+        );
+      }
+      return (...args: unknown[]) => {
+        if (execution) {
+          throw new Error(`Board-key direct db.${method} mutation was already executed`);
+        }
+        calls.push({ property, args });
+        return proxy;
+      };
+    },
+  });
+  return proxy;
 }
 
 async function runCoupledTransaction(
@@ -231,7 +374,7 @@ async function runCoupledTransaction(
       };
     }).insert.bind(tx);
     const instrumented = instrumentTransactionClient(tx as object, () => {
-      markMutation(context, true);
+      markMutation(context);
       if (flush) return;
       const query = rawInsert(boardApiKeyAuthorizationEvents).values({
         ...pending,
@@ -275,21 +418,12 @@ export async function settleBoardKeyAuditContext(
 
   const succeeded = statusCode >= 200 && statusCode < 400;
   if (!succeeded) return;
-  if (context.mutationAttempted && !context.untransacted) return;
+  if (context.mutationAttempted) return;
 
-  const coupling = context.untransacted
-    ? BOARD_KEY_AUDIT_COUPLINGS.untransacted
-    : BOARD_KEY_AUDIT_COUPLINGS.noMutation;
-  if (context.untransacted) {
-    logger.error(
-      { boardApiKeyId: pending.boardApiKeyId, action: pending.action },
-      "Board-key mutation ran outside a transaction; allow disposition could not be coupled atomically",
-    );
-  }
   try {
     await db.insert(boardApiKeyAuthorizationEvents).values({
       ...pending,
-      details: { ...(pending.details ?? {}), coupling },
+      details: { ...(pending.details ?? {}), coupling: BOARD_KEY_AUDIT_COUPLINGS.noMutation },
     });
   } catch (err) {
     logger.error(
