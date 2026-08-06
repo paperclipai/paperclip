@@ -5665,11 +5665,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runStatusById = new Map<string, string>();
     for (const row of runRows) runStatusById.set(row.id, row.status);
 
+    // Collect the runs that a non-terminal issue still references. Such a run is
+    // the live run of an active issue. A different, terminal issue can also hold
+    // the same run id in a stale lock column. The terminal reference alone must
+    // not terminalize a run that an active issue still owns, so exclude these
+    // runs from the issue-terminal authority below.
+    const runIdsReferencedByActiveIssue = new Set<string>();
+    for (const issue of candidates) {
+      if (issue.status === "done" || issue.status === "cancelled") continue;
+      for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
+        if (runId) runIdsReferencedByActiveIssue.add(runId);
+      }
+    }
+
     // Map each referenced run to the terminal run status implied by its
     // referencing issue. When a terminal issue still holds the run in a lock
     // column, that run is orphaned: the issue is the stuck "Live" task the UI
     // shows. A "done" issue implies "succeeded"; a "cancelled" issue implies
-    // "cancelled".
+    // "cancelled". Skip a run that an active issue also references, because that
+    // run is still live for the active issue.
     const issueTerminalStatusByRunId = new Map<string, "succeeded" | "cancelled">();
     for (const issue of candidates) {
       const implied =
@@ -5680,7 +5694,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : null;
       if (!implied) continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
-        if (runId) issueTerminalStatusByRunId.set(runId, implied);
+        if (runId && !runIdsReferencedByActiveIssue.has(runId)) {
+          issueTerminalStatusByRunId.set(runId, implied);
+        }
       }
     }
 

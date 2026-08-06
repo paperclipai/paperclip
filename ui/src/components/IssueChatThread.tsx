@@ -4479,8 +4479,8 @@ export function IssueChatThread({
     return ids;
   }, [displayLiveRuns]);
   const hasActiveRun = useMemo(
-    () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
-    [displayLiveRuns, activeRun],
+    () => displayLiveRuns.some((run) => run.status === "running"),
+    [displayLiveRuns],
   );
   // Real-time view of the handoff: a run that starts after the issue payload
   // was fetched must quiet the missing-disposition warnings without waiting

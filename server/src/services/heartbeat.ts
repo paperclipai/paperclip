@@ -8826,10 +8826,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    return setRunStatusFromLive(runId, status, ["running"], patch);
+  }
+
+  // Move a run to a new status only when its current status is one of
+  // `fromStatuses`. The compare-and-set is a single conditional update, so a
+  // concurrent path can win the race. When this update matches nothing, the
+  // function reads the current row and reports updated=false, so the caller can
+  // keep the terminal outcome that another path already wrote.
+  async function setRunStatusFromLive(
+    runId: string,
+    status: string,
+    fromStatuses: string[],
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, fromStatuses)))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -8888,7 +8902,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const message =
       `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
-    const write = await setRunStatusIfRunning(run.id, terminalStatus, {
+    // Match both "running" and "queued". A queued run has released its lease but
+    // never reached "running", so a running-only update would miss it and leave
+    // a phantom live run behind.
+    const write = await setRunStatusFromLive(run.id, terminalStatus, ["running", "queued"], {
       finishedAt: run.finishedAt ?? new Date(),
       error: run.error ?? (terminalStatus === "interrupted" ? message : null),
       errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? "lease_released_before_terminal" : null),

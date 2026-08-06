@@ -399,6 +399,65 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(runStatus).toBe("running");
   });
 
+  it("does not terminalize a live run that a terminal issue and an active issue both reference", async () => {
+    // A stale lock on a terminal issue and the real lock on an active issue can
+    // point at the same running run. The terminal reference alone must not
+    // terminalize the run, because the run is still live for the active issue.
+    const { companyId, agentId, runningRunId } = await seed();
+    // process.pid is the live test process, so isPidAlive returns true.
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: process.pid })
+      .where(eq(heartbeatRuns.id, runningRunId));
+
+    const terminalIssueId = randomUUID();
+    const activeIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: terminalIssueId,
+        companyId,
+        title: "Terminal issue holds a stale lock on the shared run",
+        status: "done",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: runningRunId,
+        executionRunId: null,
+      },
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Active issue owns the live shared run",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: runningRunId,
+        executionRunId: runningRunId,
+        executionLockedAt: new Date(),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    // The run stays live, so the sweep terminalizes nothing and clears nothing.
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(result.cleared).toBe(0);
+
+    const runStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]?.status);
+    expect(runStatus).toBe("running");
+
+    const activeLock = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, activeIssueId))
+      .then((rows) => rows[0]);
+    expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
+  });
+
   it("still clears the lock when the audit write fails after terminalization", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid that never maps to a live process, so the sweep
