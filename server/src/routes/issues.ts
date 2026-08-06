@@ -11046,6 +11046,7 @@ export function issueRoutes(
     }
     if (
       req.actor.type === "agent" &&
+      issue.status === "in_progress" &&
       !req.actor.runId &&
       req.actor.agentId &&
       issue.assigneeAgentId === req.actor.agentId &&

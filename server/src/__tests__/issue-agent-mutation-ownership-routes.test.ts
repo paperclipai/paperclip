@@ -715,7 +715,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
     expect(mockIssueService.list).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("uses the company-scope fast path on the issue list route", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
@@ -1061,6 +1061,40 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 15_000);
+
+  it("allows agent-key comments on closed issues with stale run ownership without trusting the run id", async () => {
+    const forgeableRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "done",
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: forgeableRunId,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Post-completion follow-up from agent-key auth." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Post-completion follow-up from agent-key auth.",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: null,
+      }),
+      expect.any(Object),
+    );
+  });
 
   it("rejects the checked-out owner with a mismatched run JWT on issue comments", async () => {
     const mismatchedRunId = "66666666-6666-4666-8666-666666666666";
