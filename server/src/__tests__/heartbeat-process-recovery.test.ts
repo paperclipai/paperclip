@@ -1947,6 +1947,91 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("reports a reconstructed run that finalizes during targeted drain as finalized", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 987_654,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      },
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "targeted-drain-race-version",
+        requestedAt: new Date("2026-08-06T01:24:35.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+
+      const originalSelect = db.select.bind(db);
+      let selectCall = 0;
+      const selectSpy = vi.spyOn(db, "select").mockImplementation(((...args: unknown[]) => {
+        const builder = (originalSelect as (...input: unknown[]) => any)(...args);
+        selectCall += 1;
+        if (selectCall !== 2) return builder;
+
+        const originalFrom = builder.from.bind(builder);
+        builder.from = (table: unknown) => {
+          const fromBuilder = originalFrom(table);
+          const originalInnerJoin = fromBuilder.innerJoin.bind(fromBuilder);
+          fromBuilder.innerJoin = (...joinArgs: unknown[]) => {
+            const joinedBuilder = originalInnerJoin(...joinArgs);
+            const originalWhere = joinedBuilder.where.bind(joinedBuilder);
+            joinedBuilder.where = (condition: unknown) => {
+              const query = originalWhere(condition);
+              return (async () => {
+                await db
+                  .update(heartbeatRuns)
+                  .set({
+                    status: "succeeded",
+                    finishedAt: new Date("2026-08-06T01:24:36.000Z"),
+                    updatedAt: new Date("2026-08-06T01:24:36.000Z"),
+                  })
+                  .where(eq(heartbeatRuns.id, runId));
+                return query;
+              })();
+            };
+            return joinedBuilder;
+          };
+          return fromBuilder;
+        };
+        return builder;
+      }) as typeof db.select);
+
+      try {
+        const heartbeat = heartbeatService(db);
+        const adoption = await heartbeat.reconcileHotRestartAdoption(
+          new Date("2026-08-06T01:24:39.862Z"),
+        );
+        expect(adoption).toMatchObject({
+          mode: "reported",
+          adoptedRunIds: [],
+          finalizedWhileDownRunIds: [runId],
+          lostRunIds: [],
+        });
+
+        const report = JSON.parse(
+          await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+        ) as { runs?: Array<Record<string, unknown>> };
+        expect(report.runs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              runId,
+              classification: "finalized_while_down",
+              reason: "run_status_succeeded",
+              status: "succeeded",
+            }),
+          ]),
+        );
+      } finally {
+        selectSpy.mockRestore();
+      }
+    });
+  });
+
   it("reports a preflight run that finished before snapshot capture as finalized", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
