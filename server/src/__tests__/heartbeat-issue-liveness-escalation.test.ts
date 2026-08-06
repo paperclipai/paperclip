@@ -828,7 +828,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
     await db
       .update(issues)
-      .set({ updatedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .set({
+        startedAt: new Date(Date.now() - 16 * 60 * 1000),
+        // Unrelated edits update this timestamp but must not postpone recovery.
+        updatedAt: new Date(),
+      })
       .where(eq(issues.id, blockerIssueId));
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();

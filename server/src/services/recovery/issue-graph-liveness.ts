@@ -31,6 +31,7 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  startedAt?: Date | string | null;
   updatedAt?: Date | string | null;
 }
 
@@ -698,8 +699,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       !executionIssue.assigneeAgentId ||
       executionIssue.assigneeUserId
     ) return null;
-    const updatedAtMs = readDateMs(executionIssue.updatedAt);
-    if (updatedAtMs === null || nowMs - updatedAtMs < EXECUTOR_ROUTING_STALL_AFTER_MS) return null;
+    const startedAtMs = readDateMs(executionIssue.startedAt);
+    if (startedAtMs === null || nowMs - startedAtMs < EXECUTOR_ROUTING_STALL_AFTER_MS) return null;
     if (hasExplicitWaitingPath(executionIssue)) return null;
 
     const ownerCandidates = ownerCandidatesForRecoveryIssue(executionIssue, input.agents, agentsById, {
