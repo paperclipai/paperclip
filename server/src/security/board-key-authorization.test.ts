@@ -12,6 +12,10 @@ import {
 import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { boardAuthService, hashBearerToken } from "../services/board-auth.js";
+import {
+  createBoardKeyAuditContext,
+  runWithBoardKeyAuditContext,
+} from "./board-key-audit-coupling.js";
 import { authorizeBoardKey, lookupBoardKeyRoute } from "./board-key-route-registry.js";
 
 const TOKEN = "pcp_board_authorization_matrix";
@@ -92,7 +96,10 @@ function createLiveAuthorityDb() {
   return { db, state, key, companyId, ownerId, audit };
 }
 
-function requestFor(authentication: Awaited<ReturnType<ReturnType<typeof boardAuthService>["authenticateBoardApiKey"]>>) {
+function requestFor(
+  authentication: Awaited<ReturnType<ReturnType<typeof boardAuthService>["authenticateBoardApiKey"]>>,
+  method = "POST",
+) {
   if (!authentication.ok) throw new Error("Expected successful board-key authentication");
   const { key, scopeConfig, access } = authentication;
   const companyIds = scopeConfig
@@ -100,6 +107,7 @@ function requestFor(authentication: Awaited<ReturnType<ReturnType<typeof boardAu
     : access.companyIds;
   return {
     id: randomUUID(),
+    method,
     actor: {
       type: "board",
       source: "board_key",
@@ -121,26 +129,47 @@ async function expectDenied(run: Promise<unknown>, status: number) {
 }
 
 describe("board-key effective authority", () => {
-  it("audits an allow before the protected side effect runs", async () => {
+  it("stages a mutating allow for its transaction instead of auditing ahead of the mutation", async () => {
     const { db, companyId, audit } = createLiveAuthorityDb();
     const authentication = await boardAuthService(db).authenticateBoardApiKey(TOKEN);
     const req = requestFor(authentication);
     const metadata = lookupBoardKeyRoute("POST", `/api/companies/${companyId}/issues`);
-    const sideEffect = vi.fn();
+    const context = createBoardKeyAuditContext();
 
-    await authorizeBoardKey(
+    await runWithBoardKeyAuditContext(context, () => authorizeBoardKey(
       db,
       req,
       metadata.action,
       async () => ({ companyId, resourceType: "company", resourceId: companyId }),
       metadata,
-    );
-    expect(audit.at(-1)).toMatchObject({ decision: "allow", action: "issues:write" });
-    sideEffect();
-    expect(sideEffect).toHaveBeenCalledOnce();
+    ));
+
+    // Nothing durable yet: the disposition commits with the mutation it
+    // authorizes, so a rolled-back controller leaves no `authorized` record.
+    expect(audit).toHaveLength(0);
+    expect(context.pending).toMatchObject({ decision: "allow", action: "issues:write" });
   });
 
-  it("fails closed before side effects when the allow audit cannot be persisted", async () => {
+  it("audits a read-only allow immediately because it has no mutation to couple to", async () => {
+    const { db, companyId, audit } = createLiveAuthorityDb();
+    const authentication = await boardAuthService(db).authenticateBoardApiKey(TOKEN);
+    const req = requestFor(authentication, "GET");
+    const metadata = lookupBoardKeyRoute("GET", `/api/companies/${companyId}/issues`);
+    const context = createBoardKeyAuditContext();
+
+    await runWithBoardKeyAuditContext(context, () => authorizeBoardKey(
+      db,
+      req,
+      metadata.action,
+      async () => ({ companyId, resourceType: "company", resourceId: companyId }),
+      metadata,
+    ));
+
+    expect(context.pending).toBeNull();
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", action: "issues:read" });
+  });
+
+  it("fails closed before side effects when a detached allow audit cannot be persisted", async () => {
     const { db, companyId } = createLiveAuthorityDb();
     const authentication = await boardAuthService(db).authenticateBoardApiKey(TOKEN);
     const req = requestFor(authentication);
@@ -148,6 +177,8 @@ describe("board-key effective authority", () => {
     db.insert = vi.fn(() => ({ values: vi.fn().mockRejectedValue(new Error("audit unavailable")) }));
     const sideEffect = vi.fn();
 
+    // No request context, so the gate cannot couple the disposition to a
+    // transaction and must persist it before the caller proceeds.
     try {
       await authorizeBoardKey(
         db,
