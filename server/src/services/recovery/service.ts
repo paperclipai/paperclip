@@ -34,6 +34,10 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
+  STRANDED_ISSUE_RECOVERY_REQUIRED_ACTION,
+  SUCCESSFUL_RUN_MISSING_STATE_REQUIRED_ACTION,
+} from "./stranded-issue-instructions.js";
+import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -1390,9 +1394,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "",
         "## Required Action",
         "",
-        "- Inspect the source issue and run metadata, not raw transcript excerpts.",
-        "- Choose a valid issue disposition: `done`/`cancelled`, `in_review` with an owner, `blocked` with first-class blockers, delegated follow-up work, or an explicit continuation path.",
-        "- When the source issue has a clear owner and disposition, mark this recovery issue done.",
+        ...SUCCESSFUL_RUN_MISSING_STATE_REQUIRED_ACTION,
       ].join("\n");
     }
 
@@ -1418,9 +1420,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "",
       "## Required Action",
       "",
-      "- Inspect the latest run and source issue state.",
-      "- Fix the runtime/adapter problem, reassign the source issue, or convert the source issue into a clear manual-review state.",
-      "- When the source issue has a live execution path or has been intentionally resolved, mark this recovery issue done.",
+      ...STRANDED_ISSUE_RECOVERY_REQUIRED_ACTION,
     ].join("\n");
   }
 

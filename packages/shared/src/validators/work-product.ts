@@ -8,6 +8,8 @@ export const issueWorkProductTypeSchema = z.enum([
   "commit",
   "artifact",
   "document",
+  "file",
+  "url",
 ]);
 
 export const issueWorkProductStatusSchema = z.enum([
@@ -41,7 +43,9 @@ export const createIssueWorkProductSchema = z.object({
   status: issueWorkProductStatusSchema.default("active"),
   reviewState: issueWorkProductReviewStateSchema.optional().default("none"),
   isPrimary: z.boolean().optional().default(false),
-  healthStatus: z.enum(["unknown", "healthy", "unhealthy"]).optional().default("unknown"),
+  // Not a client-supplied fact: the server overwrites this with its own verification result.
+  // A declaring agent must not be able to assert that its artifact exists.
+  healthStatus: z.enum(["unknown", "healthy", "unhealthy", "verified", "missing"]).optional().default("unknown"),
   summary: z.string().optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
   createdByRunId: z.string().uuid().optional().nullable(),

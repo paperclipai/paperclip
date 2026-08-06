@@ -45,6 +45,18 @@ function makeTool<TSchema extends z.ZodRawShape>(
   };
 }
 
+function defaultWorkProductProvider(type: "file" | "commit" | "document" | "url"): string {
+  switch (type) {
+    case "file":
+    case "commit":
+      return "git";
+    case "document":
+      return "paperclip";
+    case "url":
+      return "http";
+  }
+}
+
 function parseOptionalJson(raw: string | undefined | null): unknown {
   if (!raw || raw.trim().length === 0) return undefined;
   return JSON.parse(raw);
@@ -305,6 +317,36 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "List approvals linked to an issue",
       z.object({ issueId: issueIdSchema }),
       async ({ issueId }) => client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/approvals`),
+    ),
+    makeTool(
+      "paperclipDeclareWorkProduct",
+      [
+        "Declare the artifact you produced for an issue, so Paperclip can verify it exists.",
+        "Issues that require a work product cannot be marked done until one is declared and verified.",
+        "State where the artifact actually is: 'file' with the repo/vault path (add metadata.commit if you committed it),",
+        "'commit' with the SHA, 'document' with the Paperclip document id, or 'url'.",
+        "Paperclip checks the location itself — declaring an artifact that is not there will not let you close the issue,",
+        "and a completion comment is never a substitute.",
+      ].join(" "),
+      z.object({
+        issueId: issueIdSchema,
+        type: z.enum(["file", "commit", "document", "url"]),
+        title: z.string().min(1),
+        externalId: z.string().optional().nullable(),
+        url: z.string().url().optional().nullable(),
+        provider: z.string().min(1).optional(),
+        isPrimary: z.boolean().optional().default(true),
+        summary: z.string().optional().nullable(),
+        metadata: z.record(z.unknown()).optional().nullable(),
+      }),
+      async ({ issueId, provider, ...rest }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/work-products`, {
+          body: {
+            ...rest,
+            provider: provider ?? defaultWorkProductProvider(rest.type),
+            status: "active",
+          },
+        }),
     ),
     makeTool(
       "paperclipListDocuments",

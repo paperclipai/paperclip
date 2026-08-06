@@ -9,6 +9,7 @@ import {
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
+  ISSUE_COMPLETION_REQUIREMENTS,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
@@ -21,8 +22,21 @@ import {
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
+  WORK_PRODUCT_TYPES,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+
+/**
+ * The artifact an issue is expected to produce, pinned by whoever creates the issue. The
+ * executing agent cannot redefine it, so it cannot retro-fit the target to whatever it made.
+ */
+export const issueExpectedWorkProductSchema = z.object({
+  type: z.enum(WORK_PRODUCT_TYPES),
+  /** Path, commit SHA, document id or URL. Omit to pin only the type. */
+  location: z.string().trim().min(1).max(1024).optional().nullable(),
+});
+
+export type IssueExpectedWorkProduct = z.infer<typeof issueExpectedWorkProductSchema>;
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -232,6 +246,8 @@ const createIssueBaseSchema = z.object({
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  completionRequirement: z.enum(ISSUE_COMPLETION_REQUIREMENTS).optional(),
+  expectedWorkProduct: issueExpectedWorkProductSchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),

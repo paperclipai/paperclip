@@ -32,6 +32,10 @@ export {
   recoveryService,
 } from "./service.js";
 export {
+  STRANDED_ISSUE_RECOVERY_REQUIRED_ACTION,
+  SUCCESSFUL_RUN_MISSING_STATE_REQUIRED_ACTION,
+} from "./stranded-issue-instructions.js";
+export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,

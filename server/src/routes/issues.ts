@@ -65,6 +65,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { verifyDeclaredWorkProduct } from "../services/work-products/gate-runtime.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -1994,8 +1995,15 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // The declaring agent does not get to assert that its artifact exists — we look ourselves.
+    const healthStatus = await verifyDeclaredWorkProduct({
+      db,
+      companyId: issue.companyId,
+      product: req.body,
+    });
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
+      healthStatus,
       projectId: req.body.projectId ?? issue.projectId ?? null,
     });
     if (!product) {

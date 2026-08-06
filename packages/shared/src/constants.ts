@@ -150,6 +150,16 @@ export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
+/**
+ * What an issue must show before it may be marked `done`. `work_product` means a declared,
+ * server-verified artifact — an agent's completion report on its own is never enough.
+ */
+export const ISSUE_COMPLETION_REQUIREMENTS = ["none", "work_product"] as const;
+export type IssueCompletionRequirement = (typeof ISSUE_COMPLETION_REQUIREMENTS)[number];
+
+export const WORK_PRODUCT_TYPES = ["file", "commit", "document", "url"] as const;
+export type WorkProductType = (typeof WORK_PRODUCT_TYPES)[number];
+
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 

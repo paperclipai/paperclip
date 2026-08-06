@@ -47,6 +47,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { assertCompletionAllowed } from "./work-products/gate-runtime.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1479,6 +1480,8 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  completionRequirement: issues.completionRequirement,
+  expectedWorkProduct: issues.expectedWorkProduct,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -3061,6 +3064,14 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      if (issueData.status === "done" && existing.status !== "done") {
+        await assertCompletionAllowed({
+          db: dbOrTx as unknown as Db,
+          issue: existing,
+          actorUserId,
+        });
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
