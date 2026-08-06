@@ -7,6 +7,8 @@ import {
   rollupUpdatesToday,
 } from "./format";
 
+const UTC_NOW = new Date("2026-07-23T12:00:00.000Z");
+
 function update(overrides: Partial<StatusCardUpdate>): StatusCardUpdate {
   return {
     id: "00000000-0000-0000-0000-000000000000",
@@ -22,7 +24,7 @@ function update(overrides: Partial<StatusCardUpdate>): StatusCardUpdate {
     model: null,
     queryVersion: 1,
     changeSummary: null,
-    startedAt: new Date().toISOString(),
+    startedAt: UTC_NOW.toISOString(),
     finishedAt: null,
     status: "ok",
     error: null,
@@ -31,10 +33,10 @@ function update(overrides: Partial<StatusCardUpdate>): StatusCardUpdate {
 }
 
 function iso(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  // Noon avoids DST/midnight edge cases in the local-day filter.
-  d.setHours(12, 0, 0, 0);
+  const d = new Date(UTC_NOW);
+  d.setUTCDate(d.getUTCDate() - daysAgo);
+  // Keep all general ledger fixtures on an explicit UTC calendar day.
+  d.setUTCHours(12, 0, 0, 0);
   return d.toISOString();
 }
 
@@ -61,7 +63,7 @@ describe("rollupUpdatesToday", () => {
       // yesterday + last week — must not be counted as "today"
       update({ kind: "full", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(1) }),
       update({ kind: "incremental", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(7) }),
-    ]);
+    ], UTC_NOW);
     // Only today's full rebuild counts as an update (compile excluded).
     expect(rollup.updateCount).toBe(1);
     // Today's tokens/cost include today's compile but not older days.
