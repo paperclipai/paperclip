@@ -149,3 +149,41 @@ def test_add_ohne_quellbilder_bleibt_leer(tmp_path):
     job_state.STATE_FILE = str(tmp_path / "s.json")
     job_state.add("i1", "p1", "c1", now=1.0)
     assert job_state.get("i1")["sources"] == []
+
+
+# --- Abschlusspruefung Befund 2/3: Zaehler fuer dauerhaft fehlschlagende ----
+# --- Absende-/Hochladeversuche je Issue. Muss neustartfest sein wie die     ---
+# --- 'unreachable'- und 'queue_notices'-Zaehler oben.                      ---
+
+def test_failed_submit_count_defaults_to_zero(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    assert job_state.failed_submit_count("issue-1") == 0
+
+
+def test_record_failed_submit_increments_and_persists(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    assert job_state.record_failed_submit("issue-1") == 1
+    assert job_state.record_failed_submit("issue-1") == 2
+    assert job_state.failed_submit_count("issue-1") == 2
+
+
+def test_clear_failed_submits_resets_to_zero(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    job_state.record_failed_submit("issue-1")
+    job_state.clear_failed_submits("issue-1")
+    assert job_state.failed_submit_count("issue-1") == 0
+
+
+def test_clear_failed_submits_on_unknown_issue_is_silent(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    job_state.clear_failed_submits("gibtsnicht")   # darf nicht werfen
+    assert job_state.failed_submit_count("gibtsnicht") == 0
+
+
+def test_failed_submits_are_tracked_per_issue(tmp_path):
+    job_state.STATE_FILE = str(tmp_path / "s.json")
+    job_state.record_failed_submit("issue-1")
+    job_state.record_failed_submit("issue-1")
+    job_state.record_failed_submit("issue-2")
+    assert job_state.failed_submit_count("issue-1") == 2
+    assert job_state.failed_submit_count("issue-2") == 1

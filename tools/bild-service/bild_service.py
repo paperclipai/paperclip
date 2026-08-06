@@ -84,6 +84,25 @@ def _local_guards_block(iid):
     return False
 
 
+def _bump_failure_or_cancel(iid, reason):
+    """Gemeinsame Zaehler-Mechanik fuer Befund 2 und 3: ein Fehler beim
+    Absenden/Hochladen fuer dieses Issue wird gezaehlt statt sofort
+    abzubrechen -- ein einzelner Ausrutscher bleibt folgenlos. Erst nach
+    FAILED_SUBMIT_CANCEL_CYCLES aufeinanderfolgenden Fehlern gilt der
+    Auftrag als dauerhaft kaputt und wird beendet.
+    """
+    versuche = job_state.record_failed_submit(iid)
+    if versuche < config.FAILED_SUBMIT_CANCEL_CYCLES:
+        return
+    api.add_comment(iid, "⚠️ %s\nNach %d aufeinanderfolgenden Versuchen abgebrochen."
+                    % (reason, versuche))
+    api.patch_status(iid, "cancelled")
+    job_state.clear_failed_submits(iid)
+    api.mail_alarm("[Bilddienst] Auftrag dauerhaft fehlgeschlagen",
+                   "Issue %s: %d aufeinanderfolgende Fehlversuche. %s"
+                   % (iid, versuche, reason))
+
+
 def _submit_local_job(iid, company, workflow, seed, modell, now, sources=None):
     """Workflow abschicken und bei Erfolg registrieren.
 
@@ -95,9 +114,22 @@ def _submit_local_job(iid, company, workflow, seed, modell, now, sources=None):
     try:
         prompt_id = comfy_client.submit(workflow)
     except comfy_client.ComfyError:
+        # Befund 2: ist der Knoten insgesamt weg, ist das Sache von
+        # note_unreachable() -- der Auftrag bleibt dort BEWUSST unbegrenzt in
+        # der Warteschlange liegen. Nur wenn der Knoten erreichbar ist,
+        # /prompt das Absenden aber trotzdem ablehnt (z.B. eine umbenannte
+        # Modelldatei), zaehlt der Fehlversuch -- sonst wuerde ein simpler
+        # Knoten-Neustart Auftraege faelschlich als 'dauerhaft ungueltig'
+        # abbrechen.
+        if comfy_client.health():
+            _bump_failure_or_cancel(iid,
+                "Absenden an den Renderknoten scheitert, obwohl er erreichbar "
+                "ist (vermutlich ein dauerhaft ungültiger Workflow, z.B. eine "
+                "umbenannte Modelldatei).")
         return None
     job_state.add(iid, prompt_id, company["id"], now, seed=seed, modell=modell, sources=sources)
     job_state.clear_queue_notice(iid)
+    job_state.clear_failed_submits(iid)
     cost_state.record_local(_today())
     return prompt_id
 

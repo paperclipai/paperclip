@@ -698,3 +698,94 @@ def test_edit_nur_eigenes_ergebnis_am_issue_bricht_ab(monkeypatch, tmp_path):
     assert api.status[iid] == "cancelled"
     assert "Bildanhang" in api.comments[0][1]
     assert job_state.get(iid) is None
+
+
+# --- Abschlusspruefung Befund 2 (WICHTIG): dauerhaft ungueltiger Workflow ---
+# --- laeuft nicht mehr ewig im Kreis --------------------------------------
+
+def _comfy_error(_wf):
+    raise comfy_client.ComfyError("HTTP 400")
+
+
+def test_submit_failure_with_node_reachable_stays_queued_below_threshold(monkeypatch, tmp_path):
+    """Ein paar fehlgeschlagene Absendeversuche bei erreichbarem Knoten
+    duerfen noch nicht abbrechen -- das waere zu schreckhaft fuer einen
+    Ausrutscher."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    monkeypatch.setattr(comfy_client, "submit", _comfy_error)
+    brief = {"error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
+             "width": 1024, "height": 1024, "openai_size": "1024x1024",
+             "quality": "medium", "background": "opaque", "seed": 42}
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES - 1):
+        bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    assert job_state.get("issue-1") is None
+    assert api.status == {}
+    assert api.comments == []
+    assert api.mails == []
+
+
+def test_submit_failure_with_node_reachable_cancels_after_threshold(monkeypatch, tmp_path):
+    """Nach FAILED_SUBMIT_CANCEL_CYCLES Fehlversuchen bei erreichbarem Knoten
+    gilt der Workflow als dauerhaft kaputt (z.B. eine umbenannte
+    Modelldatei) -- der Auftrag wird abgebrochen statt fuer immer im Kreis
+    zu laufen."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    monkeypatch.setattr(comfy_client, "submit", _comfy_error)
+    brief = {"error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
+             "width": 1024, "height": 1024, "openai_size": "1024x1024",
+             "quality": "medium", "background": "opaque", "seed": 42}
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES):
+        bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    assert api.status["issue-1"] == "cancelled"
+    assert job_state.get("issue-1") is None
+    assert job_state.failed_submit_count("issue-1") == 0   # Zaehler aufgeraeumt
+    assert api.mails
+
+
+def test_submit_failure_with_node_unreachable_never_cancels(monkeypatch, tmp_path):
+    """Ein vorübergehend NICHT erreichbarer Knoten muss folgenlos bleiben --
+    dafuer gibt es schon note_unreachable(). Der Fehlversuch-Zaehler darf
+    hier NICHT mitzaehlen, sonst wuerde ein simpler Ausfall Auftraege
+    faelschlich als 'dauerhaft ungueltiger Workflow' abbrechen."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: False)
+    monkeypatch.setattr(comfy_client, "submit", _comfy_error)
+    brief = {"error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
+             "width": 1024, "height": 1024, "openai_size": "1024x1024",
+             "quality": "medium", "background": "opaque", "seed": 42}
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES * 3):
+        bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    assert "issue-1" not in api.status
+    assert job_state.get("issue-1") is None
+    assert api.comments == []
+    assert api.mails == []
+
+
+def test_successful_submit_resets_failed_submit_counter(monkeypatch, tmp_path):
+    """Eine gluecklose Serie darf sich nicht ueber Wochen aufsummieren: nach
+    einem erfolgreichen Absenden faengt der Zaehler wieder bei 0 an."""
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: True)
+    calls = {"n": 0}
+
+    def flaky_submit(wf):
+        calls["n"] += 1
+        if calls["n"] <= config.FAILED_SUBMIT_CANCEL_CYCLES - 1:
+            raise comfy_client.ComfyError("HTTP 400")
+        return "prompt-ok"
+
+    monkeypatch.setattr(comfy_client, "submit", flaky_submit)
+    brief = {"error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
+             "width": 1024, "height": 1024, "openai_size": "1024x1024",
+             "quality": "medium", "background": "opaque", "seed": 42}
+    for _ in range(config.FAILED_SUBMIT_CANCEL_CYCLES - 1):
+        bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    assert job_state.failed_submit_count("issue-1") == config.FAILED_SUBMIT_CANCEL_CYCLES - 1
+
+    bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)  # jetzt erfolgreich
+
+    assert job_state.get("issue-1")["prompt_id"] == "prompt-ok"
+    assert job_state.failed_submit_count("issue-1") == 0
+    assert api.status == {}   # kein falscher Abbruch trotz der Vorgeschichte

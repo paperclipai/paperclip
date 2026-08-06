@@ -117,6 +117,18 @@ MODEL_JOB_TIMEOUT_SEC = {"qwen360": 900, "qwenedit": 600}
 
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
 
+# Befund 2 + 3: Absende- bzw. Hochladeversuche, die je Issue hintereinander
+# scheitern, OBWOHL der Knoten/Paperclip grundsaetzlich reagiert (kein
+# 'unreachable' im Sinne von UNREACHABLE_ALERT_CYCLES). Absichtlich deutlich
+# kleiner als UNREACHABLE_ALERT_CYCLES: eine kurze Netzwerkstoerung ist dort
+# schon abgedeckt (Auftrag bleibt bewusst UNBEGRENZT liegen, siehe
+# note_unreachable) -- hier geht es um einen Fehler, der sich durch Warten
+# nicht von selbst loest (z.B. eine umbenannte Modelldatei oder ein
+# geloeschtes Asset). 10 Zyklen a 60 s = 10 Minuten toleriert ein paar
+# Ausrutscher, ohne bis zu drei Quellbilder ueber eine halbe Stunde lang
+# jeden Zyklus sinnlos neu hoch- und wieder zu verwerfen.
+FAILED_SUBMIT_CANCEL_CYCLES = 10
+
 # Absoluter Notausstieg: Jobs, deren "done"-Verarbeitung wiederholt an einer
 # Exception scheitert (z.B. Issue geloescht, Ausgabedatei weg), wuerden sonst
 # fuer immer einen der drei Inflight-Plaetze blockieren. Vielfaches von

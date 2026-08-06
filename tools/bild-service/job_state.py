@@ -147,3 +147,34 @@ def reset_unreachable():
     st = _load()
     st[UNREACHABLE_KEY] = {"cycles": 0, "alerted": False}
     _save(st)
+
+
+# --- Fehlgeschlagene Absende-/Hochladeversuche (Befund 2 + 3): pro Issue ----
+# zaehlen, statt beim ersten Fehler abzubrechen. Ein einzelner Ausrutscher
+# (kurzer Netzwerk-Hakler, ComfyUI mitten im Neustart) bleibt so folgenlos;
+# erst eine laengere Serie gilt als dauerhaft kaputt (z.B. eine umbenannte
+# Modelldatei oder ein geloeschtes Asset). Liegt hier im State-File aus
+# demselben Grund wie 'unreachable' oben: launchd startet jeden Zyklus als
+# frischen Prozess, Modul-Globals wuerden die Schwelle nie erreichen.
+
+FAILED_SUBMITS_KEY = "failed_submits"
+
+
+def failed_submit_count(issue_id):
+    return int(_load().get(FAILED_SUBMITS_KEY, {}).get(issue_id, 0))
+
+
+def record_failed_submit(issue_id):
+    st = _load()
+    counts = st.setdefault(FAILED_SUBMITS_KEY, {})
+    counts[issue_id] = int(counts.get(issue_id, 0)) + 1
+    _save(st)
+    return counts[issue_id]
+
+
+def clear_failed_submits(issue_id):
+    st = _load()
+    counts = st.get(FAILED_SUBMITS_KEY, {})
+    if issue_id in counts:
+        del counts[issue_id]
+        _save(st)
