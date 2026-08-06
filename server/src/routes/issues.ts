@@ -215,7 +215,10 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
-import { assertIssueReviewVerdictActorAllowed } from "../services/issue-review-policy.js";
+import {
+  assertIssueReviewVerdictActorAllowed,
+  isIssueReviewVerdictInteraction,
+} from "../services/issue-review-policy.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -4040,6 +4043,7 @@ export function issueRoutes(
     issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
     interaction: {
       createdByAgentId?: string | null;
+      createdByUserId?: string | null;
       sourceRunId?: string | null;
       effectiveResolverPolicy: string;
       addresseeAgentId?: string | null;
@@ -4051,7 +4055,7 @@ export function issueRoutes(
     if (req.actor.type !== "agent") {
       assertBoard(req);
       await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
-      return true;
+      return "standard" as const;
     }
     const actorAgentId = req.actor.agentId;
     const runId = requireAgentRunId(req, res);
@@ -4063,7 +4067,7 @@ export function issueRoutes(
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
-    const isReviewConfirmationVerdict = isPendingReviewConfirmationVerdict(issue, interaction);
+    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     const payload = interaction.payload && typeof interaction.payload === "object"
       ? interaction.payload as { toolAction?: unknown }
       : null;
@@ -4074,13 +4078,15 @@ export function issueRoutes(
     if (isReviewConfirmationVerdict) {
       if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)) return false;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
-      return true;
+      return "review_verdict" as const;
     }
     if (interaction.effectiveResolverPolicy !== "board_or_agents") {
       res.status(403).json({ error: "This issue-thread interaction is board-only" });
       return false;
     }
-    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId);
+    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)
+      ? "standard" as const
+      : false;
   }
 
   function assertAgentInteractionActorAllowed(
@@ -4108,16 +4114,30 @@ export function issueRoutes(
     return true;
   }
 
-  function isPendingReviewConfirmationVerdict(
-    issue: { status: string },
-    interaction: { kind: string; status: string },
+  async function isPendingReviewConfirmationVerdict(
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    },
+    interaction: {
+      kind: string;
+      status: string;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    },
   ) {
-    return issue.status === "in_review"
-      && interaction.status === "pending"
-      && (
-        interaction.kind === "request_confirmation"
-        || interaction.kind === "request_checkbox_confirmation"
-      );
+    if (
+      issue.status !== "in_review"
+      || interaction.status !== "pending"
+      || (
+        interaction.kind !== "request_confirmation"
+        && interaction.kind !== "request_checkbox_confirmation"
+      )
+    ) return false;
+    return isIssueReviewVerdictInteraction(db, { issue, interaction });
   }
 
   async function assertPendingReviewInteractionVerdictAllowed(
@@ -10178,14 +10198,15 @@ export function issueRoutes(
       if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
+      if (!resolutionAuthorization) return;
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && isPendingReviewConfirmationVerdict(issue, current)
+        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
           ? { reviewVerdictAuthorized: true }
           : {}),
       });
@@ -10333,14 +10354,15 @@ export function issueRoutes(
       if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
+      if (!resolutionAuthorization) return;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && isPendingReviewConfirmationVerdict(issue, current)
+        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
           ? { reviewVerdictAuthorized: true }
           : {}),
       });

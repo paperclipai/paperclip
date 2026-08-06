@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, createDb, issues, type Db } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
-import { assertIssueReviewVerdictActorAllowed } from "../services/issue-review-policy.js";
+import {
+  assertIssueReviewVerdictActorAllowed,
+  isIssueReviewVerdictInteraction,
+} from "../services/issue-review-policy.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -161,6 +164,29 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.peerAgentId },
     })).resolves.toBeUndefined();
+  });
+
+  it("classifies only confirmations created by the review requester as review verdicts", async () => {
+    const seeded = await seedReview("not_creator");
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.requesterAgentId,
+      agentId: seeded.requesterAgentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issue.id,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+
+    await expect(isIssueReviewVerdictInteraction(db, {
+      issue: seeded.issue,
+      interaction: { createdByAgentId: seeded.requesterAgentId },
+    })).resolves.toBe(true);
+    await expect(isIssueReviewVerdictInteraction(db, {
+      issue: seeded.issue,
+      interaction: { createdByAgentId: seeded.peerAgentId },
+    })).resolves.toBe(false);
   });
 
   it("uses authenticated principal type for human_only", async () => {

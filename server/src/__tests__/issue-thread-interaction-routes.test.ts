@@ -409,6 +409,9 @@ describe.sequential("issue thread interaction routes", () => {
           onFulfilled,
           onRejected,
         ),
+      orderBy: () => ({
+        limit: () => Promise.resolve([]),
+      }),
     }));
   });
 
@@ -1735,7 +1738,12 @@ describe.sequential("issue thread interaction routes", () => {
   });
 
   it("allows an agent to reject a pending review confirmation by default", async () => {
-    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "in_review", reviewPolicy: null }));
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      reviewPolicy: null,
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+    }));
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-agent-reject",
       kind: "request_confirmation",
@@ -1769,9 +1777,43 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("keeps an unrelated pending confirmation board-only on an in-review issue", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      reviewPolicy: null,
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+    }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-unrelated-confirmation",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: UNRELATED_AGENT_ID,
+      sourceRunId: "run-1",
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+      payload: { version: 1, prompt: "Approve an unrelated operation?" },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-unrelated-confirmation/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "This issue-thread interaction is board-only" });
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "it addresses a different agent",
+      requesterAgentId: CREATED_AGENT_ID,
       interaction: {
         addresseeAgentId: "agent-other-reviewer",
         createdByAgentId: CREATED_AGENT_ID,
@@ -1781,16 +1823,23 @@ describe.sequential("issue thread interaction routes", () => {
     },
     {
       name: "the agent created it",
+      requesterAgentId: ASSIGNEE_AGENT_ID,
       interaction: { createdByAgentId: ASSIGNEE_AGENT_ID, sourceRunId: "run-1" },
       error: "Agents cannot resolve interactions they created",
     },
     {
       name: "the same run created it",
+      requesterAgentId: CREATED_AGENT_ID,
       interaction: { createdByAgentId: CREATED_AGENT_ID, sourceRunId: "run-2" },
       error: "Agents cannot resolve interactions created by the same run",
     },
-  ])("rejects an agent review verdict when $name", async ({ interaction, error }) => {
-    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "in_review", reviewPolicy: null }));
+  ])("rejects an agent review verdict when $name", async ({ interaction, error, requesterAgentId }) => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      reviewPolicy: null,
+      createdByAgentId: requesterAgentId,
+      createdByUserId: null,
+    }));
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-agent-review-scope",
       kind: "request_confirmation",
@@ -1820,6 +1869,8 @@ describe.sequential("issue thread interaction routes", () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({
       status: "in_review",
       reviewPolicy: "human_only",
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
     }));
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-human-only",

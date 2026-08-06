@@ -61,6 +61,23 @@ async function findReviewRequester(
   return null;
 }
 
+export async function isIssueReviewVerdictInteraction(
+  db: Db,
+  input: {
+    issue: ReviewPolicyIssue;
+    interaction: {
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    };
+  },
+): Promise<boolean> {
+  const requester = await findReviewRequester(db, input.issue);
+  if (!requester) return false;
+  return requester.type === "agent"
+    ? input.interaction.createdByAgentId === requester.id
+    : input.interaction.createdByUserId === requester.id;
+}
+
 export async function assertIssueReviewVerdictActorAllowed(
   db: Db,
   input: {
