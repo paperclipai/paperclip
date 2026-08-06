@@ -8711,7 +8711,12 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
-    if (req.body.executionPolicy !== undefined) {
+    const policyEligibilityInputsChanged =
+      req.body.executionPolicy !== undefined ||
+      normalizedAssigneeAgentId !== undefined ||
+      req.body.assigneeUserId !== undefined ||
+      req.body.status !== undefined;
+    if (policyEligibilityInputsChanged) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       const workflowStartsWithThisPatch = existingExecutionState === null
         && (updateFields.status === "done" || updateFields.status === "in_review");

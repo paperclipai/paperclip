@@ -161,6 +161,24 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       executionPolicy: null,
     });
 
+    const validPolicy = {
+      stages: [{ type: "approval", participants: [{ type: "agent", agentId: qa.id }] }],
+    };
+    const [assigneeOnlyPatch] = await db.insert(issues).values({
+      companyId,
+      title: "Reject assignee-only invalidation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: validPolicy,
+    }).returning();
+    await request(app)
+      .patch(`/api/issues/${assigneeOnlyPatch.id}`)
+      .send({ assigneeAgentId: qa.id })
+      .expect(400);
+    const [assigneeOnlyPersisted] = await db.select().from(issues).where(eq(issues.id, assigneeOnlyPatch.id));
+    expect(assigneeOnlyPersisted.assigneeAgentId).toBe(coder.id);
+
     const activeReviewStageId = randomUUID();
     const nullReturnPolicy = {
       stages: [
