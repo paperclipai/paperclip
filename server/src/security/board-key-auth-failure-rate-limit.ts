@@ -5,6 +5,8 @@ export type BoardKeyAuthFailureRateLimitConfig = {
   globalLimit: number;
   credentialMaxEntries: number;
   sourceMaxEntries: number;
+  sourceInFlightLimit: number;
+  globalInFlightLimit: number;
 };
 
 export const BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS = {
@@ -14,6 +16,8 @@ export const BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS = {
   globalLimit: 1_000,
   credentialMaxEntries: 4_096,
   sourceMaxEntries: 1_024,
+  sourceInFlightLimit: 8,
+  globalInFlightLimit: 128,
 } satisfies BoardKeyAuthFailureRateLimitConfig;
 
 type FailureEntry = { count: number; resetAt: number };
@@ -86,6 +90,8 @@ export function createBoardKeyAuthFailureRateLimiter(
     config.sourceMaxEntries,
   );
   const global = new BoundedFixedWindowFailures(config.globalLimit, config.windowMs, 1);
+  const sourceInFlight = new Map<string, number>();
+  let globalInFlight = 0;
 
   return {
     isLimited(input: { credentialId: string; sourceId: string; now?: number }) {
@@ -103,10 +109,39 @@ export function createBoardKeyAuthFailureRateLimiter(
       return globalLimited || sourceLimited || credentialLimited;
     },
 
+    tryAcquire(input: { sourceId: string }) {
+      const currentSourceInFlight = sourceInFlight.get(input.sourceId) ?? 0;
+      const newSourceWouldExceedStorage = currentSourceInFlight === 0
+        && sourceInFlight.size >= config.sourceMaxEntries;
+      if (
+        globalInFlight >= config.globalInFlightLimit
+        || currentSourceInFlight >= config.sourceInFlightLimit
+        || newSourceWouldExceedStorage
+      ) {
+        return null;
+      }
+
+      globalInFlight += 1;
+      sourceInFlight.set(input.sourceId, currentSourceInFlight + 1);
+      let released = false;
+      return {
+        release() {
+          if (released) return;
+          released = true;
+          globalInFlight = Math.max(0, globalInFlight - 1);
+          const remainingForSource = (sourceInFlight.get(input.sourceId) ?? 1) - 1;
+          if (remainingForSource <= 0) sourceInFlight.delete(input.sourceId);
+          else sourceInFlight.set(input.sourceId, remainingForSource);
+        },
+      };
+    },
+
     reset() {
       credentials.clear();
       sources.clear();
       global.clear();
+      sourceInFlight.clear();
+      globalInFlight = 0;
     },
 
     snapshot() {
@@ -114,6 +149,8 @@ export function createBoardKeyAuthFailureRateLimiter(
         credentialEntries: credentials.size,
         sourceEntries: sources.size,
         globalEntries: global.size,
+        sourceInFlightEntries: sourceInFlight.size,
+        globalInFlight,
       };
     },
   };

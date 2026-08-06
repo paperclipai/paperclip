@@ -351,16 +351,29 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         next(tooManyRequests("Too many authentication failures"));
         return;
       }
-      const authentication = await boardAuth.authenticateBoardApiKey(token);
-      if (!authentication.ok) {
-        await auditBoardKeyAuthenticationFailure(db, req, authentication);
-        next(
-          boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity)
-            ? tooManyRequests("Too many authentication failures")
-            : unauthorized(),
-        );
+      const admission = boardKeyAuthFailureRateLimiter.tryAcquire({ sourceId: failureIdentity.sourceId });
+      if (!admission) {
+        next(tooManyRequests("Too many authentication failures"));
         return;
       }
+      let authentication: Awaited<ReturnType<typeof boardAuth.authenticateBoardApiKey>>;
+      try {
+        authentication = await boardAuth.authenticateBoardApiKey(token);
+      } catch (error) {
+        admission.release();
+        throw error;
+      }
+      if (!authentication.ok) {
+        const limited = boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity);
+        try {
+          await auditBoardKeyAuthenticationFailure(db, req, authentication);
+        } finally {
+          admission.release();
+        }
+        next(limited ? tooManyRequests("Too many authentication failures") : unauthorized());
+        return;
+      }
+      admission.release();
       const { key: boardKey, access, scopeConfig } = authentication;
       const effectiveCompanyIds = scopeConfig
         ? scopeConfig.companyIds.filter((companyId) => access.companyIds.includes(companyId))
