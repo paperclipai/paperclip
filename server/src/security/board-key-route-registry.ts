@@ -38,6 +38,13 @@ import {
 import { isUuidLike, type BoardPermissionKey, type PermissionKey } from "@paperclipai/shared";
 import { HttpError, forbidden, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  BOARD_KEY_AUDIT_COUPLINGS,
+  createBoardKeyAuditContext,
+  runWithBoardKeyAuditContext,
+  settleBoardKeyAuditContext,
+  stageBoardKeyAllowAudit,
+} from "./board-key-audit-coupling.js";
 
 export type BoardKeyRouteClassification =
   | "company"
@@ -623,7 +630,7 @@ async function auditDecision(
   reason: string,
 ) {
   if (req.actor.source !== "board_key" || !req.actor.keyId || !req.actor.boardKeyOwnerId) return;
-  await db.insert(boardApiKeyAuthorizationEvents).values({
+  const values = {
     boardApiKeyId: req.actor.keyId,
     ownerUserId: req.actor.boardKeyOwnerId,
     tokenPrefix: req.actor.boardKeyPrefix ?? null,
@@ -636,8 +643,21 @@ async function auditDecision(
     reason,
     requestId: typeof req.id === "string" ? req.id : null,
     runId: isUuidLike(req.actor.runId) ? req.actor.runId : null,
-    details: {},
-  });
+    details: {} as Record<string, string | boolean | null>,
+  };
+  // An allow on an unsafe method authorizes a mutation, so its disposition is
+  // staged and committed inside that mutation's transaction. Denials abort the
+  // request and safe methods have no mutation to couple to, so both stay
+  // immediately durable.
+  if (decision === "allow" && !SAFE_METHODS.has(req.method) && stageBoardKeyAllowAudit(values)) return;
+  if (decision === "allow" && !SAFE_METHODS.has(req.method)) {
+    logger.warn(
+      { boardApiKeyId: req.actor.keyId, action: metadata.action },
+      "Board-key allow audited without a request context; disposition is not transactionally coupled",
+    );
+    values.details = { coupling: BOARD_KEY_AUDIT_COUPLINGS.detached };
+  }
+  await db.insert(boardApiKeyAuthorizationEvents).values(values);
 }
 
 async function denyBoardKey(
@@ -746,23 +766,36 @@ export async function authorizeBoardKey(
 }
 
 export function boardKeyAuthorizationMiddleware(db: Db): RequestHandler {
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     if (req.actor.source !== "board_key") {
       next();
       return;
     }
     const metadata = lookupBoardKeyRoute(req.method, req.originalUrl);
-    try {
-      await authorizeBoardKey(
-        db,
-        req,
-        metadata.action,
-        () => resolveAuthoritativeResource(db, metadata),
-        metadata,
-      );
-      next();
-    } catch (err) {
-      next(err);
-    }
+    const context = createBoardKeyAuditContext();
+    // A staged allow disposition that never reached a domain transaction is
+    // resolved once the response is complete: recorded when the request
+    // succeeded without a rollback, dropped otherwise.
+    const settle = (statusCode: number) => {
+      void settleBoardKeyAuditContext(db, context, statusCode);
+    };
+    res.on("finish", () => settle(res.statusCode));
+    res.on("close", () => settle(res.writableEnded ? res.statusCode : 0));
+    // The context stays active across the downstream handler chain, so the
+    // instrumented database handle can couple the disposition to its mutation.
+    await runWithBoardKeyAuditContext(context, async () => {
+      try {
+        await authorizeBoardKey(
+          db,
+          req,
+          metadata.action,
+          () => resolveAuthoritativeResource(db, metadata),
+          metadata,
+        );
+        next();
+      } catch (err) {
+        next(err);
+      }
+    });
   };
 }
