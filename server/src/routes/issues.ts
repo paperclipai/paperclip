@@ -133,7 +133,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
-import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { buildPlanReviewContext, readPlanTarget } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -10040,6 +10040,21 @@ export function issueRoutes(
     }
     if (req.body.kind === "request_confirmation" && req.body.payload?.toolAction !== undefined) {
       throw unprocessable("payload.toolAction is server-owned metadata and cannot be supplied when creating an interaction");
+    }
+
+    const planTarget = req.body.kind === "request_confirmation"
+      ? readPlanTarget(req.body.payload.target, issue.id)
+      : null;
+    if (planTarget) {
+      const planReviewContext = await buildPlanReviewContext({
+        db,
+        companyId: issue.companyId,
+        issueId: issue.id,
+        includeForIssueComment: true,
+      });
+      if (!planReviewContext || planReviewContext.latestRevisionId !== planTarget.revisionId) {
+        throw unprocessable("Plan confirmations must target an existing plan document and its latest revision.");
+      }
     }
 
     const interaction = await issueThreadInteractionService(db).create(issue, {

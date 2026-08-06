@@ -58,7 +58,7 @@ function authorFrom(row: {
   };
 }
 
-function readPlanTarget(value: unknown, issueId: string): PlanReviewInteractionTargetContext | null {
+export function readPlanTarget(value: unknown, issueId: string): PlanReviewInteractionTargetContext | null {
   const target = parseObject(value);
   if (target.type !== "issue_document") return null;
   if (target.key !== "plan") return null;

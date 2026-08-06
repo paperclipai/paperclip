@@ -34,6 +34,7 @@ const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => 
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockBuildPlanReviewContext = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{ companyId: "company-1", agentId: CREATED_AGENT_ID, contextSnapshot: null }]).then(
@@ -68,6 +69,12 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/plan-review-context.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/plan-review-context.js")>(
+      "../services/plan-review-context.js",
+    );
+    return { ...actual, buildPlanReviewContext: mockBuildPlanReviewContext };
+  });
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -248,6 +255,7 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:00:00.000Z",
     });
+    mockBuildPlanReviewContext.mockResolvedValue(null);
     mockInteractionService.acceptInteraction.mockResolvedValue({
       interaction: {
         id: "interaction-1",
@@ -1040,6 +1048,37 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("payload.toolAction is server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects plan confirmations when the issue has no matching plan revision", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the plan?",
+          target: {
+            type: "issue_document",
+            issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            documentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            key: "plan",
+            revisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            revisionNumber: 1,
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("existing plan document and its latest revision");
+    expect(mockBuildPlanReviewContext).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      includeForIssueComment: true,
+    }));
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
