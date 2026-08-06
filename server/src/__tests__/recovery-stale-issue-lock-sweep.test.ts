@@ -100,6 +100,49 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     return { companyId, agentId, failedRunId, runningRunId };
   }
 
+  // SYN-3144: the backstop keyed on TERMINAL_HEARTBEAT_RUN_STATUSES alone, so it skipped
+  // a lock held by a run parked in `scheduled_retry` — precisely the rows it exists to
+  // catch, and the reason a host-side reaper had to be installed under SYN-3138.
+  it("clears a lock held by a never-started scheduled_retry run", async () => {
+    const { companyId, agentId } = await seed();
+    const parkedRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: parkedRunId,
+      companyId,
+      agentId,
+      status: "scheduled_retry",
+      invocationSource: "manual",
+      startedAt: null,
+      scheduledRetryAt: new Date(Date.now() + 5 * 86_400_000),
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock — never-started scheduled_retry holder",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: parkedRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.cleared).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const row = await db
+      .select({ executionRunId: issues.executionRunId, executionLockedAt: issues.executionLockedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {
     const { companyId, agentId, failedRunId } = await seed();
     const issueId = randomUUID();
