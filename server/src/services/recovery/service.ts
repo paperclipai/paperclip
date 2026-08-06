@@ -5507,6 +5507,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // column. It maps issue "done" to "succeeded" and issue "cancelled" to
       // "cancelled". A null value means the referencing issue is not terminal.
       referencingIssueTerminalStatus?: "succeeded" | "cancelled" | null;
+      // True when an active (non-terminal) issue still holds this run in a lock
+      // column. The run is live for that active issue, so the caller forbids the
+      // issue-terminal authority. This flag also suppresses the context-snapshot
+      // fallback below. Without it, a terminal issue named in the run context
+      // snapshot would still terminalize the shared run and defeat the guard.
+      runReferencedByActiveIssue?: boolean;
     },
   ): Promise<{ terminalized: boolean; status: string }> {
     // Act only on a run in "running" status. A "queued" run has no process yet,
@@ -5521,11 +5527,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // orphaned regardless of process or handle state. Prefer the referencing
     // issue status that the caller passed, because a lock column is the direct
     // link from the stuck "Live" issue to this run. Fall back to the issue id in
-    // the run context snapshot when the caller passed nothing.
+    // the run context snapshot when the caller passed nothing. Skip the fallback
+    // when an active issue still references the run. The run is live for that
+    // active issue, so a terminal issue named in the context snapshot must not
+    // terminalize it.
     let issueTerminalStatus: "succeeded" | "cancelled" | null =
       options?.referencingIssueTerminalStatus ?? null;
     const issueId = issueIdFromRunContext(run.contextSnapshot);
-    if (!issueTerminalStatus && issueId) {
+    if (!issueTerminalStatus && !options?.runReferencedByActiveIssue && issueId) {
       const issueStatus = await db
         .select({ status: issues.status })
         .from(issues)
@@ -5707,6 +5716,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const row of runRows) {
       const outcome = await terminalizeOrphanedRunningRun(row, {
         referencingIssueTerminalStatus: issueTerminalStatusByRunId.get(row.id) ?? null,
+        runReferencedByActiveIssue: runIdsReferencedByActiveIssue.has(row.id),
       });
       runStatusById.set(row.id, outcome.status);
       if (outcome.terminalized) result.terminalizedRunIds.push(row.id);

@@ -458,6 +458,72 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
+  it("does not terminalize a shared live run when its context snapshot names the terminal issue", async () => {
+    // The run context snapshot names the terminal issue. The context-snapshot
+    // fallback in terminalizeOrphanedRunningRun could read that terminal status
+    // and terminalize the run. An active issue still owns the run, so the sweep
+    // must suppress the fallback and keep the run live.
+    const { companyId, agentId, runningRunId } = await seed();
+    // process.pid is the live test process, so isPidAlive returns true.
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: process.pid })
+      .where(eq(heartbeatRuns.id, runningRunId));
+
+    const terminalIssueId = randomUUID();
+    const activeIssueId = randomUUID();
+    // The run context snapshot names the terminal issue. This is the path the
+    // shared-run guard must still block.
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId: terminalIssueId } })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values([
+      {
+        id: terminalIssueId,
+        companyId,
+        title: "Terminal issue named in the run context snapshot",
+        status: "done",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: runningRunId,
+        executionRunId: null,
+      },
+      {
+        id: activeIssueId,
+        companyId,
+        title: "Active issue owns the live shared run",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: runningRunId,
+        executionRunId: runningRunId,
+        executionLockedAt: new Date(),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    // The run stays live, so the sweep terminalizes nothing and clears nothing.
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(result.cleared).toBe(0);
+
+    const runStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]?.status);
+    expect(runStatus).toBe("running");
+
+    const activeLock = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, activeIssueId))
+      .then((rows) => rows[0]);
+    expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
+  });
+
   it("still clears the lock when the audit write fails after terminalization", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid that never maps to a live process, so the sweep
