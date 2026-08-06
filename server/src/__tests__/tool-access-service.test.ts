@@ -69,17 +69,20 @@ async function createCompany(db: ReturnType<typeof createDb>) {
 // also decode SSE-framed responses, so test doubles must supply both.
 function mcpHttpResponse(
   payload: unknown,
-  opts: { contentType?: string; body?: string } = {},
+  opts: { contentType?: string; body?: string; headers?: Record<string, string>; status?: number; ok?: boolean } = {},
 ): Response {
   const contentType = opts.contentType ?? "application/json";
   const body = opts.body ?? JSON.stringify(payload);
-  return {
-    ok: true,
-    status: 200,
-    headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? contentType : null) },
-    text: async () => body,
-    json: async () => payload,
-  } as unknown as Response;
+  const status = opts.status ?? 200;
+  // Prefer a real Response/Headers so production code can use headers.get()
+  // without special-casing test doubles.
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": contentType,
+      ...(opts.headers ?? {}),
+    },
+  });
 }
 
 // Build an SSE-framed (`event: message\ndata: {…}`) MCP Streamable HTTP
@@ -93,7 +96,7 @@ function mcpSseResponse(payload: unknown): Response {
 }
 
 function mockToolsList(tools: unknown[]) {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
     mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } }),
   );
 }
@@ -932,7 +935,8 @@ describeEmbeddedPostgres("tool access service", () => {
       .update(toolCatalogEntries)
       .set({ status: "active", reviewedAt: new Date(), quarantineReason: null, quarantinedAt: null })
       .where(eq(toolCatalogEntries.toolName, "send_email"));
-    fetchMock.mockResolvedValueOnce(mcpHttpResponse({
+    // initialize + tools/list both need the changed catalog payload (fresh body each call)
+    const changedCatalog = {
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",
       result: {
@@ -945,7 +949,8 @@ describeEmbeddedPostgres("tool access service", () => {
           },
         ],
       },
-    }));
+    };
+    fetchMock.mockImplementation(async () => mcpHttpResponse(changedCatalog));
 
     const secondRefresh = await service.refreshCatalog(connection.id);
 
@@ -972,17 +977,15 @@ describeEmbeddedPostgres("tool access service", () => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       const accept = headers.accept ?? headers.Accept ?? "";
       if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
-        return {
-          ok: false,
-          status: 406,
-          headers: { get: () => null },
-          text: async () => JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Not Acceptable: Client must accept both application/json and text/event-stream" },
-            id: null,
-          }),
-        } as unknown as Response;
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Not Acceptable: Client must accept both application/json and text/event-stream" },
+          id: null,
+        }), { status: 406, headers: { "content-type": "application/json" } });
       }
+      // Session-less servers must not receive a session header.
+      expect(headers["mcp-session-id"]).toBeUndefined();
+      expect(headers["Mcp-Session-Id"]).toBeUndefined();
       return mcpSseResponse({
         jsonrpc: "2.0",
         id: "paperclip-catalog-refresh",
@@ -1015,6 +1018,126 @@ describeEmbeddedPostgres("tool access service", () => {
     // The same probe backs the periodic health sweep, so it must also pass.
     const health = await service.checkHealth(connection.id);
     expect(health.connection.healthStatus).toBe("ok");
+  });
+
+  it("forwards Mcp-Session-Id on tools/list after a session-keeping initialize handshake", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const sessionId = `catalog-sess-${randomUUID()}`;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (init?.method === "DELETE") {
+        expect(headers["mcp-session-id"]).toBe(sessionId);
+        return new Response(null, { status: 200 });
+      }
+      if (body?.method === "initialize") {
+        return mcpHttpResponse(
+          {
+            jsonrpc: "2.0",
+            id: "paperclip-mcp-initialize",
+            result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "sess", version: "1" } },
+          },
+          { headers: { "mcp-session-id": sessionId } },
+        );
+      }
+      if (body?.method === "notifications/initialized") {
+        expect(headers["mcp-session-id"]).toBe(sessionId);
+        expect(headers["mcp-protocol-version"]).toBe("2025-03-26");
+        return new Response(null, { status: 202 });
+      }
+      if (body?.method === "tools/list") {
+        expect(headers["mcp-session-id"]).toBe(sessionId);
+        expect(headers["mcp-protocol-version"]).toBe("2025-03-26");
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "kv_get", description: "Read.", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected method ${body?.method ?? init?.method}`);
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Session-keeping fixture",
+      transport: "mcp_remote",
+      config: { url: "https://session.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const refresh = await service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+
+    expect(refresh.discoveredCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalled();
+    const methods = fetchMock.mock.calls.map(([, init]) => {
+      if (init?.method === "DELETE") return "DELETE";
+      return JSON.parse(String(init?.body)).method;
+    });
+    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "DELETE"]);
+  });
+
+  it("fail-soft: catalog refresh succeeds when initialize returns HTTP 500", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (body?.method === "initialize") {
+        return mcpHttpResponse({ error: "boom" }, { status: 500 });
+      }
+      if (body?.method === "tools/list") {
+        expect(headers["mcp-session-id"]).toBeUndefined();
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "kv_get", description: "Read.", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected method ${body?.method}`);
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Fail-soft 500 fixture",
+      transport: "mcp_remote",
+      config: { url: "https://failsoft500.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const refresh = await service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+    expect(refresh.discoveredCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("fail-soft: catalog refresh succeeds when initialize hits a network error", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (body?.method === "initialize") {
+        throw new TypeError("fetch failed");
+      }
+      if (body?.method === "tools/list") {
+        expect(headers["mcp-session-id"]).toBeUndefined();
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "kv_get", description: "Read.", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      throw new Error(`unexpected method ${body?.method}`);
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Fail-soft network fixture",
+      transport: "mcp_remote",
+      config: { url: "https://failsoftnet.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const refresh = await service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+    expect(refresh.discoveredCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
@@ -1344,11 +1467,13 @@ describeEmbeddedPostgres("tool access service", () => {
       priority: 100,
       selectors: { connectionId: connection.id },
     });
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
-      jsonrpc: "2.0",
-      id: "paperclip-tool-test",
-      result: { content: [{ type: "text", text: "sent" }] },
-    }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-tool-test",
+        result: { content: [{ type: "text", text: "sent" }] },
+      }),
+    );
     const app = createRouteApp(
       db,
       boardSessionActor(company.id, "operator", userId),
@@ -1364,7 +1489,8 @@ describeEmbeddedPostgres("tool access service", () => {
       decision: "allowed",
       result: { data: expect.objectContaining({ isError: false, transport: "mcp_http" }) },
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    // initialize handshake + tools/call
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
     expect(invocation).toMatchObject({
       actorType: "user",
@@ -1525,11 +1651,13 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(waiting.body.result).toBeUndefined();
 
     // 3. Approving from the review queue is what runs the parked test call.
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
-      jsonrpc: "2.0",
-      id: "paperclip-tool-test",
-      result: { content: [{ type: "text", text: "sent" }] },
-    }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-tool-test",
+        result: { content: [{ type: "text", text: "sent" }] },
+      }),
+    );
     await gateway.approveActionRequest({ companyId: company.id, actionRequestId, actor: { userId } });
     expect(fetchMock).toHaveBeenCalled();
 
@@ -1568,11 +1696,13 @@ describeEmbeddedPostgres("tool access service", () => {
       .send(body)
       .expect(200);
 
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
-      jsonrpc: "2.0",
-      id: "paperclip-tool-test",
-      result: { content: [{ type: "text", text: "sent" }] },
-    }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-tool-test",
+        result: { content: [{ type: "text", text: "sent" }] },
+      }),
+    );
     await gateway.approveActionRequest({
       companyId: company.id,
       actionRequestId: first.body.actionRequestId as string,
@@ -3041,7 +3171,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .query({ state, code: "oauth-code" });
 
     expect(callbackRes.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(callbackRes.body.connection).toMatchObject({
       id: connectRes.body.connectionId,
       status: "active",
@@ -3073,7 +3203,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(redirectCallbackRes.headers.location).toBe(
       `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/setup?oauth=connected`,
     );
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(10);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
     await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(6);
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectRes.body.connectionId));
@@ -3386,7 +3516,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const health = await service.checkHealth(connection.id, { actorType: "system", actorId: "health-check" });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
     expect(updated.credentialSecretRefs).toEqual([
       expect.objectContaining({ configPath: "oauth.access_token", label: "OAuth access token" }),
@@ -4512,7 +4642,7 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialValues: { "credentials.authorization": "zap-secret" },
     }, { actorType: "user", actorId: "board" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://mcp.zapier.com/api/mcp",
       expect.objectContaining({
@@ -4602,7 +4732,7 @@ describeEmbeddedPostgres("tool access service", () => {
       ]),
     );
 
-    fetchMock.mockResolvedValueOnce(mcpHttpResponse({
+    const rereviewCatalog = {
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",
       result: {
@@ -4627,7 +4757,8 @@ describeEmbeddedPostgres("tool access service", () => {
           },
         ],
       },
-    }));
+    };
+    fetchMock.mockImplementation(async () => mcpHttpResponse(rereviewCatalog));
     const rereview = await service.refreshCatalog(connect.connectionId, { actorType: "user", actorId: "board" });
     expect(rereview.quarantinedCount).toBe(2);
     expect(rereview.catalog).toEqual(

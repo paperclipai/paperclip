@@ -416,6 +416,7 @@ function createGatewayRouteApp(
 }
 
 type FakeMcpRequest = {
+  method: string;
   headers: IncomingMessage["headers"];
   body: Record<string, unknown> | null;
 };
@@ -432,7 +433,13 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
   body?: unknown;
   rawBody?: string;
   delayMs?: number;
-}) {
+}, opts: {
+  /** When set, initialize replies with this mcp-session-id (session-keeping server). */
+  sessionId?: string | null;
+  /** When false, initialize is forwarded to `handler` like any other method. Default true. */
+  autoInitialize?: boolean;
+} = {}) {
+  const autoInitialize = opts.autoInitialize !== false;
   const requests: FakeMcpRequest[] = [];
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -445,8 +452,44 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
       } catch {
         body = null;
       }
-      const requestRecord = { headers: req.headers, body };
+      const requestRecord: FakeMcpRequest = {
+        method: req.method ?? "GET",
+        headers: req.headers,
+        body,
+      };
       requests.push(requestRecord);
+
+      // Default: answer initialize locally so existing tools/call handlers keep
+      // asserting only on the tool request. Session-less unless sessionId is set.
+      if (autoInitialize && body?.method === "initialize") {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json");
+        if (opts.sessionId) {
+          res.setHeader("mcp-session-id", opts.sessionId);
+        }
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id ?? "test",
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            serverInfo: { name: "fake-remote-mcp", version: "0.0.0" },
+          },
+        }));
+        return;
+      }
+      if (autoInitialize && body?.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      // Session teardown is best-effort DELETE; acknowledge without involving the tool handler.
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+
       const response = await handler(requestRecord);
       if (response.delayMs) {
         await new Promise((resolve) => setTimeout(resolve, response.delayMs));
@@ -1510,16 +1553,21 @@ rl.on("line", (line) => {
           },
         },
       });
-      expect(fake.requests).toHaveLength(1);
+      // initialize (+ optional notifications/initialized) then tools/call
+      const toolCall = fake.requests.find((request) => request.body?.method === "tools/call");
+      expect(toolCall).toBeTruthy();
+      // Session-less servers must not receive a session header on tools/call.
+      expect(toolCall!.headers["mcp-session-id"]).toBeUndefined();
       // Streamable HTTP requires advertising both JSON and SSE on the call (PAP-11096).
-      expect(fake.requests[0]!.headers.accept).toBe("application/json, text/event-stream");
-      expect(fake.requests[0]!.body).toMatchObject({
+      expect(toolCall!.headers.accept).toBe("application/json, text/event-stream");
+      expect(toolCall!.body).toMatchObject({
         method: "tools/call",
         params: {
           name: "kv_set",
           arguments: { key: "alpha", value: "one" },
         },
       });
+      expect(fake.requests.some((request) => request.body?.method === "initialize")).toBe(true);
 
       const [invocation] = await db.select().from(toolInvocations);
       expect(invocation).toMatchObject({
@@ -1607,6 +1655,159 @@ rl.on("line", (line) => {
       });
       expect(persisted).not.toContain(credentialValue);
     } finally {
+      await fake.close();
+    }
+  });
+
+  it("forwards Mcp-Session-Id on tools/call after a session-keeping initialize handshake", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const sessionId = `sess-${randomUUID()}`;
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers["mcp-session-id"]).toBe(sessionId);
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "session-ok" }] },
+        },
+      };
+    }, { sessionId });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "session-demo",
+        toolName: "kv_get",
+        title: "Get KV",
+        riskLevel: "read",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "session-ok" },
+      });
+      expect(fake.requests.map((request) => request.body?.method ?? request.method)).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+        "DELETE",
+      ]);
+      expect(fake.requests[2]!.headers["mcp-session-id"]).toBe(sessionId);
+      expect(fake.requests[2]!.headers["mcp-protocol-version"]).toBe("2025-03-26");
+      expect(fake.requests[3]!.headers["mcp-session-id"]).toBe(sessionId);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("fail-soft: tools/call succeeds when initialize returns HTTP 500", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      if (fakeRequest.body?.method === "initialize") {
+        return { status: 500, body: { error: "initialize unsupported" } };
+      }
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "ok-after-init-500" }] },
+        },
+      };
+    }, { autoInitialize: false });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "failsoft-500",
+        toolName: "kv_get",
+        title: "Get KV",
+        riskLevel: "read",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "ok-after-init-500" },
+      });
+      const toolCall = fake.requests.find((request) => request.body?.method === "tools/call");
+      expect(toolCall).toBeTruthy();
+      expect(toolCall!.headers["mcp-session-id"]).toBeUndefined();
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("fail-soft: tools/call succeeds when initialize hits a network error", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "ok-after-init-network" }] },
+      },
+    }));
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      if (body?.method === "initialize") {
+        throw new TypeError("fetch failed");
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "failsoft-net",
+        toolName: "kv_get",
+        title: "Get KV",
+        riskLevel: "read",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "ok-after-init-network" },
+      });
+      const toolCall = fake.requests.find((request) => request.body?.method === "tools/call");
+      expect(toolCall).toBeTruthy();
+      expect(toolCall!.headers["mcp-session-id"]).toBeUndefined();
+    } finally {
+      fetchSpy.mockRestore();
       await fake.close();
     }
   });
@@ -2701,7 +2902,9 @@ rl.on("line", (line) => {
             request: {
               endpoint: fake.url,
               mcpMethod: "tools/call",
-              dispatched: true,
+              // Timeout aborts the in-flight tools/call fetch before it returns,
+              // so dispatched stays false (set only after fetch resolves).
+              dispatched: scenario.reasonCode !== "tool_timeout",
             },
           },
         });
