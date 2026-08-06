@@ -120,6 +120,12 @@ const manifest: PaperclipPluginManifestV1 = {
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
             default: false,
           },
+          useLogStream: {
+            type: "boolean",
+            description:
+              "When true, a session command streams stdout and stderr from the Daytona callback log form and reads the exit code one time after the stream ends. When false, the command polls the exit code and reads the logs one time. Defaults to false.",
+            default: false,
+          },
         },
       },
     },

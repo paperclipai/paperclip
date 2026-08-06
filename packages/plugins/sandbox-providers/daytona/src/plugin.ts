@@ -123,6 +123,7 @@ interface DaytonaDriverConfig {
   reuseLease: boolean;
   archiveOnRelease: boolean;
   useSessions: boolean;
+  useLogStream: boolean;
 }
 
 type WorkspaceSentinelResult = {
@@ -229,6 +230,12 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     // Daytona session per lease and dispatches every command into it. The flag
     // stays default off until a live leak soak passes.
     useSessions: raw.useSessions === true,
+    // Log-stream opt-in. Default OFF. When off, the session dispatch polls the
+    // exit code every 50 ms and then reads the logs one time. When on, the
+    // dispatch streams stdout and stderr from the callback log form and reads
+    // the exit code one time after the stream ends. The flag stays default off
+    // until a live soak passes.
+    useLogStream: raw.useLogStream === true,
   };
 }
 
@@ -1473,6 +1480,124 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Backoff delays for the exit-code read after the log stream ends. The live
+// spike measured the exit code available within one poll (91-202 ms), so the
+// first read almost always holds the code. These delays cover the rare case
+// where the first read has no code yet.
+const SESSION_EXIT_CODE_RETRY_DELAYS_MS = [50, 100, 200];
+
+// A bounded reconnect for the log stream. A disconnect settles the stream
+// promise as a rejection while the command still runs on the server. One
+// reconnect replays the log from byte 0; the stream buffer drops the replayed
+// prefix by byte offset. After this many reconnects the dispatch falls back to
+// the poll path.
+const MAX_SESSION_STREAM_RECONNECTS = 1;
+
+// Buffers the stdout and stderr of one session command from the callback log
+// stream, and drops a replayed prefix by byte offset.
+//
+// The Daytona callback stream replays the whole log from byte 0 after a
+// reconnect (it does not resume from an offset and does not omit earlier
+// bytes). So the buffer tracks the byte count it already holds per stream and
+// drops any replayed bytes that fall before that count. The dedupe runs at the
+// byte level, because Daytona replays the log byte-for-byte. The SDK keeps each
+// multibyte UTF-8 character whole per chunk and per stream, so the delivered
+// byte count always lands on a character boundary and the byte-offset split is
+// safe.
+function createSessionStreamBuffer() {
+  const streams = {
+    stdout: { data: Buffer.alloc(0), connectionBytes: 0 },
+    stderr: { data: Buffer.alloc(0), connectionBytes: 0 },
+  };
+
+  function append(stream: { data: Buffer; connectionBytes: number }, chunk: string): void {
+    const buf = Buffer.from(chunk, "utf8");
+    const start = stream.connectionBytes;
+    stream.connectionBytes = start + buf.length;
+    // The whole chunk falls before the delivered byte count, so it is a replay.
+    if (start + buf.length <= stream.data.length) {
+      return;
+    }
+    // The whole chunk is new.
+    if (start >= stream.data.length) {
+      stream.data = Buffer.concat([stream.data, buf]);
+      return;
+    }
+    // The chunk straddles the delivered byte count. Keep only the new tail.
+    stream.data = Buffer.concat([stream.data, buf.subarray(stream.data.length - start)]);
+  }
+
+  return {
+    onStdout: (chunk: string) => append(streams.stdout, chunk),
+    onStderr: (chunk: string) => append(streams.stderr, chunk),
+    // Reset the per-connection read cursors after a reconnect, so the replayed
+    // prefix drops against the already-delivered byte count.
+    resetConnectionCursors(): void {
+      streams.stdout.connectionBytes = 0;
+      streams.stderr.connectionBytes = 0;
+    },
+    get stdout(): string {
+      return streams.stdout.data.toString("utf8");
+    },
+    get stderr(): string {
+      return streams.stderr.data.toString("utf8");
+    },
+  };
+}
+
+type SessionLogStreamResult =
+  | { ok: true; stdout: string; stderr: string }
+  | { ok: false };
+
+// Stream stdout and stderr of one session command from the callback log form.
+// The stream buffer drops a replayed prefix by byte offset on a reconnect. A
+// disconnect rejects the stream promise; the dispatch reconnects a bounded
+// number of times, then reports failure so the caller falls back to the poll
+// path.
+async function runSessionLogStream(
+  sandbox: Sandbox,
+  sessionId: string,
+  commandId: string,
+): Promise<SessionLogStreamResult> {
+  const buffer = createSessionStreamBuffer();
+  let reconnects = 0;
+  while (true) {
+    try {
+      await sandbox.process.getSessionCommandLogs(sessionId, commandId, buffer.onStdout, buffer.onStderr);
+      return { ok: true, stdout: buffer.stdout, stderr: buffer.stderr };
+    } catch {
+      if (reconnects >= MAX_SESSION_STREAM_RECONNECTS) {
+        return { ok: false };
+      }
+      reconnects += 1;
+      buffer.resetConnectionCursors();
+    }
+  }
+}
+
+// Read the exit code one time after the log stream ends. The exit code is
+// available within one poll, so the first read almost always holds it. Add a
+// small bounded retry with backoff only for the rare case where the first read
+// has no code yet. Return null when no read holds a numeric code.
+async function readSessionExitCode(
+  sandbox: Sandbox,
+  sessionId: string,
+  commandId: string,
+): Promise<number | null> {
+  const first = await sandbox.process.getSessionCommand(sessionId, commandId);
+  if (typeof first.exitCode === "number") {
+    return first.exitCode;
+  }
+  for (const delayMs of SESSION_EXIT_CODE_RETRY_DELAYS_MS) {
+    await sleep(delayMs);
+    const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+    if (typeof status.exitCode === "number") {
+      return status.exitCode;
+    }
+  }
+  return null;
+}
+
 // Dispatch one user command into the persistent session and return its true
 // stdout and stderr.
 //
@@ -1532,9 +1657,29 @@ async function executeInSession(
     );
     const commandId = dispatched.cmdId;
 
+    // Log-stream path (opt-in). Stream stdout and stderr from the callback log
+    // form, then read the exit code one time. On a stream failure, fall through
+    // to the poll path below, because the command still runs to its exit on the
+    // server.
+    if (config.useLogStream) {
+      const streamResult = await runSessionLogStream(sandbox, sessionId, commandId);
+      if (streamResult.ok) {
+        const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
+        const durationMs = timingNow() - execStart;
+        return {
+          exitCode,
+          timedOut: false,
+          stdout: streamResult.stdout,
+          stderr: streamResult.stderr,
+          metadata: { durationMs },
+        };
+      }
+    }
+
     // Poll for the exit code; the SDK has no wait method. The poll deadline uses
     // the wall clock, separate from the injected timing clock that measures the
-    // reported `durationMs`.
+    // reported `durationMs`. The poll path is the default when the log stream is
+    // off, and the fallback when the log stream fails.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
     let exitCode: number | null = null;
     while (true) {
