@@ -1618,6 +1618,135 @@ async function executeOneShot(
   }
 }
 
+// Poll interval for a session command's exit code. The live spike measured a
+// session command resolving in about 260-300 ms, so a short interval keeps the
+// poll responsive without a busy loop.
+const SESSION_POLL_INTERVAL_MS = 50;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Dispatch one user command into the persistent session and return its true
+// stdout and stderr.
+//
+// The Daytona session is one persistent shell. A top-level `exit N` inside a
+// session command ends that shell, so the next command then fails with "session
+// process has exited". To stop a user `exit` from reaching the session shell,
+// the dispatch wraps the whole login-shell script in a subshell `( ... )`. A
+// user `exit` then ends only the subshell and reports its exit code, and the
+// session shell stays alive. The provider passes the caller cwd and env inside
+// the login-shell script on every command, so it never relies on implicit state
+// that leaks between commands.
+//
+// The SDK exposes no built-in wait for a session command, so the dispatch runs
+// the command with `runAsync: true` and polls `getSessionCommand` until the exit
+// code is set. It then reads true `stdout` and `stderr` from
+// `getSessionCommandLogs`, because the synchronous response fields are optional.
+// The `runAsync: true` path also avoids the known `runAsync: false` login-shell
+// hang.
+async function executeInSession(
+  sandbox: Sandbox,
+  sessionId: string,
+  params: PluginEnvironmentExecuteParams,
+  config: DaytonaDriverConfig,
+): Promise<PluginEnvironmentExecuteResult> {
+  const gitNet = isGitNetworkCommand(params.command, params.args ?? []);
+  const timeoutMs = resolveTimeoutMs(params.timeoutMs, config);
+  const effectiveTimeoutMs = gitNet ? Math.min(timeoutMs, GIT_NETWORK_TIMEOUT_MS) : timeoutMs;
+  const timeoutSeconds = toTimeoutSeconds(effectiveTimeoutMs);
+  const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
+
+  // Marks the start of the session dispatch and poll. The timeout paths report
+  // the exec wall-time spent before the abort, so a slow command is still
+  // attributed to the provider boundary.
+  let execStart: number | null = null;
+
+  try {
+    if (stdinPath) {
+      await sandbox.fs.uploadFile(Buffer.from(params.stdin ?? "", "utf8"), stdinPath, timeoutSeconds);
+    }
+
+    const loginScript = buildLoginShellScript({
+      command: params.command,
+      args: params.args ?? [],
+      cwd: params.cwd,
+      env: params.env,
+      stdinPath: stdinPath ?? undefined,
+    });
+    // Subshell wrap: a top-level `exit` in the user command exits only the
+    // subshell, not the persistent session shell.
+    const command = `( ${loginScript} )`;
+
+    execStart = timingNow();
+    const dispatched = await sandbox.process.executeSessionCommand(
+      sessionId,
+      { command, runAsync: true },
+      timeoutSeconds,
+    );
+    const commandId = dispatched.cmdId;
+
+    // Poll for the exit code; the SDK has no wait method. The poll deadline uses
+    // the wall clock, separate from the injected timing clock that measures the
+    // reported `durationMs`.
+    const deadlineMs = Date.now() + effectiveTimeoutMs;
+    let exitCode: number | null = null;
+    while (true) {
+      const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+      if (typeof status.exitCode === "number") {
+        exitCode = status.exitCode;
+        break;
+      }
+      if (Date.now() >= deadlineMs) {
+        const durationMs = timingNow() - execStart;
+        const timeoutMessage = gitNet
+          ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
+          : `Command timed out after ${Math.round(effectiveTimeoutMs / 1000)} s.`;
+        return {
+          exitCode: null,
+          timedOut: true,
+          stdout: "",
+          stderr: `${timeoutMessage}\n`,
+          metadata: { durationMs },
+        };
+      }
+      await sleep(SESSION_POLL_INTERVAL_MS);
+    }
+
+    // Read true, separated stdout and stderr from the logs endpoint. The
+    // synchronous dispatch response fields are optional, so the logs endpoint is
+    // the source of truth.
+    const logs = await sandbox.process.getSessionCommandLogs(sessionId, commandId);
+    const durationMs = timingNow() - execStart;
+    return {
+      exitCode,
+      timedOut: false,
+      stdout: logs.stdout ?? "",
+      stderr: logs.stderr ?? "",
+      metadata: { durationMs },
+    };
+  } catch (error) {
+    if (error instanceof DaytonaTimeoutError) {
+      const timeoutMessage = gitNet
+        ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
+        : error.message.trim();
+      const durationMs = execStart != null ? timingNow() - execStart : undefined;
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: "",
+        stderr: `${timeoutMessage}\n`,
+        ...(durationMs != null ? { metadata: { durationMs } } : {}),
+      };
+    }
+    throw error;
+  } finally {
+    if (stdinPath) {
+      await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
+    }
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     // Hoist the context to a module variable so the lifecycle hooks and the
@@ -2276,16 +2405,21 @@ const plugin = definePlugin({
         providerLeaseId,
         config,
       };
-      // Open the persistent session on a cache miss when the session model is
-      // on. The session dispatch itself lands in a later phase; this phase only
-      // opens and stores the session, and keeps the one-shot command path.
+      // Dispatch the command. When the session model is on, open the persistent
+      // session on a cache miss and run the command in it. The provider never
+      // falls back to a one-shot command to open a session; a cache miss creates
+      // one. When the session model is off, run the command on the one-shot path.
+      let result: PluginEnvironmentExecuteResult;
       if (config.useSessions) {
-        await getOrCreateSession(sandbox, scope);
+        const sessionId = await getOrCreateSession(sandbox, scope);
+        result = await executeInSession(sandbox, sessionId, params, config);
+      } else {
+        // Read the advisory bwrap flags from the lease metadata and read the
+        // collected writable directories from the same scope the sync-in hook
+        // uses.
+        const bwrapPlan = resolveBwrapExecPlan(params.lease.metadata, scope);
+        result = await executeOneShot(sandbox, params, config, bwrapPlan);
       }
-      // Read the advisory bwrap flags from the lease metadata and read the
-      // collected writable directories from the same scope the sync-in hook uses.
-      const bwrapPlan = resolveBwrapExecPlan(params.lease.metadata, scope);
-      const result = await executeOneShot(sandbox, params, config, bwrapPlan);
       if (!result.timedOut) {
         sandboxHandleCache.markFresh(scope);
       }

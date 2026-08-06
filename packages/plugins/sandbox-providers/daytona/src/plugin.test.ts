@@ -1316,6 +1316,82 @@ describe("Daytona sandbox provider plugin", () => {
         restore();
       }
     });
+
+    it("dispatches commands into the session and returns separate stdout and stderr", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", command: "", exitCode: 7 });
+      sandbox.process.getSessionCommandLogs.mockResolvedValue({ stdout: "out-here", stderr: "err-here" });
+      mockGet.mockResolvedValue(sandbox);
+
+      const result = await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      // The command runs through the session, not the one-shot path.
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+      const [sid, req, timeoutArg] = sandbox.process.executeSessionCommand.mock.calls[0] as [
+        string,
+        { command: string; runAsync?: boolean },
+        number,
+      ];
+      expect(sid).toMatch(/^paperclip-/);
+      expect(req.runAsync).toBe(true);
+      expect(timeoutArg).toBe(1);
+      // The built command carries the login-shell script and the user command.
+      expect(req.command).toMatch(/&& env .*'printf' 'hello'/);
+      // True separated streams come from the logs endpoint.
+      expect(result).toMatchObject({ exitCode: 7, timedOut: false, stdout: "out-here", stderr: "err-here" });
+      expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
+    });
+
+    it("wraps each user command in a subshell so a top-level exit cannot kill the session shell", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({ command: "exit", args: ["3"] }),
+      );
+
+      const [, req] = sandbox.process.executeSessionCommand.mock.calls[0] as [
+        string,
+        { command: string },
+      ];
+      // The whole login-shell script (with the user `exit`) runs inside a
+      // subshell, so a top-level exit ends the subshell, not the session shell.
+      expect(req.command.trimStart()).toMatch(/^\(/);
+      expect(req.command.trimEnd()).toMatch(/\)$/);
+      expect(req.command).toMatch(/'exit' '3'/);
+    });
+
+    it("reuses the same session (one persistent shell) across commands", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const firstSid = sandbox.process.executeSessionCommand.mock.calls[0]![0] as string;
+      const secondSid = sandbox.process.executeSessionCommand.mock.calls[1]![0] as string;
+      expect(firstSid).toBe(secondSid);
+    });
+
+    it("returns a session timeout when the command never reports an exit code", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      // The command stays running: the exit code never arrives.
+      sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", command: "", exitCode: undefined });
+      mockGet.mockResolvedValue(sandbox);
+
+      const result = await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({ timeoutMs: 1 }),
+      );
+
+      expect(result).toMatchObject({ exitCode: null, timedOut: true });
+      expect(result!.stderr).toMatch(/timed out/);
+    });
   });
 
   it("executes commands one-shot and returns combined output via stdout", async () => {
