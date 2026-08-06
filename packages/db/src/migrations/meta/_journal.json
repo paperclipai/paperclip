@@ -575,6 +575,20 @@
       "when": 1778067785040,
       "tag": "0081_optimal_dormammu",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1783932865758,
+      "tag": "0082_completion_requirement",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1786036526260,
+      "tag": "0083_slim_calypso",
+      "breakpoints": true
     }
   ]
 }
