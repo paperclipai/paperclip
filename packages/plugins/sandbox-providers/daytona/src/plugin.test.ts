@@ -3901,6 +3901,43 @@ describe("daytona manifest memory config", () => {
   });
 });
 
+describe("daytona manifest form defaults", () => {
+  const configSchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<
+        string,
+        { format?: string; enum?: unknown[]; minimum?: number; default?: unknown }
+      >;
+    }
+  );
+  const properties = configSchema.properties ?? {};
+
+  it("pre-fills sizing and image fields for the environment form", () => {
+    expect(properties.cpu?.default).toBe(4);
+    expect(properties.memory?.default).toBe(4);
+    expect(properties.disk?.default).toBe(10);
+    expect(properties.image?.default).toBe("daytonaio/sandbox:0.8.0");
+  });
+
+  it("keeps each default within its own schema constraints", () => {
+    expect(properties.memory?.enum).toContain(properties.memory?.default);
+    expect(properties.cpu?.default as number).toBeGreaterThanOrEqual(
+      properties.cpu?.minimum ?? 1,
+    );
+    expect(properties.disk?.default as number).toBeGreaterThanOrEqual(
+      properties.disk?.minimum ?? 1,
+    );
+  });
+
+  it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {
+    for (const prop of Object.values(properties)) {
+      if (prop.format === "secret-ref") {
+        expect(prop.default).toBeUndefined();
+      }
+    }
+  });
+});
+
 describe("buildBwrapCommand advisory wrapper builder", () => {
   it("uses su to drop to sandbox user without --unshare-user", () => {
     const command = buildBwrapCommand(

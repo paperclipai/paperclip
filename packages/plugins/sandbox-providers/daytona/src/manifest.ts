@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -60,6 +60,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description:
               "Optional base image or Daytona Image reference. If set, the sandbox is created from this image instead of a snapshot.",
+            default: "daytonaio/sandbox:0.8.0",
           },
           language: {
             type: "string",
@@ -70,17 +71,20 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "integer",
             description: "Optional CPU allocation in cores.",
             minimum: 1,
+            default: 4,
           },
           memory: {
             type: "integer",
             description:
-              "Optional memory allocation in GiB. Leave unset to use Daytona defaults; supported sandbox sizes are 1, 2, 4, and 8 GiB.",
+              "Optional memory allocation in GiB. Supported sandbox sizes are 1, 2, 4, and 8 GiB.",
             enum: [1, 2, 4, 8],
+            default: 4,
           },
           disk: {
             type: "integer",
             description: "Optional disk allocation in GiB.",
             minimum: 1,
+            default: 10,
           },
           gpu: {
             type: "integer",

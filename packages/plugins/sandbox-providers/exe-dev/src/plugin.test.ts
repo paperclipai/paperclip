@@ -15,6 +15,7 @@ vi.mock("node:child_process", async () => {
 });
 
 import plugin, { validateSshPrivateKey } from "./plugin.js";
+import manifest from "./manifest.js";
 
 class MockChildProcess extends EventEmitter {
   stdout = new EventEmitter();
@@ -840,5 +841,28 @@ describe("exe.dev sandbox provider plugin", () => {
 
     expect(spawnMock).not.toHaveBeenCalled();
     expect(result?.cwd).toBe("/srv/paperclip/no-vm");
+  });
+});
+
+describe("exe-dev manifest form defaults", () => {
+  const configSchema = (
+    manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { format?: string; default?: unknown }>;
+    }
+  );
+  const properties = configSchema.properties ?? {};
+
+  it("pre-fills VM sizing for the environment form", () => {
+    expect(properties.cpu?.default).toBe(4);
+    expect(properties.memory?.default).toBe("4GB");
+    expect(properties.disk?.default).toBe("20GB");
+  });
+
+  it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {
+    for (const prop of Object.values(properties)) {
+      if (prop.format === "secret-ref") {
+        expect(prop.default).toBeUndefined();
+      }
+    }
   });
 });

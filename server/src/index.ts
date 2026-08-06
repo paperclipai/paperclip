@@ -1133,18 +1133,15 @@ export async function startServer(): Promise<StartedServer> {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
       for (const company of activeCompanies) {
-        const items = [];
-        let cursor: string | undefined;
-        do {
-          const page = await attentionService(db as any).list(company.id, {
-            includeDismissed: true,
-            limit: 100,
-            cursor,
-          });
-          items.push(...page.items);
-          cursor = page.nextCursor ?? undefined;
-        } while (cursor);
-        archived += await retentionExecutor.autoArchive({ companyId: company.id, items });
+        // Cursor pagination rebuilds the whole feed for every page; one
+        // unscoped all-items build keeps this sweep at a single feed build
+        // per company per tick.
+        const page = await attentionService(db as any).list(company.id, {
+          includeDismissed: true,
+          all: true,
+          allowUnscopedAll: true,
+        });
+        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
       }
       const notifications = await retentionExecutor.deliverNotifications();
       return { archived, ...notifications };

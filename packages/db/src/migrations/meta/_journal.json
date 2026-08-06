@@ -1457,6 +1457,13 @@
       "when": 1786020026023,
       "tag": "0209_heartbeat_context_snapshot_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786032087897,
+      "tag": "0210_heartbeat_context_taskkey_index",
+      "breakpoints": true
     }
   ]
 }
