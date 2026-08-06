@@ -4055,6 +4055,7 @@ async function listIssueBlockedInboxAttentionMap(
         reason: finding.state as IssueBlockedInboxAttention["reason"],
         severity: finding.state === "blocked_by_assigned_backlog_issue"
           || finding.state === "in_review_without_action_path"
+          || finding.state === "in_progress_without_execution_path"
           ? "high"
           : finding.severity === "critical" ? "critical" : "high",
         stoppedSinceAt: leaf?.updatedAt ?? row.updatedAt,
@@ -4079,6 +4080,8 @@ async function listIssueBlockedInboxAttentionMap(
                 return "Repair review participant";
               case "in_review_without_action_path":
                 return "Choose review path";
+              case "in_progress_without_execution_path":
+                return "Resume executor routing";
             }
           })(),
           detail: finding.recommendedAction,

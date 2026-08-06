@@ -812,6 +812,46 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
+  it("escalates an assigned in-progress blocker when only its manager has an active run", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "in_progress",
+      blockerAssigneeAgentId: "coder",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      status: "running",
+      contextSnapshot: { issueId: blockerIssueId },
+    });
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    const [escalation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalation).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: coderId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "in_progress_without_execution_path",
+        blockerIssueId,
+      ].join(":"),
+    });
+  });
+
   it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {
     await enableAutoRecovery();
     const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({

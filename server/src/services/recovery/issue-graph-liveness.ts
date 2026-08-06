@@ -9,7 +9,10 @@ export type IssueLivenessState =
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
   | "invalid_review_participant"
-  | "in_review_without_action_path";
+  | "in_review_without_action_path"
+  | "in_progress_without_execution_path";
+
+export const EXECUTOR_ROUTING_STALL_AFTER_MS = 15 * 60 * 1000;
 
 export interface IssueLivenessIssueInput {
   id: string;
@@ -28,6 +31,7 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  updatedAt?: Date | string | null;
 }
 
 export interface IssueLivenessRelationInput {
@@ -154,9 +158,12 @@ function hasActiveExecutionPath(
   issueId: string,
   activeRuns: IssueLivenessExecutionPathInput[],
   queuedWakeRequests: IssueLivenessExecutionPathInput[],
+  expectedAgentId?: string | null,
 ) {
   return [...activeRuns, ...queuedWakeRequests].some(
-    (entry) => entry.companyId === companyId && entry.issueId === issueId,
+    (entry) => entry.companyId === companyId &&
+      entry.issueId === issueId &&
+      (!expectedAgentId || entry.agentId === expectedAgentId),
   );
 }
 
@@ -514,7 +521,13 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
-      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
+      hasActiveExecutionPath(
+        issue.companyId,
+        issue.id,
+        activeRuns,
+        queuedWakeRequests,
+        issue.assigneeAgentId,
+      ) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
@@ -675,6 +688,37 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     return null;
   }
 
+  function inProgressExecutionFinding(
+    source: IssueLivenessIssueInput,
+    executionIssue: IssueLivenessIssueInput,
+    dependencyPath: IssueLivenessIssueInput[],
+  ): IssueLivenessFinding | null {
+    if (
+      executionIssue.status !== "in_progress" ||
+      !executionIssue.assigneeAgentId ||
+      executionIssue.assigneeUserId
+    ) return null;
+    const updatedAtMs = readDateMs(executionIssue.updatedAt);
+    if (updatedAtMs === null || nowMs - updatedAtMs < EXECUTOR_ROUTING_STALL_AFTER_MS) return null;
+    if (hasExplicitWaitingPath(executionIssue)) return null;
+
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(executionIssue, input.agents, agentsById, {
+      includeStalledAssignee: true,
+    });
+    return finding({
+      issue: source,
+      state: "in_progress_without_execution_path",
+      reason: `${issueLabel(executionIssue)} has remained in progress for at least 15 minutes with no wake or active run for its assigned executor.`,
+      dependencyPath,
+      recoveryIssue: executionIssue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction:
+        `Inspect ${issueLabel(executionIssue)}'s executor routing, then resume its assigned agent or make a deliberate reassignment.`,
+      blockerIssueId: executionIssue.id,
+    });
+  }
+
   function firstBlockedChainFinding(
     source: IssueLivenessIssueInput,
     current: IssueLivenessIssueInput,
@@ -696,6 +740,9 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         if (nested) return nested;
         if (hasExplicitWaitingPath(blocker)) continue;
       }
+
+      const stalledExecution = inProgressExecutionFinding(source, blocker, path);
+      if (stalledExecution) return stalledExecution;
 
       const leafFinding = blockedFindingForLeaf(source, blocker, path);
       if (leafFinding) return leafFinding;
@@ -727,6 +774,11 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
+    }
+
+    if (issue.status === "in_progress" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
+      const stalledExecution = inProgressExecutionFinding(issue, issue, [issue]);
+      if (stalledExecution) findings.push(stalledExecution);
     }
   }
 
