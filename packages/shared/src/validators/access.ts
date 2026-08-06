@@ -8,6 +8,7 @@ import {
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
+import { boardApiKeyScopeConfigSchema } from "../board-api-key-scope.js";
 
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
@@ -75,7 +76,8 @@ export const createCliAuthChallengeSchema = z.object({
   clientName: z.string().max(120).optional().nullable(),
   requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
   requestedCompanyId: z.string().guid().optional().nullable(),
-});
+  scopeConfig: boardApiKeyScopeConfigSchema,
+}).strict();
 
 export type CreateCliAuthChallenge = z.infer<typeof createCliAuthChallengeSchema>;
 
@@ -85,11 +87,17 @@ export const resolveCliAuthChallengeSchema = z.object({
 
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
 
-export const createBoardApiKeySchema = z.object({
-  name: z.string().trim().min(1).max(120).default("paperclipai cli"),
-  expiresAt: z.coerce.date().optional().nullable(),
-  requestedCompanyId: z.string().guid().optional().nullable(),
-});
+export const createBoardApiKeySchema = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(120)
+      .refine((value) => value === value.trim() && value.trim().length > 0, "Name must not have surrounding whitespace"),
+    expiresAt: z.string().datetime({ offset: true }).optional().nullable(),
+    scopeConfig: boardApiKeyScopeConfigSchema,
+  })
+  .strict();
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 

@@ -2,6 +2,11 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  boardApiKeyScopeConfigSchema,
+  deriveBoardApiKeyStatus,
+  type BoardApiKeyScopeConfig,
+} from "@paperclipai/shared";
+import {
   authUsers,
   boardApiKeys,
   cliAuthChallenges,
@@ -32,6 +37,10 @@ export function createBoardApiToken() {
   return `pcp_board_${randomBytes(24).toString("hex")}`;
 }
 
+export function boardApiKeyTokenPrefix(token: string) {
+  return token.slice(0, "pcp_board_".length + 12);
+}
+
 export function createCliAuthSecret() {
   return `pcp_cli_auth_${randomBytes(24).toString("hex")}`;
 }
@@ -52,7 +61,10 @@ function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliA
 }
 
 export function boardAuthService(db: Db) {
-  const touchedBoardApiKeys = new Map<string, { completedAt: number | null; inFlight: Promise<void> | null }>();
+  const touchedBoardApiKeys = new Map<
+    string,
+    { completedAt: number | null; inFlight: Promise<{ id: string } | null> | null }
+  >();
 
   function pruneTouchedBoardApiKeys(nowMs: number) {
     for (const [id, entry] of touchedBoardApiKeys) {
@@ -149,35 +161,43 @@ export function boardAuthService(db: Db) {
 
   async function findBoardApiKeyByToken(token: string) {
     const tokenHash = hashBearerToken(token);
-    const now = new Date();
     return db
       .select()
       .from(boardApiKeys)
-      .where(
-        and(
-          eq(boardApiKeys.keyHash, tokenHash),
-          isNull(boardApiKeys.revokedAt),
-        ),
-      )
-      .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()) ?? null);
+      .where(eq(boardApiKeys.keyHash, tokenHash))
+      .then((rows) => rows[0] ?? null);
   }
 
-  async function touchBoardApiKey(id: string) {
-    const nowMs = Date.now();
+  async function touchBoardApiKey(id: string, now: Date = new Date()) {
+    const nowMs = now.getTime();
     pruneTouchedBoardApiKeys(nowMs);
     const cached = touchedBoardApiKeys.get(id);
     if (cached?.inFlight) return cached.inFlight;
-    if (cached?.completedAt !== null && cached?.completedAt !== undefined
-      && cached.completedAt > nowMs - BOARD_API_KEY_TOUCH_DEBOUNCE_MS) return;
+    if (
+      cached?.completedAt !== null
+      && cached?.completedAt !== undefined
+      && cached.completedAt > nowMs - BOARD_API_KEY_TOUCH_DEBOUNCE_MS
+    ) {
+      return { id };
+    }
 
     const inFlight = db
       .update(boardApiKeys)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(boardApiKeys.id, id))
-      .then(() => {
+      .set({ lastUsedAt: now })
+      .where(and(
+        eq(boardApiKeys.id, id),
+        isNull(boardApiKeys.revokedAt),
+        or(isNull(boardApiKeys.expiresAt), gt(boardApiKeys.expiresAt, now)),
+      ))
+      .returning({ id: boardApiKeys.id })
+      .then((rows) => {
+        const touched = rows[0] ?? null;
         touchedBoardApiKeys.delete(id);
-        touchedBoardApiKeys.set(id, { completedAt: Date.now(), inFlight: null });
-        pruneTouchedBoardApiKeys(Date.now());
+        if (touched) {
+          touchedBoardApiKeys.set(id, { completedAt: Date.now(), inFlight: null });
+          pruneTouchedBoardApiKeys(Date.now());
+        }
+        return touched;
       })
       .catch((error) => {
         if (touchedBoardApiKeys.get(id)?.inFlight === inFlight) touchedBoardApiKeys.delete(id);
@@ -187,11 +207,41 @@ export function boardAuthService(db: Db) {
     return inFlight;
   }
 
+  async function authenticateBoardApiKey(token: string) {
+    const key = await findBoardApiKeyByToken(token);
+    if (!key) return { ok: false as const, reason: "unknown_key" as const, key: null };
+    if (key.revokedAt) return { ok: false as const, reason: "revoked" as const, key };
+    if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+      return { ok: false as const, reason: "expired" as const, key };
+    }
+
+    let scopeConfig: BoardApiKeyScopeConfig | null;
+    if (key.legacyUnrestricted === true && key.scopeConfig === null) {
+      scopeConfig = null;
+    } else if (key.legacyUnrestricted === false && key.scopeConfig !== null) {
+      const parsed = boardApiKeyScopeConfigSchema.safeParse(key.scopeConfig);
+      if (!parsed.success) return { ok: false as const, reason: "malformed_scope" as const, key };
+      scopeConfig = parsed.data;
+    } else {
+      return { ok: false as const, reason: "malformed_scope" as const, key };
+    }
+
+    const access = await resolveBoardAccess(key.userId);
+    if (!access.user) return { ok: false as const, reason: "owner_deleted" as const, key };
+
+    // This conditional update is the final authentication commit point. A
+    // concurrent revocation/expiry cannot be overwritten or authenticated.
+    const touched = await touchBoardApiKey(key.id);
+    if (!touched) return { ok: false as const, reason: "revoked" as const, key };
+
+    return { ok: true as const, key, scopeConfig, access };
+  }
+
   async function revokeBoardApiKey(id: string) {
     const now = new Date();
     return db
       .update(boardApiKeys)
-      .set({ revokedAt: now, lastUsedAt: now })
+      .set({ revokedAt: now })
       .where(and(eq(boardApiKeys.id, id), isNull(boardApiKeys.revokedAt)))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -201,14 +251,18 @@ export function boardAuthService(db: Db) {
     userId: string;
     name: string;
     expiresAt?: Date | null;
+    scopeConfig: BoardApiKeyScopeConfig;
   }) {
     const token = createBoardApiToken();
+    const scopeConfig = boardApiKeyScopeConfigSchema.parse(input.scopeConfig);
     const created = await db
       .insert(boardApiKeys)
       .values({
         userId: input.userId,
-        name: input.name.trim(),
+        name: input.name,
         keyHash: hashBearerToken(token),
+        tokenPrefix: boardApiKeyTokenPrefix(token),
+        scopeConfig,
         expiresAt: input.expiresAt === undefined ? boardApiKeyExpiresAt() : input.expiresAt,
       })
       .returning()
@@ -218,6 +272,10 @@ export function boardAuthService(db: Db) {
       id: created.id,
       name: created.name,
       token,
+      tokenPrefix: created.tokenPrefix,
+      scopeConfig,
+      legacyUnrestricted: false,
+      status: deriveBoardApiKeyStatus(created),
       createdAt: created.createdAt,
       lastUsedAt: created.lastUsedAt,
       revokedAt: created.revokedAt,
@@ -244,6 +302,9 @@ export function boardAuthService(db: Db) {
       .select({
         id: boardApiKeys.id,
         name: boardApiKeys.name,
+        tokenPrefix: boardApiKeys.tokenPrefix,
+        scopeConfig: boardApiKeys.scopeConfig,
+        legacyUnrestricted: boardApiKeys.legacyUnrestricted,
         createdAt: boardApiKeys.createdAt,
         lastUsedAt: boardApiKeys.lastUsedAt,
         revokedAt: boardApiKeys.revokedAt,
@@ -251,7 +312,8 @@ export function boardAuthService(db: Db) {
       })
       .from(boardApiKeys)
       .where(and(...conditions))
-      .orderBy(sql`${boardApiKeys.createdAt} desc`);
+      .orderBy(sql`${boardApiKeys.createdAt} desc`)
+      .then((rows) => rows.map((row) => ({ ...row, status: deriveBoardApiKeyStatus(row) })));
   }
 
   async function getBoardApiKeyForUser(keyId: string, userId: string) {
@@ -260,6 +322,9 @@ export function boardAuthService(db: Db) {
         id: boardApiKeys.id,
         userId: boardApiKeys.userId,
         name: boardApiKeys.name,
+        tokenPrefix: boardApiKeys.tokenPrefix,
+        scopeConfig: boardApiKeys.scopeConfig,
+        legacyUnrestricted: boardApiKeys.legacyUnrestricted,
         createdAt: boardApiKeys.createdAt,
         lastUsedAt: boardApiKeys.lastUsedAt,
         revokedAt: boardApiKeys.revokedAt,
@@ -275,9 +340,11 @@ export function boardAuthService(db: Db) {
     clientName?: string | null;
     requestedAccess: "board" | "instance_admin_required";
     requestedCompanyId?: string | null;
+    scopeConfig: BoardApiKeyScopeConfig;
   }) {
     const challengeSecret = createCliAuthSecret();
     const pendingBoardToken = createBoardApiToken();
+    const scopeConfig = boardApiKeyScopeConfigSchema.parse(input.scopeConfig);
     const expiresAt = cliAuthChallengeExpiresAt();
     const labelBase = input.clientName?.trim() || "paperclipai cli";
     const pendingKeyName =
@@ -293,7 +360,9 @@ export function boardAuthService(db: Db) {
         clientName: input.clientName?.trim() || null,
         requestedAccess: input.requestedAccess,
         requestedCompanyId: input.requestedCompanyId?.trim() || null,
+        requestedScopeConfig: scopeConfig,
         pendingKeyHash: hashBearerToken(pendingBoardToken),
+        pendingKeyPrefix: boardApiKeyTokenPrefix(pendingBoardToken),
         pendingKeyName,
         expiresAt,
       })
@@ -354,6 +423,7 @@ export function boardAuthService(db: Db) {
       approvedAt: challenge.approvedAt?.toISOString() ?? null,
       cancelledAt: challenge.cancelledAt?.toISOString() ?? null,
       expiresAt: challenge.expiresAt.toISOString(),
+      boardApiKeyId: challenge.boardApiKeyId ?? null,
       approvedByUser: approvedBy
         ? {
             id: approvedBy.id,
@@ -388,6 +458,11 @@ export function boardAuthService(db: Db) {
         throw forbidden("Instance admin required");
       }
 
+      const requestedScope = boardApiKeyScopeConfigSchema.safeParse(challenge.requestedScopeConfig);
+      if (!requestedScope.success || !challenge.pendingKeyPrefix) {
+        throw conflict("CLI auth challenge must be recreated with an explicit board-key scope");
+      }
+
       let boardKeyId = challenge.boardApiKeyId;
       if (!boardKeyId) {
         const createdKey = await tx
@@ -396,6 +471,8 @@ export function boardAuthService(db: Db) {
             userId,
             name: challenge.pendingKeyName,
             keyHash: challenge.pendingKeyHash,
+            tokenPrefix: challenge.pendingKeyPrefix,
+            scopeConfig: requestedScope.data,
             expiresAt: boardApiKeyExpiresAt(),
           })
           .returning()
@@ -455,6 +532,7 @@ export function boardAuthService(db: Db) {
 
   return {
     resolveBoardAccess,
+    authenticateBoardApiKey,
     findBoardApiKeyByToken,
     touchBoardApiKey,
     revokeBoardApiKey,

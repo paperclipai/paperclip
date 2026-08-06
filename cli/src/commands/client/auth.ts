@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import {
   getStoredBoardCredential,
   loginBoardCli,
@@ -36,11 +37,22 @@ export function registerClientAuthCommands(auth: Command): void {
       .option("--no-browser", "Don't try to open a browser; just print the approval URL")
       .action(async (opts: AuthLoginOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const companyId = ctx.companyId as string;
+          const preset = opts.instanceAdmin
+            ? BOARD_API_KEY_SCOPE_PRESETS.full_instance_admin
+            : BOARD_API_KEY_SCOPE_PRESETS.company_automation;
           const login = await loginBoardCli({
             apiBase: ctx.api.apiBase,
             requestedAccess: opts.instanceAdmin ? "instance_admin_required" : "board",
-            requestedCompanyId: ctx.companyId ?? null,
+            requestedCompanyId: companyId,
+            scopeConfig: {
+              version: 1,
+              kind: "scoped",
+              companyIds: [companyId],
+              permissions: [...preset.permissions],
+              instanceCapabilities: [...preset.instanceCapabilities],
+            },
             command: "paperclipai auth login",
             openBrowser: opts.browser,
           });
@@ -74,9 +86,11 @@ export function registerClientAuthCommands(auth: Command): void {
           }
           let revoked = false;
           try {
+            if (!credential.keyId) throw new Error("Stored credential predates self-revoke metadata");
             await revokeStoredBoardCredential({
               apiBase: ctx.api.apiBase,
               token: credential.token,
+              keyId: credential.keyId,
             });
             revoked = true;
           } catch {

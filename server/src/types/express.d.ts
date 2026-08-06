@@ -1,6 +1,6 @@
 export {};
 
-import type { AgentApiKeyScope } from "@paperclipai/shared";
+import type { AgentApiKeyScope, BoardApiKeyScopeConfig } from "@paperclipai/shared";
 
 declare global {
   namespace Express {
@@ -27,6 +27,10 @@ declare global {
         isInstanceAdmin?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;
+        boardKeyScope?: BoardApiKeyScopeConfig | null;
+        boardKeyOwnerId?: string;
+        boardKeyPrefix?: string | null;
+        boardKeyLegacyUnrestricted?: boolean;
         runId?: string;
         onBehalfOfUserId?: string | null;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";

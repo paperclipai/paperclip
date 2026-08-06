@@ -7,6 +7,7 @@ import {
   agentApiKeys,
   agents,
   authUsers,
+  boardApiKeyAuthorizationEvents,
   companies,
   companyMemberships,
   heartbeatRuns,
@@ -54,12 +55,62 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unauthorized, unprocessable } from "../errors.js";
+import { forbidden, tooManyRequests, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+const BOARD_KEY_AUTH_FAILURE_WINDOW_MS = 60_000;
+const BOARD_KEY_AUTH_FAILURE_LIMIT = 10;
+const boardKeyAuthFailures = new Map<string, { count: number; resetAt: number }>();
+
+function recordBoardKeyAuthFailure(token: string, now = Date.now()) {
+  const identity = hashToken(token);
+  const existing = boardKeyAuthFailures.get(identity);
+  const entry = !existing || existing.resetAt <= now
+    ? { count: 1, resetAt: now + BOARD_KEY_AUTH_FAILURE_WINDOW_MS }
+    : { count: existing.count + 1, resetAt: existing.resetAt };
+  boardKeyAuthFailures.set(identity, entry);
+  if (boardKeyAuthFailures.size > 10_000) {
+    for (const [key, value] of boardKeyAuthFailures) {
+      if (value.resetAt <= now) boardKeyAuthFailures.delete(key);
+    }
+  }
+  return entry.count > BOARD_KEY_AUTH_FAILURE_LIMIT;
+}
+
+export function resetBoardKeyAuthFailureRateLimitForTests() {
+  boardKeyAuthFailures.clear();
+}
+
+async function auditBoardKeyAuthenticationFailure(
+  db: Db,
+  req: Request,
+  input: {
+    key: { id: string; userId: string; tokenPrefix: string | null } | null;
+    reason: string;
+  },
+) {
+  if (!input.key) return;
+  try {
+    await db.insert(boardApiKeyAuthorizationEvents).values({
+      boardApiKeyId: input.key.id,
+      ownerUserId: input.key.userId,
+      tokenPrefix: input.key.tokenPrefix,
+      action: "authenticate",
+      classification: "authentication",
+      decision: "deny",
+      reason: input.reason,
+      requestId: typeof req.id === "string" ? req.id : null,
+      runId: isUuidLike(req.header("x-paperclip-run-id")) ? req.header("x-paperclip-run-id") : null,
+      details: {},
+    });
+  } catch (err) {
+    logger.warn({ err, boardApiKeyId: input.key.id }, "Failed to audit denied board-key authentication");
+  }
 }
 
 function normalizeOptionalString(value: string | null | undefined) {
@@ -303,26 +354,35 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
-          type: "board",
-          userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
-          isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
-          runId: runIdHeader || undefined,
-          source: "board_key",
-        };
-        next();
+    if (token.startsWith("pcp_board_")) {
+      const authentication = await boardAuth.authenticateBoardApiKey(token);
+      if (!authentication.ok) {
+        await auditBoardKeyAuthenticationFailure(db, req, authentication);
+        next(recordBoardKeyAuthFailure(token) ? tooManyRequests("Too many authentication failures") : unauthorized());
         return;
       }
+      const { key: boardKey, access, scopeConfig } = authentication;
+      const effectiveCompanyIds = scopeConfig
+        ? scopeConfig.companyIds.filter((companyId) => access.companyIds.includes(companyId))
+        : access.companyIds;
+      req.actor = {
+        type: "board",
+        userId: boardKey.userId,
+        userName: access.user.name ?? null,
+        userEmail: access.user.email ?? null,
+        companyIds: effectiveCompanyIds,
+        memberships: access.memberships.filter((membership) => effectiveCompanyIds.includes(membership.companyId)),
+        isInstanceAdmin: access.isInstanceAdmin,
+        keyId: boardKey.id,
+        boardKeyOwnerId: boardKey.userId,
+        boardKeyScope: scopeConfig,
+        boardKeyPrefix: boardKey.tokenPrefix,
+        boardKeyLegacyUnrestricted: boardKey.legacyUnrestricted,
+        runId: runIdHeader || undefined,
+        source: "board_key",
+      };
+      next();
+      return;
     }
 
     const tokenHash = hashToken(token);
