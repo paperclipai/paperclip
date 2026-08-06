@@ -3365,34 +3365,44 @@ export function issueRoutes(
     };
     updateFields: Record<string, unknown>;
     actorType: string;
+    actorAgentId?: string | null;
+    actorRunId?: string | null;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
-    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return null;
 
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId
       : input.updateFields.assigneeUserId;
-    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return null;
 
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
       : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return;
+    if (hasExecutionParticipant(nextExecutionState)) return null;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (hasScheduledMonitor({
       existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
       patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
       executionPolicy: nextExecutionPolicy,
-    })) return;
+    })) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
-    if (interactions.some((interaction) => interaction.status === "pending")) return;
+    const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
+    if (pendingInteractions.length > 0) {
+      const reviewConfirmations = pendingInteractions.filter((interaction) =>
+        (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
+        && interaction.createdByAgentId === input.actorAgentId
+        && interaction.sourceRunId === input.actorRunId
+      );
+      return reviewConfirmations.length === 1 ? reviewConfirmations[0]!.id : null;
+    }
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
-    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
+    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
@@ -4042,6 +4052,7 @@ export function issueRoutes(
     res: Response,
     issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
     interaction: {
+      id: string;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
       sourceRunId?: string | null;
@@ -4123,6 +4134,7 @@ export function issueRoutes(
       createdByUserId?: string | null;
     },
     interaction: {
+      id: string;
       kind: string;
       status: string;
       createdByAgentId?: string | null;
@@ -6171,6 +6183,8 @@ export function issueRoutes(
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: actor.agentId,
+      actorRunId: actor.runId,
     });
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
@@ -8772,10 +8786,12 @@ export function issueRoutes(
       }
     }
 
-    await assertAgentInReviewReviewPath({
+    const reviewInteractionId = await assertAgentInReviewReviewPath({
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: actor.agentId,
+      actorRunId: actor.runId,
     });
 
     const nextAssigneeAgentId =
@@ -9088,6 +9104,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         authorizationReason: issueMutationAuthorizationReason,
         changes: issueChanges,
+        ...(reviewInteractionId ? { reviewInteractionId } : {}),
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),

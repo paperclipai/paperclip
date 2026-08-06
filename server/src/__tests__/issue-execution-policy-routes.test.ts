@@ -299,7 +299,13 @@ describe("issue execution policy routes", () => {
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
-      { id: "interaction-1", kind: "request_confirmation", status: "pending" },
+      {
+        id: "interaction-1",
+        kind: "request_confirmation",
+        status: "pending",
+        createdByAgentId: "33333333-3333-4333-8333-333333333333",
+        sourceRunId: "55555555-5555-4555-8555-555555555555",
+      },
     ]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
@@ -320,6 +326,13 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({ status: "in_review" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({ reviewInteractionId: "interaction-1" }),
+      }),
     );
   });
 

@@ -176,16 +176,24 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       action: "issue.updated",
       entityType: "issue",
       entityId: seeded.issue.id,
-      details: { status: "in_review", _previous: { status: "in_progress" } },
+      details: {
+        status: "in_review",
+        reviewInteractionId: "review-confirmation",
+        _previous: { status: "in_progress" },
+      },
     });
 
     await expect(isIssueReviewVerdictInteraction(db, {
       issue: seeded.issue,
-      interaction: { createdByAgentId: seeded.requesterAgentId },
+      interaction: { id: "review-confirmation", createdByAgentId: seeded.requesterAgentId },
     })).resolves.toBe(true);
     await expect(isIssueReviewVerdictInteraction(db, {
       issue: seeded.issue,
-      interaction: { createdByAgentId: seeded.peerAgentId },
+      interaction: { id: "review-confirmation", createdByAgentId: seeded.peerAgentId },
+    })).resolves.toBe(false);
+    await expect(isIssueReviewVerdictInteraction(db, {
+      issue: seeded.issue,
+      interaction: { id: "requester-sibling", createdByAgentId: seeded.requesterAgentId },
     })).resolves.toBe(false);
   });
 

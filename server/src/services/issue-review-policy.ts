@@ -8,6 +8,10 @@ export interface IssueReviewVerdictActor {
   id: string;
 }
 
+interface IssueReviewRequester extends IssueReviewVerdictActor {
+  reviewInteractionId: string | null;
+}
+
 interface ReviewPolicyIssue {
   id: string;
   companyId: string;
@@ -19,11 +23,12 @@ interface ReviewPolicyIssue {
 async function findReviewRequester(
   db: Db,
   issue: ReviewPolicyIssue,
-): Promise<IssueReviewVerdictActor | null> {
+): Promise<IssueReviewRequester | null> {
   const transition = await db
     .select({
       actorType: activityLog.actorType,
       actorId: activityLog.actorId,
+      details: activityLog.details,
     })
     .from(activityLog)
     .where(and(
@@ -50,13 +55,16 @@ async function findReviewRequester(
     .then((rows) => rows[0] ?? null);
 
   if (transition?.actorType === "agent" || transition?.actorType === "user") {
-    return { type: transition.actorType, id: transition.actorId };
+    const reviewInteractionId = typeof transition.details?.reviewInteractionId === "string"
+      ? transition.details.reviewInteractionId
+      : null;
+    return { type: transition.actorType, id: transition.actorId, reviewInteractionId };
   }
   if (issue.createdByAgentId && !issue.createdByUserId) {
-    return { type: "agent", id: issue.createdByAgentId };
+    return { type: "agent", id: issue.createdByAgentId, reviewInteractionId: null };
   }
   if (issue.createdByUserId && !issue.createdByAgentId) {
-    return { type: "user", id: issue.createdByUserId };
+    return { type: "user", id: issue.createdByUserId, reviewInteractionId: null };
   }
   return null;
 }
@@ -66,13 +74,14 @@ export async function isIssueReviewVerdictInteraction(
   input: {
     issue: ReviewPolicyIssue;
     interaction: {
+      id: string;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
     };
   },
 ): Promise<boolean> {
   const requester = await findReviewRequester(db, input.issue);
-  if (!requester) return false;
+  if (!requester?.reviewInteractionId || requester.reviewInteractionId !== input.interaction.id) return false;
   return requester.type === "agent"
     ? input.interaction.createdByAgentId === requester.id
     : input.interaction.createdByUserId === requester.id;
