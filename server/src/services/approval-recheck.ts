@@ -30,6 +30,7 @@ export const humanJudgementDeclarationSchema = z.object({
 }).strict();
 
 export type MachineRecheckPredicate = z.infer<typeof machineRecheckPredicateSchema>;
+export type MachineRecheckPredicateInput = z.input<typeof machineRecheckPredicateSchema>;
 
 export function parseBoardAskCondition(payload: Record<string, unknown>) {
   const machine = machineRecheckPredicateSchema.safeParse(payload.recheckPredicate);
@@ -59,32 +60,33 @@ export type MachineProbeResult = {
  * the condition that made the ask necessary, so the ask is safe to retire.
  */
 export async function evaluateMachineRecheckPredicate(
-  predicate: MachineRecheckPredicate,
+  predicate: MachineRecheckPredicateInput,
 ): Promise<MachineProbeResult> {
-  if (predicate.probe.kind === "api") {
+  const resolved = machineRecheckPredicateSchema.parse(predicate);
+  if (resolved.probe.kind === "api") {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), predicate.probe.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), resolved.probe.timeoutMs);
     let actualStatus = -1;
     try {
-      const response = await fetch(predicate.probe.url, { signal: controller.signal, redirect: "manual" });
+      const response = await fetch(resolved.probe.url, { signal: controller.signal, redirect: "manual" });
       actualStatus = response.status;
     } catch {
       // The unavailable endpoint is disproof that the expected green API state remains.
     } finally {
       clearTimeout(timeout);
     }
-    const cleared = actualStatus !== predicate.probe.expectedStatus;
+    const cleared = actualStatus !== resolved.probe.expectedStatus;
     return {
       cleared,
-      note: `Machine-condition recheck disproof: API probe ${predicate.probe.url} returned ${actualStatus}; expected green status ${predicate.probe.expectedStatus}.`,
+      note: `Machine-condition recheck disproof: API probe ${resolved.probe.url} returned ${actualStatus}; expected green status ${resolved.probe.expectedStatus}.`,
     };
   }
 
-  const [file, ...args] = predicate.probe.command;
+  const [file, ...args] = resolved.probe.command;
   let actualExitCode = 0;
   try {
     await execFileAsync(file, args, {
-      timeout: predicate.probe.timeoutMs,
+      timeout: resolved.probe.timeoutMs,
       windowsHide: true,
       maxBuffer: 16 * 1024,
     });
@@ -92,10 +94,10 @@ export async function evaluateMachineRecheckPredicate(
     actualExitCode = typeof error?.code === "number" ? error.code : -1;
   }
 
-  const cleared = actualExitCode !== predicate.probe.expectedExitCode;
+  const cleared = actualExitCode !== resolved.probe.expectedExitCode;
   const command = [file, ...args].map((part) => JSON.stringify(part)).join(" ");
   return {
     cleared,
-    note: `Machine-condition recheck disproof: command ${command} exited ${actualExitCode}; expected green exit ${predicate.probe.expectedExitCode}.`,
+    note: `Machine-condition recheck disproof: command ${command} exited ${actualExitCode}; expected green exit ${resolved.probe.expectedExitCode}.`,
   };
 }

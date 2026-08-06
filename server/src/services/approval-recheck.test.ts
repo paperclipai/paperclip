@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApprovalSchema } from "@paperclipai/shared";
-import { evaluateMachineRecheckPredicate } from "./approval-recheck.ts";
-import { approvalService } from "./approvals.ts";
+import { evaluateMachineRecheckPredicate } from "./approval-recheck.js";
+import { approvalService } from "./approvals.js";
 
 describe("machine-condition board asks", () => {
   it("rejects creation without a recheck predicate or human judgement declaration", () => {
