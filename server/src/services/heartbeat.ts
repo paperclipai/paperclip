@@ -13307,6 +13307,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.sweepStaleIssueLocks();
   }
 
+  async function terminalizeOrphanedRunningRunForRecovery(
+    run: typeof heartbeatRuns.$inferSelect,
+    options?: { referencingIssueTerminalStatus?: "succeeded" | "cancelled" | null },
+  ) {
+    return recovery.terminalizeOrphanedRunningRun(run, options);
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -19035,6 +19042,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileStrandedAssignedIssues,
 
     terminalizeRunOnLeaseRelease,
+
+    terminalizeOrphanedRunningRun: terminalizeOrphanedRunningRunForRecovery,
 
     sweepStaleIssueLocks,
 

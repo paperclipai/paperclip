@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -5565,6 +5565,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : "run terminalized by recovery backstop: process and sandbox gone while heartbeat_runs.status stayed live";
 
     const now = new Date();
+    const expectedIssueStatus =
+      issueTerminalStatus === "succeeded"
+        ? "done"
+        : issueTerminalStatus === "cancelled"
+          ? "cancelled"
+          : null;
+    const issueAuthorityGuard = expectedIssueStatus
+      ? options?.referencingIssueTerminalStatus
+        ? sql`exists (
+            select 1 from ${issues} as terminal_issue
+            where terminal_issue.company_id = ${run.companyId}
+              and terminal_issue.status = ${expectedIssueStatus}
+              and (
+                terminal_issue.checkout_run_id = ${run.id}
+                or terminal_issue.execution_run_id = ${run.id}
+              )
+          ) and not exists (
+            select 1 from ${issues} as active_issue
+            where active_issue.company_id = ${run.companyId}
+              and active_issue.status not in ('done', 'cancelled')
+              and (
+                active_issue.checkout_run_id = ${run.id}
+                or active_issue.execution_run_id = ${run.id}
+              )
+          )`
+        : sql`exists (
+            select 1 from ${issues} as terminal_issue
+            where terminal_issue.id = ${issueId}
+              and terminal_issue.company_id = ${run.companyId}
+              and terminal_issue.status = ${expectedIssueStatus}
+          )`
+      : sql`true`;
     const updated = await db
       .update(heartbeatRuns)
       .set({
@@ -5574,7 +5606,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? errorCode : null),
         updatedAt: now,
       })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "running"),
+          issueAuthorityGuard,
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!updated) {
@@ -5589,32 +5628,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     runningProcesses.delete(run.id);
 
-    // Recovery bypasses the normal heartbeat finalizer. Reconcile the agent as
-    // part of the same backstop so a terminalized orphan cannot leave the
-    // operator-facing status at running/error with a stale timeout. Another
-    // active run remains authoritative and keeps the agent running.
-    const [{ count: remainingRunningCount }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(heartbeatRuns)
+    // Recovery bypasses the normal heartbeat finalizer. Reconcile the agent in
+    // one compare-and-set. The NOT EXISTS guard protects another active run,
+    // while updatedAt prevents a newer execution-start write from being
+    // overwritten between a separate count and update.
+    await db
+      .update(agents)
+      .set({ status: "idle", errorReason: null, updatedAt: now })
       .where(
         and(
-          eq(heartbeatRuns.agentId, updated.agentId),
-          eq(heartbeatRuns.companyId, updated.companyId),
-          eq(heartbeatRuns.status, "running"),
+          eq(agents.id, updated.agentId),
+          eq(agents.companyId, updated.companyId),
+          notInArray(agents.status, ["paused", "terminated"]),
+          lte(agents.updatedAt, now),
+          sql`not exists (
+            select 1 from ${heartbeatRuns} as active_run
+            where active_run.agent_id = ${updated.agentId}
+              and active_run.company_id = ${updated.companyId}
+              and active_run.status = 'running'
+          )`,
         ),
       );
-    if (Number(remainingRunningCount ?? 0) === 0) {
-      await db
-        .update(agents)
-        .set({ status: "idle", errorReason: null, updatedAt: now })
-        .where(
-          and(
-            eq(agents.id, updated.agentId),
-            eq(agents.companyId, updated.companyId),
-            notInArray(agents.status, ["paused", "terminated"]),
-          ),
-        );
-    }
 
     // The run update above already committed the terminal status. The audit
     // event is best-effort: if the insert fails, the caller must still treat
@@ -5698,11 +5732,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // the same run id in a stale lock column. The terminal reference alone must
     // not terminalize a run that an active issue still owns, so exclude these
     // runs from the issue-terminal authority below.
+    const runReferenceKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
     const runIdsReferencedByActiveIssue = new Set<string>();
     for (const issue of candidates) {
       if (issue.status === "done" || issue.status === "cancelled") continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
-        if (runId) runIdsReferencedByActiveIssue.add(runId);
+        if (runId) runIdsReferencedByActiveIssue.add(runReferenceKey(issue.companyId, runId));
       }
     }
 
@@ -5722,8 +5757,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : null;
       if (!implied) continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
-        if (runId && !runIdsReferencedByActiveIssue.has(runId)) {
-          issueTerminalStatusByRunId.set(runId, implied);
+        const key = runId ? runReferenceKey(issue.companyId, runId) : null;
+        if (key && !runIdsReferencedByActiveIssue.has(key)) {
+          issueTerminalStatusByRunId.set(key, implied);
         }
       }
     }
@@ -5734,7 +5770,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // terminal status by another route.
     for (const row of runRows) {
       const outcome = await terminalizeOrphanedRunningRun(row, {
-        referencingIssueTerminalStatus: issueTerminalStatusByRunId.get(row.id) ?? null,
+        referencingIssueTerminalStatus:
+          issueTerminalStatusByRunId.get(runReferenceKey(row.companyId, row.id)) ?? null,
       });
       runStatusById.set(row.id, outcome.status);
       if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
@@ -5828,6 +5865,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    terminalizeOrphanedRunningRun,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,

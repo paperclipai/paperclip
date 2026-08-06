@@ -469,6 +469,91 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
+  it("rejects stale terminal-issue authority after the issue is reopened", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal snapshot becomes stale",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+    });
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]!);
+
+    // Simulate the issue reopening after the sweep took its candidate snapshot.
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    const outcome = await heartbeatService(db).terminalizeOrphanedRunningRun(run, {
+      referencingIssueTerminalStatus: "succeeded",
+    });
+    expect(outcome).toEqual({ terminalized: false, status: "running" });
+  });
+
+  it("does not use a cross-company issue reference as terminal authority", async () => {
+    const { runningRunId } = await seed();
+    const foreignCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign company",
+      issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: foreignCompanyId,
+      title: "Invalid cross-company stale reference",
+      status: "done",
+      priority: "high",
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toEqual([]);
+    const status = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]?.status);
+    expect(status).toBe("running");
+  });
+
+  it("does not overwrite a newer agent start while reconciling an orphan", async () => {
+    const { agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000 })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const newerStartAt = new Date(Date.now() + 60_000);
+    await db
+      .update(agents)
+      .set({ status: "running", errorReason: null, updatedAt: newerStartAt })
+      .where(eq(agents.id, agentId));
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))
+      .then((rows) => rows[0]!);
+
+    const outcome = await heartbeatService(db).terminalizeOrphanedRunningRun(run);
+    expect(outcome.terminalized).toBe(true);
+    const agent = await db
+      .select({ status: agents.status, updatedAt: agents.updatedAt })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.status).toBe("running");
+    expect(agent?.updatedAt).toEqual(newerStartAt);
+  });
+
   it("continues after the post-clear activity audit fails", async () => {
     const { companyId, agentId, failedRunId } = await seed();
     const issueId = randomUUID();
