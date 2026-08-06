@@ -1,5 +1,5 @@
 import type { Request, RequestHandler } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -20,6 +20,7 @@ import {
   issueWorkProducts,
   issues,
   labels,
+  principalPermissionGrants,
   projects,
   routines,
   routineTriggers,
@@ -34,7 +35,7 @@ import {
   toolRuntimeSlots,
   workspaceOperations,
 } from "@paperclipai/db";
-import { isUuidLike, type BoardPermissionKey } from "@paperclipai/shared";
+import { isUuidLike, type BoardPermissionKey, type PermissionKey } from "@paperclipai/shared";
 import { HttpError, forbidden, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -564,6 +565,44 @@ function isWriteAction(action: BoardPermissionKey) {
   return /:(?:write|manage|control|operate|run|decide|create|import_export)$/.test(action);
 }
 
+// Board-key actions intentionally use a stable public vocabulary that is
+// broader than the internal principal-grant vocabulary. Require the closest
+// live owner grant for every action that has an internal grant boundary. This
+// makes grant revocation effective on the next request while existing
+// membership roles remain authoritative for actions without a granular grant.
+const OWNER_GRANT_REQUIREMENTS: Partial<Record<BoardPermissionKey, readonly PermissionKey[]>> = {
+  "agents:write": ["agents:create", "agents:configure"],
+  "issues:write": ["tasks:assign"],
+  "issues:control": ["tasks:assign", "tasks:manage_active_checkouts"],
+  "skills:manage": ["skills:create"],
+  "environments:manage": ["environments:manage"],
+  "tools:manage": ["tools:admin"],
+  "audit:read": ["audit:view_agent_actions"],
+  "members:manage": ["users:invite", "users:manage_permissions", "joins:approve"],
+  "pipelines:write": ["pipelines:write"],
+};
+
+async function ownerHasRequiredGrant(
+  db: Db,
+  ownerUserId: string,
+  companyId: string,
+  action: BoardPermissionKey,
+) {
+  const permissionKeys = OWNER_GRANT_REQUIREMENTS[action];
+  if (!permissionKeys) return true;
+  const rows = await db
+    .select({ permissionKey: principalPermissionGrants.permissionKey })
+    .from(principalPermissionGrants)
+    .where(and(
+      eq(principalPermissionGrants.companyId, companyId),
+      eq(principalPermissionGrants.principalType, "user"),
+      eq(principalPermissionGrants.principalId, ownerUserId),
+      inArray(principalPermissionGrants.permissionKey, [...permissionKeys]),
+    ));
+  const liveKeys = new Set(rows.map((row) => row.permissionKey));
+  return permissionKeys.every((permissionKey) => liveKeys.has(permissionKey));
+}
+
 async function auditDecision(
   db: Db,
   req: Request,
@@ -667,6 +706,14 @@ export async function authorizeBoardKey(
     }
     if (isWriteAction(action as BoardPermissionKey) && membership?.membershipRole === "viewer") {
       await denyBoardKey(db, req, metadata, resource, "owner_role_read_only", "forbidden");
+    }
+    if (!await ownerHasRequiredGrant(
+      db,
+      req.actor.boardKeyOwnerId!,
+      resource.companyId,
+      action as BoardPermissionKey,
+    )) {
+      await denyBoardKey(db, req, metadata, resource, "owner_permission_grant_missing", "forbidden");
     }
   }
 

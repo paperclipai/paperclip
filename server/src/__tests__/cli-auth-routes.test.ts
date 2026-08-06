@@ -195,6 +195,13 @@ describe.sequential("cli auth routes", () => {
       requestedAccess: "board",
       requestedCompanyId: null,
       requestedCompanyName: null,
+      requestedScopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        permissions: ["companies:read"],
+        instanceCapabilities: [],
+      },
       approvedAt: null,
       cancelledAt: null,
       expiresAt: "2026-03-23T13:00:00.000Z",
@@ -208,6 +215,13 @@ describe.sequential("cli auth routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.requiresSignIn).toBe(true);
     expect(res.body.canApprove).toBe(false);
+    expect(res.body.requestedScopeConfig).toEqual({
+      version: 1,
+      kind: "scoped",
+      companyIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      permissions: ["companies:read"],
+      instanceCapabilities: [],
+    });
   });
 
   it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {

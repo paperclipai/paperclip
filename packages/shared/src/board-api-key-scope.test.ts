@@ -5,7 +5,7 @@ import {
   boardApiKeyScopeConfigSchema,
   deriveBoardApiKeyStatus,
 } from "./board-api-key-scope.js";
-import { createBoardApiKeySchema } from "./validators/access.js";
+import { createBoardApiKeySchema, createCliAuthChallengeSchema } from "./validators/access.js";
 
 const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -86,6 +86,35 @@ describe("createBoardApiKeySchema", () => {
     ["unknown key", { name: "automation", requestedCompanyId: COMPANY_ID, scopeConfig: validScope() }],
   ])("rejects %s", (_label, input) => {
     expect(createBoardApiKeySchema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe("createCliAuthChallengeSchema", () => {
+  it("binds the displayed company and access level to the exact minted scope", () => {
+    const base = {
+      command: "paperclipai auth login",
+      requestedAccess: "board" as const,
+      requestedCompanyId: COMPANY_ID,
+      scopeConfig: validScope(),
+    };
+    expect(createCliAuthChallengeSchema.parse(base)).toEqual(base);
+    expect(createCliAuthChallengeSchema.safeParse({
+      ...base,
+      requestedCompanyId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }).success).toBe(false);
+    expect(createCliAuthChallengeSchema.safeParse({
+      ...base,
+      scopeConfig: { ...validScope(), instanceCapabilities: ["instance_admin"] },
+    }).success).toBe(false);
+    expect(createCliAuthChallengeSchema.safeParse({
+      ...base,
+      requestedAccess: "instance_admin_required",
+    }).success).toBe(false);
+    expect(createCliAuthChallengeSchema.safeParse({
+      ...base,
+      requestedAccess: "instance_admin_required",
+      scopeConfig: { ...validScope(), instanceCapabilities: ["instance_admin"] },
+    }).success).toBe(true);
   });
 });
 

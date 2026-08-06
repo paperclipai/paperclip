@@ -394,6 +394,7 @@ export function boardAuthService(db: Db) {
   async function describeCliAuthChallenge(id: string, token: string) {
     const challenge = await getCliAuthChallengeBySecret(id, token);
     if (!challenge) return null;
+    const requestedScope = boardApiKeyScopeConfigSchema.safeParse(challenge.requestedScopeConfig);
 
     const [company, approvedBy] = await Promise.all([
       challenge.requestedCompanyId
@@ -420,6 +421,7 @@ export function boardAuthService(db: Db) {
       requestedAccess: challenge.requestedAccess as "board" | "instance_admin_required",
       requestedCompanyId: challenge.requestedCompanyId ?? null,
       requestedCompanyName: company?.name ?? null,
+      requestedScopeConfig: requestedScope.success ? requestedScope.data : null,
       approvedAt: challenge.approvedAt?.toISOString() ?? null,
       cancelledAt: challenge.cancelledAt?.toISOString() ?? null,
       expiresAt: challenge.expiresAt.toISOString(),

@@ -77,7 +77,23 @@ export const createCliAuthChallengeSchema = z.object({
   requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
   requestedCompanyId: z.string().guid().optional().nullable(),
   scopeConfig: boardApiKeyScopeConfigSchema,
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  const scopeRequiresInstanceAdmin = value.scopeConfig.instanceCapabilities.includes("instance_admin");
+  if ((value.requestedAccess === "instance_admin_required") !== scopeRequiresInstanceAdmin) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requestedAccess"],
+      message: "requestedAccess must match the scope's instance capabilities",
+    });
+  }
+  if (value.requestedCompanyId && !value.scopeConfig.companyIds.includes(value.requestedCompanyId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requestedCompanyId"],
+      message: "requestedCompanyId must be included in the requested scope",
+    });
+  }
+});
 
 export type CreateCliAuthChallenge = z.infer<typeof createCliAuthChallengeSchema>;
 
