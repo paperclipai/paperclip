@@ -25,7 +25,6 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const [activeAction, setActiveAction] = useState<"settings" | "sign-out" | null>(null);
 
   const signOutMutation = useSignOut();
 
@@ -50,7 +49,6 @@ export function InstanceGeneralSettings() {
   const updateGeneralMutation = useMutation({
     mutationFn: instanceSettingsApi.updateGeneral,
     onMutate: () => {
-      setActiveAction("settings");
       setActionError(null);
       signOutMutation.reset();
     },
@@ -82,15 +80,11 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
-  const visibleActionError = activeAction === "sign-out"
-    ? signOutMutation.error instanceof Error
-      ? signOutMutation.error.message
-      : signOutMutation.error
-        ? "Failed to sign out."
-        : null
-    : activeAction === "settings"
-      ? actionError
-      : null;
+  const visibleActionError = signOutMutation.error instanceof Error
+    ? signOutMutation.error.message
+    : signOutMutation.error
+      ? "Failed to sign out."
+      : actionError;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -157,7 +151,7 @@ export function InstanceGeneralSettings() {
           <ToggleSwitch
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
-            disabled={updateGeneralMutation.isPending}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
             aria-label="Toggle username log censoring"
           />
         </div>
@@ -175,7 +169,7 @@ export function InstanceGeneralSettings() {
           <ToggleSwitch
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
-            disabled={updateGeneralMutation.isPending}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
           />
         </div>
@@ -201,7 +195,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={days}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -231,7 +225,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={weeks}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -261,7 +255,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={months}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -326,7 +320,7 @@ export function InstanceGeneralSettings() {
                 <button
                   key={option.value}
                   type="button"
-                  disabled={updateGeneralMutation.isPending}
+                  disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                   className={cn(
                     "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                     active
@@ -370,9 +364,8 @@ export function InstanceGeneralSettings() {
           <Button
             variant="outline"
             size="sm"
-            disabled={signOutMutation.isPending}
+            disabled={signOutMutation.isPending || updateGeneralMutation.isPending}
             onClick={() => {
-              setActiveAction("sign-out");
               setActionError(null);
               signOutMutation.mutate();
             }}

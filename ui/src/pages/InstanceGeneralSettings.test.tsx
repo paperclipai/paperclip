@@ -148,39 +148,36 @@ describe("InstanceGeneralSettings sign-out", () => {
     await vi.waitFor(() => expect(container.textContent).not.toContain("Sign-out request failed"));
   });
 
-  it("keeps a current sign-out failure when an older settings request fails later", async () => {
-    let rejectSettings: ((error: Error) => void) | undefined;
-    mockInstanceSettingsApi.updateGeneral.mockImplementation(
-      () => new Promise<void>((_resolve, reject) => {
-        rejectSettings = reject;
+  it("disables settings changes while sign-out is pending", async () => {
+    let resolveSignOut: ((result: { success: boolean }) => void) | undefined;
+    mockAuthApi.signOut.mockImplementation(
+      () => new Promise<{ success: boolean }>((resolve) => {
+        resolveSignOut = resolve;
       }),
     );
-    mockAuthApi.signOut.mockRejectedValue(new Error("Sign-out request failed"));
     await renderPage(SELF_HOSTED_HEALTH);
 
     const keyboardToggle = container.querySelector<HTMLButtonElement>(
       '[aria-label="Toggle keyboard shortcuts"]',
     );
-    flushSync(() => keyboardToggle?.click());
-    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
-
     flushSync(() => signOutButton()?.click());
-    await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
+    await vi.waitFor(() => expect(mockAuthApi.signOut).toHaveBeenCalledOnce());
 
-    rejectSettings?.(new Error("Settings update failed"));
+    expect(keyboardToggle?.disabled).toBe(true);
+    flushSync(() => keyboardToggle?.click());
+    expect(mockInstanceSettingsApi.updateGeneral).not.toHaveBeenCalled();
 
-    await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
-    expect(container.textContent).not.toContain("Settings update failed");
+    resolveSignOut?.({ success: true });
+    await vi.waitFor(() => expect(keyboardToggle?.disabled).toBe(false));
   });
 
-  it("clears a sign-out failure when an older settings request succeeds later", async () => {
+  it("disables sign-out while a settings update is pending", async () => {
     let resolveSettings: (() => void) | undefined;
     mockInstanceSettingsApi.updateGeneral.mockImplementation(
       () => new Promise<void>((resolve) => {
         resolveSettings = resolve;
       }),
     );
-    mockAuthApi.signOut.mockRejectedValue(new Error("Sign-out request failed"));
     await renderPage(SELF_HOSTED_HEALTH);
 
     const keyboardToggle = container.querySelector<HTMLButtonElement>(
@@ -189,11 +186,11 @@ describe("InstanceGeneralSettings sign-out", () => {
     flushSync(() => keyboardToggle?.click());
     await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
 
+    expect(signOutButton()?.disabled).toBe(true);
     flushSync(() => signOutButton()?.click());
-    await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
 
     resolveSettings?.();
-
-    await vi.waitFor(() => expect(container.textContent).not.toContain("Sign-out request failed"));
+    await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
   });
 });
