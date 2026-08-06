@@ -34,6 +34,8 @@ function createDbState() {
     revoked: false,
     revokeOnTouch: false,
     lastUsedAt: null as Date | null,
+    boardKeyLookupBarrier: null as Promise<void> | null,
+    boardKeyLookupStarts: 0,
   };
   const audits: Array<Record<string, unknown>> = [];
   const key = () => ({
@@ -71,7 +73,13 @@ function createDbState() {
                 ? []
                 : [];
         return {
-          where: () => Promise.resolve(rows),
+          where: async () => {
+            if (table === boardApiKeys) {
+              state.boardKeyLookupStarts += 1;
+              await state.boardKeyLookupBarrier;
+            }
+            return rows;
+          },
           then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
         };
       },
@@ -201,6 +209,8 @@ describe("board-key authentication middleware", () => {
       globalLimit: 10_000,
       credentialMaxEntries: 7,
       sourceMaxEntries: 5,
+      sourceInFlightLimit: 2,
+      globalInFlightLimit: 3,
     });
 
     for (let index = 0; index < 100; index += 1) {
@@ -215,6 +225,8 @@ describe("board-key authentication middleware", () => {
       credentialEntries: 7,
       sourceEntries: 5,
       globalEntries: 1,
+      sourceInFlightEntries: 0,
+      globalInFlight: 0,
     });
   });
 
@@ -226,6 +238,8 @@ describe("board-key authentication middleware", () => {
       globalLimit: 3,
       credentialMaxEntries: 10,
       sourceMaxEntries: 10,
+      sourceInFlightLimit: 10,
+      globalInFlightLimit: 10,
     });
 
     for (let index = 0; index < 3; index += 1) {
@@ -233,6 +247,34 @@ describe("board-key authentication middleware", () => {
     }
 
     expect(limiter.isLimited({ credentialId: "novel-credential", sourceId: "novel-source", now: 1 })).toBe(true);
+  });
+
+  it("bounds concurrent database authentication starts with pre-lookup admission", async () => {
+    const { db, state } = createDbState();
+    state.keyExists = false;
+    let releaseLookups!: () => void;
+    state.boardKeyLookupBarrier = new Promise<void>((resolve) => {
+      releaseLookups = resolve;
+    });
+    const { app } = createApp(db);
+    const inFlightLimit = BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS.sourceInFlightLimit;
+
+    const requests = Array.from({ length: inFlightLimit + 6 }, (_, index) =>
+      request(app)
+        .get("/actor")
+        .set("Authorization", `Bearer pcp_board_concurrent_${index}`)
+        .then((response) => response),
+    );
+
+    await vi.waitFor(() => expect(state.boardKeyLookupStarts).toBe(inFlightLimit));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(state.boardKeyLookupStarts).toBe(inFlightLimit);
+    releaseLookups();
+
+    const responses = await Promise.all(requests);
+    expect(responses.filter((response) => response.status === 401)).toHaveLength(inFlightLimit);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(6);
+    expect(state.boardKeyLookupStarts).toBe(inFlightLimit);
   });
 
   it("does not resurrect last-used state when revocation wins the authentication race", async () => {
