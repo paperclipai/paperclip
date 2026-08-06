@@ -5,6 +5,7 @@ import type {
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
+  EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
@@ -26,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -51,11 +53,14 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { useProposalReview } from "../pages/secrets/proposal-review";
+import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
-import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
+import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
@@ -195,7 +200,6 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
-
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
@@ -231,6 +235,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
+  // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
+  // non-permitted viewers simply get an empty list.
+  const editAgentId = !isCreate ? props.agent.id : null;
+  const { data: pendingProposals = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "none"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+    retry: false,
+  });
+  const agentBindingProposals = useMemo(
+    () =>
+      pendingProposals.filter(
+        (proposal) => proposal.kind === "binding" && proposal.target?.id === editAgentId,
+      ),
+    [pendingProposals, editAgentId],
+  );
+  const proposalReview = useProposalReview(selectedCompanyId, []);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -324,6 +347,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   function flushEnvironmentDraft() {
     return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
   }
+
+  /**
+   * Replace the agent's API-access grants (top-level `access.<ALIAS>` keys) with
+   * the complete set emitted by the Secret access editor. Added/changed aliases
+   * are marked into the overlay; aliases dropped from the set are marked
+   * `undefined` so `buildAgentUpdatePatch` strips them.
+   */
+  const applyAccessGrants = useCallback((next: Record<string, EnvSecretRefBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const nextAdapterConfig: Record<string, unknown> = { ...prev.adapterConfig };
+      for (const [alias, binding] of Object.entries(next)) {
+        nextAdapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`] = binding;
+      }
+      for (const key of Object.keys(effective)) {
+        if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) continue;
+        const alias = key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+        if (!(alias in next)) nextAdapterConfig[key] = undefined;
+      }
+      return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
@@ -538,14 +584,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (adapterConfigPatch) {
         Object.assign(next, adapterConfigPatch);
       }
-      return next;
+      return omitUndefinedEntries(next);
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
     if (adapterConfigPatch) {
       Object.assign(next, adapterConfigPatch);
     }
-    return next;
+    return omitUndefinedEntries(next);
   }
 
   function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
@@ -637,7 +683,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       const primaryModel = currentModelId.trim() || null;
       const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
-      const environmentId = currentDefaultEnvironmentId || null;
+      // Probe where a real run would actually execute: the agent's own
+      // environment, else the instance default. Testing the host for an
+      // agent that runs in the instance-default sandbox reports failures
+      // (e.g. a CLI that only exists in the sandbox image) a real run would
+      // never hit. The raw id is sent even for a local environment — the
+      // server resolves the driver and probes the host in that case.
+      //
+      // Test can be clicked before the settings query settles (or after it
+      // failed with retry:false), so when the agent relies on the instance
+      // default, resolve the settings here rather than trusting the
+      // render-time cache. A fetch that still fails FAILS the test with an
+      // honest diagnostic — silently probing the host instead would report
+      // the exact false command-not-found failure this resolution exists to
+      // fix. Agents with their own environment never need the settings.
+      let settings = instanceSettings;
+      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+        try {
+          settings = await queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.settings,
+            queryFn: () => instanceSettingsApi.get(),
+          });
+        } catch {
+          throw new Error(
+            "Could not load instance settings to determine which environment to test in. Retry the test.",
+          );
+        }
+      }
+      const environmentId = resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+      });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
           label: "Primary model",
@@ -747,9 +823,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
 
   // Current model for display
-  const currentModelId = isCreate
-    ? val!.model
+  const currentModelValue = isCreate
+    ? val!.model ?? ""
     : eff("adapterConfig", "model", String(config.model ?? ""));
+  const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
@@ -1381,6 +1458,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+              {!isCreate && (
+                <Field label="Secret access" hint={help.secretAccess}>
+                  <AgentSecretAccessEditor
+                    config={{ ...config, ...overlay.adapterConfig }}
+                    secrets={availableSecrets}
+                    onChange={applyAccessGrants}
+                    proposals={agentBindingProposals}
+                    onApproveProposal={proposalReview.requestApprove}
+                    onRejectProposal={proposalReview.requestReject}
+                  />
+                  {proposalReview.dialogs}
+                </Field>
+              )}
+
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
@@ -1579,7 +1670,7 @@ export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmen
 
 /* ---- Internal sub-components ---- */
 
-function AdapterTypeDropdown({
+export function AdapterTypeDropdown({
   value,
   onChange,
   disabledTypes,
@@ -1652,7 +1743,7 @@ function ExperimentalBadge() {
   );
 }
 
-function ModelDropdown({
+export function ModelDropdown({
   models,
   value,
   onChange,

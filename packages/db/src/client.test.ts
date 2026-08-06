@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  resetPostgresDatabase,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -87,6 +88,34 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres migration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describeEmbeddedPostgres("resetPostgresDatabase", () => {
+  it("recreates an existing database so stale tables are removed", async () => {
+    const connectionString = await createTempDatabase();
+    const adminUrl = new URL(connectionString);
+    const databaseName = adminUrl.pathname.replace(/^\//, "");
+    adminUrl.pathname = "/postgres";
+
+    const setupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await setupSql.unsafe(`CREATE TABLE stale_reseed_target_only (id integer PRIMARY KEY)`);
+    } finally {
+      await setupSql.end();
+    }
+
+    await resetPostgresDatabase(adminUrl.toString(), databaseName);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const rows = await verifySql.unsafe<{ stale_table: string | null }[]>(
+        `SELECT to_regclass('public.stale_reseed_target_only')::text AS stale_table`,
+      );
+      expect(rows[0]?.stale_table).toBeNull();
+    } finally {
+      await verifySql.end();
+    }
+  }, 30_000);
+});
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
@@ -610,6 +639,110 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             "plugin_migrations_status_idx",
           ]),
         );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays the built-in managed resources migration after the legacy 0136 journal entry",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const builtInResourcesHash = await migrationHash(
+        "0140_built_in_managed_resources.sql",
+      );
+      const legacyBuiltInResourcesHash = createHash("sha256")
+        .update("legacy 0136_built_in_managed_resources.sql")
+        .digest("hex");
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${builtInResourcesHash}'`,
+        );
+        await sql.unsafe(
+          `
+            INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at")
+            VALUES ('${legacyBuiltInResourcesHash}', 1783555200000)
+          `,
+        );
+        await sql.unsafe(`
+          ALTER TABLE "built_in_managed_resources"
+          DROP CONSTRAINT IF EXISTS "built_in_managed_resources_company_id_companies_id_fk"
+        `);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_company_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_resource_idx"`);
+        await sql.unsafe(`DROP INDEX IF EXISTS "built_in_managed_resources_company_bundle_resource_uq"`);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0140_built_in_managed_resources.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          foreign_key_exists: boolean;
+          company_index_exists: boolean;
+          resource_index_exists: boolean;
+          unique_index_exists: boolean;
+        }[]>(`
+          SELECT
+            EXISTS (
+              SELECT 1
+              FROM "pg_constraint" c
+              JOIN "pg_class" t ON t.oid = c.conrelid
+              JOIN "pg_namespace" n ON n.oid = t.relnamespace
+              WHERE n.nspname = 'public'
+                AND t.relname = 'built_in_managed_resources'
+                AND c.conname = 'built_in_managed_resources_company_id_companies_id_fk'
+            ) AS "foreign_key_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_company_idx'
+            ) AS "company_index_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_resource_idx'
+            ) AS "resource_index_exists",
+            EXISTS (
+              SELECT 1
+              FROM "pg_class" c
+              JOIN "pg_namespace" n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'i'
+                AND c.relname = 'built_in_managed_resources_company_bundle_resource_uq'
+            ) AS "unique_index_exists"
+        `);
+        expect(rows[0]).toEqual({
+          foreign_key_exists: true,
+          company_index_exists: true,
+          resource_index_exists: true,
+          unique_index_exists: true,
+        });
       } finally {
         await verifySql.end();
       }

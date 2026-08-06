@@ -21,7 +21,7 @@ function emptyRunDay(date: string): DashboardRunActivityDay {
 
 const runSegmentColors = {
   succeeded: "var(--hex-10b981)",
-  recovered: "var(--hex-f59e0b)",
+  recovered: "var(--status-task-todo)",
   failed: "var(--hex-ef4444)",
   other: "var(--hex-737373)",
 } as const;

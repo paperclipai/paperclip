@@ -67,6 +67,18 @@ describe("agent local JWT", () => {
     });
   });
 
+  it("round-trips a skill_test run scope", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1", {
+      kind: "skill_test",
+      issueId,
+    });
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims?.key_scope).toEqual({ kind: "skill_test", issueId });
+  });
+
   it("returns null when secret is missing", () => {
     process.env[secretEnv] = "";
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");

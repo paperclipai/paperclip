@@ -1,15 +1,27 @@
+import fs from "node:fs/promises";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
+  type CommandManagedRuntimeAsset,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import {
   buildRemoteExecutionSessionIdentity,
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
-  type RemoteManagedRuntimeAsset,
 } from "./remote-managed-runtime.js";
+import type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
+export type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
@@ -18,6 +30,7 @@ import {
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
+  syncRemoteTextFileWithHashSkip,
 } from "./sandbox-callback-bridge.js";
 import {
   createSandboxRunLogTailFactory,
@@ -33,17 +46,40 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
+import {
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export interface AdapterLocalExecutionTarget {
+export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
+
+export interface AdapterWorkspacePathAlias {
+  path: string;
+  target: string;
+}
+
+export interface AdapterWorkspaceRealization {
+  mode: AdapterWorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: AdapterWorkspacePathAlias[];
+  outboundRestorePaths: string[];
+}
+
+interface AdapterExecutionTargetWorkspaceMetadata {
+  workspaceRealization?: AdapterWorkspaceRealization | null;
+}
+
+export interface AdapterLocalExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "local";
   environmentId?: string | null;
   leaseId?: string | null;
 }
 
-export interface AdapterSshExecutionTarget {
+export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "ssh";
   environmentId?: string | null;
@@ -52,7 +88,7 @@ export interface AdapterSshExecutionTarget {
   spec: SshRemoteExecutionSpec;
 }
 
-export interface AdapterSandboxExecutionTarget {
+export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -78,13 +114,30 @@ export type AdapterExecutionTarget =
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
-export type AdapterManagedRuntimeAsset = RemoteManagedRuntimeAsset;
+// The adapter-facing managed-runtime asset type. Aliased to the sandbox/command
+// asset descriptor so the per-asset lifecycle contributions (`provision` /
+// `restore`) declared on the sandbox core are load-bearing all the way from the
+// adapter call site through to the sandbox runtime. The SSH transport consumes
+// the subset of fields it understands and ignores the rest.
+export type AdapterManagedRuntimeAsset = CommandManagedRuntimeAsset;
 
 export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. Empty for a local target or when no
+   * additional sources were requested.
+   */
+  additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Empty for a local target, for a transport that does not
+   * stage referenced projects, or when every requested project staged.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -104,6 +157,7 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  localProcessSandbox?: LocalProcessSandboxOptions | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -122,6 +176,11 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * `runAdapterExecutionTargetProcess` via `options.runLogTail`.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  stop(): Promise<void>;
+}
+
+export interface AdapterExecutionTargetProcessSessionBridgeHandle {
+  agentCommand: string;
   stop(): Promise<void>;
 }
 
@@ -574,6 +633,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }
@@ -1067,9 +1127,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
@@ -1087,6 +1150,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
+      additionalSourceDirs: {},
+      additionalSourceFailures: [],
       restoreWorkspace: async () => {},
     };
   }
@@ -1098,7 +1163,9 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      syncWorkspace: input.syncWorkspace,
       assets: input.assets,
+      additionalSources: input.additionalSources,
       onProgress: input.onProgress,
     });
     return {
@@ -1106,6 +1173,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
+      additionalSourceDirs: prepared.additionalSourceDirs,
+      // The SSH transport does not stage referenced projects (it is out of scope), so it never
+      // reports a per-project staging failure.
+      additionalSourceFailures: [],
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1125,9 +1196,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
@@ -1138,6 +1211,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
+    additionalSourceDirs: prepared.additionalSourceDirs,
+    additionalSourceFailures: prepared.additionalSourceFailures,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
@@ -1200,6 +1275,480 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
   return Buffer.concat(chunks, totalBytes).toString("utf8");
 }
 
+const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
+const PROCESS_SESSION_REMOTE_SCRIPT = "paperclip-process-session-remote.mjs";
+const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
+
+function jsonLine(value: unknown): string {
+  return `${JSON.stringify(value)}\n`;
+}
+
+function splitJsonLines(buffer: string): { lines: string[]; rest: string } {
+  const parts = buffer.split(/\n/);
+  return { lines: parts.slice(0, -1), rest: parts.at(-1) ?? "" };
+}
+
+async function writeProcessSessionProxyScript(dir: string, port: number, token: string): Promise<string> {
+  await fs.mkdir(dir, { recursive: true });
+  const proxyPath = path.join(dir, PROCESS_SESSION_PROXY_SCRIPT);
+  await fs.writeFile(proxyPath, getProcessSessionProxySource({ port, token }), { mode: 0o700 });
+  return proxyPath;
+}
+
+// Content-hash-skip the process-session remote script write, mirroring the
+// sandbox callback bridge entrypoint sha256 gate. The script is a static
+// Paperclip-authored `.mjs` that only changes when the build changes, so on a
+// warm start (same sandbox, script already present) the single sha-gate exec
+// skips the ~3-exec base64 upload entirely. `syncRemoteTextFileWithHashSkip`
+// fails loud on a check error rather than silently re-uploading.
+async function syncProcessSessionRemoteScript(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  remoteScriptDir: string;
+  remoteScriptPath: string;
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<{ uploaded: boolean }> {
+  const { uploaded } = await syncRemoteTextFileWithHashSkip({
+    runner: input.runner,
+    remoteCwd: input.remoteCwd,
+    remoteDir: input.remoteScriptDir,
+    remotePath: input.remoteScriptPath,
+    body: getProcessSessionRemoteSource(),
+    label: "Process session remote script",
+    action: "sync process session remote script",
+    lockDir: path.posix.join(input.remoteScriptDir, ".paperclip-process-session-script.lock"),
+    timeoutMs: input.timeoutMs,
+    shellCommand: input.shellCommand,
+  });
+  return { uploaded };
+}
+
+async function readRemoteJsonFiles(input: {
+  client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
+  dir: string;
+}): Promise<Array<{ name: string; body: string }>> {
+  const names = await input.client.listJsonFiles(input.dir);
+  const out: Array<{ name: string; body: string }> = [];
+  for (const name of names) {
+    const filePath = path.posix.join(input.dir, name);
+    const body = await input.client.readTextFile(filePath);
+    await input.client.remove(filePath).catch(() => undefined);
+    out.push({ name, body });
+  }
+  return out;
+}
+
+async function waitForLocalServerListen(server: net.Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Process session bridge did not expose a TCP port.");
+  }
+  return address.port;
+}
+
+export async function startAdapterExecutionTargetProcessSessionBridge(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  runtimeRootDir: string | null | undefined;
+  adapterKey: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  // The launch env is consumed ONLY when building the base64 `commandPayload`
+  // below — never during the env-INDEPENDENT dir/script setup. Accepting a
+  // resolver (in addition to a plain object) lets a caller overlap that setup
+  // with other work — e.g. starting the paperclip callback bridge — and hand the
+  // merged env in right before the launch.
+  env: Record<string, string> | (() => Promise<Record<string, string>>);
+  timeoutSec?: number | null;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  // Return the current-run parent-context token. The socket handlers and the
+  // poll timer read it per unit of work and run under it, so their run-time
+  // `sandbox.exec` spans parent to the live run span (`agent.turn` during the
+  // turn, `task.run` otherwise). When it is absent, the work runs with an empty
+  // store, exactly like the earlier `runWithoutActiveStep` behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
+}): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
+  if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
+    return null;
+  }
+
+  const target = input.target;
+  const onLog = input.onLog ?? (async () => {});
+  const runner = requireSandboxRunner(target);
+  const shellCommand = preferredSandboxShell(target);
+  const timeoutMs =
+    typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
+      ? Math.trunc(input.timeoutSec * 1000)
+      : target.timeoutMs ?? undefined;
+  const bridgeRuntimeDir = path.posix.join(
+    input.runtimeRootDir?.trim() || path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey),
+    "process-sessions",
+  );
+  const sessionId = randomUUID();
+  const sessionDir = path.posix.join(bridgeRuntimeDir, sessionId);
+  const stdinDir = path.posix.join(sessionDir, "stdin");
+  const eventsDir = path.posix.join(sessionDir, "events");
+  const remoteScriptPath = path.posix.join(bridgeRuntimeDir, PROCESS_SESSION_REMOTE_SCRIPT);
+  const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+    runner,
+    remoteCwd: target.remoteCwd,
+    timeoutMs,
+    shellCommand,
+  });
+
+  // The launch exec below re-creates stdinDir and eventsDir with one `mkdir -p`,
+  // and the remote script also creates them on start. No reader touches the two
+  // directories before the launch exec runs, so upfront makeDir execs are redundant.
+  await syncProcessSessionRemoteScript({
+    runner,
+    remoteCwd: target.remoteCwd,
+    remoteScriptDir: bridgeRuntimeDir,
+    remoteScriptPath,
+    timeoutMs,
+    shellCommand,
+  });
+
+  // Resolve the launch env AFTER the env-independent setup above, so a caller
+  // can defer it until an upstream dependency (e.g. the paperclip bridge's env)
+  // is ready without blocking the dir/script setup.
+  const launchEnv = typeof input.env === "function" ? await input.env() : input.env;
+  const commandPayload = Buffer.from(JSON.stringify({
+    command: input.command,
+    args: input.args,
+    cwd: input.cwd || target.remoteCwd,
+    env: sanitizeRemoteExecutionEnv(launchEnv),
+  }), "utf8").toString("base64");
+
+  await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
+  const startResult = await runner.execute({
+    command: shellCommand,
+    args: shellCommandArgs(
+      [
+        `mkdir -p ${shellQuote(stdinDir)} ${shellQuote(eventsDir)}`,
+        `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
+          `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
+          `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
+        "printf '%s\\n' \"$!\"",
+      ].join("\n"),
+    ),
+    cwd: target.remoteCwd,
+    env: {
+      PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+    },
+    timeoutMs,
+  });
+  if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
+    throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);
+  }
+
+  let socket: net.Socket | null = null;
+  let stopping = false;
+  let stdinSeq = 0;
+  let pollTimer: NodeJS.Timeout | null = null;
+  const pendingRemoteEvents: Array<{
+    type?: string;
+    stream?: "stdout" | "stderr";
+    data?: string;
+    code?: number | null;
+    signal?: string | null;
+    message?: string;
+  }> = [];
+  const token = createSandboxCallbackBridgeToken(18);
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-proxy-"));
+
+  const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (!socket) return false;
+    socket.write(jsonLine(event));
+    if (event.type === "exit") {
+      stopping = true;
+      socket.end();
+    } else if (event.type === "error") {
+      stopping = true;
+      socket.destroy();
+    }
+    return true;
+  };
+
+  const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (socket) {
+      writeRemoteEventToSocket(event);
+      return;
+    }
+    pendingRemoteEvents.push(event);
+    if (event.type === "exit" || event.type === "error") {
+      stopping = true;
+    }
+  };
+
+  const flushPendingRemoteEvents = () => {
+    if (!socket) return;
+    while (pendingRemoteEvents.length > 0 && socket) {
+      const event = pendingRemoteEvents.shift();
+      if (event) writeRemoteEventToSocket(event);
+    }
+  };
+
+  const liveSockets = new Set<net.Socket>();
+  // Register the per-connection socket handlers with no run parent context.
+  // A stdin write from a socket handler is a run-time exec, not startup work.
+  // The connection can open under `task.run` and receive stdin later, during an
+  // `agent.turn`. So the handler must read the current-run parent at send time,
+  // not at connect time. A connect-time read captures the parent that was live
+  // when the socket opened, and every later exec span parents to that stale
+  // parent. The `data` handler below reads the getter per message instead.
+  const server = net.createServer((nextSocket) => {
+    liveSockets.add(nextSocket);
+    nextSocket.setEncoding("utf8");
+    nextSocket.on("error", () => undefined);
+    let connectionBuffer = "";
+    let authenticated = false;
+    // Connections own the session (and receive buffered process output) only
+    // after presenting the bridge token; idle unauthenticated peers are dropped.
+    const authTimer = setTimeout(() => {
+      if (!authenticated) nextSocket.destroy();
+    }, PROCESS_SESSION_AUTH_TIMEOUT_MS);
+    authTimer.unref?.();
+    nextSocket.on("close", () => {
+      clearTimeout(authTimer);
+      liveSockets.delete(nextSocket);
+    });
+    nextSocket.on("data", (chunk) => {
+      connectionBuffer += chunk;
+      const split = splitJsonLines(connectionBuffer);
+      connectionBuffer = split.rest;
+      for (const line of split.lines) {
+        if (!line.trim()) continue;
+        let message: { token?: string; type?: string; data?: string };
+        try {
+          message = JSON.parse(line) as { token?: string; type?: string; data?: string };
+        } catch {
+          nextSocket.destroy();
+          return;
+        }
+        if (message.token !== token) {
+          nextSocket.destroy();
+          return;
+        }
+        if (!authenticated) {
+          if (socket) {
+            nextSocket.destroy();
+            return;
+          }
+          authenticated = true;
+          clearTimeout(authTimer);
+          socket = nextSocket;
+          flushPendingRemoteEvents();
+        }
+        // Read the current-run parent now, at send time. The live parent
+        // switches to `agent.turn` during the turn and back to `task.run`
+        // after it. With no getter the store stays empty, exactly like the
+        // earlier unparented behavior.
+        runWithRuntimeParent(input.getRuntimeParentContext?.(), () => {
+          void (async () => {
+            if (message.type === "stdin" && typeof message.data === "string") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
+            } else if (message.type === "stdinEnd") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
+            }
+          })().catch((error) => {
+            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+            nextSocket.destroy();
+          });
+        });
+      }
+    });
+  });
+
+  const poll = async () => {
+    if (stopping) return;
+    try {
+      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      for (const event of events) {
+        const parsed = JSON.parse(event.body) as {
+          type?: string;
+          stream?: "stdout" | "stderr";
+          data?: string;
+          code?: number | null;
+          signal?: string | null;
+          message?: string;
+        };
+        deliverRemoteEvent(parsed);
+        if (parsed.type === "exit" || parsed.type === "error") return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
+      deliverRemoteEvent({ type: "error", message });
+      return;
+    } finally {
+      if (!stopping) {
+        schedulePoll();
+      }
+    }
+  };
+
+  // Schedule the long-lived poll timer under the current-run parent context.
+  // The poll loop reads remote event files with run-time execs, not startup
+  // work, so a poll `sandbox.exec` span parents to the live run span, not to the
+  // ended bridge step. Read the getter per tick, because the re-arm timer that
+  // the poll body schedules reads it again: the live parent switches to
+  // `agent.turn` during the turn and back to `task.run` after it. With no getter
+  // the store stays empty, exactly like the earlier unparented behavior.
+  const schedulePoll = () => {
+    pollTimer = setTimeout(() => runWithRuntimeParent(input.getRuntimeParentContext?.(), () => void poll()), 100);
+    pollTimer.unref?.();
+  };
+
+  const port = await waitForLocalServerListen(server);
+  const agentCommand = await writeProcessSessionProxyScript(proxyDir, port, token);
+  schedulePoll();
+
+  return {
+    agentCommand,
+    stop: async () => {
+      stopping = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      for (const liveSocket of liveSockets) liveSocket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+      await client.writeTextFile(
+        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
+        jsonLine({ type: "stdinEnd" }),
+      ).catch(() => undefined);
+      await client.remove(sessionDir).catch(() => undefined);
+      await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+    },
+  };
+}
+
+function getProcessSessionProxySource(input: { port: number; token: string }): string {
+  return `#!/usr/bin/env node
+import net from "node:net";
+
+const socket = net.createConnection({ host: "127.0.0.1", port: ${input.port} });
+const token = ${JSON.stringify(input.token)};
+let buffer = "";
+let exiting = false;
+
+function send(message) {
+  socket.write(JSON.stringify({ token, ...message }) + "\\n");
+}
+
+socket.on("connect", () => send({ type: "hello" }));
+process.stdin.on("data", (chunk) => send({ type: "stdin", data: Buffer.from(chunk).toString("base64") }));
+process.stdin.on("end", () => send({ type: "stdinEnd" }));
+process.stdin.resume();
+
+socket.setEncoding("utf8");
+socket.on("data", (chunk) => {
+  buffer += chunk;
+  const parts = buffer.split(/\\n/);
+  buffer = parts.pop() || "";
+  for (const line of parts) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.type === "data") {
+      const out = Buffer.from(message.data || "", "base64");
+      (message.stream === "stderr" ? process.stderr : process.stdout).write(out);
+    } else if (message.type === "error") {
+      process.stderr.write(String(message.message || "Process session bridge failed.") + "\\n");
+      exiting = true;
+      process.exitCode = 1;
+      socket.end();
+    } else if (message.type === "exit") {
+      exiting = true;
+      process.exitCode = typeof message.code === "number" ? message.code : 1;
+      socket.end();
+    }
+  }
+});
+socket.on("close", () => {
+  if (!exiting) process.exit(1);
+});
+`;
+}
+
+function getProcessSessionRemoteSource(): string {
+  return `import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
+const commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+if (!sessionDir || !commandPayload) throw new Error("Missing process session bridge env.");
+
+const stdinDir = path.posix.join(sessionDir, "stdin");
+const eventsDir = path.posix.join(sessionDir, "events");
+let seq = 0;
+let stdinClosed = false;
+
+const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
+await fs.mkdir(stdinDir, { recursive: true });
+await fs.mkdir(eventsDir, { recursive: true });
+
+let writeChain = Promise.resolve();
+
+function writeEvent(event) {
+  seq += 1;
+  const file = path.posix.join(eventsDir, String(seq).padStart(12, "0") + ".json");
+  const write = writeChain.then(async () => {
+    await fs.writeFile(file + ".tmp", JSON.stringify(event) + "\\n", "utf8");
+    await fs.rename(file + ".tmp", file);
+  });
+  writeChain = write.catch(() => undefined);
+  return write;
+}
+
+const child = spawn(config.command, Array.isArray(config.args) ? config.args : [], {
+  cwd: config.cwd || process.cwd(),
+  env: { ...process.env, ...(config.env || {}) },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+
+child.stdout.on("data", (chunk) => void writeEvent({ type: "data", stream: "stdout", data: Buffer.from(chunk).toString("base64") }));
+child.stderr.on("data", (chunk) => void writeEvent({ type: "data", stream: "stderr", data: Buffer.from(chunk).toString("base64") }));
+child.on("error", (error) => void writeEvent({ type: "error", message: error.message }));
+// "close" (not "exit") so stdout/stderr fully drain before the exit event;
+// the write chain then guarantees the exit file lands after every data file.
+child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+
+async function pollStdin() {
+  while (!stdinClosed) {
+    const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
+    for (const name of entries) {
+      const file = path.posix.join(stdinDir, name);
+      const raw = await fs.readFile(file, "utf8").catch(() => null);
+      await fs.rm(file, { force: true }).catch(() => undefined);
+      if (!raw) continue;
+      const message = JSON.parse(raw);
+      if (message.type === "stdin" && typeof message.data === "string") {
+        child.stdin.write(Buffer.from(message.data, "base64"));
+      } else if (message.type === "stdinEnd") {
+        stdinClosed = true;
+        child.stdin.end();
+        break;
+      }
+    }
+    if (!stdinClosed) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+void pollStdin().catch((error) => void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+`;
+}
+
 export async function startAdapterExecutionTargetPaperclipBridge(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
@@ -1210,6 +1759,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
+  // Return the current-run parent-context token. The factory threads it into the
+  // callback bridge worker, which reads it per request so each request
+  // `sandbox.exec` span parents to the live run span. When it is absent, the
+  // request work runs with an empty store, exactly like the earlier behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -1271,10 +1825,16 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // this flag is enabled. Only intended for active debugging in trusted
     // environments.
     const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
+    // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
+    // setup on the active `bridge.paperclip` step, and runs each request under
+    // the run parent context (see `runWithRuntimeParent` inside that function).
+    // So the startup `mkdir` execs stay parented to the step, and every later
+    // request `sandbox.exec` span parents to the live run span.
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
+      getRuntimeParentContext: input.getRuntimeParentContext,
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {

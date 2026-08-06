@@ -88,6 +88,24 @@ export const createAgentSchema = z.object({
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
+export const builtInAgentProvisionSchema = z.object({
+  adapterType: agentAdapterTypeSchema.optional(),
+  adapterConfig: adapterConfigSchema.optional(),
+  budgetMonthlyCents: z.number().int().nonnegative().optional(),
+}).strict();
+
+export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
+
+export const builtInAgentEmptyMutationSchema = z.object({}).strict().default({});
+
+export type BuiltInAgentEmptyMutation = z.infer<typeof builtInAgentEmptyMutationSchema>;
+
+export const builtInAgentResetSchema = z.object({
+  resources: z.array(z.enum(["agent", "instructions", "skill", "routine"])).optional(),
+}).strict().default({});
+
+export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
+
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
@@ -137,13 +155,20 @@ export const standardAgentKeyScopeSchema = z.object({
   kind: z.literal("standard"),
 }).strict();
 
+export const skillTestAgentKeyScopeSchema = z.object({
+  kind: z.literal("skill_test"),
+  issueId: z.string().uuid(),
+}).strict();
+
 export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
+  skillTestAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
+export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
   const parsed = agentApiKeyScopeSchema.safeParse(value);

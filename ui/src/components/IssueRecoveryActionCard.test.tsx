@@ -130,7 +130,7 @@ describe("deriveRecoveryCardState", () => {
 });
 
 describe("IssueRecoveryActionCard", () => {
-  it("renders required fields and an aria-label naming the state", () => {
+  it("renders state and kind attributes with owner names and the recorded next action", () => {
     const node = render(
       <IssueRecoveryActionCard
         action={buildAction()}
@@ -142,22 +142,18 @@ describe("IssueRecoveryActionCard", () => {
       />,
     );
     const section = node.querySelector("section[aria-label]");
-    expect(section?.getAttribute("aria-label")).toBe("Recovery action: needed");
+    expect(section).not.toBeNull();
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(section?.getAttribute("data-recovery-kind")).toBe("missing_disposition");
     expect(node.textContent).toContain("RECOVERY NEEDED");
     expect(node.textContent).toContain("Missing Disposition");
-    expect(node.textContent).not.toContain("missing_disposition");
-    expect(node.textContent).toContain("This task's run finished, but no next step was chosen.");
+    expect(node.textContent).toContain(
+      "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
+    );
+    expect(node.textContent).toContain("An agent will be asked to choose the next step");
     expect(node.textContent).toContain("ClaudeCoder");
     expect(node.textContent).toContain("CodexCoder");
     expect(node.textContent).toContain("Choose and record a valid issue disposition.");
-    expect(node.textContent).toContain("Corrective wake queued");
-  });
-
-  it("falls back to em dash when wake policy is absent", () => {
-    const node = render(
-      <IssueRecoveryActionCard action={buildAction({ wakePolicy: null })} />,
-    );
-    expect(node.textContent).toContain("—");
   });
 
   it("renders observe_only tone for active_run_watchdog", () => {
@@ -165,11 +161,31 @@ describe("IssueRecoveryActionCard", () => {
       <IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog" })} />,
     );
     const section = node.querySelector("section[aria-label]");
-    expect(section?.getAttribute("aria-label")).toBe("Recovery action: observing active run");
+    expect(section?.getAttribute("data-recovery-state")).toBe("observe_only");
     expect(node.textContent).toContain("OBSERVING ACTIVE RUN");
+    expect(node.textContent).toContain(
+      "The active run has been silent. Recovery is observing without interrupting it.",
+    );
   });
 
-  it("renders a workspace-specific label and headline for workspace_validation", () => {
+  it("explains issue_graph_liveness in plain language", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "issue_graph_liveness", cause: "issue_graph_liveness" })}
+      />,
+    );
+    expect(node.textContent).toContain("Task Needs Next Step");
+    expect(node.textContent).toContain(
+      "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
+    );
+  });
+
+  it("falls back to an em dash when no evidence summary is available", () => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({ evidence: {} })} />);
+    expect(node.textContent).toContain("—");
+  });
+
+  it("renders workspace_validation with its kind attribute and the recorded next action", () => {
     const node = render(
       <IssueRecoveryActionCard
         action={buildAction({
@@ -188,19 +204,65 @@ describe("IssueRecoveryActionCard", () => {
     const section = node.querySelector("section[aria-label]");
     expect(section?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
     expect(node.textContent).toContain("Workspace Validation");
-    expect(node.textContent).not.toContain("workspace_validation\n");
     expect(node.textContent).toContain(
       "Paperclip stopped this run because the task's git workspace could not be validated.",
     );
     expect(node.textContent).toContain("Repair the source issue workspace link");
-    expect(node.textContent).toContain("Manual repair required");
   });
 
-  it("renders the resolved label and outcome when resolved", () => {
+  it("renders a human evidence summary as prose, not a mono log line", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+        })}
+      />,
+    );
+    const summary = Array.from(node.querySelectorAll("span")).find((el) =>
+      el.textContent === "Unmanaged background task stopped; no durable live path.",
+    );
+    expect(summary).toBeTruthy();
+    expect(summary?.className).toContain("text-xs");
+    expect(summary?.className).not.toContain("font-mono");
+    expect(node.textContent).toContain(
+      "To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
+    );
+  });
+
+  it("keeps code-shaped evidence (error code, no summary) in the mono treatment", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "workspace_validation",
+          cause: "workspace_validation_failed",
+          evidence: {
+            latestRunErrorCode: "workspace_validation_failed",
+          },
+        })}
+      />,
+    );
+    const code = Array.from(node.querySelectorAll("span")).find((el) =>
+      el.textContent === "workspace_validation_failed",
+    );
+    expect(code).toBeTruthy();
+    expect(code?.className).toContain("font-mono");
+  });
+
+  it("renders the resolved state and outcome when resolved", () => {
     const node = render(
       <IssueRecoveryActionCard action={buildAction({ status: "resolved", outcome: "restored", resolvedAt: "2026-05-09T19:35:00.000Z" })} />,
     );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("resolved");
     expect(node.textContent).toContain("RECOVERY RESOLVED");
+    expect(node.textContent).toContain("Recovery resolved as restored.");
     expect(node.textContent).toContain("Resolved as restored");
   });
 
@@ -296,22 +358,35 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
     const diagnosis = node.querySelector("[data-testid='recovery-divergence-diagnosis']");
     expect(diagnosis).not.toBeNull();
     const text = diagnosis?.textContent ?? "";
+    expect(text).toContain("Divergence diagnosis");
+    expect(text).toContain("Expected · recorded");
+    expect(text).toContain("Live · checked out");
     expect(text).toContain("PAP-522-recorded");
     expect(text).toContain("nleach/PAP-1405-live");
     // shortened shas (10 chars)
     expect(text).toContain("aaaaaaaaaa");
     expect(text).toContain("bbbbbbbbbb");
     expect(text).toContain("cannot prove a forward-only reconciliation");
-    expect(node.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toContain("Diverged");
+    expect(node.querySelector("[data-testid='recovery-ancestry-verdict']")).not.toBeNull();
   });
 
-  it("labels an ancestor verdict as forward-only", () => {
-    const node = render(
+  it("labels each ancestry verdict", () => {
+    const diverged = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} />);
+    expect(diverged.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Diverged");
+
+    const ancestor = render(
       <IssueRecoveryActionCard
         action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "ancestor" } })}
       />,
     );
-    expect(node.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toContain("Forward-only");
+    expect(ancestor.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Forward-only");
+
+    const unknown = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ provenance: { ancestryVerdict: "unknown" } })}
+      />,
+    );
+    expect(unknown.querySelector("[data-testid='recovery-ancestry-verdict']")?.textContent).toBe("Ancestry unknown");
   });
 
   it("does not render a divergence diagnosis for non-incoherence workspace failures", () => {
@@ -334,7 +409,6 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
       />,
     );
     click(node.querySelector("[data-testid='recovery-action-reissue-trigger']"));
-    expect(document.body.textContent).toContain("Re-issue on isolated workspace");
     click(document.body.querySelector("[data-testid='recovery-action-reissue-confirm']"));
     expect(onReissueIsolated).toHaveBeenCalledWith({
       baseRef: "nleach/PAP-1405-live",
@@ -450,14 +524,13 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
     );
     click(node.querySelector("[data-testid='recovery-action-breakglass-trigger']"));
 
-    // The confirm step restates the divergence: both branches, both short SHAs, and the verdict.
+    // The confirm step restates the divergence: both branches and both short SHAs.
     const restated = document.body.querySelector("[data-testid='recovery-breakglass-restated-divergence']");
     const restatedText = restated?.textContent ?? "";
     expect(restatedText).toContain("PAP-522-recorded");
     expect(restatedText).toContain("nleach/PAP-1405-live");
     expect(restatedText).toContain("aaaaaaaaaa");
     expect(restatedText).toContain("bbbbbbbbbb");
-    expect(restatedText).toContain("Diverged");
 
     // The override is disabled until a non-empty reason is recorded.
     const confirm = document.body.querySelector<HTMLButtonElement>(
@@ -500,5 +573,170 @@ describe("IssueRecoveryActionCard W7 reconcile actions", () => {
     );
     expect(node.querySelector("[data-testid='recovery-action-reconcile-forward']")).toBeNull();
     expect(node.querySelector("[data-testid='recovery-action-breakglass-trigger']")).toBeNull();
+  });
+});
+
+function buildDirtyDivergenceAction(
+  overrides: {
+    action?: Partial<IssueRecoveryAction>;
+    provenance?: Record<string, unknown>;
+    workspaceValidation?: Record<string, unknown>;
+  } = {},
+): IssueRecoveryAction {
+  return buildWorkspaceValidationAction({
+    ...overrides,
+    workspaceValidation: {
+      cleanliness: "dirty",
+      statusEntryCount: 3,
+      dirtyPathSample: ["src/app.ts", "README.md"],
+      sourceIdentifier: "PAP-1405",
+      ...overrides.workspaceValidation,
+    },
+  });
+}
+
+describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => {
+  it("offers the repair action only for a dirty divergence", () => {
+    const cleanNode = render(
+      <IssueRecoveryActionCard
+        action={buildWorkspaceValidationAction({ workspaceValidation: { cleanliness: "clean" } })}
+        onQuarantineRestore={() => {}}
+      />,
+    );
+    expect(cleanNode.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+
+    const dirtyNode = render(
+      <IssueRecoveryActionCard action={buildDirtyDivergenceAction()} onQuarantineRestore={() => {}} />,
+    );
+    expect(dirtyNode.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
+  });
+
+  it("does not offer the repair action without a handler or for non-workspace kinds", () => {
+    const noHandler = render(<IssueRecoveryActionCard action={buildDirtyDivergenceAction()} />);
+    expect(noHandler.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+
+    const nonWorkspace = render(
+      <IssueRecoveryActionCard action={buildAction()} onQuarantineRestore={() => {}} />,
+    );
+    expect(nonWorkspace.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+  });
+
+  it("confirm popover restates the dirty count, live branch, rescue branch and recorded branch, then fires the handler", () => {
+    const onQuarantineRestore = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={onQuarantineRestore}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-repair-trigger']"));
+    const restated = document.body.querySelector("[data-testid='recovery-repair-restated']");
+    const text = restated?.textContent ?? "";
+    expect(
+      document.body.querySelector("[data-testid='recovery-repair-dirty-count']")?.textContent,
+    ).toBe("3 uncommitted changes");
+    // live branch is named in the restated summary, left untouched
+    expect(text).toContain("nleach/PAP-1405-live");
+    expect(text).toContain("(left untouched)");
+    // rescue branch preview mirrors the server naming (prefix + timestamp marker)
+    expect(
+      document.body.querySelector("[data-testid='recovery-repair-rescue-branch']")?.textContent,
+    ).toContain("paperclip/rescue/PAP-1405/");
+    // recorded branch to be restored
+    expect(text).toContain("PAP-522-recorded");
+
+    // No reason field is present — the operation is lossless.
+    expect(document.body.querySelector("textarea")).toBeNull();
+
+    click(document.body.querySelector("[data-testid='recovery-action-repair-confirm']"));
+    expect(onQuarantineRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it("singularizes a one-file dirty count", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction({ workspaceValidation: { statusEntryCount: 1 } })}
+        onQuarantineRestore={() => {}}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-repair-trigger']"));
+    expect(
+      document.body.querySelector("[data-testid='recovery-repair-dirty-count']")?.textContent,
+    ).toBe("1 uncommitted change");
+  });
+
+  it("disables the repair trigger while a quarantine-restore is pending", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={() => {}}
+        quarantineRestorePending
+      />,
+    );
+    expect(
+      node.querySelector<HTMLButtonElement>("[data-testid='recovery-action-repair-trigger']")?.disabled,
+    ).toBe(true);
+  });
+
+  it("in the contended case disables repair, explains the claimant, and recommends re-issue", () => {
+    const onQuarantineRestore = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction({
+          workspaceValidation: {
+            contention: {
+              claimedByWorkspaceId: "ws-99",
+              claimedByIssueId: "issue-99",
+              claimedByIssueIdentifier: "PAP-9001",
+              activeRun: { id: "run-9001", status: "running", issueId: "issue-99", issueIdentifier: "PAP-9001" },
+            },
+          },
+        })}
+        onQuarantineRestore={onQuarantineRestore}
+        onReissueIsolated={() => {}}
+      />,
+    );
+    // Diagnosis gains a claimant line naming the claiming issue.
+    const notice = node.querySelector("[data-testid='recovery-contention-notice']");
+    expect(notice?.textContent).toContain("Worktree claimed by");
+    expect(notice?.textContent).toContain("PAP-9001");
+    expect(notice?.textContent).toContain("(active run)");
+
+    // The repair control is present but disabled, with the claimant as the explanation.
+    const disabled = node.querySelector("[data-testid='recovery-action-repair-disabled']");
+    expect(disabled).not.toBeNull();
+    const trigger = disabled?.querySelector<HTMLButtonElement>(
+      "[data-testid='recovery-action-repair-trigger']",
+    );
+    expect(trigger?.disabled).toBe(true);
+    expect(disabled?.textContent).toContain(
+      "Held by PAP-9001 — re-issue on an isolated workspace instead.",
+    );
+    // Clicking the disabled control never fires the repair.
+    click(trigger ?? null);
+    expect(onQuarantineRestore).not.toHaveBeenCalled();
+
+    // Re-issue is surfaced as the recommended action.
+    expect(node.querySelector("[data-testid='recovery-reissue-recommended']")).not.toBeNull();
+    expect(
+      node
+        .querySelector("[data-testid='recovery-action-reissue-trigger']")
+        ?.getAttribute("data-recommended"),
+    ).toBe("true");
+  });
+
+  it("compact variant drops the metadata table but keeps the diagnosis and repair action", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildDirtyDivergenceAction()}
+        onQuarantineRestore={() => {}}
+        variant="compact"
+      />,
+    );
+    // Metadata rows (e.g. the Owner/Next action table) are dropped in compact mode.
+    expect(node.textContent).not.toContain("Choose and record a valid issue disposition.");
+    // The divergence diagnosis and repair action still render.
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
   });
 });

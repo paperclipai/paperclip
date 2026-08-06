@@ -6,6 +6,7 @@ import {
   agents,
   assets,
   companies,
+  documentMemberships,
   documents,
   heartbeatRuns,
   issueAttachments,
@@ -171,9 +172,10 @@ async function readTextAttachmentPreview(
   }
 }
 
-function sortArtifacts(artifacts: CompanyArtifact[]) {
+function sortArtifacts(artifacts: CompanyArtifact[], sortDates = new Map<string, string>()) {
   return artifacts.sort((a, b) => {
-    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    const dateDiff = Date.parse(sortDates.get(b.id) ?? b.updatedAt)
+      - Date.parse(sortDates.get(a.id) ?? a.updatedAt);
     if (dateDiff !== 0) return dateDiff;
     return b.id.localeCompare(a.id);
   });
@@ -315,7 +317,11 @@ function buildArtifactGroups(input: {
 
 export function companyArtifactsService(db: Db, storage?: StorageService) {
   return {
-    list: async (companyId: string, rawQuery: Partial<CompanyArtifactsQuery> = {}): Promise<CompanyArtifactsResponse> => {
+    list: async (
+      companyId: string,
+      rawQuery: Partial<CompanyArtifactsQuery> = {},
+      options: { issueConditions?: SQL[]; userId?: string } = {},
+    ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
       const groupBy = query.groupBy === "none" ? null : query.groupBy;
@@ -326,10 +332,20 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         .then((rows) => rows[0] ?? null);
       if (!company) throw notFound("Company not found");
 
+      if (query.starred && !options.userId) {
+        return { artifacts: [], nextCursor: null };
+      }
+
       const fetchLimit = Math.min(query.limit + 1, COMPANY_ARTIFACTS_MAX_LIMIT + 1);
       const sourceFetchLimit = groupBy ? GROUPED_ARTIFACT_FETCH_LIMIT : fetchLimit;
       const q = query.q ? `%${escapeLikePattern(query.q)}%` : null;
+      const issueConditions: SQL[] = [
+        isNull(issues.hiddenAt),
+        isNull(issues.harnessKind),
+        ...(options.issueConditions ?? []),
+      ];
       const artifacts: CompanyArtifact[] = [];
+      const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
 
       if (query.kind === "all" || query.kind === "document") {
@@ -339,10 +355,22 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const documentConditions: SQL[] = [
           eq(issueDocuments.companyId, companyId),
           eq(documents.companyId, companyId),
-          or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
-          notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
+          ...issueConditions,
+          ...(query.starred
+            ? [
+              eq(documentMemberships.companyId, companyId),
+              eq(documentMemberships.userId, options.userId!),
+              isNotNull(documentMemberships.starredAt),
+            ]
+            : [
+              or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
+              notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
+            ]),
         ];
-        const documentCursor = groupBy ? undefined : cursorCondition(sql<Date>`${documents.updatedAt}`, documentArtifactId, cursor);
+        const documentSortDate = query.starred
+          ? sql<Date>`${documentMemberships.starredAt}`
+          : sql<Date>`${documents.updatedAt}`;
+        const documentCursor = groupBy ? undefined : cursorCondition(documentSortDate, documentArtifactId, cursor);
         if (documentCursor) documentConditions.push(documentCursor);
         if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
@@ -370,6 +398,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             createdByAgentId: sql<string | null>`coalesce(${createdAgent.id}, ${updatedAgent.id})`,
             createdByAgentName: sql<string | null>`coalesce(${createdAgent.name}, ${updatedAgent.name})`,
             updatedAt: documents.updatedAt,
+            starredAt: documentMemberships.starredAt,
           })
           .from(issueDocuments)
           .innerJoin(
@@ -377,6 +406,14 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issueDocuments.documentId, documents.id),
               eq(documents.companyId, issueDocuments.companyId),
+            ),
+          )
+          .leftJoin(
+            documentMemberships,
+            and(
+              eq(documentMemberships.documentId, documents.id),
+              eq(documentMemberships.companyId, documents.companyId),
+              eq(documentMemberships.userId, options.userId ?? ""),
             ),
           )
           .innerJoin(
@@ -408,11 +445,12 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             ),
           )
           .where(and(...documentConditions))
-          .orderBy(desc(documents.updatedAt), desc(documentArtifactId));
+          .orderBy(desc(documentSortDate), desc(documentArtifactId));
         const documentRows = await documentRowsQuery.limit(sourceFetchLimit);
 
         for (const row of documentRows) {
           const identifier = row.issueIdentifier ?? row.issueId;
+          artifactSortDates.set(row.artifactId, (row.starredAt ?? row.updatedAt).toISOString());
           artifacts.push({
             id: row.artifactId,
             source: "document",
@@ -434,7 +472,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         }
       }
 
-      if (query.kind !== "document") {
+      if (!query.starred && query.kind !== "document") {
         const workProductAgent = alias(agents, "work_product_agent");
         const workProductArtifactId = sql<string>`concat('work_product:', ${issueWorkProducts.id})`;
         const workProductContentType = sql<string>`coalesce(${issueWorkProducts.metadata}->>'contentType', '')`;
@@ -442,6 +480,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueWorkProducts.companyId, companyId),
           eq(issueWorkProducts.type, "artifact"),
           eq(issueWorkProducts.provider, "paperclip"),
+          ...issueConditions,
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
         const workProductCursor = groupBy
@@ -578,6 +617,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueAttachments.companyId, companyId),
           isNull(issueAttachments.issueCommentId),
           isNotNull(assets.createdByAgentId),
+          ...issueConditions,
         ];
         const attachmentCursor = groupBy
           ? undefined
@@ -680,11 +720,15 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         artifacts.push(...attachmentArtifacts.filter((artifact): artifact is CompanyArtifact => artifact !== null));
       }
 
-      const sorted = sortArtifacts(artifacts);
+      const sorted = sortArtifacts(artifacts, artifactSortDates);
       if (!groupBy) {
         const page = sorted.slice(0, query.limit);
+        const last = page[page.length - 1];
         const nextCursor = sorted.length > query.limit
-          ? encodeCursor({ id: page[page.length - 1]?.id ?? "", updatedAt: page[page.length - 1]?.updatedAt ?? new Date(0).toISOString() })
+          ? encodeCursor({
+            id: last?.id ?? "",
+            updatedAt: last ? artifactSortDates.get(last.id) ?? last.updatedAt : new Date(0).toISOString(),
+          })
           : null;
 
         return { artifacts: page, nextCursor };

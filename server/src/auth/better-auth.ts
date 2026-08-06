@@ -54,6 +54,28 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
   };
 }
 
+export function shouldEnableAuthRateLimit(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}): boolean {
+  const override = input.override?.trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+
+  return input.deploymentMode === "authenticated";
+}
+
+export function buildBetterAuthRateLimitOptions(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}) {
+  return {
+    enabled: shouldEnableAuthRateLimit(input),
+  };
+}
+
 export function shouldDisableSecureAuthCookies(input: {
   deploymentMode: Config["deploymentMode"];
   deploymentExposure?: Config["deploymentExposure"];
@@ -158,6 +180,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    rateLimit: buildBetterAuthRateLimitOptions({
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 

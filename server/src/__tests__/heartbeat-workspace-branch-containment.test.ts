@@ -35,6 +35,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
@@ -170,21 +171,6 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
   return heartbeat.getRun(runId);
 }
 
-async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  let idleSince: number | null = null;
-  while (Date.now() < deadline) {
-    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
-      idleSince ??= Date.now();
-      if (Date.now() - idleSince >= 250) return;
-    } else {
-      idleSince = null;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 async function deleteHeartbeatRunsForCleanup(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -301,6 +287,10 @@ function readAdapterWorkspace(input: unknown) {
     typeof context.executionWorkspaceId === "string" ? context.executionWorkspaceId : null;
   if (!cwd || !branchName || !executionWorkspaceId) {
     throw new Error("Adapter input is missing execution workspace context");
+  }
+  const wake = context.paperclipWake as { executionWorkspace?: { branchName?: string } } | undefined;
+  if (wake?.executionWorkspace?.branchName !== branchName) {
+    throw new Error("Adapter wake payload is missing the execution workspace branch pin");
   }
   return { cwd, branchName, executionWorkspaceId };
 }
@@ -689,8 +679,9 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "manual_repair_required",
-      reason: "workspace_validation_failed",
+      type: "wake_owner",
+      reason: "source_scoped_recovery_action",
+      ownerAgentId: expect.any(String),
     }),
   });
 
@@ -870,7 +861,14 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await waitForHeartbeatIdle(db);
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. resumeQueuedRuns claims a run and dispatches its execution
+    // fire-and-forget, and the containment path can dispatch a follow-up
+    // recovery wakeup, so a run or wakeup can still write heartbeat_runs and
+    // issues rows when teardown starts. The shared drain also awaits an
+    // in-flight wakeup that is still before run registration, which a plain run
+    // table status poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     adapterExecute.mockReset();
     adapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -913,7 +911,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
-  });
+  }, 60_000);
 
   it("blocks projectless isolated git-worktree issues before dispatch", async () => {
     const companyId = randomUUID();

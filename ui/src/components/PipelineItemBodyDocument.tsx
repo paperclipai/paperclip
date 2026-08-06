@@ -14,7 +14,7 @@ import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { useToastActions } from "../context/ToastContext";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
-import { DocumentFrameHeader } from "./DocumentFrameHeader";
+import { DocumentFrameHeader, type DocumentFrameHeaderRevisionActor } from "./DocumentFrameHeader";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "./IssueDocumentAnnotations";
 import { EmptyState } from "./EmptyState";
 import { FoldCurtain } from "./FoldCurtain";
@@ -35,6 +35,34 @@ type CaseBodyDocument = PipelineCaseDocumentPayload["document"] & {
   createdByUserId?: string | null;
 };
 
+function getPipelineRevisionActor(
+  revision: { createdByAgentId?: string | null; createdByUserId?: string | null },
+  maps: {
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  },
+): DocumentFrameHeaderRevisionActor {
+  if (revision.createdByAgentId) {
+    const agent = maps.agentMap?.get(revision.createdByAgentId);
+    return {
+      kind: "agent",
+      name: agent?.name ?? revision.createdByAgentId.slice(0, 8),
+      agentIcon: agent?.icon ?? null,
+    };
+  }
+
+  if (revision.createdByUserId) {
+    const profile = maps.userProfileMap?.get(revision.createdByUserId);
+    return {
+      kind: "user",
+      name: profile?.label ?? (revision.createdByUserId === "local-board" ? "Board" : revision.createdByUserId.slice(0, 8)),
+      imageUrl: profile?.image ?? null,
+    };
+  }
+
+  return { kind: "system", name: "System" };
+}
+
 function isNotFound(error: unknown) {
   return error instanceof ApiError && error.status === 404;
 }
@@ -48,7 +76,7 @@ export interface PipelineItemBodyDocumentProps {
   /** Active conversation issue the body document is/should be anchored to. */
   conversationIssueId: string | null;
   conversationIssue: Issue | null;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   mentions?: MentionOption[];
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -396,7 +424,7 @@ export function PipelineItemBodyDocument({
             id: revision.id,
             revisionNumber: revision.revisionNumber,
             createdAt: revision.createdAt,
-            actorLabel: revision.createdByUserId ? "board" : revision.createdByAgentId ? "agent" : "system",
+            actor: getPipelineRevisionActor(revision, { agentMap, userProfileMap }),
           })),
           selectedRevisionId,
           currentRevisionId: doc?.latestRevisionId ?? null,

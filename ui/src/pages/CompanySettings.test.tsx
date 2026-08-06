@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyEnvironments } from "./CompanyEnvironments";
@@ -32,6 +33,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   getExperimental: vi.fn(),
 }));
 
@@ -84,14 +86,7 @@ vi.mock("../context/ToastContext", () => ({
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP" }],
-    selectedCompany: {
-      id: "company-1",
-      name: "Paperclip",
-      description: null,
-      brandColor: null,
-      logoUrl: null,
-      issuePrefix: "PAP",
-    },
+    selectedCompany: null,
     selectedCompanyId: "company-1",
     setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
@@ -122,8 +117,48 @@ async function flushReact() {
   });
 }
 
-function getOpenDialog(): HTMLElement | null {
-  return document.body.querySelector("[role='dialog']");
+async function waitForAssertion(assertion: () => void) {
+  let lastError: unknown;
+  for (let i = 0; i < 20; i += 1) {
+    await flushReact();
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function getEnvironmentFormPage(): HTMLElement | null {
+  return document.body.querySelector("[data-testid='environment-form-page']");
+}
+
+function findAction(root: ParentNode, label: string): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>("button,a")).find((element) => element.textContent?.trim() === label);
+}
+
+function click(element: Element | null | undefined) {
+  element?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+}
+
+function renderCompanyEnvironments(queryClient: QueryClient, initialPath = ENVIRONMENTS_PATH) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <TooltipProvider>
+          <Routes>
+            <Route path={ENVIRONMENTS_PATH} element={<CompanyEnvironments />} />
+            <Route path={`${ENVIRONMENTS_PATH}/new`} element={<CompanyEnvironments mode="create" />} />
+            <Route path={`${ENVIRONMENTS_PATH}/:environmentId/edit`} element={<CompanyEnvironments mode="edit" />} />
+          </Routes>
+        </TooltipProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
 }
 
 describe("CompanyEnvironments", () => {
@@ -136,6 +171,7 @@ describe("CompanyEnvironments", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
     });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),
@@ -164,13 +200,7 @@ describe("CompanyEnvironments", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
     await flushReact();
@@ -208,29 +238,20 @@ describe("CompanyEnvironments", () => {
     );
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
     await flushReact();
 
-    const addEnvironmentButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Add environment",
-    );
+    const addEnvironmentButton = findAction(container, "Add environment");
     expect(addEnvironmentButton).toBeTruthy();
 
     await act(async () => {
-      addEnvironmentButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(addEnvironmentButton);
     });
-    await flushReact();
 
-    const dialog = getOpenDialog();
-    expect(dialog).toBeTruthy();
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
+    const dialog = getEnvironmentFormPage();
 
     const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
       .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
@@ -268,28 +289,20 @@ describe("CompanyEnvironments", () => {
     ]);
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
     await flushReact();
 
-    const editButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Edit");
+    const editButton = findAction(container, "Edit");
     expect(editButton).toBeTruthy();
 
     await act(async () => {
-      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(editButton);
     });
-    await flushReact();
 
-    const dialog = getOpenDialog();
-    expect(dialog).toBeTruthy();
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
+    const dialog = getEnvironmentFormPage();
 
     const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
       .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
@@ -350,30 +363,22 @@ describe("CompanyEnvironments", () => {
     );
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
     await flushReact();
 
     expect(container.textContent).toContain("Secure Sandbox");
 
-    const editButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Edit");
+    const editButton = findAction(container, "Edit");
     expect(editButton).toBeTruthy();
 
     await act(async () => {
-      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(editButton);
     });
-    await flushReact();
 
-    const dialog = getOpenDialog();
-    expect(dialog).toBeTruthy();
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
+    const dialog = getEnvironmentFormPage();
 
     const providerSelect = Array.from(dialog?.querySelectorAll("select") ?? []).find((select) =>
       Array.from(select.options).some((option) => option.value === "secure-plugin"),

@@ -1,10 +1,15 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.js";
 
 const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
+  "paperclipai/bundled/paperclip-operations/reflection-coach",
+  "paperclipai/bundled/paperclip-operations/status-card-query",
+  "paperclipai/bundled/paperclip-operations/summarize-status",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
   "paperclipai/bundled/product/wireframe",
@@ -15,12 +20,93 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/browser/agent-browser",
   "paperclipai/optional/content/release-announcement",
+  "paperclipai/optional/content/simplified-english",
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
 ];
 
+const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
+const REPO_ROOT = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const SKILL_FRONTMATTER_ROOTS = [
+  path.join(REPO_ROOT, ".agents"),
+  path.join(REPO_ROOT, "skills"),
+  path.join(REPO_ROOT, "packages/adapters"),
+  path.join(REPO_ROOT, "packages/plugins"),
+  path.join(REPO_ROOT, "packages/skills-catalog/catalog"),
+  path.join(REPO_ROOT, "packages/teams-catalog/catalog"),
+];
+
+function listSkillFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return listSkillFiles(entryPath);
+    if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];
+    return [];
+  });
+}
+
+function readFrontmatterDescription(markdown: string): string | null {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return null;
+
+  const lines = match[1]!.split(/\r?\n/);
+  const descriptionIndex = lines.findIndex((line) => line.startsWith("description:"));
+  if (descriptionIndex === -1) return null;
+
+  const inlineValue = lines[descriptionIndex]!.slice("description:".length).trim();
+  if (/^[>|][+-]?$/.test(inlineValue)) {
+    const descriptionLines: string[] = [];
+    for (let index = descriptionIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (/^[A-Za-z0-9_-]+:/.test(line)) break;
+      descriptionLines.push(line.trim());
+    }
+    return descriptionLines.join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  return inlineValue.replace(/^['"]|['"]$/g, "");
+}
+
 describe("shipped skills catalog", () => {
+  it("ships the summarize-status streaming protocol", () => {
+    const skill = readFileSync(
+      path.join(
+        REPO_ROOT,
+        "packages/skills-catalog/catalog/bundled/paperclip-operations/summarize-status/SKILL.md",
+      ),
+      "utf8",
+    );
+
+    expect(skill).toContain("Post the first status update immediately, before doing anything else.");
+    expect(skill).toContain('STATUS: considering "Fix login redirect loop"…');
+    expect(skill).toContain("<<<SUMMARY-DRAFT>>>");
+    expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
+    expect(skill).toContain("tool-call arguments don't stream; assistant text does");
+    expect(skill).toContain("falls back to its spinner");
+    expect(skill).toContain("Open with what the reader needs to do.");
+    expect(skill).toContain("1–3 specific, concrete, actionable items");
+  });
+
+  it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {
+    const violations: string[] = [];
+    for (const skillFile of SKILL_FRONTMATTER_ROOTS.flatMap(listSkillFiles)) {
+      const description = readFrontmatterDescription(readFileSync(skillFile, "utf8"));
+      if (!description) {
+        violations.push(`${path.relative(REPO_ROOT, skillFile)} is missing a frontmatter description`);
+      } else if (description.length > MAX_FRONTMATTER_DESCRIPTION_LENGTH) {
+        violations.push(`${path.relative(REPO_ROOT, skillFile)} description is ${description.length} chars`);
+      }
+    }
+    for (const skill of catalogSkills) {
+      if (skill.description.length > MAX_FRONTMATTER_DESCRIPTION_LENGTH) {
+        violations.push(`${skill.key} generated description is ${skill.description.length} chars`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it("ships the expected bundled and optional skill set", () => {
     const bundledKeys = catalogSkills
       .filter((skill) => skill.kind === "bundled")

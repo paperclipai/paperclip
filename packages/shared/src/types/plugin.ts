@@ -22,6 +22,8 @@ import type {
   IssuePriority,
   ProjectStatus,
   RoutineCatchUpPolicy,
+  RoutineActivityGatePolicy,
+  RoutineActivityGateScope,
   RoutineConcurrencyPolicy,
   RoutineStatus,
   IssueSurfaceVisibility,
@@ -164,6 +166,13 @@ export interface PluginEnvironmentDriverDeclaration {
    * runtime config. Omit to use the standard key for `templateRefKind`.
    */
   templateConfigBinding?: PluginEnvironmentTemplateConfigBinding;
+  /**
+   * Config paths (dot notation) that scope where captured templates live for
+   * this provider, such as an API endpoint. When one of these changes on a
+   * saved environment, captured templates cannot be re-linked to the updated
+   * config and a fresh capture is required.
+   */
+  templateIdentityPaths?: string[];
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */
@@ -309,6 +318,10 @@ export interface PluginManagedRoutineDeclaration {
   concurrencyPolicy?: RoutineConcurrencyPolicy;
   /** Suggested missed-trigger behavior. Defaults to core routine default. */
   catchUpPolicy?: RoutineCatchUpPolicy;
+  /** Suggested external-activity gate behavior. Defaults to `always`. */
+  activityGatePolicy?: RoutineActivityGatePolicy;
+  /** Suggested external-activity gate scope. Defaults to `company`. */
+  activityGateScope?: RoutineActivityGateScope;
   /** Suggested routine variables. */
   variables?: RoutineVariable[];
   /** Suggested triggers created when the routine is first reconciled. */
@@ -733,15 +746,17 @@ export interface PluginStateRecord {
 // ---------------------------------------------------------------------------
 
 /**
- * Domain type for a plugin's instance configuration as persisted in the
+ * Domain type for a plugin's company-scoped configuration as persisted in the
  * `plugin_config` table.
  * See PLUGIN_SPEC.md §21.3 for the schema definition.
  */
 export interface PluginConfig {
   /** UUID primary key. */
   id: string;
-  /** FK to `plugins.id`. Unique — each plugin has at most one config row. */
+  /** FK to `plugins.id`. Unique together with `companyId`. */
   pluginId: string;
+  /** FK to `companies.id`. */
+  companyId: string;
   /** Operator-provided configuration values (validated against `instanceConfigSchema`). */
   configJson: Record<string, unknown>;
   /** Most recent config validation error, if any. */

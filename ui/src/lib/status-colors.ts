@@ -95,12 +95,19 @@ export const statusBadge: Record<string, string> = {
   info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  // Skill Studio test-run "queued" aligns with pending (yellow). PAP-12962 D6.
+  queued: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 
   // Approval statuses
   pending_approval: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   revision_requested: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+
+  // Case statuses (PAP-12968 E3) — `draft` is the neutral pre-work state,
+  // rendered as a muted gray alias of `backlog`/`planned`. The other case
+  // statuses (in_progress/in_review/approved/done/cancelled) already map above.
+  draft: "bg-muted text-muted-foreground",
 
   // Issue statuses — consistent hues with issueStatusIcon above (PAP-75 brand
   // mapping: todo → amber, in_progress → blue "liveness").
@@ -111,6 +118,21 @@ export const statusBadge: Record<string, string> = {
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
+
+  // Tool access — policy decisions, catalog, and runtime health (Tools & Access, PAP-10389)
+  allowed: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  denied: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  block: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  "require-approval": "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  redacted: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
+  "rate-limit": "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
+  deferred: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
+  hidden: "bg-muted text-muted-foreground",
+  quarantined: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  "runtime-error": "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  healthy: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  degraded: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  unchecked: "bg-muted text-muted-foreground",
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";
@@ -161,10 +183,41 @@ export const agentStatusMotion: Record<string, string> = {
 export const runningLabelText = "text-[#1D4ED8] dark:text-[#2563EB]";
 
 /**
+ * Liveness-blue badge recipe — the shared "Live" / "Running" pill treatment
+ * (translucent blue fill + border + blue text). One source of truth so every
+ * live/running indicator reads as the same blue.
+ */
+export const liveBlueBadge = "bg-blue-500/10 border-blue-500/30 text-blue-600 dark:text-blue-400";
+
+/**
  * Issue/task status → brand colour name (PAP-75). `in_progress` is blue
  * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
  * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).
  */
+
+// ---------------------------------------------------------------------------
+// Inline banner tones (built-in agents provenance / paused notices)
+//
+// Softer, full-width banner surface derived from the same brand hue anchors as
+// `brandChipBadge`. `info` carries provenance/informational context, `warning`
+// carries paused/attention context, and `danger` carries failed actions. Consumed by
+// `<InlineBanner>` so feature banners stay token-backed instead of hand-rolling
+// per-instance `bg-yellow-*`/`bg-blue-*` recipes.
+// ---------------------------------------------------------------------------
+
+export type BannerTone = "info" | "warning" | "danger";
+
+export const brandBanner: Record<BannerTone, string> = {
+  info: "border-[#2563EB]/40 bg-[#DBEAFE]/50 text-[#1D4ED8] dark:border-[#2563eb59] dark:bg-[#2563eb14] dark:text-[#93C5FD]",
+  warning: "border-[#F59E0B]/50 bg-[#FEF3C7]/60 text-[#B45309] dark:border-[#f59e0b59] dark:bg-[#f59e0b12] dark:text-[#F59E0B]",
+  // PAP-14031: aligned to the proven `failed`/`error` chip recipe (bg-red-100 /
+  // text-red-700 pair) so title + body both clear WCAG AA 4.5:1 in light and
+  // dark on either `--background` or `--card`. The prior `text-destructive` on
+  // `bg-destructive/10` measured ~3.7–4.3:1 — under AA for normal text. Border
+  // keeps the destructive hue for continuity with other danger surfaces.
+  danger: "border-destructive/40 bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+};
+
 export const issueStatusColor: Record<string, BrandChipColor> = {
   backlog: "gray",
   todo: "amber",

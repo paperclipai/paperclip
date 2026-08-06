@@ -19,6 +19,10 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
   createRecorder: vi.fn(),
 }));
 
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
@@ -27,6 +31,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+  heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
@@ -77,6 +82,7 @@ describe.sequential("execution workspace routes", () => {
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
+    mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -133,6 +139,7 @@ describe.sequential("execution workspace routes", () => {
   it.each([
     ["forward", { mode: "forward" }],
     ["override", { mode: "override", reason: "operator break-glass" }],
+    ["quarantine_restore", { mode: "quarantine_restore", reason: "rescue dirty branch" }],
   ])("rejects agent actors for %s branch reconciliation", async (_mode, body) => {
     mockExecutionWorkspaceService.getById.mockResolvedValue({
       id: "workspace-1",
@@ -217,6 +224,168 @@ describe.sequential("execution workspace routes", () => {
         sourceIssueId: "issue-1",
         auditCommentId: "comment-1",
         recoveryActionId: "recovery-1",
+      }),
+    }));
+  });
+
+  it("accepts quarantine_restore, logs the rescue ref, and wakes the restored source issue", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        branchName: "feature/recorded",
+      },
+      inspection: {
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        worktreePath: "/tmp/worktree",
+        repoRoot: "/tmp/repo",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/live",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "diverged",
+        cleanliness: "dirty",
+        statusEntryCount: 2,
+        plainLanguageReason: "dirty live branch",
+      },
+      recoveryAction: {
+        id: "recovery-1",
+      },
+      auditCommentId: "comment-1",
+      rescueRef: {
+        branchName: "paperclip/rescue/PAP-123/20260709T120000Z",
+        commitSha: "3333333",
+        fileCount: 2,
+        sourceAuditCommentId: "comment-0",
+        claimantAuditCommentId: null,
+      },
+      restoredSourceIssue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "todo",
+        assigneeAgentId: "agent-1",
+      },
+      sourceIssueStatusChanged: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send({ mode: "quarantine_restore" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch).toHaveBeenCalledWith("workspace-1", {
+      mode: "quarantine_restore",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "execution_workspace.branch_reconciled",
+      entityType: "execution_workspace",
+      entityId: "workspace-1",
+      details: expect.objectContaining({
+        mode: "quarantine_restore",
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        recoveryActionId: "recovery-1",
+        rescueRef: expect.objectContaining({
+          branchName: "paperclip/rescue/PAP-123/20260709T120000Z",
+          commitSha: "3333333",
+        }),
+        sourceIssueStatus: "todo",
+      }),
+    }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      source: "automation",
+      reason: "issue_recovery_action_restored",
+      payload: expect.objectContaining({
+        issueId: "issue-1",
+        recoveryActionId: "recovery-1",
+        executionWorkspaceId: "workspace-1",
+        rescueRef: "paperclip/rescue/PAP-123/20260709T120000Z",
+        mutation: "execution_workspace_quarantine_restore",
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId: "issue-1",
+        taskId: "issue-1",
+        wakeReason: "issue_recovery_action_restored",
+        source: "execution_workspace.quarantine_restore",
+        recoveryActionId: "recovery-1",
+        executionWorkspaceId: "workspace-1",
+        rescueRef: "paperclip/rescue/PAP-123/20260709T120000Z",
+      }),
+    }));
+  });
+
+  it("wakes a restored in_review agent participant after quarantine_restore", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+    });
+    mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue({
+      workspace: {
+        id: "workspace-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        branchName: "feature/recorded",
+      },
+      inspection: {
+        fingerprint: "workspace_incoherence:v1:sha256:dirty",
+        worktreePath: "/tmp/worktree",
+        repoRoot: "/tmp/repo",
+        fromBranch: "feature/recorded",
+        toBranch: "feature/live",
+        fromSha: "1111111",
+        toSha: "2222222",
+        ancestryVerdict: "diverged",
+        cleanliness: "dirty",
+        statusEntryCount: 2,
+        plainLanguageReason: "dirty live branch",
+      },
+      recoveryAction: {
+        id: "recovery-1",
+      },
+      auditCommentId: "comment-1",
+      rescueRef: null,
+      restoredSourceIssue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: "reviewer-agent-1",
+      },
+      sourceIssueStatusChanged: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/reconcile-branch")
+      .send({ mode: "quarantine_restore" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({
+        sourceIssueStatus: "in_review",
+      }),
+    }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("reviewer-agent-1", expect.objectContaining({
+      reason: "issue_recovery_action_restored",
+      payload: expect.objectContaining({
+        issueId: "issue-1",
+        mutation: "execution_workspace_quarantine_restore",
+      }),
+      contextSnapshot: expect.objectContaining({
+        issueId: "issue-1",
+        wakeReason: "issue_recovery_action_restored",
+        source: "execution_workspace.quarantine_restore",
       }),
     }));
   });

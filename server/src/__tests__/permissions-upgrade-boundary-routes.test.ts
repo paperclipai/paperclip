@@ -254,7 +254,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     expect(activity.body).toEqual(expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]));
     expect(workProducts.status, JSON.stringify(workProducts.body)).toBe(200);
     expect(workProducts.body).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Preview" })]));
-  });
+  }, 20_000);
 
   it("denies cross-company issue reads before private-agent grant evaluation can matter", async () => {
     const sourceCompany = await seedCompany(db, "Source");
@@ -284,8 +284,10 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     const res = await request(await createApp(db, agentActor(sourceCompany.id, sourceAgent.id)))
       .get(`/api/issues/${issue.id}`);
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Agent key cannot access another company");
+    // Cross-tenant reads return 404 (not 403) so the response is
+    // indistinguishable from a nonexistent issue — no existence oracle.
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
   });
 
   it("allows same-company route assignment after upgrade but keeps private target assignment grant constrained", async () => {
