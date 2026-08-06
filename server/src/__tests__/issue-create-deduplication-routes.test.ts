@@ -62,6 +62,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(activityLog);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issuePlanDecompositions);
