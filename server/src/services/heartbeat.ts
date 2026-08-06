@@ -225,6 +225,11 @@ import {
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
+  checkProcessAdapterAutoAssignmentConstraint,
+  PROCESS_ADAPTER_HUMAN_ACTION_LOCK_BLOCKED_REASON,
+  resolveHumanActionLockRestrictedAdapterTypes,
+} from "./process-adapter-assignment-constraints.js";
+import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
@@ -12375,6 +12380,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return null;
       }
+
+      const restrictedAdapterTypes = resolveHumanActionLockRestrictedAdapterTypes();
+      if (restrictedAdapterTypes.has(agent.adapterType)) {
+        const lockState = await db
+          .select({
+            executionLockedAt: issues.executionLockedAt,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (lockState?.executionLockedAt) {
+          const [pendingInteraction, pendingApproval] = await Promise.all([
+            db
+              .select({ id: issueThreadInteractions.id })
+              .from(issueThreadInteractions)
+              .where(
+                and(
+                  eq(issueThreadInteractions.companyId, run.companyId),
+                  eq(issueThreadInteractions.issueId, issueId),
+                  eq(issueThreadInteractions.status, "pending"),
+                ),
+              )
+              .limit(1)
+              .then((rows) => rows[0] ?? null),
+            db
+              .select({ id: issueApprovals.approvalId })
+              .from(issueApprovals)
+              .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+              .where(
+                and(
+                  eq(issueApprovals.companyId, run.companyId),
+                  eq(issueApprovals.issueId, issueId),
+                  inArray(approvals.status, ["pending", "revision_requested"]),
+                ),
+              )
+              .limit(1)
+              .then((rows) => rows[0] ?? null),
+          ]);
+
+          const constraintResult = checkProcessAdapterAutoAssignmentConstraint({
+            adapterType: agent.adapterType,
+            currentRunId: run.id,
+            executionLockedAt: lockState.executionLockedAt,
+            executionLockRunId: lockState.executionRunId,
+            hasPendingHumanAction: Boolean(pendingInteraction || pendingApproval),
+            restrictedAdapterTypes,
+          });
+
+          if (!constraintResult.allowed) {
+            await cancelQueuedRunForProcessAdapterHumanActionLock(run, issueId, {
+              adapterType: agent.adapterType,
+              executionLockedAt: lockState.executionLockedAt,
+              pendingInteractionId: pendingInteraction?.id ?? null,
+              pendingApprovalId: pendingApproval?.id ?? null,
+            });
+            logger.info(
+              { runId: run.id, issueId, agentId: run.agentId, adapterType: agent.adapterType },
+              "claimQueuedRun: rejected process adapter auto-assignment to issue locked and awaiting human action",
+            );
+            return null;
+          }
+        }
+      }
     }
 
     const claimedAt = new Date();
@@ -12498,6 +12568,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         issueId,
         unresolvedBlockerIssueIds,
+      },
+    });
+
+    return cancelled;
+  }
+
+  async function cancelQueuedRunForProcessAdapterHumanActionLock(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    details: {
+      adapterType: string;
+      executionLockedAt: Date | string;
+      pendingInteractionId: string | null;
+      pendingApprovalId: string | null;
+    },
+  ) {
+    const now = new Date();
+    const reason =
+      `Cancelled because ${details.adapterType} adapters are restricted from auto-claiming an issue ` +
+      "that is execution-locked by another run and awaiting human action";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: PROCESS_ADAPTER_HUMAN_ACTION_LOCK_BLOCKED_REASON,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: PROCESS_ADAPTER_HUMAN_ACTION_LOCK_BLOCKED_REASON,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "human_action_lock_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    // This run never owned the issue's execution lock (it belongs to a different, still-running
+    // run), so unlike cancelQueuedRunForBlockedDependencies above, the lock must not be cleared here.
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        issueId,
+        adapterType: details.adapterType,
+        executionLockedAt: new Date(details.executionLockedAt).toISOString(),
+        pendingInteractionId: details.pendingInteractionId,
+        pendingApprovalId: details.pendingApprovalId,
       },
     });
 
