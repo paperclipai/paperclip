@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -3286,18 +3286,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       env: { PAPERCLIP_ROUTINE_ISSUE_MODE: { type: "plain", value: "reuse_terminal" } },
     }, {});
     const [fallbackRoutine] = await db.select().from(routines).where(eq(routines.id, routine.id));
+    // Pre-seed an open rail under a different origin id so origin-keyed open
+    // coalesce misses, forcing the create path. Title-keyed allowDuplicate=false
+    // must still fold onto the existing card (TSMC-19799).
     const existing = await issueSvc.create(companyId, {
       projectId,
       title: "fallback-monitor",
       description: "Existing fallback-monitor execution.",
-      status: "blocked",
+      status: "todo",
       priority: "medium",
       assigneeAgentId: agentId,
       originKind: "routine_execution",
-      originId: routine.id,
+      originId: randomUUID(),
       originRunId: randomUUID(),
     });
-    const result = await svc.run(routine.id, { source: "schedule" });
+    const result = await svc.runRoutine(routine.id, { source: "schedule" });
 
     expect(result).toMatchObject({ status: "coalesced", linkedIssueId: existing.id });
     const routineIssues = await db
