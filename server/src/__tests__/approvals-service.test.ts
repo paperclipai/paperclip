@@ -134,6 +134,66 @@ describe("approvalService resolution idempotency", () => {
       }),
     );
   });
+
+  it("withdraws only pending approvals and stores exact agent attribution", async () => {
+    const withdrawn = {
+      ...createApproval("withdrawn"),
+      decisionNote: "Superseded",
+      withdrawnByAgentId: "requester-1",
+      withdrawnByUserId: null,
+      withdrawnAt: new Date("2026-08-06T12:00:00.000Z"),
+    };
+    const dbStub = createDbStub([[createApproval("pending")]], [withdrawn]);
+
+    const result = await approvalService(dbStub.db as any).withdraw(
+      "approval-1",
+      { agentId: "requester-1" },
+      "Superseded",
+    );
+
+    expect(result).toMatchObject({ applied: true, approval: withdrawn });
+  });
+
+  it.each(["approved", "rejected", "cancelled", "revision_requested"])(
+    "leaves %s approvals unchanged when withdrawal is attempted",
+    async (status) => {
+      const dbStub = createDbStub([[createApproval(status)]], []);
+
+      await expect(approvalService(dbStub.db as any).withdraw(
+        "approval-1",
+        { agentId: "requester-1" },
+        "Superseded",
+      )).rejects.toThrow("Only pending approvals can be withdrawn");
+      expect((dbStub.db as any).update).not.toHaveBeenCalled();
+    },
+  );
+
+  it("treats an authorized repeated withdrawal as an idempotent no-op", async () => {
+    const withdrawn = createApproval("withdrawn");
+    const dbStub = createDbStub([[withdrawn]], []);
+
+    const result = await approvalService(dbStub.db as any).withdraw(
+      "approval-1",
+      { agentId: "requester-1" },
+      "Superseded",
+    );
+
+    expect(result).toEqual({ approval: withdrawn, applied: false });
+    expect((dbStub.db as any).update).not.toHaveBeenCalled();
+  });
+
+  it("loses an approve/withdraw race without overwriting the approval winner", async () => {
+    const dbStub = createDbStub(
+      [[createApproval("pending")], [createApproval("approved")]],
+      [],
+    );
+
+    await expect(approvalService(dbStub.db as any).withdraw(
+      "approval-1",
+      { agentId: "requester-1" },
+      "Superseded",
+    )).rejects.toThrow("Only pending approvals can be withdrawn");
+  });
 });
 
 describe("approvalService.findOpenHireApprovalForAgent", () => {

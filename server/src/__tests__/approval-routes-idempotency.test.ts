@@ -6,6 +6,7 @@ const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  withdraw: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   requestRevision: vi.fn(),
@@ -86,7 +87,11 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   } as any;
 }
 
-async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
+async function createAgentApp(options: {
+  runId?: string;
+  contextSnapshot?: Record<string, unknown>;
+  actorOverrides?: Record<string, unknown>;
+} = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -101,6 +106,7 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
       runId: options.runId ?? "run-1",
       source: "api_key",
       isInstanceAdmin: false,
+      ...options.actorOverrides,
     };
     next();
   });
@@ -121,6 +127,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
     mockApprovalService.create.mockReset();
+    mockApprovalService.withdraw.mockReset();
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
     mockApprovalService.requestRevision.mockReset();
@@ -369,6 +376,188 @@ describe("approval routes idempotent retries", () => {
         action: "approval.created",
       }),
     );
+  });
+
+  it("ignores an agent-supplied requester id and persists the authenticated agent", async () => {
+    mockApprovalService.create.mockImplementation(async (_companyId, input) => ({
+      id: "approval-spoof",
+      companyId: "company-1",
+      ...input,
+    }));
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        requestedByAgentId: "00000000-0000-4000-8000-000000000099",
+        payload: { title: "Spoof requester" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ requestedByAgentId: "agent-1" }),
+    );
+  });
+
+  it("lets the requesting agent withdraw its own pending approval and records bounded audit metadata", async () => {
+    const pending = {
+      id: "approval-own",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    };
+    const withdrawn = {
+      ...pending,
+      status: "withdrawn",
+      decisionNote: "Superseded",
+      withdrawnByAgentId: "agent-1",
+      withdrawnByUserId: null,
+      withdrawnAt: new Date("2026-08-06T12:00:00.000Z"),
+    };
+    mockApprovalService.getById.mockResolvedValue(pending);
+    mockApprovalService.withdraw.mockResolvedValue({ approval: withdrawn, applied: true });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-own/withdraw")
+      .send({ reason: "  Superseded  " });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.withdraw).toHaveBeenCalledWith(
+      "approval-own",
+      { agentId: "agent-1", userId: null },
+      "Superseded",
+    );
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "approval.withdraw:any" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.withdrawn",
+        actorType: "agent",
+        actorId: "agent-1",
+        details: expect.objectContaining({
+          authorizationMode: "requester",
+          reason: "Superseded",
+          withdrawnByAgentId: "agent-1",
+        }),
+      }),
+    );
+  });
+
+  it("denies a different same-company agent without approval.withdraw:any, even if named CEO", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-other",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-2",
+    });
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "approval.withdraw:any",
+      reason: "deny_missing_grant",
+      explanation: "Missing permission",
+    });
+
+    const res = await request(await createAgentApp({ actorOverrides: { role: "ceo" } }))
+      .post("/api/approvals/approval-other/withdraw")
+      .send({ reason: "Cleanup" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockApprovalService.withdraw).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets an explicit approval.withdraw:any holder withdraw another request", async () => {
+    const pending = {
+      id: "approval-cleanup",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-2",
+    };
+    mockApprovalService.getById.mockResolvedValue(pending);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "approval.withdraw:any",
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by explicit grant",
+    });
+    mockApprovalService.withdraw.mockResolvedValue({
+      approval: {
+        ...pending,
+        status: "withdrawn",
+        withdrawnByAgentId: "agent-1",
+        withdrawnByUserId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-cleanup/withdraw")
+      .send({ reason: "Backlog cleanup" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "approval.withdraw:any",
+      resource: { type: "company", companyId: "company-1" },
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ authorizationMode: "scoped_cleanup" }),
+      }),
+    );
+  });
+
+  it("returns cross-company withdraw ids as not found", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-cross-company",
+      companyId: "company-2",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-cross-company/withdraw")
+      .send({ reason: "No longer needed" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(mockApprovalService.withdraw).not.toHaveBeenCalled();
+  });
+
+  it("blocks cheap status-only recovery runs from withdrawing approvals", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-cheap",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp({
+      contextSnapshot: {
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    }))
+      .post("/api/approvals/approval-cheap/withdraw")
+      .send({ reason: "No longer needed" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockApprovalService.withdraw).not.toHaveBeenCalled();
   });
 
   it("blocks status-only recovery runs from creating approvals", async () => {

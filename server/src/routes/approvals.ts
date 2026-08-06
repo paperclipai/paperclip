@@ -7,6 +7,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  withdrawApprovalSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -247,7 +248,7 @@ export function approvalRoutes(
       payload: normalizedPayload,
       requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
       requestedByAgentId:
-        approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
+        actor.actorType === "agent" ? actor.actorId : approvalInput.requestedByAgentId ?? null,
       status: "pending",
       decisionNote: null,
       decidedByUserId: null,
@@ -283,6 +284,61 @@ export function approvalRoutes(
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
+  });
+
+  router.post("/approvals/:id/withdraw", validate(withdrawApprovalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
+    if (!existing) return;
+    if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
+
+    let authorizationMode: "requester" | "scoped_cleanup";
+    if (req.actor.type === "agent" && req.actor.agentId === existing.requestedByAgentId) {
+      authorizationMode = "requester";
+    } else {
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "approval.withdraw:any",
+        resource: { type: "company", companyId: existing.companyId },
+      });
+      if (!decision.allowed) {
+        res.status(403).json({ error: "Only the requester or a principal with approval.withdraw:any can withdraw this approval" });
+        return;
+      }
+      authorizationMode = "scoped_cleanup";
+    }
+
+    const actor = getActorInfo(req);
+    const { approval, applied } = await svc.withdraw(
+      id,
+      {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+      req.body.reason,
+    );
+
+    if (applied) {
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.withdrawn",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          requestedByAgentId: approval.requestedByAgentId,
+          authorizationMode,
+          withdrawnByAgentId: approval.withdrawnByAgentId,
+          withdrawnByUserId: approval.withdrawnByUserId,
+          reason: approval.decisionNote,
+        },
+      });
+    }
+
+    res.json(redactApprovalPayload(approval));
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, approvals, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(approvals);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -170,6 +171,31 @@ describeEmbeddedPostgres("dashboard service", () => {
       // failed + timed_out with no error code both bucket under "unknown"
       failedByErrorCode: { unknown: 2 },
     });
+  });
+
+  it("excludes withdrawn approvals from the pending dashboard count", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(approvals).values([
+      { companyId, type: "request_board_approval", status: "pending", payload: {} },
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "withdrawn",
+        payload: {},
+        decisionNote: "Superseded",
+        withdrawnAt: new Date(),
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.pendingApprovals).toBe(1);
   });
 
   it("separates recovered restart kills from true failures and breaks failures down by error code", async () => {
