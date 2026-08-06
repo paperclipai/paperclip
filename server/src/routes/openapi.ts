@@ -668,6 +668,17 @@ const workTimelineResponseSchema = z.object({
   }).strict(),
 }).strict();
 
+const pushSubscriptionBodySchema = z.object({
+  endpoint: z.string().url(),
+  p256dh: z.string().min(1),
+  auth: z.string().min(1),
+  deviceLabel: z.string().optional(),
+}).strict();
+
+const deletePushSubscriptionBodySchema = z.object({
+  endpoint: z.string().url(),
+}).strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -732,6 +743,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/openapi.json",
+  "GET /api/push/vapid-public-key",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
   "GET /api/cli-auth/challenges/{id}",
@@ -755,6 +767,7 @@ const BOARD_ONLY_PREFIXES = [
   "/api/auth/",
   "/api/admin/",
   "/api/plugins",
+  "/api/push/",
   "/api/instance/",
 ];
 
@@ -812,6 +825,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "GET /api/companies/{companyId}/push/subscriptions",
+  "POST /api/companies/{companyId}/push/subscriptions",
+  "DELETE /api/companies/{companyId}/push/subscriptions",
+  "POST /api/companies/{companyId}/push/test",
+  "POST /api/companies/{companyId}/push/digest/test",
   "GET /api/issues/{issueId}/file-resources/content",
   "GET /api/issues/{issueId}/file-resources/list",
   "GET /api/issues/{issueId}/file-resources/resolve",
@@ -957,6 +975,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/gateways",
   "POST /api/tool-gateway/gateways/{gatewayId}/tokens",
   "POST /api/tool-gateway/sessions",
+  "POST /api/companies/{companyId}/push/subscriptions",
 ]);
 
 const ACCEPTED_OPERATIONS = new Set([
@@ -1185,6 +1204,96 @@ registry.registerPath({
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
   responses: { 200: r.ok() },
+});
+
+// ─── Push notifications ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/push/vapid-public-key",
+  tags: ["push"],
+  summary: "Get the Web Push VAPID public key",
+  responses: {
+    200: r.ok(z.object({ vapidPublicKey: z.string() }).strict()),
+    503: { description: "VAPID is not configured", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/push/subscriptions",
+  tags: ["push"],
+  summary: "Subscribe the current browser for Web Push notifications",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(pushSubscriptionBodySchema),
+  },
+  responses: {
+    200: r.ok(z.object({ status: z.literal("subscribed") }).strict()),
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/push/subscriptions",
+  tags: ["push"],
+  summary: "Unsubscribe a browser endpoint from Web Push notifications",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(deletePushSubscriptionBodySchema),
+  },
+  responses: {
+    200: r.ok(z.object({ status: z.literal("unsubscribed") }).strict()),
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/push/subscriptions",
+  tags: ["push"],
+  summary: "List Web Push subscriptions",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      subscriptions: z.array(z.object({
+        id: z.string(),
+        endpoint: z.string(),
+        deviceLabel: z.string(),
+        createdAt: z.unknown(),
+      }).strict()),
+    }).strict()),
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/push/test",
+  tags: ["push"],
+  summary: "Send a test Web Push notification",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    503: { description: "VAPID is not configured", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/push/digest/test",
+  tags: ["push"],
+  summary: "Send a test Web Push digest notification",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    503: { description: "VAPID is not configured", content: { "application/json": { schema: ErrorSchema } } },
+  },
 });
 
 // ─── Companies ───────────────────────────────────────────────────────────────
