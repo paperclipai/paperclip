@@ -345,6 +345,13 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ISSUE_WAKE_LAST_ACTIVITY_AT_KEY = "_paperclipIssueLastActivityAt";
+const ISSUE_WAKE_LOCAL_ACTIVITY_ACTIONS = [
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+];
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
@@ -3125,6 +3132,186 @@ export function buildReferencedProjectRunObservability(input: {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function parseDateMarker(value: unknown): Date | null {
+  const raw = value instanceof Date ? value.toISOString() : readNonEmptyString(value);
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function latestDateMarker(...values: unknown[]): Date | null {
+  return values
+    .map(parseDateMarker)
+    .filter((value): value is Date => Boolean(value))
+    .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+}
+
+function issueWakePayloadWithActivityMarker(
+  payload: Record<string, unknown> | null,
+  issueId: string,
+  lastActivityAt: Date,
+) {
+  return {
+    ...(payload ?? {}),
+    issueId,
+    [ISSUE_WAKE_LAST_ACTIVITY_AT_KEY]: lastActivityAt.toISOString(),
+  };
+}
+
+function applyIssueWakeActivityMarkerToContext(
+  contextSnapshot: Record<string, unknown>,
+  lastActivityAt: Date,
+) {
+  contextSnapshot[ISSUE_WAKE_LAST_ACTIVITY_AT_KEY] = lastActivityAt.toISOString();
+}
+
+function readIssueWakeActivityMarker(record: unknown): Date | null {
+  const parsed = parseObject(record);
+  return parseDateMarker(parsed[ISSUE_WAKE_LAST_ACTIVITY_AT_KEY])
+    ?? parseDateMarker(parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY])[ISSUE_WAKE_LAST_ACTIVITY_AT_KEY]);
+}
+
+async function readCanonicalIssueWakeActivityAt(
+  dbOrTx: any,
+  companyId: string,
+  issueId: string,
+): Promise<Date | null> {
+  const [row] = await dbOrTx
+    .select({
+      updatedAt: issues.updatedAt,
+      latestCommentAt: sql<Date | null>`(
+        select max(${issueComments.createdAt})
+        from ${issueComments}
+        where ${issueComments.companyId} = ${companyId}
+          and ${issueComments.issueId} = ${issueId}
+      )`,
+      latestLogAt: sql<Date | null>`(
+        select max(${activityLog.createdAt})
+        from ${activityLog}
+        where ${activityLog.companyId} = ${companyId}
+          and ${activityLog.entityType} = 'issue'
+          and ${activityLog.entityId} = ${issueId}
+          and ${activityLog.action} not in (${sql.join(
+            ISSUE_WAKE_LOCAL_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+            sql`, `,
+          )})
+      )`,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+    .limit(1);
+
+  if (!row) return null;
+  return latestDateMarker(row.updatedAt, row.latestCommentAt, row.latestLogAt);
+}
+
+async function markRunIssueWakeActivity(input: {
+  dbOrTx: any;
+  runId: string;
+  wakeupRequestId: string | null;
+  issueId: string;
+  lastActivityAt: Date;
+  updatedAt?: Date;
+}) {
+  const updatedAt = input.updatedAt ?? new Date();
+  const [run] = await input.dbOrTx
+    .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    .limit(1);
+
+  await input.dbOrTx
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: {
+        ...parseObject(run?.contextSnapshot),
+        issueId: input.issueId,
+        [ISSUE_WAKE_LAST_ACTIVITY_AT_KEY]: input.lastActivityAt.toISOString(),
+      },
+      updatedAt,
+    })
+    .where(eq(heartbeatRuns.id, input.runId));
+
+  if (!input.wakeupRequestId) return;
+
+  const [wakeupRequest] = await input.dbOrTx
+    .select({ payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests)
+    .where(eq(agentWakeupRequests.id, input.wakeupRequestId))
+    .limit(1);
+
+  await input.dbOrTx
+    .update(agentWakeupRequests)
+    .set({
+      payload: issueWakePayloadWithActivityMarker(
+        parseObject(wakeupRequest?.payload),
+        input.issueId,
+        input.lastActivityAt,
+      ),
+      updatedAt,
+    })
+    .where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+}
+
+async function readLastIssueWakeActivityMarker(input: {
+  dbOrTx: any;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+}) {
+  const [row] = await input.dbOrTx
+    .select({
+      id: agentWakeupRequests.id,
+      payload: agentWakeupRequests.payload,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(agentWakeupRequests)
+    .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        sql`(
+          ${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}
+          or ${agentWakeupRequests.payload} ->> 'taskId' = ${input.issueId}
+          or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${input.issueId}
+          or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${input.issueId}
+          or ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}
+          or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${input.issueId}
+        )`,
+      ),
+    )
+    .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.createdAt))
+    .limit(1);
+
+  if (!row) return null;
+  const marker = readIssueWakeActivityMarker(row.payload) ?? readIssueWakeActivityMarker(row.contextSnapshot);
+  return marker ? { requestId: row.id, lastActivityAt: marker } : null;
+}
+
+async function evaluateIssueWakeNoNewActivitySkip(input: {
+  dbOrTx: any;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+}) {
+  const currentActivityAt = await readCanonicalIssueWakeActivityAt(input.dbOrTx, input.companyId, input.issueId);
+  if (!currentActivityAt) {
+    return { skip: false as const, currentActivityAt: null, previousWake: null };
+  }
+
+  const previousWake = await readLastIssueWakeActivityMarker(input);
+  if (!previousWake) {
+    return { skip: false as const, currentActivityAt, previousWake: null };
+  }
+
+  return {
+    skip: currentActivityAt.getTime() <= previousWake.lastActivityAt.getTime(),
+    currentActivityAt,
+    previousWake,
+  };
 }
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
@@ -12423,7 +12610,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      const lockedIssue = await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -12440,7 +12627,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issues.assigneeAgentId, claimed.agentId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
-        );
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (lockedIssue) {
+        await markRunIssueWakeActivity({
+          dbOrTx: db,
+          runId: claimed.id,
+          wakeupRequestId: claimed.wakeupRequestId,
+          issueId: claimedIssueId,
+          lastActivityAt: claimedAt,
+          updatedAt: claimedAt,
+        });
+      }
     }
 
     return claimed;
@@ -15874,6 +16073,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : livenessRun,
           agent,
         );
+        if (issueId) {
+          const finalIssueActivityAt = await readCanonicalIssueWakeActivityAt(db, finalizedRun.companyId, issueId);
+          if (finalIssueActivityAt) {
+            await markRunIssueWakeActivity({
+              dbOrTx: db,
+              runId: finalizedRun.id,
+              wakeupRequestId: finalizedRun.wakeupRequestId,
+              issueId,
+              lastActivityAt: finalIssueActivityAt,
+            });
+          }
+        }
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -17112,6 +17323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload,
     });
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    let payloadForWake = payload;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
@@ -17455,6 +17667,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        const activitySkip = await evaluateIssueWakeNoNewActivitySkip({
+          dbOrTx: tx,
+          companyId: agent.companyId,
+          agentId,
+          issueId: issue.id,
+        });
+        if (activitySkip.currentActivityAt) {
+          payloadForWake = issueWakePayloadWithActivityMarker(payloadForWake, issue.id, activitySkip.currentActivityAt);
+          applyIssueWakeActivityMarkerToContext(enrichedContextSnapshot, activitySkip.currentActivityAt);
+        }
+        if (activitySkip.skip && activitySkip.currentActivityAt && activitySkip.previousWake) {
+          const now = new Date();
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_wake_no_new_activity",
+            payload: {
+              ...(payloadForWake ?? {}),
+              heartbeatSkip: {
+                reason: "issue_wake_no_new_activity",
+                requestedReason: reason,
+                issueId: issue.id,
+                currentIssueLastActivityAt: activitySkip.currentActivityAt.toISOString(),
+                lastWakeIssueLastActivityAt: activitySkip.previousWake.lastActivityAt.toISOString(),
+                lastWakeupRequestId: activitySkip.previousWake.requestId,
+              },
+            },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: now,
+          });
+          return { kind: "skipped" as const };
+        }
+
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
           if (
@@ -17698,7 +17948,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_dependencies_blocked",
             payload: {
-              ...(payload ?? {}),
+              ...(payloadForWake ?? {}),
               issueId,
               unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
             },
@@ -17791,7 +18041,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               triggerDetail,
               reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
               payload: {
-                ...(payload ?? {}),
+                ...(payloadForWake ?? {}),
                 issueId,
                 heartbeatSkip: {
                   code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -17881,7 +18131,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               source,
               triggerDetail,
               reason: "issue_execution_same_name",
-              payload,
+              payload: payloadForWake,
               status: "coalesced",
               coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
@@ -17896,7 +18146,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
           if (availableActiveExecutionRun) {
             const deferredPayload = {
-              ...(payload ?? {}),
+              ...(payloadForWake ?? {}),
               issueId,
               [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
             };
@@ -17925,7 +18175,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
               const mergedDeferredPayload = {
                 ...existingDeferredPayload,
-                ...(payload ?? {}),
+                ...(payloadForWake ?? {}),
                 issueId,
                 [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
               };
@@ -18052,7 +18302,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 triggerDetail,
                 reason: "issue_rewake_throttled",
                 payload: {
-                  ...(payload ?? {}),
+                  ...(payloadForWake ?? {}),
                   issueId,
                   heartbeatSkip: {
                     reason: "issue_rewake_throttled",
@@ -18084,7 +18334,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: dailyCapBlock.reason,
             payload: {
-              ...(payload ?? {}),
+              ...(payloadForWake ?? {}),
               heartbeatSkip: {
                 reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
                 observed: dailyCapBlock.observed,
@@ -18117,7 +18367,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source,
             triggerDetail,
             reason,
-            payload,
+            payload: payloadForWake,
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
