@@ -309,7 +309,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       },
     });
 
-  });
+  }, 30_000);
 
   it("enforces not_creator for status verdicts and admits another agent", async () => {
     const seeded = await seedCompany("NCR");
