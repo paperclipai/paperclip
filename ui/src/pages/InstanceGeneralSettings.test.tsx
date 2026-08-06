@@ -114,4 +114,21 @@ describe("InstanceGeneralSettings sign-out", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.health });
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
   });
+
+  it("shows a current sign-out failure instead of a stale settings error", async () => {
+    mockInstanceSettingsApi.updateGeneral.mockRejectedValue(new Error("Settings update failed"));
+    mockAuthApi.signOut.mockRejectedValue(new Error("Sign-out request failed"));
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const keyboardToggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle keyboard shortcuts"]',
+    );
+    flushSync(() => keyboardToggle?.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Settings update failed"));
+
+    flushSync(() => signOutButton()?.click());
+
+    await vi.waitFor(() => expect(container.textContent).toContain("Sign-out request failed"));
+    expect(container.textContent).not.toContain("Settings update failed");
+  });
 });

@@ -358,7 +358,10 @@ export function InstanceGeneralSettings() {
             variant="outline"
             size="sm"
             disabled={signOutMutation.isPending}
-            onClick={() => signOutMutation.mutate()}
+            onClick={() => {
+              setActionError(null);
+              signOutMutation.mutate();
+            }}
           >
             <LogOut className="size-4" />
             {signOutMutation.isPending ? "Signing out..." : "Sign out"}
