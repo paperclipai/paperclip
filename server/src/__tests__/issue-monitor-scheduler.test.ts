@@ -5,6 +5,7 @@ import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   activityLog,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
@@ -109,6 +110,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
