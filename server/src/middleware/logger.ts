@@ -8,16 +8,19 @@ import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
 
+const config = readConfigFile();
+
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 
-  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
+  const fileLogDir = config?.logging.logDir?.trim();
   if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
 
   return resolveDefaultLogsDir();
 }
 
+const loggingConfig = config?.logging;
 const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
@@ -40,8 +43,21 @@ export const logger = pino({
       level: "info",
     },
     {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      pipeline: [
+        {
+          target: "pino-pretty",
+          options: { ...sharedOpts, colorize: false },
+        },
+        {
+          target: "pino-roll",
+          options: {
+            file: logFile,
+            size: loggingConfig?.maxSizeMb ?? 200,
+            mkdir: true,
+            limit: { count: loggingConfig?.maxFiles ?? 10 },
+          },
+        },
+      ],
       level: "debug",
     },
   ],

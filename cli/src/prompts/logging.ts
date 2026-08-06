@@ -29,9 +29,9 @@ export async function promptLogging(): Promise<LoggingConfig> {
       process.exit(0);
     }
 
-    return { mode: "file", logDir: logDir || defaultLogDir };
+    return { mode: "file", logDir: logDir || defaultLogDir, maxSizeMb: 200, maxFiles: 10 };
   }
 
   p.note("Cloud logging is coming soon. Using file-based logging for now.");
-  return { mode: "file", logDir: defaultLogDir };
+  return { mode: "file", logDir: defaultLogDir, maxSizeMb: 200, maxFiles: 10 };
 }

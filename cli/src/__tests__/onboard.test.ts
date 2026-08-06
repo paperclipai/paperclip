@@ -33,6 +33,8 @@ function createExistingConfigFixture() {
     logging: {
       mode: "file",
       logDir: path.join(runtimeRoot, "logs"),
+      maxSizeMb: 200,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "local_trusted",
