@@ -77,6 +77,6 @@ export function startHostResourceTelemetry(options: {
 
   tick();
   const interval = setInterval(tick, intervalMs);
-  interval.unref();
+  interval.unref?.();
   return () => clearInterval(interval);
 }
