@@ -1896,8 +1896,8 @@ describe("agent issue mutation checkout ownership", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ assigneeAgentId: peerAgentId });
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Forbidden" });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Issue not found" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
