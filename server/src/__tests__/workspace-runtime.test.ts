@@ -5373,7 +5373,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     await db.delete(companies);
   });
 
-  it("allocates distinct actual ports for pinned services in sibling execution workspaces", async () => {
+  it("allocates distinct actual ports for pinned services in sibling execution workspaces on macOS", async () => {
     if (process.platform !== "linux") return;
     try {
       await execFileAsync("lsof", ["-v"]);
@@ -5386,6 +5386,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pinned-home-"));
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const originalPlatform = process.platform;
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-pinned-${randomUUID()}`;
 
@@ -5479,15 +5480,22 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         config,
         adapterEnv: {},
       });
-      const second = await startRuntimeServicesForWorkspaceControl({
-        db,
-        actor,
-        issue: null,
-        workspace: { ...buildWorkspace(secondWorkspaceRoot), projectId, workspaceId: null },
-        executionWorkspaceId: secondExecutionWorkspaceId,
-        config,
-        adapterEnv: {},
-      });
+      const second = await (async () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        try {
+          return await startRuntimeServicesForWorkspaceControl({
+            db,
+            actor,
+            issue: null,
+            workspace: { ...buildWorkspace(secondWorkspaceRoot), projectId, workspaceId: null },
+            executionWorkspaceId: secondExecutionWorkspaceId,
+            config,
+            adapterEnv: {},
+          });
+        } finally {
+          Object.defineProperty(process, "platform", { value: originalPlatform });
+        }
+      })();
 
       expect(first[0]?.port).toBe(basePort);
       expect(second[0]?.port).toBeGreaterThan(basePort!);
@@ -5502,6 +5510,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         expect.objectContaining({ executionWorkspaceId: secondExecutionWorkspaceId, port: second[0]?.port, url: second[0]?.url }),
       ]));
     } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: firstExecutionWorkspaceId,
