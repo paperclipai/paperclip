@@ -70,6 +70,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   applyManagedEnvironments,
+  approvalService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1166,6 +1167,7 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
     await decisionExecutor.sweepExpired();
+    await approvalService(db).sweepOpenMachineConditions();
 
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
@@ -1176,6 +1178,11 @@ export async function startServer(): Promise<StartedServer> {
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
+        trackHeartbeatSchedulerWork(approvalService(db)
+          .sweepOpenMachineConditions()
+          .catch((err: unknown) => {
+            logger.error({ err }, "approval machine-condition sweeper failed");
+          }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
