@@ -6,11 +6,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentApiKeys,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   authUsers,
   companies,
   companyMemberships,
+  companySkills,
   createDb,
   documentRevisions,
   documents,
@@ -68,9 +70,11 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agentApiKeys);
     await db.delete(agents);
     await db.delete(companyMemberships);
+    await db.delete(companySkills);
     await db.delete(authUsers);
     await db.delete(companies);
   });
@@ -271,6 +275,32 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
   });
 
+  it("does not enqueue a second assignment wake when the accepted unblock owner is already the assignee", async () => {
+    const companyId = await seedCompany();
+    const owner = await seedAgent(companyId);
+    const app = createApp({ blockedOwnerEnqueueWakeup: acceptedBlockedOwnerWakeup(companyId) });
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Owner-assigned blocked root",
+        status: "blocked",
+        assigneeAgentId: owner.id,
+        unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the finding" },
+      })
+      .expect(201);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const wakes = await db
+      .select({ reason: agentWakeupRequests.reason, idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, owner.id));
+
+    expect(response.body.blockedOwnerNotifiedAt).toEqual(expect.any(String));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ reason: "issue_unblock_requested" });
+  });
+
   it("rejects a non-invokable unblock owner before blocked root creation", async () => {
     const companyId = await seedCompany();
     const pausedOwner = await seedAgent(companyId, null, "paused");
@@ -436,7 +466,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await request(app)
       .post(`/api/companies/${companyId}/issues`)
       .send(payload)
-      .expect(500);
+      .expect(201);
     const committed = await db
       .select()
       .from(issues)
@@ -457,6 +487,35 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
     expect(attempts).toBe(2);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+  });
+
+  it("falls back to an assignee wake when the canonical owner scheduler rejects a blocked root", async () => {
+    const companyId = await seedCompany();
+    const owner = await seedAgent(companyId);
+    const app = createApp({
+      blockedOwnerEnqueueWakeup: async () => {
+        throw new Error("canonical unblock scheduler unavailable");
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Fallback after blocked owner scheduler failure",
+        status: "blocked",
+        assigneeAgentId: owner.id,
+        unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the finding" },
+      })
+      .expect(201);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const wakeRequests = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, owner.id));
+
+    expect(response.body.blockedOwnerNotifiedAt).toBeNull();
+    expect(wakeRequests).toContainEqual({ reason: "issue_assigned" });
   });
 
   it("reconciles an accepted wake after a pre-notification crash without duplicating it", async () => {
