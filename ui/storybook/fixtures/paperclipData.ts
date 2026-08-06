@@ -719,6 +719,7 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: "Set up Storybook and move UX review surfaces into stories.",
     status: "in_progress",
     priority: "high",
+    reviewPolicy: null,
     assigneeAgentId: "agent-codex",
     assigneeUserId: null,
     responsibleUserId: null,

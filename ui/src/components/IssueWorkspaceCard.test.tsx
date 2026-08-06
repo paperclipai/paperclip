@@ -91,6 +91,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "in_progress",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
     responsibleUserId: null,

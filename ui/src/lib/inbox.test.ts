@@ -189,6 +189,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     status: "todo",
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
