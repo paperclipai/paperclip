@@ -922,6 +922,7 @@ export async function startServer(): Promise<StartedServer> {
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let stopHostResourceTelemetry: (() => void) | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1352,7 +1353,12 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   // Lightweight periodic CPU/RAM sampling for post-incident diagnostics (RENA-51447).
-  startHostResourceTelemetry();
+  // Optional/best-effort: never let a telemetry setup failure reject startServer.
+  try {
+    stopHostResourceTelemetry = startHostResourceTelemetry();
+  } catch (err) {
+    logger.warn({ err }, "failed to start host resource telemetry; continuing without it");
+  }
 
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
@@ -1443,6 +1449,10 @@ export async function startServer(): Promise<StartedServer> {
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
+      }
+      if (stopHostResourceTelemetry) {
+        stopHostResourceTelemetry();
+        stopHostResourceTelemetry = null;
       }
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({

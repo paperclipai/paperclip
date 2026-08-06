@@ -64,7 +64,14 @@ export function startHostResourceTelemetry(options: {
   const intervalMs = options.intervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const rotatedFilesKept = options.rotatedFilesKept ?? DEFAULT_ROTATED_FILES_KEPT;
-  const filePath = resolveTelemetryFilePath();
+
+  let filePath: string;
+  try {
+    filePath = resolveTelemetryFilePath();
+  } catch (err) {
+    logger.warn({ err }, "host resource telemetry disabled: failed to resolve/create log directory");
+    return () => {};
+  }
 
   const tick = () => {
     try {
