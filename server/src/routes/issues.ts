@@ -9034,7 +9034,16 @@ export function issueRoutes(
     const notifiedChildIssues = new Map<string, typeof result.newlyCreatedIssues[number]>();
     for (const childIssue of decompositionChildIssues) {
       await assertCreateUnblockOwnerAllowed(childIssue.unblockDescriptor, sourceIssue.companyId, req.actor);
-      const notifiedIssue = await deliverBlockedOwnerNotification(childIssue);
+      let notifiedIssue = childIssue;
+      try {
+        notifiedIssue = await deliverBlockedOwnerNotification(childIssue);
+      } catch (err) {
+        // The child has already been committed. Preserve the null marker so the
+        // generic assignee wake below remains available while a later replay can
+        // redrive the canonical unblock-owner intent.
+        notifiedIssue = { ...childIssue, blockedOwnerNotifiedAt: null };
+        logger.warn({ err, issueId: childIssue.id }, "accepted-plan child owner notification remains pending");
+      }
       notifiedChildIssues.set(notifiedIssue.id, notifiedIssue);
     }
 
