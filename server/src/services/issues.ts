@@ -4427,8 +4427,26 @@ export function issueService(db: Db) {
       .for("update");
     const ownerAgent = companyAgents.find((agent) => agent.id === ownerAgentId);
     if (!ownerAgent) throw unprocessable("Unblock owner agent must belong to the issue company");
-    if (!getAgentWorkEligibility({ agent: ownerAgent, agents: companyAgents }).invokable) {
+    const ownerEligibility = getAgentWorkEligibility({ agent: ownerAgent, agents: companyAgents });
+    if (!ownerEligibility.invokable) {
       throw unprocessable("Unblock owner agent must be invokable");
+    }
+    const creatorAgentId = typeof issueData.createdByAgentId === "string"
+      ? issueData.createdByAgentId.trim()
+      : "";
+    if (!creatorAgentId || creatorAgentId === ownerAgentId) return;
+    const creatorAgent = companyAgents.find((agent) => agent.id === creatorAgentId);
+    const creatorEligibility = creatorAgent
+      ? getAgentWorkEligibility({ agent: creatorAgent, agents: companyAgents })
+      : null;
+    const ownerIsCreatorManager = Boolean(
+      creatorEligibility?.invokable &&
+      creatorEligibility.orgChainHealth.fullChain.some(
+        (entry) => entry.relation === "ancestor" && entry.id === ownerAgent.id,
+      ),
+    );
+    if (!ownerIsCreatorManager) {
+      throw unprocessable("Agents may only name themselves or a reporting-line manager as an unblock owner");
     }
   }
 
