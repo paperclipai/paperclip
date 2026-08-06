@@ -1195,6 +1195,41 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
+    it("runs a bypassSession command one-shot and leaves the session closed", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      // The provision command runs before the run opens its trace root, so the
+      // host marks it `bypassSession`. The provider must not open the session for
+      // it, or the `session.setup` span loses its run parent.
+      await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({ bypassSession: true }),
+      );
+
+      expect(sandbox.process.createSession).not.toHaveBeenCalled();
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("opens the session on the first in-run command after a bypassSession command", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      // A bypassSession command runs first (no session), then an in-run command
+      // opens the one session. The session-setup span then parents to the run
+      // trace, and every later in-run command reuses the same session.
+      await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({ bypassSession: true }),
+      );
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      expect(sessionId).toMatch(/^paperclip-/);
+    });
+
     it("deletes the session and clears the store on release", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();

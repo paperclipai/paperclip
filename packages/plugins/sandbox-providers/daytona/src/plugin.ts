@@ -2250,8 +2250,16 @@ const plugin = definePlugin({
       // session on a cache miss and run the command in it. The provider never
       // falls back to a one-shot command to open a session; a cache miss creates
       // one. When the session model is off, run the command on the one-shot path.
+      //
+      // A `bypassSession` command runs one-shot even when the session model is
+      // on, and it does NOT open the session. The host sets this flag on a
+      // pre-run command (the workspace provision command) that runs before the
+      // run opens its trace root. Opening the session there would emit a
+      // `session.setup` span with no run parent, and the span backend would drop
+      // it. With the bypass the session opens on the first in-run command, whose
+      // setup span parents to the run trace.
       let result: PluginEnvironmentExecuteResult;
-      if (config.useSessions) {
+      if (config.useSessions && !params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
         result = await executeInSession(sandbox, sessionId, params, config);
       } else {

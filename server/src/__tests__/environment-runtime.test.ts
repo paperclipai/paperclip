@@ -890,6 +890,72 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(releaseStepContext).toBeNull();
   });
 
+  it("forwards the bypassSession flag to the plugin execute RPC so a pre-run command skips the session", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    // Capture the params of each environmentExecute RPC, so the test can assert
+    // the host forwards `bypassSession` to the provider unchanged.
+    const executeParams: Array<Record<string, unknown>> = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          executeParams.push(params);
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "ok\n", stderr: "" };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // A pre-run command (the provision command) sets bypassSession; an in-run
+    // command leaves it unset.
+    await runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "bash",
+      args: ["-lc", "true"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+      bypassSession: true,
+    });
+    await runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "printf",
+      args: ["ok"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    expect(executeParams).toHaveLength(2);
+    expect(executeParams[0]?.bypassSession).toBe(true);
+    // An in-run command carries no bypass, so the provider opens/uses the session.
+    expect(executeParams[1]?.bypassSession).toBeUndefined();
+  });
+
   it("builds the workspace-realization record with referenced sources for a plugin-backed sandbox realize", async () => {
     // A provider plugin realize handler returns only its realized cwd and provider metadata; it does
     // not build the workspace-realization record. The server must build that record from the run

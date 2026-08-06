@@ -193,6 +193,15 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session. The run
+   * orchestrator sets this on the workspace provision command, which runs before
+   * the run opens its trace root. A sandbox provider that opens a persistent
+   * session on the first command must run this command one-shot and keep the
+   * session closed, so the session first opens on an in-run command whose setup
+   * span parents to the run trace. The default keeps the session path.
+   */
+  bypassSession?: boolean;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
@@ -1339,6 +1348,11 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
+            // Forward the session-bypass flag so a provider that opens a
+            // persistent session skips it for a pre-run command (the workspace
+            // provision command). The session then opens on the first in-run
+            // command, whose setup span parents to the run trace.
+            bypassSession: input.bypassSession,
           }, resolvePluginExecuteRpcTimeoutMs({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,
