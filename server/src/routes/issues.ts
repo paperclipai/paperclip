@@ -5599,22 +5599,110 @@ export function issueRoutes(
    * and no one tells the human. Humans are unaffected, and closed ancestors
    * do not count — re-engaging the creator of finished work is normal.
    */
-  async function assertNoAgentDelegationCycle(input: {
+  type DelegationCycleFailover = {
+    rejectedAgentId: string;
+    chosenAgentId: string;
+    strategy: "same_role_peer" | "fallback_sister" | "platform_owner";
+  };
+
+  function allowsHumanDelegation(description: unknown) {
+    return typeof description === "string"
+      && /\b(?:credential|account(?:[- ]identity)?|spend|oauth)\b/i.test(description);
+  }
+
+  function assertAgentHumanDelegationIsNarrow(input: {
     actorType: string;
+    assigneeUserId: string | null | undefined;
+    description: unknown;
+  }) {
+    if (input.actorType !== "agent" || !input.assigneeUserId) return;
+    if (allowsHumanDelegation(input.description)) return;
+    throw unprocessable(
+      "Agent-created execution work cannot be routed to a human; only credential, account-identity, spend, or OAuth work may be assigned to an operator.",
+      { code: "human_assignment_restricted" },
+    );
+  }
+
+  /**
+   * A cycle is a routing failure, not an instruction to put execution work in
+   * the operator queue. Resolve it at the rejection boundary so the resulting
+   * issue retains a concrete technical owner and an auditable receipt.
+   */
+  async function resolveAgentDelegationCycleFailover(input: {
+    actorType: string;
+    companyId: string;
     parentIssueId: string | null | undefined;
     assigneeAgentId: string | null | undefined;
-  }) {
-    if (input.actorType !== "agent") return;
-    if (!input.parentIssueId || !input.assigneeAgentId) return;
+  }): Promise<{ assigneeAgentId: string | null | undefined; failover: DelegationCycleFailover | null }> {
+    if (input.actorType !== "agent" || !input.parentIssueId || !input.assigneeAgentId) {
+      return { assigneeAgentId: input.assigneeAgentId, failover: null };
+    }
     const ancestor = await svc.findOpenAncestorCreatedByAgent(input.parentIssueId, input.assigneeAgentId);
-    if (!ancestor) return;
+    if (!ancestor) return { assigneeAgentId: input.assigneeAgentId, failover: null };
+
+    const [rejected, companyAgents, sisterRelationships] = await Promise.all([
+      agentsSvc.getById(input.assigneeAgentId),
+      agentsSvc.list(input.companyId, { includeTerminated: true }),
+      agentsSvc.listFallbackRelationships(input.companyId, input.assigneeAgentId),
+    ]);
+    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent] as const));
+    const isEligible = (agent: (typeof companyAgents)[number] | null | undefined) =>
+      Boolean(agent && isAgentStatusInvokable(agent.status) && agent.orgChainHealth?.status !== "invalid_org_chain");
+    const platformOwners = companyAgents.filter((agent) =>
+      (agent.metadata as Record<string, unknown> | null)?.delegationFailoverPlatformOwner === true,
+    );
+    const candidates: Array<{ agentId: string; strategy: DelegationCycleFailover["strategy"] }> = [
+      ...companyAgents
+        .filter((agent) => agent.id !== input.assigneeAgentId && rejected && agent.role === rejected.role)
+        .map((agent) => ({ agentId: agent.id, strategy: "same_role_peer" as const })),
+      ...sisterRelationships.map((relationship) => ({
+        agentId: relationship.sisterAgentId,
+        strategy: "fallback_sister" as const,
+      })),
+      ...platformOwners.map((agent) => ({ agentId: agent.id, strategy: "platform_owner" as const })),
+    ];
+    const attempted = new Set<string>([input.assigneeAgentId]);
+    for (const candidate of candidates) {
+      if (attempted.has(candidate.agentId)) continue;
+      attempted.add(candidate.agentId);
+      const agent = agentsById.get(candidate.agentId) ?? null;
+      if (!isEligible(agent)) continue;
+      const candidateAncestor = await svc.findOpenAncestorCreatedByAgent(input.parentIssueId, candidate.agentId);
+      if (candidateAncestor) continue;
+      return {
+        assigneeAgentId: candidate.agentId,
+        failover: {
+          rejectedAgentId: input.assigneeAgentId,
+          chosenAgentId: candidate.agentId,
+          strategy: candidate.strategy,
+        },
+      };
+    }
+
     throw conflict(
-      `Delegation cycle: ${ancestor.identifier ?? "an ancestor issue"} in this chain was created by the agent this child would be assigned to. ` +
-        "Complete the remaining work in your own issue, leave the child unassigned, or escalate to a board operator — do not delegate the work back to the agent that delegated it to you.",
+      `Delegation cycle: ${ancestor.identifier ?? "an ancestor issue"} has no eligible non-cyclic technical fallback.`,
       {
-        code: "delegation_cycle",
+        code: "delegation_cycle_failover_exhausted",
         ancestorIssueId: ancestor.id,
-        assigneeAgentId: input.assigneeAgentId,
+        rejectedAgentId: input.assigneeAgentId,
+        attemptedCandidateAgentIds: [...attempted],
+      },
+    );
+  }
+
+  async function recordDelegationCycleFailoverReceipt(input: {
+    issueId: string;
+    failover: DelegationCycleFailover | null;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (!input.failover) return;
+    await svc.addComment(
+      input.issueId,
+      `Delegation-cycle failover receipt\n\n- Rejected candidate: ${input.failover.rejectedAgentId}\n- Chosen fallback: ${input.failover.chosenAgentId}\n- Resolution order selected: ${input.failover.strategy}`,
+      {
+        agentId: input.actor.agentId ?? undefined,
+        userId: input.actor.actorType === "user" ? input.actor.actorId : undefined,
+        runId: input.actor.runId,
       },
     );
   }
@@ -8503,8 +8591,14 @@ export function issueRoutes(
         actorType: req.actor.type,
       },
     );
-    await assertNoAgentDelegationCycle({
+    assertAgentHumanDelegationIsNarrow({
       actorType: req.actor.type,
+      assigneeUserId: rawCreateBody.assigneeUserId as string | null | undefined,
+      description: rawCreateBody.description,
+    });
+    const delegationCycleResolution = await resolveAgentDelegationCycleFailover({
+      actorType: req.actor.type,
+      companyId,
       parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });
@@ -8515,7 +8609,7 @@ export function issueRoutes(
     const createBody = {
       ...rawCreateBody,
       parentId: effectiveParentId,
-      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(delegationCycleResolution.assigneeAgentId !== undefined ? { assigneeAgentId: delegationCycleResolution.assigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
@@ -8601,6 +8695,11 @@ export function issueRoutes(
       });
       return;
     }
+    await recordDelegationCycleFailoverReceipt({
+      issueId: issue.id,
+      failover: delegationCycleResolution.failover,
+      actor,
+    });
     await issueReferencesSvc.syncIssue(issue.id);
     await externalObjectsSvc.syncIssueSafely(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -8750,14 +8849,20 @@ export function issueRoutes(
         actorType: req.actor.type,
       },
     );
-    await assertNoAgentDelegationCycle({
+    assertAgentHumanDelegationIsNarrow({
       actorType: req.actor.type,
+      assigneeUserId: sanitizedChildBody.assigneeUserId as string | null | undefined,
+      description: sanitizedChildBody.description,
+    });
+    const delegationCycleResolution = await resolveAgentDelegationCycleFailover({
+      actorType: req.actor.type,
+      companyId: parent.companyId,
       parentIssueId: parent.id,
       assigneeAgentId: normalizedAssigneeAgentId ?? null,
     });
     const createBody = {
       ...sanitizedChildBody,
-      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(delegationCycleResolution.assigneeAgentId !== undefined ? { assigneeAgentId: delegationCycleResolution.assigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
@@ -8811,6 +8916,11 @@ export function issueRoutes(
       watchdogActorRunId: actor.runId,
     });
     await externalObjectsSvc.syncIssueSafely(issue.id);
+    await recordDelegationCycleFailoverReceipt({
+      issueId: issue.id,
+      failover: delegationCycleResolution.failover,
+      actor,
+    });
 
     await logActivity(db, {
       companyId: parent.companyId,
