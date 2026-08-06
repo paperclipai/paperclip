@@ -3845,6 +3845,7 @@ async function listIssueBlockedInboxAttentionMap(
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
+      startedAt: issue.startedAt,
     })),
     relations: graphRelations,
     agents: companyAgents,

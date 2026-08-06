@@ -638,7 +638,9 @@ describe("issue graph liveness classifier", () => {
           title: "Executor routing stalled",
           status: "in_progress",
           assigneeAgentId: coderId,
-          updatedAt: new Date(now.getTime() - 16 * 60 * 1000),
+          startedAt: new Date(now.getTime() - 16 * 60 * 1000),
+          // A comment or other unrelated edit must not hide a missing executor path.
+          updatedAt: now,
         }),
       ],
       relations: [],
