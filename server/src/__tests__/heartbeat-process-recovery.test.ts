@@ -1504,6 +1504,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("writes a preflight fallback snapshot when the shutdown database query fails", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 987_654,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "dead-shutdown-socket-version",
+        requestedAt: new Date("2026-08-06T01:23:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      const queryError = new Error("read ECONNRESET");
+      const failingDb = new Proxy(db, {
+        get(target, property, receiver) {
+          if (property === "select") {
+            return () => {
+              throw queryError;
+            };
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      const heartbeat = heartbeatService(failingDb);
+
+      await expect(heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-06T01:24:35.000Z"),
+      )).resolves.toEqual({
+        mode: "preflight_snapshot_fallback",
+        skipDrain: true,
+        activeRunIds: [runId],
+      });
+      await expect(readHotRestartIntent()).resolves.toMatchObject({
+        preflightActiveRunIds: [runId],
+        shutdownSnapshot: {
+          capturedAt: "2026-08-06T01:24:35.000Z",
+          signal: "SIGTERM",
+          activeRuns: [],
+        },
+      });
+    });
+  });
+
   it("snapshots and drains a server-stdio ACP run before embedded database shutdown", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -1805,11 +1851,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("reports preflight live runs as lost when the shutdown snapshot is missing", async () => {
+  it("adopts a live preflight run reconstructed when the shutdown snapshot is missing", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
     const { runId } = await seedRunFixture({
       agentStatus: "running",
-      processPid: process.pid,
+      processPid: child.pid,
       processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
     });
 
     await withTempPaperclipHome(async (home) => {
@@ -1826,18 +1879,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(adoption).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [],
+        adoptedRunIds: [runId],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [runId],
+        lostRunIds: [],
       });
 
       const report = JSON.parse(
         await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
       ) as Record<string, unknown>;
       expect(report).toMatchObject({
-        adoptedRunIds: [],
+        adoptedRunIds: [runId],
         finalizedWhileDownRunIds: [],
-        lostRunIds: [runId],
+        lostRunIds: [],
+      });
+    });
+  });
+
+  it("interrupts and retries a dead server-stdio run reconstructed from preflight", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 987_654,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      },
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "missing-snapshot-acp-version",
+        requestedAt: new Date("2026-08-06T01:24:35.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-06T01:24:39.862Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.find((run) => run.id === runId)).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      expect(runs.find((run) => run.retryOfRunId === runId)).toMatchObject({
+        status: "queued",
+      });
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
       });
     });
   });
