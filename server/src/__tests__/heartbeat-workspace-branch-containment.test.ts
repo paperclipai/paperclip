@@ -35,6 +35,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
@@ -168,21 +169,6 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return heartbeat.getRun(runId);
-}
-
-async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  let idleSince: number | null = null;
-  while (Date.now() < deadline) {
-    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
-      idleSince ??= Date.now();
-      if (Date.now() - idleSince >= 250) return;
-    } else {
-      idleSince = null;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
 }
 
 async function deleteHeartbeatRunsForCleanup(db: Db) {
@@ -875,7 +861,14 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await waitForHeartbeatIdle(db);
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. resumeQueuedRuns claims a run and dispatches its execution
+    // fire-and-forget, and the containment path can dispatch a follow-up
+    // recovery wakeup, so a run or wakeup can still write heartbeat_runs and
+    // issues rows when teardown starts. The shared drain also awaits an
+    // in-flight wakeup that is still before run registration, which a plain run
+    // table status poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     adapterExecute.mockReset();
     adapterExecute.mockImplementation(async () => ({
       exitCode: 0,

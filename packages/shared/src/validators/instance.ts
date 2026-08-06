@@ -46,21 +46,25 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
+  enableTaskChatRedesign: z.boolean().default(false),
   enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
-  enableCloudSync: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
   enableSmokeLab: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),
+  enableBetaSkills: z.boolean().default(false),
   enableSummaries: z.boolean().default(false),
+  enableStatusCards: z.boolean().default(false),
   enableDecisions: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
+  enableSimplifiedEnglishInteractions: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
+  enableOwnerInstanceAdmin: z.boolean().default(false),
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
@@ -79,6 +83,18 @@ export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSetti
   })
   .partial()
   .strip();
+
+export const managedSettingMetadataSchema = z.object({
+  managed: z.literal(true),
+  managedBy: z.literal("paperclip-cloud"),
+}).strict();
+
+// Response shape of the experimental settings endpoints: on cloud-managed
+// instances every overlaid key is listed in `managedKeys`; self-hosted
+// responses omit the field entirely.
+export const instanceExperimentalSettingsWithManagedSchema = instanceExperimentalSettingsSchema.extend({
+  managedKeys: z.record(managedSettingMetadataSchema).optional(),
+}).strict();
 
 export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().uuid().nullable().optional(),
@@ -106,7 +122,7 @@ export const instanceSettingsSchema = z.object({
   id: z.string().uuid(),
   defaultEnvironmentId: z.string().uuid().nullable(),
   general: instanceGeneralSettingsSchema,
-  experimental: instanceExperimentalSettingsSchema,
+  experimental: instanceExperimentalSettingsWithManagedSchema,
   createdAt: z.union([z.date(), z.string().datetime()]),
   updatedAt: z.union([z.date(), z.string().datetime()]),
 }).strict();

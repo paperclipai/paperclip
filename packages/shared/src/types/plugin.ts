@@ -22,6 +22,8 @@ import type {
   IssuePriority,
   ProjectStatus,
   RoutineCatchUpPolicy,
+  RoutineActivityGatePolicy,
+  RoutineActivityGateScope,
   RoutineConcurrencyPolicy,
   RoutineStatus,
   IssueSurfaceVisibility,
@@ -316,6 +318,10 @@ export interface PluginManagedRoutineDeclaration {
   concurrencyPolicy?: RoutineConcurrencyPolicy;
   /** Suggested missed-trigger behavior. Defaults to core routine default. */
   catchUpPolicy?: RoutineCatchUpPolicy;
+  /** Suggested external-activity gate behavior. Defaults to `always`. */
+  activityGatePolicy?: RoutineActivityGatePolicy;
+  /** Suggested external-activity gate scope. Defaults to `company`. */
+  activityGateScope?: RoutineActivityGateScope;
   /** Suggested routine variables. */
   variables?: RoutineVariable[];
   /** Suggested triggers created when the routine is first reconciled. */

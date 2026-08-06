@@ -93,7 +93,8 @@ async function createTool(db: ReturnType<typeof createDb>, companyId: string) {
     companyId,
     applicationId: application.id,
     name: `Connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     config: { url: "https://example.invalid/mcp" },
@@ -1658,7 +1659,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
     await expect(svc.createConnection(company.id, {
       name: "Wrong secret",
-      transport: "remote_http",
+      transport: "mcp_remote",
       transportConfig: { url: "https://example.invalid/mcp" },
       credentialSecretRefs: [{
         secretId: otherSecret.id,

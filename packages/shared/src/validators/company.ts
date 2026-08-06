@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   COMPANY_STATUSES,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
 
@@ -12,6 +13,19 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+
+const interactionResolverKindGovernanceSchema = z.object({
+  defaultPolicy: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
+  cap: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
+}).strict();
+
+export const interactionResolverGovernanceSchema = z.object({
+  suggest_tasks: interactionResolverKindGovernanceSchema.optional(),
+  ask_user_questions: interactionResolverKindGovernanceSchema.optional(),
+  request_confirmation: interactionResolverKindGovernanceSchema.optional(),
+  request_checkbox_confirmation: interactionResolverKindGovernanceSchema.optional(),
+  request_item_verdicts: interactionResolverKindGovernanceSchema.optional(),
+}).strict().default({});
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -29,6 +43,7 @@ export const updateCompanySchema = createCompanySchema
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
+    interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),

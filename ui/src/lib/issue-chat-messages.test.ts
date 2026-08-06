@@ -92,6 +92,9 @@ function createInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -120,6 +123,9 @@ function createRequestConfirmation(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 

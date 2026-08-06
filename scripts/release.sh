@@ -250,6 +250,9 @@ if [ "$VERSION_IN_CLI_PACKAGE" != "$TARGET_PUBLISH_VERSION" ]; then
   release_fail "versioning drift detected. Expected $TARGET_PUBLISH_VERSION but found $VERSION_IN_CLI_PACKAGE."
 fi
 
+VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
+VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
+
 release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 5/7: Previewing publish payloads (--dry-run)..."
@@ -257,7 +260,16 @@ if [ "$dry_run" = true ]; then
     [ -z "$pkg_dir" ] && continue
     release_info "  --- $pkg_dir ---"
     cd "$REPO_ROOT/$pkg_dir"
-    pnpm publish --dry-run --no-git-checks --tag "$DIST_TAG" 2>&1 | tail -3
+    publish_tool="$(package_publish_tool)"
+    if [ "$publish_tool" = "npm" ]; then
+      publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-package.XXXXXX")"
+      node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
+      cd "$publish_dir"
+      run_bundled_npm_pack pack --pack-destination "$publish_dir" 2>&1 | tail -3
+      rm -rf "$publish_dir"
+    else
+      pnpm publish --dry-run --no-git-checks --tag "$DIST_TAG" 2>&1 | tail -3
+    fi
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  [dry-run] Would create git tag $tag_name on $CURRENT_SHA"
 else
@@ -266,9 +278,30 @@ else
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
     cd "$REPO_ROOT/$pkg_dir"
-    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version"
+    publish_tool="$(package_publish_tool)"
+    if [ "$publish_tool" = "npm" ]; then
+      publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-package.XXXXXX")"
+      node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
+      cd "$publish_dir"
+    fi
+    if ! publish_package_to_npm_and_wait \
+      "$DIST_TAG" \
+      "$pkg_name" \
+      "$pkg_version" \
+      "$publish_tool" \
+      "$VERIFY_ATTEMPTS" \
+      "$VERIFY_DELAY_SECONDS"; then
+      if [ "$publish_tool" = "npm" ]; then
+        rm -rf "$publish_dir"
+      fi
+      release_fail "stopping release: npm did not publish and expose ${pkg_name}@${pkg_version}"
+    fi
+    if [ "$publish_tool" = "npm" ]; then
+      rm -rf "$publish_dir"
+    fi
+    release_info "    ✓ Published version is registry-visible"
   done <<< "$VERSIONED_PACKAGE_INFO"
-  release_info "  ✓ Published all packages under dist-tag $DIST_TAG"
+  release_info "  ✓ Published the full package set under dist-tag $DIST_TAG"
 fi
 
 release_info ""
@@ -276,29 +309,9 @@ if [ "$dry_run" = true ]; then
   release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
 else
   release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
-  VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
-  VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
   REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
   REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
-  MISSING_PUBLISHED_PACKAGES=""
-
-  while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
-    [ -z "$pkg_name" ] && continue
-    release_info "  Checking $pkg_name@$pkg_version"
-    if wait_for_npm_package_version "$pkg_name" "$pkg_version" "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS"; then
-      release_info "    ✓ Found on npm"
-      continue
-    fi
-
-    if [ -n "$MISSING_PUBLISHED_PACKAGES" ]; then
-      MISSING_PUBLISHED_PACKAGES="${MISSING_PUBLISHED_PACKAGES}, "
-    fi
-    MISSING_PUBLISHED_PACKAGES="${MISSING_PUBLISHED_PACKAGES}${pkg_name}@${pkg_version}"
-  done <<< "$VERSIONED_PACKAGE_INFO"
-
-  [ -z "$MISSING_PUBLISHED_PACKAGES" ] || release_fail "publish completed but npm never exposed: $MISSING_PUBLISHED_PACKAGES"
-
-  release_info "  ✓ Verified all versioned packages are available on npm"
+  release_info "  ✓ Every version was registry-visible before the next package publish"
 
   verify_args=(
     --channel "$channel"
@@ -324,6 +337,12 @@ else
 
     release_fail "publish completed, but npm dist-tags or registry metadata never converged for ${TARGET_PUBLISH_VERSION}"
   fi
+
+  release_info "  Installing paperclipai@$DIST_TAG into a clean prefix..."
+  if ! verify_npm_installable "paperclipai@$DIST_TAG" "$TARGET_PUBLISH_VERSION"; then
+    release_fail "paperclipai@$DIST_TAG did not install cleanly at expected version ${TARGET_PUBLISH_VERSION}"
+  fi
+  release_info "    ✓ Clean-prefix install resolved ${TARGET_PUBLISH_VERSION}"
 fi
 
 release_info ""

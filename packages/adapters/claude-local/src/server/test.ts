@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -278,6 +279,20 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
+  } else if (
+    isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
+    (considerHostEnv && isNonEmpty(process.env.CLAUDE_CODE_OAUTH_TOKEN))
+  ) {
+    const source = isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)
+      ? "configured environment variables"
+      : "server environment";
+    checks.push({
+      code: "claude_oauth_token_configured",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
+      detail: `Detected in ${source}.`,
+    });
   } else if (!targetIsRemote) {
     checks.push({
       code: "claude_subscription_mode_possible",
@@ -428,27 +443,44 @@ export async function testEnvironment(
           (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
           detail ||
           "";
+        // Provider-quota exhaustion (usage/session limit) is classified
+        // separately from generic transient upstream errors: auth works, the
+        // subscription's usage window is just spent. Surface it as its own
+        // warning instead of a hard probe failure.
+        const usageLimited = isClaudeProviderQuotaError({
+          parsed,
+          stdout: probe.stdout,
+          stderr: probe.stderr,
+        });
         const transient = isClaudeTransientUpstreamError({
           parsed,
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
         checks.push(
-          transient
+          usageLimited
             ? {
-                code: "claude_hello_probe_transient_upstream",
+                code: "claude_hello_probe_usage_limited",
                 level: "warn",
-                message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+                message: "Claude hello probe hit the subscription usage limit.",
                 ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: "This is usually temporary. Wait a moment and re-run Test.",
+                hint: "Authentication works; the account's usage window is exhausted. Wait for the limit to reset and re-run Test.",
               }
-            : {
-                code: "claude_hello_probe_failed",
-                level: "error",
-                message: "Claude hello probe failed.",
-                ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
-              },
+            : transient
+              ? {
+                  code: "claude_hello_probe_transient_upstream",
+                  level: "warn",
+                  message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+                  ...(failureDetail ? { detail: failureDetail } : {}),
+                  hint: "This is usually temporary. Wait a moment and re-run Test.",
+                }
+              : {
+                  code: "claude_hello_probe_failed",
+                  level: "error",
+                  message: "Claude hello probe failed.",
+                  ...(failureDetail ? { detail: failureDetail } : {}),
+                  hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+                },
         );
       }
     }

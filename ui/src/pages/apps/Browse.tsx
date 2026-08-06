@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, Search } from "lucide-react";
-import type { AppGalleryEntry } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -9,6 +8,13 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
+import {
+  appDefinitionDescription,
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "./app-definition-display";
 import {
   AdvancedToolsLink,
   BYO_CONNECT_HREF,
@@ -46,11 +52,11 @@ export function Browse() {
     enabled: !!selectedCompanyId,
   });
 
-  const gallery = galleryQuery.data?.apps ?? [];
+  const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
   const popular = useMemo(
     () =>
-      POPULAR_KEYS.map((key) => gallery.find((entry) => entry.key === key)).filter(
-        (entry): entry is AppGalleryEntry => Boolean(entry),
+      POPULAR_KEYS.map((key) => gallery.find((entry) => appDefinitionSlug(entry) === key)).filter(
+        (entry): entry is AppGalleryDisplayEntry => Boolean(entry),
       ),
     [gallery],
   );
@@ -60,9 +66,8 @@ export function Browse() {
     if (!trimmed) return gallery;
     return gallery.filter(
       (entry) =>
-        entry.name.toLowerCase().includes(trimmed) ||
-        entry.tagline.toLowerCase().includes(trimmed) ||
-        (entry.description?.toLowerCase().includes(trimmed) ?? false),
+        appDefinitionName(entry).toLowerCase().includes(trimmed) ||
+        appDefinitionDescription(entry).toLowerCase().includes(trimmed),
     );
   }, [gallery, trimmed]);
 
@@ -109,9 +114,9 @@ export function Browse() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
                   <AppTile
-                    key={entry.key}
+                    key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={appDefinitionSlug(entry) === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
                     compact
                   />
                 ))}
@@ -132,9 +137,9 @@ export function Browse() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((entry) => (
                   <AppTile
-                    key={entry.key}
+                    key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={appDefinitionSlug(entry) === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
                   />
                 ))}
               </div>
@@ -160,7 +165,7 @@ function AppTile({
   onConnect,
   compact = false,
 }: {
-  entry: AppGalleryEntry;
+  entry: AppGalleryDisplayEntry;
   onConnect?: () => void;
   compact?: boolean;
 }) {
@@ -175,8 +180,8 @@ function AppTile({
           ? "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
           : "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"}
       >
-        <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
-        <span className="text-xs font-medium text-foreground">{entry.name}</span>
+        <AppLogo name={appDefinitionName(entry)} logoUrl={appDefinitionLogoUrl(entry)} size={36} />
+        <span className="text-xs font-medium text-foreground">{appDefinitionName(entry)}</span>
         <span className={disabled ? "text-xs text-muted-foreground" : "text-xs font-semibold text-primary"}>
           {disabled ? "Coming soon" : "Connect →"}
         </span>
@@ -192,10 +197,10 @@ function AppTile({
         ? "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
         : "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"}
     >
-      <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
+      <AppLogo name={appDefinitionName(entry)} logoUrl={appDefinitionLogoUrl(entry)} size={36} />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-foreground">{entry.name}</div>
-        <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{entry.tagline}</div>
+        <div className="text-sm font-semibold text-foreground">{appDefinitionName(entry)}</div>
+        <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{appDefinitionDescription(entry)}</div>
       </div>
       <span className={disabled ? "shrink-0 text-xs font-semibold text-muted-foreground" : "shrink-0 text-xs font-semibold text-primary"}>
         {disabled ? "Coming soon" : "Connect →"}

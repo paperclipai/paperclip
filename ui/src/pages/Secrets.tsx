@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -7,11 +7,16 @@ import {
   Archive,
   Ban,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Cloud,
+  CornerLeftUp,
   Copy,
   Database,
   Edit3,
   ExternalLink,
+  Folder,
+  FolderOpen,
   KeyRound,
   Link2,
   Lock,
@@ -30,7 +35,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type {
   CompanySecret,
   CompanySecretUsageBinding,
@@ -60,6 +65,13 @@ import { ApiError } from "../api/client";
 import { accessApi, type CompanyUserDirectoryEntry } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { envKeyFromSecretName } from "../components/environment-variables-editor/model";
+import {
+  AGENT_ACCESS_CONFIG_PATH_PREFIX,
+  aliasFromConfigPath,
+  consumerTypeLabel,
+  deliveryModeForConfigPath,
+  deliveryModeLabel,
+} from "../lib/secret-delivery";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -95,8 +107,19 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
+import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
+import { ProposalsTab } from "./secrets/ProposalsTab";
+import { SecretPathName } from "./secrets/SecretPathName";
+import {
+  buildSecretPathBreadcrumbs,
+  buildSecretPathListing,
+  getSecretPathRowName,
+  normalizeSecretPath,
+  validateSecretFolderSegment,
+  type SecretPathFolder,
+} from "./secrets/secret-path";
 import { SetMyUserSecretDialog } from "./secrets/SetMyUserSecretDialog";
 import {
   coverageSummaryLabel,
@@ -105,9 +128,33 @@ import {
 import type { MyUserSecretEntry } from "../api/secrets";
 
 type CreateMode = "managed" | "external";
+// "value" writes a new secret value (for external references: through to the
+// provider); "reference" re-points an external reference without writing.
+type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
-type SecretsTab = "secrets" | "my-secrets" | "vaults";
+type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
+type SecretsViewMode = "folders" | "flat";
+
+const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
+
+function readStoredViewMode(): SecretsViewMode | null {
+  try {
+    const stored = window.localStorage.getItem(SECRETS_VIEW_MODE_STORAGE_KEY);
+    return stored === "folders" || stored === "flat" ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "12 secrets · 3 folders" — folder part omitted when there are no subfolders. */
+function formatSecretPathCounts(secretCount: number, folderCount: number): string {
+  const parts = [`${secretCount} ${secretCount === 1 ? "secret" : "secrets"}`];
+  if (folderCount > 0) {
+    parts.push(`${folderCount} ${folderCount === 1 ? "folder" : "folders"}`);
+  }
+  return parts.join(" · ");
+}
 
 type UnifiedSecretRow =
   | { id: string; kind: "company"; secret: CompanySecret }
@@ -298,9 +345,12 @@ function modeLabel(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
 }
 
-function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
+function modeDescription(managedMode: SecretManagedMode, canWriteExternalValue = false) {
+  if (managedMode === "paperclip_managed") {
+    return "Paperclip owns create and rotation writes for this provider secret.";
+  }
+  return canWriteExternalValue
+    ? "Paperclip resolves this provider reference and can write new values to it via Update value."
     : "Paperclip resolves this provider reference but does not rotate the provider value.";
 }
 
@@ -607,8 +657,25 @@ export function Secrets() {
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [providedByFilter, setProvidedByFilter] = useState<ProvidedByFilter>("all");
-  const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
-  const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The detail sheet is deep-linkable: `?secret=<id>` /
+  // `?definition=<id>` are the source of truth for the current selection, so
+  // every open secret has a shareable URL and Back closes the sheet.
+  const selectedSecretId = searchParams.get("secret");
+  const selectedDefinitionId = searchParams.get("definition");
+  const setDetailSelection = useCallback(
+    (secretId: string | null, definitionId: string | null = null) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (secretId) next.set("secret", secretId);
+        else next.delete("secret");
+        if (definitionId) next.set("definition", definitionId);
+        else next.delete("definition");
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -616,6 +683,7 @@ export function Secrets() {
   const [secretValueProvider, setSecretValueProvider] = useState<SecretValueProvider>("company");
   const [createMode, setCreateMode] = useState<CreateMode>("managed");
   const [editingDefinition, setEditingDefinition] = useState<UserSecretDefinition | null>(null);
+  const [createNamePrefix, setCreateNamePrefix] = useState<string | null>(null);
   const [createKeyDirty, setCreateKeyDirty] = useState(false);
   const [createKeyEditable, setCreateKeyEditable] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -630,6 +698,7 @@ export function Secrets() {
   });
   const [createError, setCreateError] = useState<unknown>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
+  const [rotateMode, setRotateMode] = useState<RotateMode>("value");
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
   const [rotateProviderConfigId, setRotateProviderConfigId] = useState("");
@@ -645,6 +714,9 @@ export function Secrets() {
   const [vaultDiscovery, setVaultDiscovery] =
     useState<SecretProviderConfigDiscoveryPreviewResult | null>(null);
   const [vaultDiscoveryError, setVaultDiscoveryError] = useState<unknown | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Secrets" }]);
@@ -702,8 +774,17 @@ export function Secrets() {
     retry: false,
   });
 
+  const proposalsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "__disabled__"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
   const userDefinitions = userDefinitionsQuery.data ?? EMPTY_USER_SECRET_DEFINITIONS;
+  const pendingProposalCount = proposalsQuery.data?.length ?? 0;
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
@@ -817,6 +898,89 @@ export function Secrets() {
     (providerFilter === "all" ? 0 : 1) +
     (providedByFilter === "all" ? 0 : 1);
 
+  // --- Folder view (PAP-14698) --------------------------------------------
+  // Folders are derived purely from slash-delimited secret names; there is no
+  // server-side folder record. `?path=` holds the normalized current folder
+  // and is only meaningful on the main Secrets tab (inert on the others).
+  const pathParam = normalizeSecretPath(searchParams.get("path") ?? "");
+  const folderPath = activeTab === "secrets" ? pathParam : "";
+  const searching = search.trim().length > 0;
+
+  const [storedViewMode, setStoredViewMode] = useState<SecretsViewMode | null>(readStoredViewMode);
+  const hasSlashNames = useMemo(
+    () => unifiedRows.some((row) => getSecretPathRowName(row).includes("/")),
+    [unifiedRows],
+  );
+  // No explicit preference → default to Folders once any name has a slash.
+  const resolvedViewMode: SecretsViewMode = storedViewMode ?? (hasSlashNames ? "folders" : "flat");
+  // A `?path=` deep link forces folder view for the visit even if the stored
+  // preference is Flat. Search always renders a flat global result set.
+  const effectiveViewMode: SecretsViewMode = folderPath ? "folders" : resolvedViewMode;
+  const showFolderView = effectiveViewMode === "folders" && !searching;
+
+  const goToFolder = useCallback(
+    (path: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          const normalized = normalizeSecretPath(path);
+          if (normalized) next.set("path", normalized);
+          else next.delete("path");
+          return next;
+        },
+        { replace: false },
+      );
+    },
+    [setSearchParams],
+  );
+
+  function closeNewFolder() {
+    setNewFolderOpen(false);
+    setNewFolderName("");
+    setNewFolderError(null);
+  }
+
+  function stageNewFolder() {
+    const segment = newFolderName.trim();
+    const error = validateSecretFolderSegment(segment);
+    if (error) {
+      setNewFolderError(error);
+      return;
+    }
+    goToFolder(folderPath ? `${folderPath}/${segment}` : segment);
+    closeNewFolder();
+  }
+
+  const setViewMode = useCallback(
+    (mode: SecretsViewMode) => {
+      setStoredViewMode(mode);
+      try {
+        window.localStorage.setItem(SECRETS_VIEW_MODE_STORAGE_KEY, mode);
+      } catch {
+        // Ignore storage failures (private mode / disabled); view still works.
+      }
+      // Flat has no notion of a current folder — leaving it out of the URL.
+      if (mode === "flat") goToFolder("");
+    },
+    [goToFolder],
+  );
+
+  const folderListing = useMemo(
+    () => buildSecretPathListing(filteredRows, folderPath),
+    [filteredRows, folderPath],
+  );
+  const breadcrumbs = useMemo(() => buildSecretPathBreadcrumbs(folderPath), [folderPath]);
+  const parentFolderPath = useMemo(() => {
+    const segments = folderPath ? folderPath.split("/") : [];
+    return segments.slice(0, -1).join("/");
+  }, [folderPath]);
+  const currentFolderSecretCount =
+    folderListing.secrets.length +
+    folderListing.folders.reduce((total, folder) => total + folder.secretCount, 0);
+  const folderRows = showFolderView ? folderListing.folders : [];
+  const secretRows = showFolderView ? folderListing.secrets : filteredRows;
+  const showUpRow = showFolderView && folderPath.length > 0;
+
   const usageQuery = useQuery({
     queryKey: selectedSecret ? queryKeys.secrets.usage(selectedSecret.id) : ["secrets", "usage", "__disabled__"],
     queryFn: () => secretsApi.usage(selectedSecret!.id),
@@ -852,14 +1016,16 @@ export function Secrets() {
   }
 
   function openCreateSecret() {
+    const prefix = folderPath ? `${folderPath}/` : null;
     setEditingDefinition(null);
+    setCreateNamePrefix(prefix);
     setSecretValueProvider("company");
     setCreateMode("managed");
     setCreateKeyDirty(false);
     setCreateKeyEditable(false);
     setCreateError(null);
     setCreateForm({
-      name: "",
+      name: prefix ?? "",
       key: "",
       value: "",
       description: "",
@@ -873,6 +1039,7 @@ export function Secrets() {
 
   function openEditDefinition(definition: UserSecretDefinition) {
     setEditingDefinition(definition);
+    setCreateNamePrefix(null);
     setSecretValueProvider("user");
     setCreateMode("managed");
     setCreateKeyDirty(true);
@@ -944,6 +1111,7 @@ export function Secrets() {
       });
       setCreateOpen(false);
       setEditingDefinition(null);
+      setCreateNamePrefix(null);
       setSecretValueProvider("company");
       setCreateKeyDirty(false);
       setCreateKeyEditable(false);
@@ -959,12 +1127,10 @@ export function Secrets() {
       });
       setCreateError(null);
       if (result.kind === "company") {
-        setSelectedSecretId(result.item.id);
-        setSelectedDefinitionId(null);
+        setDetailSelection(result.item.id);
         invalidateAll([result.item.id]);
       } else {
-        setSelectedDefinitionId(result.item.id);
-        setSelectedSecretId(null);
+        setDetailSelection(null, result.item.id);
         invalidateAll([result.item.id]);
       }
     },
@@ -976,7 +1142,7 @@ export function Secrets() {
   const rotateMutation = useMutation({
     mutationFn: () => {
       if (!selectedSecret) throw new Error("Select a secret first");
-      if (selectedSecret.managedMode === "external_reference") {
+      if (selectedSecret.managedMode === "external_reference" && rotateMode === "reference") {
         return secretsApi.rotate(selectedSecret.id, {
           externalRef: rotateExternalRef.trim() || selectedSecret.externalRef || undefined,
           providerConfigId: rotateProviderConfigId || null,
@@ -1048,7 +1214,7 @@ export function Secrets() {
     onSuccess: (_response, id) => {
       pushToast({ title: "Secret deleted", tone: "info" });
       setDeleteConfirm(null);
-      if (selectedSecretId === id) setSelectedSecretId(null);
+      if (selectedSecretId === id) setDetailSelection(null);
       invalidateAll([id]);
     },
     onError: (error) => {
@@ -1066,7 +1232,7 @@ export function Secrets() {
     onSuccess: (_response, definition) => {
       pushToast({ title: "User-provided secret removed", body: definition.name, tone: "info" });
       setDefinitionDeleteConfirm(null);
-      if (selectedDefinitionId === definition.id) setSelectedDefinitionId(null);
+      if (selectedDefinitionId === definition.id) setDetailSelection(null);
       invalidateAll([definition.id]);
     },
     onError: (error) => {
@@ -1274,25 +1440,54 @@ export function Secrets() {
 
   function openCompanySecret(secret: CompanySecret) {
     setSecretDetailTab("details");
-    setSelectedSecretId(secret.id);
-    setSelectedDefinitionId(null);
+    setDetailSelection(secret.id);
   }
 
   function openUserDefinition(definition: UserSecretDefinition) {
     setSecretDetailTab("details");
-    setSelectedDefinitionId(definition.id);
-    setSelectedSecretId(null);
+    setDetailSelection(null, definition.id);
+  }
+
+  function secretSupportsExternalValueWrite(secret: CompanySecret) {
+    return (
+      secret.managedMode === "external_reference" &&
+      Boolean(secret.externalRef) &&
+      Boolean(providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites)
+    );
+  }
+
+  function rotateActionLabel(secret: CompanySecret) {
+    return secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+      ? "Update reference"
+      : "Update value";
   }
 
   function openRotateSecret(secret: CompanySecret) {
     openCompanySecret(secret);
     setRotateOpen(true);
+    setRotateMode(
+      secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+        ? "reference"
+        : "value",
+    );
     setRotateValue("");
     setRotateExternalRef("");
     setRotateProviderConfigId(
       secret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, secret.provider),
     );
     setRotateError(null);
+  }
+
+  function copyDetailLink() {
+    void copyTextToClipboard(window.location.href)
+      .then(() => pushToast({ title: "Link copied", body: "Deep link to this secret", tone: "success" }))
+      .catch((error) =>
+        pushToast({
+          title: "Copy failed",
+          body: error instanceof Error ? error.message : "Unable to copy link",
+          tone: "error",
+        }),
+      );
   }
 
   function copySecretKey(key: string) {
@@ -1337,7 +1532,7 @@ export function Secrets() {
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => openRotateSecret(row.secret)}>
                 <RefreshCw className="h-4 w-4" />
-                {row.secret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                {rotateActionLabel(row.secret)}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -1438,6 +1633,158 @@ export function Secrets() {
     );
   }
 
+  function folderLinkTo(path: string) {
+    const params = new URLSearchParams(searchParams);
+    const normalized = normalizeSecretPath(path);
+    if (normalized) params.set("path", normalized);
+    else params.delete("path");
+    const qs = params.toString();
+    return { search: qs ? `?${qs}` : "" };
+  }
+
+  /** Secret-name treatment: raw in flat view, muted-path/bold-leaf otherwise. */
+  function renderSecretName(name: string) {
+    if (searching) return <SecretPathName name={name} className="text-sm" />;
+    if (showFolderView) return <SecretPathName name={name} basePath={folderPath} className="text-sm" />;
+    return <span className="truncate font-medium text-foreground">{name}</span>;
+  }
+
+  function renderFolderTableRow(folder: SecretPathFolder) {
+    return (
+      <Link
+        key={`folder:${folder.path}`}
+        to={folderLinkTo(folder.path)}
+        role="row"
+        className="grid grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40"
+      >
+        <div role="cell" className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="truncate font-medium text-foreground">{folder.name}</span>
+          </div>
+          <div className="mt-0.5 pl-6 text-xs text-muted-foreground">
+            {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
+          </div>
+        </div>
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" className="flex justify-end">
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </Link>
+    );
+  }
+
+  function renderFolderCard(folder: SecretPathFolder) {
+    return (
+      <Link
+        key={`folder:${folder.path}`}
+        to={folderLinkTo(folder.path)}
+        className="flex items-center justify-between gap-2 rounded-md border border-border bg-background p-3 hover:bg-accent/30"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <div className="truncate font-medium text-foreground">{folder.name}</div>
+            <div className="text-xs text-muted-foreground">
+              {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
+            </div>
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </Link>
+    );
+  }
+
+  function renderUpRow(variant: "table" | "card") {
+    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "All secrets";
+    return (
+      <Link
+        to={folderLinkTo(parentFolderPath)}
+        role={variant === "table" ? "row" : undefined}
+        className={cn(
+          "flex items-center gap-2 text-xs text-muted-foreground hover:bg-accent/40",
+          variant === "table"
+            ? "border-b border-border/60 px-3 py-2.5"
+            : "rounded-md border border-border bg-background px-3 py-2.5",
+        )}
+      >
+        <CornerLeftUp className="h-4 w-4 shrink-0" />
+        <span className="truncate">Up to {parentLabel}</span>
+      </Link>
+    );
+  }
+
+  function renderSecretsBreadcrumb() {
+    const currentName = breadcrumbs.length > 0 ? breadcrumbs[breadcrumbs.length - 1].name : "All secrets";
+    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "All secrets";
+    const fullTrail: { name: string; path: string }[] = [
+      { name: "All secrets", path: "" },
+      ...breadcrumbs,
+    ];
+    // Middle-truncate deep paths: root · … · last two.
+    const collapsed =
+      fullTrail.length > 4
+        ? [fullTrail[0], { name: "…", path: "" }, ...fullTrail.slice(-2)]
+        : fullTrail;
+
+    return (
+      <nav aria-label="Breadcrumb" className="min-w-0">
+        {/* Wide: full trail */}
+        <ol className="hidden min-w-0 items-center gap-1 text-sm @min-[40rem]:flex">
+          {collapsed.map((crumb, index) => {
+            const isLast = index === collapsed.length - 1;
+            const isEllipsis = crumb.name === "…" && crumb.path === "" && index > 0 && !isLast;
+            return (
+              <li key={`${crumb.path}:${index}`} className="flex min-w-0 items-center gap-1">
+                {index > 0 ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" /> : null}
+                {isEllipsis ? (
+                  <span className="px-0.5 text-muted-foreground">…</span>
+                ) : isLast ? (
+                  <span aria-current="page" className="truncate font-medium text-foreground">
+                    {crumb.name}
+                  </span>
+                ) : (
+                  <Link
+                    to={folderLinkTo(crumb.path)}
+                    className="max-w-40 truncate text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    {crumb.name}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+        {/* Narrow: back-chevron + parent/current */}
+        <div className="flex min-w-0 items-center gap-1.5 text-sm @min-[40rem]:hidden">
+          {folderPath ? (
+            <>
+              <Link
+                to={folderLinkTo(parentFolderPath)}
+                aria-label="Up one folder"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Link>
+              {parentLabel !== "All secrets" ? (
+                <span className="shrink-0 text-muted-foreground">{parentLabel} /</span>
+              ) : null}
+              <span aria-current="page" className="truncate font-medium text-foreground">
+                {currentName}
+              </span>
+            </>
+          ) : (
+            <span aria-current="page" className="truncate font-medium text-foreground">
+              All secrets
+            </span>
+          )}
+        </div>
+      </nav>
+    );
+  }
+
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
@@ -1462,6 +1809,22 @@ export function Secrets() {
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
             { value: "vaults", label: "Provider vaults" },
+            {
+              value: "proposals",
+              label: (
+                <span className="inline-flex items-center gap-1.5">
+                  Proposals
+                  {pendingProposalCount > 0 ? (
+                    <Badge
+                      variant="outline"
+                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                    >
+                      {pendingProposalCount}
+                    </Badge>
+                  ) : null}
+                </span>
+              ),
+            },
           ]}
           align="start"
           value={activeTab}
@@ -1492,16 +1855,87 @@ export function Secrets() {
               onProviderChange={setProviderFilter}
               onProvidedByChange={setProvidedByFilter}
             />
+            <div
+              role="group"
+              aria-label="View mode"
+              className={cn(
+                "inline-flex items-center rounded-md border border-border p-0.5",
+                searching && "opacity-50",
+              )}
+            >
+              {(["folders", "flat"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={effectiveViewMode === mode}
+                  disabled={searching}
+                  onClick={() => setViewMode(mode)}
+                  className={cn(
+                    "rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed",
+                    effectiveViewMode === mode
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
               onManageVaults={() => setActiveTab("vaults")}
               className="ml-auto"
             />
+            {showFolderView ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setNewFolderOpen(true);
+                  setNewFolderError(null);
+                }}
+              >
+                <Folder className="mr-1 h-3.5 w-3.5" /> New folder
+              </Button>
+            ) : null}
             <Button onClick={openCreateSecret} size="sm">
               <Plus className="h-3.5 w-3.5 mr-1" /> New secret
             </Button>
           </div>
+          {newFolderOpen && showFolderView ? (
+            <div className="flex flex-wrap items-start gap-2" role="group" aria-label="Create folder">
+              <div className="min-w-48 flex-1 sm:max-w-80">
+                <Input
+                  value={newFolderName}
+                  onChange={(event) => {
+                    setNewFolderName(event.target.value);
+                    if (newFolderError) setNewFolderError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") stageNewFolder();
+                    if (event.key === "Escape") closeNewFolder();
+                  }}
+                  placeholder="Folder name"
+                  aria-label="Folder name"
+                  aria-invalid={Boolean(newFolderError)}
+                  autoFocus
+                />
+                {newFolderError ? (
+                  <p className="mt-1 text-xs text-destructive" role="alert">
+                    {newFolderError}
+                  </p>
+                ) : null}
+              </div>
+              <Button type="button" size="sm" onClick={stageNewFolder}>
+                Create folder
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={closeNewFolder}>
+                Cancel
+              </Button>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {secretsQuery.isError || userDefinitionsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
@@ -1518,17 +1952,57 @@ export function Secrets() {
                   Retry
                 </Button>
               </div>
-            ) : unifiedRows.length === 0 && !secretsQuery.isPending && !userDefinitionsQuery.isPending ? (
+            ) : unifiedRows.length === 0 &&
+              !secretsQuery.isPending &&
+              !userDefinitionsQuery.isPending &&
+              !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
                 message="No secrets yet. Create a shared company secret or one that each user supplies."
                 action="New secret"
                 onAction={openCreateSecret}
               />
-            ) : filteredRows.length === 0 ? (
-              <EmptyState icon={Search} message="No secrets match your filters." />
             ) : (
               <div className="@container min-w-0 overflow-x-hidden text-sm" data-testid="secrets-list-container">
+                {showFolderView ? (
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    {renderSecretsBreadcrumb()}
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatSecretPathCounts(currentFolderSecretCount, folderListing.folders.length)}
+                    </span>
+                  </div>
+                ) : searching ? (
+                  <div className="mb-3">
+                    <div className="text-sm font-medium text-foreground">Search results</div>
+                    <div className="text-xs text-muted-foreground">
+                      {filteredRows.length} {filteredRows.length === 1 ? "match" : "matches"} across all
+                      folders{folderPath ? ` · searching everywhere, not just ${folderPath}` : ""}
+                    </div>
+                  </div>
+                ) : null}
+
+                {folderRows.length === 0 && secretRows.length === 0 ? (
+                  secretsQuery.isPending || userDefinitionsQuery.isPending ? (
+                    <div className="space-y-2 py-2" aria-hidden="true" data-testid="secrets-loading-skeleton">
+                      {[0, 1, 2, 3].map((index) => (
+                        <div key={index} className="h-14 animate-pulse rounded-md bg-muted/40" />
+                      ))}
+                    </div>
+                  ) : showFolderView && folderPath && activeSecretFilterCount === 0 ? (
+                    <EmptyState
+                      icon={FolderOpen}
+                      message="No secrets in this folder yet."
+                      action="New secret here"
+                      onAction={openCreateSecret}
+                    />
+                  ) : (
+                    <EmptyState
+                      icon={Search}
+                      message={searching ? "No secrets match your search." : "No secrets match your filters."}
+                    />
+                  )
+                ) : (
+                  <>
                 <div
                   role="table"
                   aria-label="Secrets"
@@ -1546,7 +2020,9 @@ export function Secrets() {
                     <div role="columnheader" className="sr-only">Actions</div>
                   </div>
                   <div role="rowgroup">
-                    {filteredRows.map((row) => {
+                    {showUpRow ? renderUpRow("table") : null}
+                    {folderRows.map(renderFolderTableRow)}
+                    {secretRows.map((row) => {
                       const status = row.kind === "company" ? row.secret.status : row.definition.status;
                       const updatedAt = row.kind === "company" ? row.secret.updatedAt : row.definition.updatedAt;
                       const updatedTooltip =
@@ -1573,9 +2049,7 @@ export function Secrets() {
                         >
                           <div role="cell" className="min-w-0">
                             <div className="flex min-w-0 items-center gap-1.5">
-                              <span className="truncate font-medium text-foreground">
-                                {row.kind === "company" ? row.secret.name : row.definition.name}
-                              </span>
+                              {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                               {row.kind === "company" ? (
                                 <SecretProviderIndicator
                                   secret={row.secret}
@@ -1635,7 +2109,9 @@ export function Secrets() {
                 </div>
 
                 <div className="space-y-2 @min-[40rem]:hidden" data-testid="secrets-card-view">
-                  {filteredRows.map((row) => {
+                  {showUpRow ? renderUpRow("card") : null}
+                  {folderRows.map(renderFolderCard)}
+                  {secretRows.map((row) => {
                     const status = row.kind === "company" ? row.secret.status : row.definition.status;
                     return (
                       <div
@@ -1652,8 +2128,8 @@ export function Secrets() {
                       >
                         <div className="flex min-w-0 items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <div className="truncate font-medium text-foreground">
-                              {row.kind === "company" ? row.secret.name : row.definition.name}
+                            <div className="min-w-0 truncate">
+                              {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                             </div>
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
@@ -1699,6 +2175,8 @@ export function Secrets() {
                     );
                   })}
                 </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1732,15 +2210,17 @@ export function Secrets() {
             }
           />
         </TabsContent>
+        <TabsContent value="proposals" className="min-h-0 flex-1 overflow-y-auto">
+          {selectedCompanyId ? (
+            <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
+          ) : null}
+        </TabsContent>
       </Tabs>
 
       <Sheet
         open={Boolean(selectedSecret || selectedDefinition)}
         onOpenChange={(open) => {
-          if (!open) {
-            setSelectedSecretId(null);
-            setSelectedDefinitionId(null);
-          }
+          if (!open && (selectedSecret || selectedDefinition)) setDetailSelection(null);
         }}
       >
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
@@ -1786,7 +2266,10 @@ export function Secrets() {
                   onClick={() => openRotateSecret(selectedSecret)}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                  {rotateActionLabel(selectedSecret)}
+                </Button>
+                <Button variant="outline" size="sm" onClick={copyDetailLink}>
+                  <Link2 className="h-3.5 w-3.5 mr-1" /> Copy link
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -2063,7 +2546,13 @@ export function Secrets() {
         />
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setCreateNamePrefix(null);
+        }}
+      >
         <DialogContent className="max-h-(--sz-calc-18) overflow-y-auto p-4 sm:max-w-lg sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingDefinition ? "Edit user-provided secret" : "Create secret"}</DialogTitle>
@@ -2113,24 +2602,67 @@ export function Secrets() {
 
             <div>
               <label className="text-xs font-medium" htmlFor="new-secret-name">Name</label>
-              <Input
-                id="new-secret-name"
-                value={createForm.name}
-                onChange={(event) => {
-                  const name = event.target.value;
-                  setCreateForm((current) => ({
-                    ...current,
-                    name,
-                    key: createKeyDirty
-                      ? current.key
-                      : secretValueProvider === "user"
-                        ? normalizeUserSecretKeyForPreview(name)
-                        : normalizeSecretKeyForPreview(name),
-                  }));
-                }}
-                placeholder={secretValueProvider === "user" ? "Personal GitHub token" : "/dev/foo/bar"}
-                autoFocus
-              />
+              {createNamePrefix && !editingDefinition ? (
+                <div className="flex h-9 w-full min-w-0 items-center gap-1.5 rounded-md border border-input bg-transparent px-2 shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-3">
+                  <span
+                    className="inline-flex min-w-0 shrink items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    title={createNamePrefix}
+                  >
+                    <span className="truncate">{createNamePrefix}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label="Remove folder prefix"
+                      onClick={() => setCreateNamePrefix(null)}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                  <input
+                    id="new-secret-name"
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                    value={createForm.name.slice(createNamePrefix.length)}
+                    onChange={(event) => {
+                      const name = createNamePrefix + event.target.value;
+                      setCreateForm((current) => ({
+                        ...current,
+                        name,
+                        key: createKeyDirty
+                          ? current.key
+                          : secretValueProvider === "user"
+                            ? normalizeUserSecretKeyForPreview(name)
+                            : normalizeSecretKeyForPreview(name),
+                      }));
+                    }}
+                    placeholder="clientsecret"
+                    autoFocus
+                  />
+                </div>
+              ) : (
+                <Input
+                  id="new-secret-name"
+                  value={createForm.name}
+                  onChange={(event) => {
+                    const name = event.target.value;
+                    setCreateForm((current) => ({
+                      ...current,
+                      name,
+                      key: createKeyDirty
+                        ? current.key
+                        : secretValueProvider === "user"
+                          ? normalizeUserSecretKeyForPreview(name)
+                          : normalizeSecretKeyForPreview(name),
+                    }));
+                  }}
+                  placeholder={secretValueProvider === "user" ? "Personal GitHub token" : "/dev/foo/bar"}
+                  autoFocus
+                />
+              )}
+              {createNamePrefix && !editingDefinition ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Creating in {folderPath} — remove the chip to type a different path.
+                </p>
+              ) : null}
             </div>
 
             {secretValueProvider === "company" && createMode === "managed" ? (
@@ -2513,14 +3045,26 @@ export function Secrets() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update external reference"
+                : "Update secret value"}
             </DialogTitle>
             <DialogDescription>
-              {selectedSecret?.managedMode === "external_reference"
-                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
-                : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
+              {selectedSecret?.managedMode !== "external_reference"
+                ? "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."
+                : rotateMode === "reference"
+                  ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
+                  : "Writes a new version of the referenced provider secret. The new value becomes current for every consumer of that secret, in and outside Paperclip."}
             </DialogDescription>
           </DialogHeader>
+          {selectedSecret && secretSupportsExternalValueWrite(selectedSecret) ? (
+            <Tabs value={rotateMode} onValueChange={(value) => setRotateMode(value as RotateMode)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="value">Write new value</TabsTrigger>
+                <TabsTrigger value="reference">Change reference</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          ) : null}
           <div>
             <label className="text-xs font-medium" htmlFor="rotate-secret-vault">Provider vault</label>
             <select
@@ -2549,7 +3093,7 @@ export function Secrets() {
               </p>
             )}
           </div>
-          {selectedSecret?.managedMode === "external_reference" ? (
+          {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference" ? (
             <div>
               <label className="text-xs font-medium" htmlFor="rotate-ref">External reference</label>
               <Input
@@ -2574,6 +3118,11 @@ export function Secrets() {
                 className="font-mono text-xs"
                 placeholder="Paste the new value"
               />
+              {selectedSecret?.managedMode === "external_reference" ? (
+                <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
+                  Written to <code className="font-mono">{selectedSecret.externalRef}</code> in the provider.
+                </p>
+              ) : null}
             </div>
           )}
           {rotateError ? <p className="text-xs text-destructive">{rotateError}</p> : null}
@@ -2589,13 +3138,15 @@ export function Secrets() {
               disabled={
                 rotateMutation.isPending ||
                 Boolean(rotateProviderBlockReason) ||
-                (selectedSecret?.managedMode === "external_reference"
+                (selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
                   ? !rotateExternalRef.trim() && !selectedSecret?.externalRef
                   : !rotateValue)
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Update value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update reference"
+                : "Update value"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3366,7 +3917,7 @@ function AwsProviderVaultDiscoveryError({
   const detailsText = JSON.stringify(safeDetails, null, 2);
 
   const copyDetails = () => {
-    void navigator.clipboard?.writeText(detailsText);
+    void copyTextToClipboard(detailsText).catch(() => {});
   };
 
   return (
@@ -3515,7 +4066,7 @@ function SecretCreateError({
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={() => void navigator.clipboard?.writeText(detailsText)}
+                onClick={() => void copyTextToClipboard(detailsText).catch(() => {})}
               >
                 Copy
               </Button>
@@ -3780,6 +4331,25 @@ function envKeysReferencingSecret(env: unknown, reference: AgentAccessReference)
     .sort();
 }
 
+/**
+ * Top-level `access.<ALIAS>` keys in an agent's adapter config that resolve to
+ * this secret (API-access delivery). Only company secrets support API access;
+ * user secrets remain env-only.
+ */
+function apiAliasesReferencingSecret(adapterConfig: unknown, reference: AgentAccessReference): string[] {
+  if (reference.kind !== "company") return [];
+  if (typeof adapterConfig !== "object" || adapterConfig === null || Array.isArray(adapterConfig)) return [];
+  return Object.entries(adapterConfig as Record<string, unknown>)
+    .filter(([key, binding]) => {
+      if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) return false;
+      if (typeof binding !== "object" || binding === null) return false;
+      const record = binding as Record<string, unknown>;
+      return record.type === "secret_ref" && record.secretId === reference.secret.id;
+    })
+    .map(([key]) => key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length))
+    .sort();
+}
+
 function AgentAccessSection({
   companyId,
   reference,
@@ -3809,14 +4379,15 @@ function AgentAccessSection({
   const agentAccess = useMemo(
     () =>
       agents
-        .map((agent) => ({
-          agent,
-          envKeys: envKeysReferencingSecret(
-            (agent.adapterConfig as Record<string, unknown> | null)?.env,
-            reference,
-          ),
-        }))
-        .filter((entry) => entry.envKeys.length > 0),
+        .map((agent) => {
+          const adapterConfig = (agent.adapterConfig as Record<string, unknown> | null) ?? null;
+          return {
+            agent,
+            envKeys: envKeysReferencingSecret(adapterConfig?.env, reference),
+            apiAliases: apiAliasesReferencingSecret(adapterConfig, reference),
+          };
+        })
+        .filter((entry) => entry.envKeys.length > 0 || entry.apiAliases.length > 0),
     [agents, reference],
   );
   const grantableAgents = useMemo(
@@ -3881,8 +4452,10 @@ function AgentAccessSection({
       const adapterConfig = { ...((detail.adapterConfig ?? {}) as Record<string, unknown>) };
       const env = { ...((adapterConfig.env ?? {}) as Record<string, unknown>) };
       const keys = envKeysReferencingSecret(env, reference);
-      if (keys.length === 0) return detail;
+      const aliases = apiAliasesReferencingSecret(adapterConfig, reference);
+      if (keys.length === 0 && aliases.length === 0) return detail;
       for (const key of keys) delete env[key];
+      for (const alias of aliases) delete adapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`];
       return agentsApi.update(
         agentId,
         { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true },
@@ -3908,7 +4481,7 @@ function AgentAccessSection({
       </div>
       <p className="mt-0.5 text-(length:--text-micro) text-muted-foreground">
         {reference.kind === "company"
-          ? "These agents receive this secret as an environment variable at run start."
+          ? "Add here to inject this secret as an environment variable at run start. API-access grants (fetched on demand, no env var) are managed from each agent's Secret access settings and shown below."
           : "These agents resolve the responsible user's value as an environment variable at run start."}
       </p>
       {agentsQuery.isPending ? (
@@ -3921,15 +4494,30 @@ function AgentAccessSection({
         <>
           {agentAccess.length > 0 ? (
             <ul className="mt-2 space-y-1">
-              {agentAccess.map(({ agent, envKeys }) => (
+              {agentAccess.map(({ agent, envKeys, apiAliases }) => (
                 <li
                   key={agent.id}
                   className="flex items-center gap-2 rounded border border-border/60 bg-background px-2 py-1"
                 >
                   <span className="min-w-0 flex-1 truncate text-xs font-medium">{agent.name}</span>
-                  <code className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
-                    {envKeys.join(", ")}
-                  </code>
+                  <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                    {envKeys.length > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-(length:--text-nano) font-normal border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                      >
+                        Env · {envKeys.join(", ")}
+                      </Badge>
+                    ) : null}
+                    {apiAliases.length > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-(length:--text-nano) font-normal border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      >
+                        API · {apiAliases.join(", ")}
+                      </Badge>
+                    ) : null}
+                  </span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -3955,19 +4543,14 @@ function AgentAccessSection({
               >
                 Agent
               </label>
-              <select
+              <AgentSelect
                 id="agent-access-agent"
-                className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none"
+                agents={grantableAgents}
                 value={selectedAgentId}
-                onChange={(event) => setSelectedAgentId(event.target.value)}
-              >
-                <option value="">Select agent…</option>
-                {grantableAgents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedAgentId}
+                triggerClassName="h-8 text-xs"
+                emptyMessage="No agents available."
+              />
             </div>
             <div className="min-w-0 flex-1">
               <label
@@ -4063,7 +4646,14 @@ function SecretDetailsTab({
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(
+          secret.managedMode,
+          Boolean(
+            secret.externalRef &&
+              providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites,
+          ),
+        )}{" "}
+        Paperclip never re-displays stored values.
       </div>
     </dl>
   );
@@ -4078,7 +4668,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
+export function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
   if (loading) {
     return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
   }
@@ -4091,42 +4681,65 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
   }
   return (
     <div className="space-y-2">
-      {bindings.map((binding) => (
-        <div
-          key={binding.id}
-          className="rounded-md border border-border bg-muted/30 p-2 text-xs"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium capitalize">{binding.target.type}</span>
-            <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
+      {bindings.map((binding) => {
+        const deliveryMode = deliveryModeForConfigPath(binding.configPath);
+        return (
+          <div
+            key={binding.id}
+            className="rounded-md border border-border bg-muted/30 p-2 text-xs"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5">
+                <span className="font-medium capitalize">{binding.target.type}</span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "h-5 px-1.5 text-(length:--text-nano) font-normal",
+                    deliveryMode === "api"
+                      ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      : deliveryMode === "env"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                        : null,
+                  )}
+                >
+                  {deliveryModeLabel(deliveryMode)}
+                </Badge>
+              </span>
+              <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+              {binding.target.href ? (
+                <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
+                  {binding.target.label}
+                </Link>
+              ) : (
+                <span className="truncate font-medium">{binding.target.label}</span>
+              )}
+              {binding.target.status ? (
+                <Badge variant="outline" className="h-5 px-1.5 text-(length:--text-nano) font-normal">
+                  {binding.target.status.replaceAll("_", " ")}
+                </Badge>
+              ) : null}
+            </div>
+            <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
+              {binding.targetId}
+            </div>
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              {deliveryMode === "api" ? (
+                <>API alias <span className="font-mono">{aliasFromConfigPath(binding.configPath)}</span></>
+              ) : (
+                <span className="font-mono">{binding.configPath}</span>
+              )}{" "}
+              {binding.required ? "· required" : "· optional"}
+            </div>
           </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-2">
-            {binding.target.href ? (
-              <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
-                {binding.target.label}
-              </Link>
-            ) : (
-              <span className="truncate font-medium">{binding.target.label}</span>
-            )}
-            {binding.target.status ? (
-              <Badge variant="outline" className="h-5 px-1.5 text-(length:--text-nano) font-normal">
-                {binding.target.status.replaceAll("_", " ")}
-              </Badge>
-            ) : null}
-          </div>
-          <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
-            {binding.targetId}
-          </div>
-          <div className="text-(length:--text-micro) text-muted-foreground">
-            {binding.configPath} {binding.required ? "· required" : "· optional"}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function SecretEventsTab({
+export function SecretEventsTab({
   loading,
   events,
   companyId,
@@ -4169,8 +4782,9 @@ function SecretEventsTab({
       {events.map((event) => (
         <div key={event.id} className="rounded border border-border px-2 py-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 capitalize">
-              {event.consumerType} · {event.outcome}
+            <span className="flex items-center gap-1.5">
+              <span>{consumerTypeLabel(event.consumerType)}</span>
+              <span className="capitalize">· {event.outcome}</span>
               {event.secretScope === "user" ? (
                 <Badge
                   variant="outline"

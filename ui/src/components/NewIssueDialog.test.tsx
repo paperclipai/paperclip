@@ -797,6 +797,29 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows the create-task loading state only in the submit button", async () => {
+    mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
+    dialogState.newIssueDefaults = { title: "Pending task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(submitButton?.textContent).toContain("Creating...");
+    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.textContent).not.toContain("Creating issue");
+
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [

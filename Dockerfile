@@ -3,10 +3,6 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG DOCKER_GID=992
-ARG APP_VERSION=v2026.707.0
-LABEL org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.source="https://github.com/starlein/paperclip"
-ENV PAPERCLIP_IMAGE_VERSION=${APP_VERSION}
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 mc nano procps zstd tini net-tools libicu76 inetutils-ping lynx \
   && apt-get install -y php8.4 php8.4-pgsql php8.4-mysql php8.4-pdo php8.4-mbstring php8.4-sqlite3 php8.4-xsl composer mariadb-client node-playwright chromium-driver chromium-headless-shell \
@@ -52,48 +48,47 @@ COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gate
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
-COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
-COPY packages/plugins/examples/plugin-authoring-smoke-example/package.json packages/plugins/examples/plugin-authoring-smoke-example/
-COPY packages/plugins/examples/plugin-file-browser-example/package.json packages/plugins/examples/plugin-file-browser-example/
-COPY packages/plugins/examples/plugin-hello-world-example/package.json packages/plugins/examples/plugin-hello-world-example/
-COPY packages/plugins/examples/plugin-kitchen-sink-example/package.json packages/plugins/examples/plugin-kitchen-sink-example/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
-RUN for package_json in packages/plugins/sandbox-providers/*/package.json; do \
-    [ -f "$package_json" ] || continue; \
-    provider_dir="${package_json%/package.json}"; \
-    echo "Installing standalone sandbox provider deps: ${provider_dir}"; \
-    pnpm --dir "$provider_dir" install --ignore-workspace --no-lockfile; \
-  done
 
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm run build
-RUN for package_json in packages/plugins/sandbox-providers/*/package.json; do \
-    [ -f "$package_json" ] || continue; \
-    provider_dir="${package_json%/package.json}"; \
-    echo "Building bundled sandbox provider: ${provider_dir}"; \
-    pnpm --dir "$provider_dir" build; \
-  done
-
+RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
-RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+# Real version for this build, computed from `git describe` on the CI runner
+# (the image has no .git, so the server cannot derive it at runtime). Empty for
+# local `docker build`, which just leaves the server on its normal fallbacks.
+ARG PAPERCLIP_BUILD_VERSION=""
+# The exact commit this image was built from, for the same reason: server-info
+# falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
+# /api/health `commit` field that deploy tooling verifies. Empty locally.
+ARG PAPERCLIP_BUILD_COMMIT=""
+# Refreshes the tool layer below when it changes (CI stamps an ISO week, so
+# the @latest CLI tools advance weekly). Without it the cached layer would
+# freeze the tools until an unrelated cache bust.
+ARG CLI_TOOLS_CACHE_EPOCH=""
 WORKDIR /app
-COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @tobilu/qmd \
+# Tool and OS layer BEFORE the app copy: it references nothing from /app, and
+# the app copy changes on every commit — ordered the other way around, this
+# (the single most expensive layer: four CLI toolchains + apt, per arch) can
+# never hit the layer cache and rebuilds on every build.
+RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @tobilu/qmd \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -103,6 +98,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+COPY --chown=node:node --from=build /app /app
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -110,6 +107,8 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  PAPERCLIP_BUILD_VERSION=${PAPERCLIP_BUILD_VERSION} \
+  PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_BUILD_COMMIT} \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
@@ -122,3 +121,38 @@ EXPOSE 3100
 
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+# Cloud image variant (build with `--target cloud`): the production image
+# plus built bundled sandbox-provider plugins. Managed instances receive a
+# `plugins.autoInstall` key list through PAPERCLIP_MANAGED_CONFIG and
+# install those plugins from the bundled catalog at boot
+# (server/src/services/bundled-plugins.ts), which requires each plugin's
+# dist/ to exist in the image — the default image ships only their source,
+# so auto-install logs "bundle not present" and skips. The plugins are
+# built in this separate target so the default (self-hosted) image stays
+# lean; CI pins the default build to `--target production`, which is
+# byte-identical to before this stage existed.
+#
+# The sandbox providers are intentionally excluded from the pnpm workspace
+# (see pnpm-workspace.yaml), so each installs standalone exactly as its
+# README prescribes. Installing in a `build`-based stage (not `production`)
+# keeps devDependencies available for tsc: `production` sets
+# NODE_ENV=production, which would make pnpm skip them.
+#
+# CLOUD_BUNDLED_PLUGINS is the space-separated list of sandbox-provider
+# directory names to build into the variant. Only what managed deployments
+# actually auto-install belongs here — every entry adds its node_modules
+# to the image. Growing the list is a one-line workflow change.
+FROM build AS cloud-plugins
+ARG CLOUD_BUNDLED_PLUGINS="daytona"
+RUN set -eu; \
+  for name in $CLOUD_BUNDLED_PLUGINS; do \
+    dir="packages/plugins/sandbox-providers/$name"; \
+    test -d "$dir" || { echo "ERROR: unknown sandbox provider '$name'" >&2; exit 1; }; \
+    pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
+    pnpm -C "$dir" build; \
+    test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
+  done
+
+FROM production AS cloud
+COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers

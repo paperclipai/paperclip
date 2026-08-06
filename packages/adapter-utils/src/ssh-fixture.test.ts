@@ -170,6 +170,49 @@ describe("ssh env-lab fixture", () => {
     await stopSshEnvLabFixture(statePath);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("builds a remote script that sources login profiles but no nvm", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      command: "node",
+      args: ["--version"],
+      env: { FOO: "bar" },
+    });
+
+    // The remote script rides the last ssh argument. The SSH target is an
+    // operator-configured host that can expose `node` only through a login
+    // profile, so the wrapper sources the profiles. It no longer sources
+    // `nvm.sh`; a profile that adds nvm still runs.
+    const remoteScript = String(target.args.at(-1) ?? "");
+    expect(remoteScript).not.toContain("nvm.sh");
+    expect(remoteScript).not.toContain("NVM_DIR");
+    // Source /etc/profile so a host that exposes the PATH through
+    // /etc/profile.d scripts still resolves node and the agent CLI.
+    expect(remoteScript).toContain("/etc/profile");
+    expect(remoteScript).toContain(".profile");
+    expect(remoteScript).toContain(".bash_profile");
+    expect(remoteScript).toContain(".zprofile");
+    // Fall back to .bashrc when no .bash_profile exists, so a host that adds
+    // nvm in .bashrc still resolves node under a non-login SSH command.
+    expect(remoteScript).toContain(".bashrc");
+    // The last ssh argument wraps the script as `sh -c '...'`, so the inner
+    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
+    expect(remoteScript).toContain("cd ");
+    expect(remoteScript).toContain("/srv/paperclip/workspace");
+    expect(remoteScript).toContain("exec env ");
+    expect(remoteScript).toContain("node");
+    expect(remoteScript).toContain("--version");
+    await target.cleanup();
+  });
+
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
       buildSshSpawnTarget({

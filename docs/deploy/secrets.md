@@ -51,6 +51,13 @@ Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
 own `PAPERCLIP_*` runtime variables.
 
+Separately from env bindings, the **server itself** consumes a company secret
+named `GITHUB_TOKEN`, `GH_TOKEN`, or `PAPERCLIP_GITHUB_TOKEN` (by name, no
+binding needed) to authenticate server-side git operations — cloning private
+GitHub repos for repo-only project workspaces and refreshing worktree base
+refs. See
+[Execution workspaces](../guides/board-operator/execution-workspaces-and-runtime-services.md#private-repositories-and-repo-only-project-workspaces).
+
 ## User-Specific Secrets
 
 User-specific secrets let a shared agent or project declare a slot such as

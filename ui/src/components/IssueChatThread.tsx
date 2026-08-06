@@ -77,6 +77,7 @@ import {
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
   type IssueTimelineWorkspace,
+  type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -107,6 +108,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -145,10 +147,13 @@ import {
   SystemNotice,
   type SystemNoticeMetadataRow,
   type SystemNoticeMetadataSection,
+  type SystemNoticeProps,
+  type SystemNoticeTone,
 } from "./SystemNotice";
 import {
   buildSystemNoticeProps,
   mapCommentMetadataToSystemNoticeSections,
+  systemNoticeLabelForTone,
 } from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
@@ -180,6 +185,8 @@ import {
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
 import { SourceTrustBadge } from "./SourceTrustBadge";
+import { CommentAttributionChip } from "./CommentAttributionChip";
+import { resolveCommentAttribution } from "../lib/comment-attribution";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -230,6 +237,11 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
+  /**
+   * Current assignee. Agent comments from anyone else are cross-issue writes, so
+   * they carry a "for {user}" attribution chip (the open cross-task write design (attribution)).
+   */
+  issueAssigneeAgentId?: string | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   externalReferences?: MarkdownExternalReferenceMap;
   /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
@@ -425,6 +437,13 @@ interface IssueChatThreadProps {
   feedbackTermsUrl?: string | null;
   linkedRuns?: IssueChatLinkedRun[];
   timelineEvents?: IssueTimelineEvent[];
+  /**
+   * Work-mode switch history from the activity feed. Only the redesigned
+   * TaskChatThread consumes this (flag: enableTaskChatRedesign) to tag each
+   * agent reply with the mode its request ran under; the legacy thread
+   * ignores it.
+   */
+  workModeChanges?: IssueWorkModeChange[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
@@ -451,6 +470,8 @@ interface IssueChatThreadProps {
     title?: string | null;
   } | null;
   assigneeUserId?: string | null;
+  /** Current assignee agent, used to mark cross-issue agent comments (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId?: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
   companyId?: string | null;
@@ -489,6 +510,20 @@ interface IssueChatThreadProps {
   autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
+  /**
+   * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
+   * the thread's scroll viewport so it scrolls away with the messages. Only the
+   * redesigned TaskChatThread consumes this (flag: enableTaskChatRedesign);
+   * the legacy thread ignores it — its header stays in the page flow.
+   */
+  threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble
+   * (PAP-375). Only the redesigned TaskChatThread consumes it (flag:
+   * enableTaskChatRedesign); the legacy thread ignores it — its description
+   * stays in the page header via InlineEditor.
+   */
+  issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -1650,6 +1685,8 @@ function IssueChatAssistantMessage({
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
     runFinalizationActions = [],
+    userLabelMap,
+    issueAssigneeAgentId,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1666,6 +1703,12 @@ function IssueChatAssistantMessage({
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
   const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
+  const attribution = resolveCommentAttribution({
+    authorAgentId,
+    onBehalfOfUserId: typeof custom.onBehalfOfUserId === "string" ? custom.onBehalfOfUserId : null,
+    issueAssigneeAgentId,
+    resolveUserLabel: (userId) => userLabelMap?.get(userId),
+  });
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
@@ -1852,6 +1895,10 @@ function IssueChatAssistantMessage({
               )}
             </span>
             <span className="text-sm font-medium text-foreground">{authorName}</span>
+            {/* Reads as "Fable · for Dotta" beside the author name (the open cross-task write design (attribution)). */}
+            {attribution ? (
+              <CommentAttributionChip agentName={authorName} userName={attribution.userName} />
+            ) : null}
             <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
             {followUpRequested ? (
               <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
@@ -2364,6 +2411,10 @@ function isStaleSuccessfulRunHandoffNotice(input: {
   const currentHandoff = input.successfulRunHandoff ?? null;
   if (currentHandoff?.state === "resolved") return true;
   if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+  // A live continuation (running/queued run or queued wake) means an agent is
+  // already handling the issue — fold the warning until the issue is actually
+  // stuck again.
+  if (currentHandoff?.hasLiveContinuation) return true;
 
   const noticeSourceRunId = sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ?? input.runId ?? null;
   if (
@@ -2558,6 +2609,82 @@ function StaleDispositionWarningRow({
   );
 }
 
+// Tone-colored dot for the fully-collapsed compact notice row. Tone is never
+// conveyed by color alone — the adjacent title text names the notice.
+const COMPACT_TONE_DOT: Record<SystemNoticeTone, string> = {
+  neutral: "bg-muted-foreground/40",
+  info: "bg-sky-500 dark:bg-sky-400",
+  success: "bg-emerald-500 dark:bg-emerald-400",
+  warning: "bg-amber-500 dark:bg-amber-400",
+  danger: "bg-red-500 dark:bg-red-400",
+};
+
+// A system notice whose presentation opts into `density: "compact"` collapses to
+// a single quiet row — tone dot + title (+ author) + timestamp + chevron.
+// Expanding reveals the full SystemNotice card (body + details), so no
+// information is lost. Generalized from the StaleDispositionWarningRow precedent.
+function CompactSystemNoticeRow({
+  anchorId,
+  message,
+  tone,
+  title,
+  source,
+  noticeProps,
+  defaultOpen = false,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  tone: SystemNoticeTone;
+  title: string;
+  source?: SystemNoticeProps["source"];
+  noticeProps: SystemNoticeProps;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const detailsId = useId();
+
+  return (
+    <div id={anchorId} data-testid="compact-system-notice" className="group">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/5"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", COMPACT_TONE_DOT[tone])}
+              aria-hidden
+            />
+            <span className="truncate text-sm font-medium text-foreground/80">{title}</span>
+            {source ? (
+              <span className="truncate text-(length:--text-micro) text-muted-foreground">
+                · {source.label}
+              </span>
+            ) : null}
+            {/* Trailing meta never shrinks — keeps the timestamp on one line so the
+                collapsed row stays a single quiet line on narrow / mobile widths. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="compact-system-notice-time" className="whitespace-nowrap text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground/70", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="py-1">
+            <SystemNotice {...noticeProps} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -2650,6 +2777,24 @@ function SystemNoticeCommentRow({
         message={message}
         metadata={commentMetadata}
         runAgentId={runAgentId}
+      />
+    );
+  }
+
+  // Compact presentation collapses the notice to a single quiet row. Notices
+  // without `density` (old comments / old data) keep today's full card.
+  if (presentation?.density === "compact") {
+    const tone = presentation.tone ?? "neutral";
+    const title = systemNoticeLabelForTone(tone, presentation.title);
+    return (
+      <CompactSystemNoticeRow
+        anchorId={anchorId}
+        message={message}
+        tone={tone}
+        title={title}
+        source={source}
+        noticeProps={props}
+        defaultOpen={Boolean(presentation.detailsDefaultOpen)}
       />
     );
   }
@@ -4206,6 +4351,7 @@ export function IssueChatThread({
   companyId,
   projectId,
   issueStatus,
+  issueAssigneeAgentId = null,
   agentMap,
   currentUserId,
   userLabelMap,
@@ -4334,6 +4480,16 @@ export function IssueChatThread({
     () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
     [displayLiveRuns, activeRun],
   );
+  // Real-time view of the handoff: a run that starts after the issue payload
+  // was fetched must quiet the missing-disposition warnings without waiting
+  // for a refetch to update `hasLiveContinuation`.
+  const successfulRunHandoffWithLiveness = useMemo(() => {
+    if (!successfulRunHandoff || successfulRunHandoff.hasLiveContinuation) {
+      return successfulRunHandoff ?? null;
+    }
+    const liveNow = activeRunIds.size > 0 || Boolean(issueId && liveIssueIds?.has(issueId));
+    return liveNow ? { ...successfulRunHandoff, hasLiveContinuation: true } : successfulRunHandoff;
+  }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -4811,7 +4967,8 @@ export function IssueChatThread({
       onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
       onUploadImage: stableOnUploadImage,
       issueStatus,
-      successfulRunHandoff,
+      issueAssigneeAgentId,
+      successfulRunHandoff: successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     }),
@@ -4839,7 +4996,8 @@ export function IssueChatThread({
       stableOnSubmitInteractionVerdicts,
       stableOnUploadImage,
       issueStatus,
-      successfulRunHandoff,
+      issueAssigneeAgentId,
+      successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     ],
@@ -4982,7 +5140,7 @@ export function IssueChatThread({
                     allBlockers={blockedBy}
                     liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
-                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoffWithLiveness}
                     scheduledRetry={scheduledRetry}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId

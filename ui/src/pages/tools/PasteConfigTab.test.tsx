@@ -82,8 +82,11 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       companyId: "company-1",
       applicationId: "app-1",
       name: "kv-demo",
+      uid: "app-gallery-link-test/kv-demo",
       connectionKind: "managed",
-      transport: "remote_http",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "none",
       status: "draft",
       enabled: false,
       config: { url: "http://127.0.0.1:8848/mcp" },
@@ -210,7 +213,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
         drafts: [
           {
             name: "kv-demo",
-            transport: "remote_http",
+            transport: "mcp_remote",
             status: "draft",
             config: { url: "http://127.0.0.1:8848/mcp" },
             credentialRefs: [],
@@ -249,7 +252,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
         drafts: [
           {
             name: "secure-demo",
-            transport: "remote_http",
+            transport: "mcp_remote",
             status: "draft",
             config: { url: "https://secure.example/mcp" },
             credentialRefs: [],

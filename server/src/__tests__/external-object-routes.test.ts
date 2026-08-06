@@ -273,7 +273,7 @@ describe("external object routes", () => {
       .send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
 

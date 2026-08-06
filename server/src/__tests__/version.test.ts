@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseGitDescribeVersion, parseImageVersion, resolveServerVersion } from "../version.js";
+import { parseGitDescribeVersion, resolveServerVersion } from "../version.js";
 
 describe("parseGitDescribeVersion", () => {
   it("reports drift from the nearest release tag as a PEP 440 local version", () => {
@@ -26,20 +26,6 @@ describe("parseGitDescribeVersion", () => {
     expect(parseGitDescribeVersion("v2026.626.0-0-g012345678-dirty\n")).toBe(
       "2026.626.0+0.git.012345678.dirty",
     );
-  });
-});
-
-describe("parseImageVersion", () => {
-  it("normalizes tagged and Docker git-describe versions", () => {
-    expect(parseImageVersion("v2026.707.0")).toBe("2026.707.0");
-    expect(parseImageVersion("v2026.707.0-229-g479576e31")).toBe(
-      "2026.707.0+229.git.479576e31",
-    );
-  });
-
-  it("accepts semver metadata and rejects invalid image labels", () => {
-    expect(parseImageVersion("2026.707.0+docker.1")).toBe("2026.707.0+docker.1");
-    expect(parseImageVersion("latest")).toBeNull();
   });
 });
 
@@ -115,6 +101,7 @@ describe("resolveServerVersion", () => {
   it("uses deployment commit metadata when a source build has no git directory", () => {
     expect(
       resolveServerVersion({
+        buildVersion: null,
         buildCommit: "0123456789abcdef0123456789abcdef01234567",
         packageVersion: "2026.706.0",
         gitDescribeCommand: () => {
@@ -125,32 +112,64 @@ describe("resolveServerVersion", () => {
     ).toBe("2026.706.0+0.git.0123456");
   });
 
-  it("uses validated image metadata when a Docker source build has no git directory", () => {
+  it("uses the stamped build version when a Docker image has no git directory", () => {
+    const debugLog = vi.fn();
+
     expect(
       resolveServerVersion({
+        // A real CalVer describe stamped by CI wins over the coarse build-commit
+        // stamp and the source placeholder — this is the analytics/debug-panel fix.
+        buildVersion: "v2026.722.0-15-g4c55f0d",
         buildCommit: "0123456789abcdef0123456789abcdef01234567",
-        imageVersion: "v2026.707.0-229-g479576e31",
         packageVersion: "0.3.1",
         gitDescribeCommand: () => {
           throw new Error("fatal: not a git repository");
         },
-        debugLog: vi.fn(),
+        debugLog,
       }),
-    ).toBe("2026.707.0+229.git.479576e31");
+    ).toBe("2026.722.0+15.git.4c55f0d");
+    expect(debugLog).toHaveBeenCalledWith(
+      { reason: "build_version" },
+      "using stamped build version for server version",
+    );
   });
 
-  it("ignores invalid image metadata and keeps the existing fallback", () => {
+  it("collapses an on-tag stamped build version to the release version", () => {
     expect(
       resolveServerVersion({
-        buildCommit: null,
-        imageVersion: "latest",
+        buildVersion: "v2026.722.0-0-g4c55f0d",
         packageVersion: "0.3.1",
         gitDescribeCommand: () => {
-          throw new Error("fatal: not a git repository");
+          throw new Error("no git");
         },
         debugLog: vi.fn(),
       }),
-    ).toBe("0.3.1");
+    ).toBe("2026.722.0");
+  });
+
+  it("uses a pre-resolved stamped build version verbatim", () => {
+    expect(
+      resolveServerVersion({
+        buildVersion: "2026.725.0-canary.2",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("no git");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.725.0-canary.2");
+  });
+
+  it("keeps the live git-derived version even when a build version is stamped", () => {
+    expect(
+      resolveServerVersion({
+        // A stamped version is only a fallback: a real checkout's git describe wins.
+        buildVersion: "v2020.1.1-0-g0000000",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => "v2026.626.0-58-g518fc71ce\n",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.626.0+58.git.518fc71ce");
   });
 
   it("skips git metadata probing for packaged installs under node_modules", () => {

@@ -33,6 +33,7 @@ import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -165,6 +166,7 @@ export function AgentActionButtons({
   workActionsDisabledReason,
   navigateToRunOnInvoke = true,
   onActionError,
+  onTerminateSuccess,
   pauseConfirm,
   hideTerminate = false,
   children,
@@ -193,6 +195,8 @@ export function AgentActionButtons({
    * omitted, failures surface as toasts (used by the list view).
    */
   onActionError?: (message: string | null) => void;
+  /** Called after termination succeeds so callers can leave now-hidden detail routes. */
+  onTerminateSuccess?: (agent: Agent) => void;
   /** Extra content rendered just before the overflow menu (e.g. live-run link). */
   children?: React.ReactNode;
   className?: string;
@@ -246,6 +250,9 @@ export function AgentActionButtons({
     onSuccess: (data, action) => {
       onActionError?.(null);
       invalidateAgent();
+      if (action === "terminate") {
+        onTerminateSuccess?.(data as Agent);
+      }
       if (action === "invoke" && navigateToRunOnInvoke && data && typeof data === "object" && "id" in data) {
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
@@ -393,7 +400,9 @@ export function AgentActionButtons({
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
-              navigator.clipboard.writeText(agent.id);
+              void copyTextToClipboard(agent.id).catch(() => {
+                pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+              });
               setMoreOpen(false);
             }}
           >

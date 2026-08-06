@@ -7,10 +7,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
+import {
+  clearLocalInboxArchive,
+  getLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
+}));
+
+const externalObjectMocks = vi.hoisted(() => ({
+  summaries: new Map(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -122,6 +130,14 @@ vi.mock("../hooks/useInboxBadge", () => ({
   }),
 }));
 
+vi.mock("../hooks/useIssueExternalObjects", () => ({
+  useIssueExternalObjectSummaries: () => ({
+    summaries: externalObjectMocks.summaries,
+    isLoading: false,
+    isReady: true,
+  }),
+}));
+
 import {
   FailedRunInboxRow,
   Inbox,
@@ -168,6 +184,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -251,6 +268,7 @@ function createJoinRequest(
 
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
+  externalObjectMocks.summaries.clear();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -289,7 +307,42 @@ describe("Inbox toolbar", () => {
   });
 
   afterEach(() => {
+    for (const issueId of getLocalInboxArchiveIssueIds("company-1")) {
+      clearLocalInboxArchive("company-1", issueId);
+    }
     container.remove();
+  });
+
+  it("does not render external-object summaries in inbox rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issue = createIssue({ title: "Inbox row without external object column" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    externalObjectMocks.summaries.set(issue.id, {
+      total: 1,
+      highestSeverity: "failed",
+      byStatusCategory: { failed: 1 },
+      objects: [],
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(issue.title);
+    });
+
+    expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
+
+    act(() => root.unmount());
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {
@@ -413,12 +466,14 @@ describe("Inbox toolbar", () => {
 
     const rows = container.querySelectorAll("[data-inbox-item]");
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
+    // The hover wash lives on the IssueRow root band (the overlay link's
+    // parent), not the overlay link itself.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
 
     // Nothing selected before hover — both rows show the hover-accent class.
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
     // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
     // state-selected band (which would swap to hover:bg-transparent). Coupling
@@ -430,9 +485,9 @@ describe("Inbox toolbar", () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
 
     act(() => {
       root.unmount();
@@ -476,16 +531,15 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const linkOf = (row: Element) => row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]");
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
     // The empty spacer that reserves the chevron column on every leaf row.
     // Excludes the tree-guide span (`.self-stretch`), which only renders on
     // nested rows.
     const hasLeadingSpacer = (row: Element) =>
-      !!linkOf(row)?.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
+      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
     // The reserved leading dot slot, present on read AND unread rows.
     const dotSlot = (row: Element) =>
-      linkOf(row)?.querySelector('[data-testid="issue-row-unread-slot"]') ?? null;
+      row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
@@ -527,12 +581,13 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
-    // The keyboard-selected row swaps to `hover:bg-transparent`; find its index.
+    // The keyboard-selected row swaps to `hover:bg-transparent` on its root
+    // band (the overlay link's parent, where the wash now lives); find its index.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
     const selectedRowIndex = () =>
       [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
-        linkOf(row)?.className.includes("hover:bg-transparent"),
+        bandOf(row)?.className.includes("hover:bg-transparent"),
       );
 
     try {
@@ -574,6 +629,107 @@ describe("Inbox toolbar", () => {
       expect(selectedRowIndex()).toBe(2);
     } finally {
       generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-3001",
+      title: "Pin row A",
+      lastActivityAt: new Date(base + 3000),
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-3002",
+      title: "Pin row B",
+      lastActivityAt: new Date(base + 2000),
+    });
+    const issueC = createIssue({
+      id: "issue-c",
+      identifier: "PAP-3003",
+      title: "Pin row C",
+      lastActivityAt: new Date(base + 1000),
+    });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Collapse each displayed row to its A/B/C identity so we can assert order.
+    const orderOf = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].flatMap((row) => {
+        const text = row.textContent ?? "";
+        if (text.includes("Pin row A")) return ["A"];
+        if (text.includes("Pin row B")) return ["B"];
+        if (text.includes("Pin row C")) return ["C"];
+        return [];
+      });
+
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    const setVisibility = (state: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    };
+    let nowValue = base + 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => nowValue);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // A poll makes row C the most-recently-active: the fresh sort is now [C, A, B].
+      apiMocks.issuesList.mockResolvedValue([
+        { ...issueA },
+        { ...issueB },
+        { ...issueC, lastActivityAt: new Date(base + 9000) },
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Pin row C");
+      });
+
+      // No attention boundary has fired, so the displayed order is held, not reshuffled.
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // The tab is hidden long enough to lose attention, then regains focus: that
+      // visibility boundary is a commit point, so the inbox adopts the fresh order.
+      await act(async () => {
+        setVisibility("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      nowValue += 31_000;
+      await act(async () => {
+        setVisibility("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await vi.waitFor(() => {
+        expect(orderOf()).toEqual(["C", "A", "B"]);
+      });
+    } finally {
+      nowSpy.mockRestore();
+      if (visibilityDescriptor) {
+        Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      } else {
+        setVisibility("visible");
+      }
       act(() => {
         root.unmount();
       });
@@ -643,6 +799,106 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps a successful archive hidden when stale query data arrives", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Archived inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Archived inbox row");
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-a");
+      expect(container.textContent).not.toContain("Archived inbox row");
+    });
+
+    await act(async () => {
+      queryClient.setQueriesData<Issue[]>(
+        { queryKey: ["issues", "company-1", "mine-by-me"] },
+        [archivedIssue],
+      );
+    });
+
+    expect(container.textContent).not.toContain("Archived inbox row");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("restores a locally hidden archive when undo is pressed", async () => {
+    generalSettingsMock.keyboardShortcutsEnabled = true;
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Undoable inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+
+      const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      await act(async () => {
+        archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain("Undoable inbox row");
+        expect(queryClient.isMutating()).toBe(0);
+      });
+
+      await act(async () => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "u", bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(apiMocks.unarchiveFromInbox).toHaveBeenCalledWith("issue-a");
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+    } finally {
+      generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => root.unmount());
+    }
   });
 });
 

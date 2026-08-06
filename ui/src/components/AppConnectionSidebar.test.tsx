@@ -94,7 +94,7 @@ function connection(overrides: Record<string, unknown> = {}) {
   return {
     id: "conn-1",
     name: "GitHub",
-    transport: "remote_http",
+    transport: "mcp_remote",
     status: "active",
     healthStatus: "healthy",
     enabled: true,

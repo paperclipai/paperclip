@@ -213,6 +213,8 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
+export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
@@ -234,6 +236,9 @@ export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KI
 
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_DENSITIES = ["compact"] as const;
+export type IssueCommentPresentationDensity = (typeof ISSUE_COMMENT_PRESENTATION_DENSITIES)[number];
 
 export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
   "text",
@@ -258,6 +263,13 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_item_verdicts",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  "board_only",
+  "board_or_agents",
+] as const;
+export type IssueThreadInteractionResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
@@ -562,6 +574,12 @@ export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[num
 
 export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
+
+export const ROUTINE_ACTIVITY_GATE_POLICIES = ["always", "require_external_activity"] as const;
+export type RoutineActivityGatePolicy = (typeof ROUTINE_ACTIVITY_GATE_POLICIES)[number];
+
+export const ROUTINE_ACTIVITY_GATE_SCOPES = ["company", "project"] as const;
+export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[number];
 
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
@@ -925,6 +943,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_connections",
   "tools:manage_profiles",
   "tools:view_audit",
+  "audit:view_agent_actions",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",
@@ -1235,6 +1254,14 @@ export const PLUGIN_CAPABILITIES = [
   "issue.relations.read",
   "issue.subtree.read",
   "issue.comments.read",
+  // Read pending issue-thread interactions (decision cards) on an issue.
+  "issue.interactions.read",
+  // Read issue attachment metadata and, via the capability-scoped host
+  // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
+  "issue.attachments.read",
+  // Read company approvals (list + get). The host redacts approval payloads to
+  // match the web app's own approval read surface.
+  "approvals.read",
   "issue.documents.read",
   "agents.read",
   "goals.read",
@@ -1256,7 +1283,18 @@ export const PLUGIN_CAPABILITIES = [
   "issues.checkout",
   "issues.wakeup",
   "issue.comments.create",
+  "issue.comments.create_human_attributed",
   "issue.interactions.create",
+  // Respond to (accept/reject) an issue-thread interaction on behalf of a
+  // paired board user. Impersonation surface: the host independently
+  // re-verifies the actor is an active human member of the company at apply
+  // time (never trusts plugin-supplied identity), matching the web app's
+  // board-only interaction resolve route.
+  "issue.interactions.respond",
+  // Decide (approve/reject) a company approval on behalf of a paired board
+  // user. Same apply-time active-human-member re-verification as above; the
+  // web app's approval decision routes are board-only.
+  "approvals.respond",
   "issue.documents.write",
   "projects.managed",
   "routines.managed",

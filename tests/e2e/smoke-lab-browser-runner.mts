@@ -164,7 +164,7 @@ async function main() {
     const oauthUrl = services.find((s: Json) => s.id === "fake-oauth")?.url as string;
     const fx = await api("POST", `/api/companies/${companyId}/smoke-lab/install-fixtures`);
     const preferStdio = scenario.transport === "local_stdio" || scenario.transport === "plugin";
-    const wantTransport = preferStdio ? "local_stdio" : "remote_http";
+    const wantTransport = preferStdio ? "local_stdio" : "mcp_remote";
     const conn = fx.connections.find((c: Json) => c.transport === wantTransport);
     assert(conn, `${wantTransport} connection for ${scenario.path}`);
 
@@ -263,7 +263,7 @@ async function main() {
 
     // schema-change-quarantine
     await doStep(scenario, "schema-change-quarantine", async () => {
-      if (conn.transport !== "remote_http") {
+      if (conn.transport !== "mcp_remote") {
         await page.goto(`${BASE}/${prefix}/apps/${conn.id}/activity`, { waitUntil: "networkidle" });
         return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
       }

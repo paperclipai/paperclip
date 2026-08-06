@@ -24,6 +24,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -42,6 +43,7 @@ import { EntityRow } from "../components/EntityRow";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
+import { AuditFeed } from "./audit/AuditFeed";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
@@ -271,7 +273,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "audit" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
@@ -279,6 +281,7 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
   if (value === "budget") return "budget";
+  if (value === "audit") return "audit";
   if (value === "runs") return value;
   return "dashboard";
 }
@@ -898,8 +901,10 @@ export function AgentDetail() {
               ? "tools"
               : activeView === "runs"
                 ? "runs"
-                : activeView === "budget"
-                  ? "budget"
+                : activeView === "audit"
+                  ? "audit"
+                  : activeView === "budget"
+                    ? "budget"
               : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
@@ -1047,6 +1052,7 @@ export function AgentDetail() {
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+  const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
@@ -1091,6 +1097,15 @@ export function AgentDetail() {
           >
             ×
           </button>
+        </div>
+      ) : null}
+      {pausedEscalationWarning ? (
+        <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium">Escalation path is paused</p>
+            <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
+          </div>
         </div>
       ) : null}
       {hasInvalidOrgChain ? (
@@ -1157,6 +1172,7 @@ export function AgentDetail() {
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
             onActionError={setActionError}
+            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
             hideTerminate={Boolean(builtInState)}
             pauseConfirm={
               builtInState
@@ -1250,6 +1266,7 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "tools", label: "Tools" },
               { value: "runs", label: "Runs" },
+              { value: "audit", label: "Audit" },
               { value: "budget", label: "Budget" },
             ]}
             value={activeView}
@@ -1381,6 +1398,10 @@ export function AgentDetail() {
           adapterConfig={agent.adapterConfig}
         />
       )}
+
+      {activeView === "audit" && resolvedCompanyId ? (
+        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} hideHeader />
+      ) : null}
 
       {activeView === "budget" && resolvedCompanyId ? (
         <div className="max-w-3xl">
@@ -4061,6 +4082,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
@@ -4090,9 +4112,14 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
 
   function copyToken() {
     if (!newToken) return;
-    navigator.clipboard.writeText(newToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    void copyTextToClipboard(newToken)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {
+        pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+      });
   }
 
   const activeKeys = (keys ?? []).filter((k: AgentKey) => !k.revokedAt);

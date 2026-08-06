@@ -120,13 +120,14 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   workspace_validation: "Workspace Validation",
   configuration_validation: "Configuration Validation",
   active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Graph Liveness",
+  issue_graph_liveness: "Task Needs Next Step",
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "This task's run finished, but no next step was chosen.",
+  missing_disposition:
+    "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
   stranded_assigned_issue:
-    "Paperclip retried this task's last run and it still has no live execution path.",
+    "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
   workspace_validation:
     "Paperclip stopped this run because the task's git workspace could not be validated.",
   configuration_validation:
@@ -134,7 +135,7 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
-    "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
+    "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
 };
 
 const STATE_TONE: Record<RecoveryCardCardState, {
@@ -737,13 +738,13 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "Corrective wake queued";
-  if (type === "board_escalation") return "Escalated to board";
-  if (type === "manual") return "Manual";
-  if (type === "manual_repair_required") return "Manual repair required";
+  if (type === "wake_owner") return "An agent will be asked to choose the next step";
+  if (type === "board_escalation") return "Board will decide";
+  if (type === "manual") return "Manual follow-up needed";
+  if (type === "manual_repair_required") return "Repair needed before retry";
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Monitor scheduled · ${interval}` : "Monitor scheduled";
+    return interval ? `Check scheduled · ${interval}` : "Check scheduled";
   }
   return type.replaceAll("_", " ");
 }
@@ -1091,7 +1092,7 @@ export function IssueRecoveryActionCard({
         <MetadataRow label="Next action">
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Wake">
+        <MetadataRow label="Follow-up">
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (

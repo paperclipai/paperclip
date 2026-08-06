@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppWindow, ShieldAlert, ShieldQuestion } from "lucide-react";
 import type {
-  AppGalleryEntry,
   ToolApplication,
   ToolConnection,
   ToolProfileWithDetails,
@@ -21,6 +20,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
+import {
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
 import { AdvancedToolsLink } from "./store-cards";
 
@@ -113,15 +118,15 @@ export function Connections() {
     enabled: !!selectedCompanyId,
   });
 
-  const gallery = galleryQuery.data?.apps ?? [];
+  const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
   const logoByName = useMemo(() => {
-    const map = new Map<string, AppGalleryEntry>();
-    for (const entry of gallery) map.set(entry.name.toLowerCase(), entry);
+    const map = new Map<string, AppGalleryDisplayEntry>();
+    for (const entry of gallery) map.set(appDefinitionName(entry).toLowerCase(), entry);
     return map;
   }, [gallery]);
   const logoByKey = useMemo(() => {
-    const map = new Map<string, AppGalleryEntry>();
-    for (const entry of gallery) map.set(entry.key, entry);
+    const map = new Map<string, AppGalleryDisplayEntry>();
+    for (const entry of gallery) map.set(appDefinitionSlug(entry), entry);
     return map;
   }, [gallery]);
 
@@ -173,7 +178,8 @@ export function Connections() {
         status: statusFor(application, appConnections),
         actionCount,
         lastUsedAt,
-        logoUrl: galleryEntry?.logoUrl ?? logoByName.get(application.name.toLowerCase())?.logoUrl,
+        logoUrl: appDefinitionLogoUrl(galleryEntry) ??
+          appDefinitionLogoUrl(logoByName.get(application.name.toLowerCase())),
       };
     });
   }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName]);

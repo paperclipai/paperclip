@@ -3,6 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppsConnect } from "./AppsConnect";
 
@@ -14,6 +15,9 @@ const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
+
+const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
+const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -122,15 +126,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     document.body.appendChild(container);
     listGalleryMock.mockResolvedValue({
       apps: [
-        {
-          key: "zapier",
-          name: "Zapier",
-          tagline: "Automate things",
-          authKind: "api_key",
-          urlPatterns: ["https://zapier.com/*", "https://*.zapier.com/*"],
-          logoUrl: null,
-          credentialFields: [{ configPath: "credentials.authorization", label: "API key", required: true }],
-        },
+        ZAPIER,
       ],
     });
     finishAppMock.mockResolvedValue({});
@@ -280,15 +276,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "byo=1&source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "zapier",
-          name: "Zapier",
-          tagline: "Automate things",
-          authKind: "api_key",
-          urlPatterns: ["https://zapier.com/*", "https://*.zapier.com/*"],
-          logoUrl: "https://example.com/zapier.png",
-          credentialFields: [],
-        },
+        { ...ZAPIER, branding: { ...ZAPIER.branding, logoUrl: "https://example.com/zapier.png" } },
       ],
     });
     connectAppMock.mockResolvedValueOnce({
@@ -475,16 +463,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("shows the Google Sheets robot email and keeps empty sheet links from continuing", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -505,16 +484,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("shows inline validation for invalid Google Sheets links", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -615,16 +585,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("a custom name on the Google Sheets step is sent to the connect mutation", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -659,16 +620,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("passes parsed Google Sheets IDs as connection config values", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();

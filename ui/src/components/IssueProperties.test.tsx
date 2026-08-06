@@ -33,6 +33,10 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  getDocument: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
+  listAttachments: vi.fn(),
+  listInteractions: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
@@ -136,6 +140,7 @@ vi.mock("./AgentIconPicker", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
   useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
+  useLocation: () => ({ hash: "", pathname: "/", search: "", state: null, key: "test" }),
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -204,6 +209,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -292,6 +298,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "PAP-1 workspace",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1",
     repoUrl: null,
     baseRef: "master",
@@ -434,6 +441,10 @@ describe("IssueProperties", () => {
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockIssuesApi.createLabel.mockResolvedValue(createLabel({
       id: "label-new",
@@ -465,6 +476,43 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.listInteractions.mockResolvedValue([
+      {
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { target: { type: "issue_document", key: "plan" } },
+      },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({ workMode: "planning" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(true);
+    });
+
+    const planTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Plan");
+    await act(async () => {
+      // Radix Tabs triggers select on mousedown (button 0), not on click.
+      planTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("This task is in plan mode but no plan document has been written yet.");
+      expect(container.textContent).toContain("A plan confirmation is pending, but the plan document it should confirm is missing.");
+    });
+
+    act(() => root.unmount());
   });
 
   it("shows assignee and originating without responsible wording", async () => {
@@ -1226,6 +1274,31 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("BLOCK-6");
     expect(container.textContent).toContain("Show 2 more");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the current archived project visible in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        id: "archived-project",
+        name: "Archived Project",
+        archivedAt: new Date("2026-04-08T00:00:00.000Z"),
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "archived-project" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
+    });
 
     act(() => root.unmount());
   });
@@ -2394,7 +2467,7 @@ describe("IssueProperties", () => {
       inline: true,
       externalObjects: [
         {
-          mentionCount: 1,
+          mentionCount: 2,
           sourceLabels: ["Description"],
           pill: {
             providerKey: "github",
@@ -2411,7 +2484,7 @@ describe("IssueProperties", () => {
           group: {
             object: null,
             mentions: [],
-            mentionCount: 1,
+            mentionCount: 2,
             sourceLabels: ["Description"],
           },
         },
@@ -2459,11 +2532,35 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: "Github PR",
+            iconKey: "github",
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "acme/web#242",
+            url: "https://github.com/acme/web/pull/242",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
       ],
     });
     await flush();
 
-    expect(container.textContent).toContain("Github Pull Request");
+    expect(container.textContent).toContain("Github PR");
+    expect(container.textContent).not.toContain("Github Pull Request");
+    expect(container.textContent).not.toContain("×2");
     expect(container.textContent).toContain("Github Issue");
     expect(container.textContent).toContain("URL");
     expect(container.textContent).not.toContain("URL link");
@@ -2472,17 +2569,21 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Open");
     expect(container.textContent).not.toContain("External objects");
     const label = Array.from(container.querySelectorAll("span"))
-      .find((span) => span.textContent === "Github Pull Request");
+      .find((span) => span.textContent === "Github PR");
     expect(label?.querySelector("svg")).toBeTruthy();
     const pullRequestLink = Array.from(container.querySelectorAll("a"))
       .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/241");
     expect(pullRequestLink?.textContent).toContain("PR 241 - Merged");
     expect(pullRequestLink?.textContent).not.toContain("acme/web#241");
-    expect(pullRequestLink?.textContent).not.toContain("Github Pull Request");
+    expect(pullRequestLink?.textContent).not.toContain("Github PR");
     expect(pullRequestLink?.querySelectorAll("svg")).toHaveLength(1);
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+    const unrefreshedPullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/242");
+    expect(unrefreshedPullRequestLink?.textContent).toContain("PR 242 - Not yet refreshed");
+    expect(unrefreshedPullRequestLink?.textContent).not.toContain("Not yet resolved");
 
     act(() => root.unmount());
   });

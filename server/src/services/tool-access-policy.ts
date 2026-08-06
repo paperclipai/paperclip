@@ -964,7 +964,7 @@ export function toolAccessPolicyService(db: Db) {
       applicationType = application.type;
     }
     providerType = providerType
-      ?? (applicationType === "mcp_http" && connectionTransport === "remote_http"
+      ?? (applicationType === "mcp_http" && connectionTransport === "mcp_remote"
         ? "mcp_remote_http"
         : applicationType === "mcp_stdio" && connectionTransport === "local_stdio"
         ? "mcp_local_stdio"
