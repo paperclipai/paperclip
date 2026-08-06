@@ -19,6 +19,8 @@ const pkg = requirePackage("../package.json") as PackageJson;
 
 const GIT_DESCRIBE_RE =
   /^v(?<publicVersion>\d+\.\d+\.\d+)-(?<commitsSinceTag>\d+)-g(?<sha>[0-9a-f]{7,40})(?<dirty>-dirty)?$/i;
+const SEMVER_RE =
+  /^(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
 
 function defaultDebugLog(fields: Record<string, unknown>, message: string): void {
   if (process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION !== "1") return;
@@ -146,11 +148,23 @@ export function parseGitDescribeVersion(output: string): string | null {
   return `${publicVersion}+${commitsSinceTag}.git.${sha}${isDirty ? ".dirty" : ""}`;
 }
 
+export function parseImageVersion(value: string | null | undefined): string | null {
+  const input = value?.trim() ?? "";
+  if (!input) return null;
+
+  const describedVersion = parseGitDescribeVersion(input);
+  if (describedVersion) return describedVersion;
+
+  const match = input.replace(/^v/, "").match(SEMVER_RE);
+  return match?.groups?.version ?? null;
+}
+
 export function resolveServerVersion(
   opts: {
     buildCommit?: string | null;
     gitDescribeCommand?: GitDescribeCommand;
     packageVersion?: string;
+    imageVersion?: string | null;
     debugLog?: DebugLog;
     packageRoot?: string;
     pathExists?: PathExists;
@@ -161,6 +175,11 @@ export function resolveServerVersion(
   const gitDescribeCommand = opts.gitDescribeCommand ?? defaultGitDescribeCommand;
   const debugLog = opts.debugLog ?? defaultDebugLog;
   const resolvedPackageRoot = opts.packageRoot ?? packageRoot;
+  const imageVersion = parseImageVersion(
+    opts.imageVersion === undefined
+      ? process.env.PAPERCLIP_IMAGE_VERSION
+      : opts.imageVersion,
+  );
 
   if (
     isPackagedInstall(resolvedPackageRoot, {
@@ -190,6 +209,8 @@ export function resolveServerVersion(
       "falling back to package version for server version",
     );
   }
+
+  if (imageVersion) return imageVersion;
 
   const buildCommit =
     opts.buildCommit === undefined

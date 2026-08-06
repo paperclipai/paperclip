@@ -3,7 +3,7 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG DOCKER_GID=992
-ARG APP_VERSION=v2026.621.0
+ARG APP_VERSION=v2026.707.0
 LABEL org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.source="https://github.com/starlein/paperclip"
 ENV PAPERCLIP_IMAGE_VERSION=${APP_VERSION}

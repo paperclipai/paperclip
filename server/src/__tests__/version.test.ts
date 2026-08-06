@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseGitDescribeVersion, resolveServerVersion } from "../version.js";
+import { parseGitDescribeVersion, parseImageVersion, resolveServerVersion } from "../version.js";
 
 describe("parseGitDescribeVersion", () => {
   it("reports drift from the nearest release tag as a PEP 440 local version", () => {
@@ -26,6 +26,20 @@ describe("parseGitDescribeVersion", () => {
     expect(parseGitDescribeVersion("v2026.626.0-0-g012345678-dirty\n")).toBe(
       "2026.626.0+0.git.012345678.dirty",
     );
+  });
+});
+
+describe("parseImageVersion", () => {
+  it("normalizes tagged and Docker git-describe versions", () => {
+    expect(parseImageVersion("v2026.707.0")).toBe("2026.707.0");
+    expect(parseImageVersion("v2026.707.0-229-g479576e31")).toBe(
+      "2026.707.0+229.git.479576e31",
+    );
+  });
+
+  it("accepts semver metadata and rejects invalid image labels", () => {
+    expect(parseImageVersion("2026.707.0+docker.1")).toBe("2026.707.0+docker.1");
+    expect(parseImageVersion("latest")).toBeNull();
   });
 });
 
@@ -109,6 +123,34 @@ describe("resolveServerVersion", () => {
         debugLog: vi.fn(),
       }),
     ).toBe("2026.706.0+0.git.0123456");
+  });
+
+  it("uses validated image metadata when a Docker source build has no git directory", () => {
+    expect(
+      resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        imageVersion: "v2026.707.0-229-g479576e31",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("fatal: not a git repository");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.707.0+229.git.479576e31");
+  });
+
+  it("ignores invalid image metadata and keeps the existing fallback", () => {
+    expect(
+      resolveServerVersion({
+        buildCommit: null,
+        imageVersion: "latest",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("fatal: not a git repository");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("0.3.1");
   });
 
   it("skips git metadata probing for packaged installs under node_modules", () => {

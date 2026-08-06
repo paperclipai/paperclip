@@ -1,36 +1,25 @@
 # Paperclip docker-compose
 #
-# By default only the `paperclip` service starts, using the built-in embedded
-# PostgreSQL.  Each optional service is gated behind a named profile so you
-# only start what you actually need.
+# By default the production stack starts PostgreSQL, Redis, Paperclip, and the
+# TLS proxy. Keeping these core services outside profiles also ensures that a
+# plain `docker compose down` removes every container before deleting the
+# project network.
 #
 # Profiles
-#   postgres  — external PostgreSQL container
-#               Also set DATABASE_URL in .env, e.g.:
-#               DATABASE_URL=postgres://paperclip:SECRET@postgres:5432/paperclip
-#   redis     — Redis container
-#               Also set REDIS_URL / PAPERCLIP_REDIS_URL in .env, e.g.:
-#               REDIS_URL=redis://redis:6379
 #   ollama    — Ollama local-LLM server
 #               Also set OLLAMA_HOST in .env, e.g.:
 #               OLLAMA_HOST=http://ollama:11434
-#   proxy     — Nginx reverse-proxy with TLS termination
 #
 # Examples
-#   docker compose up                                   # minimal (embedded postgres)
-#   docker compose --profile proxy up                   # add TLS proxy
-#   docker compose --profile postgres --profile proxy up
-#   docker compose --profile postgres --profile redis --profile ollama --profile proxy up
+#   docker compose up
+#   docker compose --profile ollama up                  # also start Ollama
 
 services:
 
   # ---------------------------------------------------------------------------
-  # Optional: external PostgreSQL
-  # Activate with: --profile postgres
-  # When this profile is off, Paperclip uses its built-in embedded PostgreSQL.
+  # PostgreSQL
   # ---------------------------------------------------------------------------
   postgres:
-    profiles: [postgres]
     image: postgres:17-alpine
     container_name: paperclip-postgres
     restart: unless-stopped
@@ -48,11 +37,9 @@ services:
     # Intentionally no host port mapping: PostgreSQL is only reachable on the Docker network.
 
   # ---------------------------------------------------------------------------
-  # Optional: Redis
-  # Activate with: --profile redis
+  # Redis
   # ---------------------------------------------------------------------------
   redis:
-    profiles: [redis]
     image: redis:7-alpine
     container_name: paperclip-redis
     restart: unless-stopped
@@ -99,6 +86,7 @@ services:
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
         DOCKER_GID: ${DOCKER_GID:-992}
+        APP_VERSION: ${PAPERCLIP_IMAGE_VERSION:-v2026.707.0}
     container_name: paperclip
     restart: unless-stopped
     depends_on:
@@ -121,9 +109,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3100
       SERVE_UI: "true"
-      # Leave DATABASE_URL unset (or set it to empty) to use embedded PostgreSQL.
-      # Set it in .env when using the postgres profile.
-      DATABASE_URL: "${DATABASE_URL:-}"
+      # Connect to the PostgreSQL service using the password from .env.
+      DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/paperclip"
       # Leave REDIS_URL unset when not using the redis profile.
       REDIS_URL: "${REDIS_URL:-}"
       PAPERCLIP_REDIS_URL: "${PAPERCLIP_REDIS_URL:-}"
@@ -149,11 +136,9 @@ services:
       OLLAMA_HOST: "${OLLAMA_HOST:-}"
 
   # ---------------------------------------------------------------------------
-  # Optional: Nginx reverse-proxy with TLS termination
-  # Activate with: --profile proxy
+  # Nginx reverse-proxy with TLS termination
   # ---------------------------------------------------------------------------
   proxy:
-    profiles: [proxy]
     image: paperclip-nginx-selfsigned:local
     build:
       context: ./docker/nginx
