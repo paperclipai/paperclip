@@ -460,8 +460,9 @@ async function syncInFileMappings(input: {
 
   // Ensure every target directory exists before the bulk upload writes its temp.
   const mkdirCommand = [...parentDirs].map((dir) => `mkdir -p ${shellQuote(dir)}`).join(" && ");
+  // `ensureDirectory` span: `mkdir -p` — ensure a directory exists before a write.
   await withProviderSpan({
-    name: "mkdir",
+    name: "ensureDirectory",
     run: () => assertSandboxCommandOk(sandbox, mkdirCommand, timeoutSeconds, "syncIn mkdir"),
   });
   guardRoundTrips += 1;
@@ -470,8 +471,10 @@ async function syncInFileMappings(input: {
   // can replace a target parent with a symlink to `/etc` so the string check
   // passes but the upload + `mv -f` resolve through it. Canonicalize every parent
   // dir (now materialized) and fail closed if any escapes, BEFORE any bytes land.
+  // `checkSymlinkEscape` span: re-check a path resolves inside the workspace root
+  // before use.
   await withProviderSpan({
-    name: "guard",
+    name: "checkSymlinkEscape",
     run: () =>
       assertSandboxPathsConfined({
         sandbox,
@@ -488,6 +491,7 @@ async function syncInFileMappings(input: {
   // retry never accumulates stale `.paperclip-upload-*` scratch.
   try {
     // One batched bulk upload (single /files/bulk-upload) for all file mappings.
+    // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
     await withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
@@ -534,8 +538,10 @@ async function syncInFileMappings(input: {
         `exec 8>&-;`,
       );
     }
+    // `promote` span: atomically move the staged temp onto its target via a
+    // pinned dir handle.
     await withProviderSpan({
-      name: "rename",
+      name: "promote",
       run: () =>
         assertSandboxCommandOk(
           sandbox,
@@ -564,6 +570,7 @@ async function syncInDirectoryMapping(input: {
     const archivePath = path.join(tmp, "sync-in.tar");
     // The pack step is host-local: it builds the tarball and makes no sandbox
     // round trip. The `pack` span records its wall time.
+    // `pack` span: build a tarball on the host — no sandbox round trip.
     await withProviderSpan({
       name: "pack",
       wallMsAttr: SPAN_ATTR.packWallMs,
@@ -585,8 +592,9 @@ async function syncInDirectoryMapping(input: {
     // components, then confirm it (and any existing parent) canonicalizes inside
     // the remote dir — `tar -C` would otherwise follow a sandbox-planted symlink
     // and extract our archive outside the workspace root.
+    // `ensureDirectory` span: `mkdir -p` — ensure a directory exists before a write.
     await withProviderSpan({
-      name: "mkdir",
+      name: "ensureDirectory",
       run: () =>
         assertSandboxCommandOk(
           sandbox,
@@ -596,8 +604,10 @@ async function syncInDirectoryMapping(input: {
         ),
     });
     guardRoundTrips += 1;
+    // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
+    // root before use.
     await withProviderSpan({
-      name: "guard",
+      name: "checkSymlinkEscape",
       run: () =>
         assertSandboxPathsConfined({
           sandbox,
@@ -608,6 +618,7 @@ async function syncInDirectoryMapping(input: {
         }),
     });
     guardRoundTrips += 1;
+    // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
     await withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
@@ -641,8 +652,10 @@ async function syncInDirectoryMapping(input: {
       `exec 9>&-;`,
       `rm -f ${shellQuote(remoteTar)};`,
     ].join("\n");
+    // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
+    // remove the scratch tarball.
     await withProviderSpan({
-      name: "extract",
+      name: "extractTarball",
       run: () =>
         assertSandboxCommandOk(
           sandbox,
@@ -687,8 +700,10 @@ async function runPostUploadCommands(input: {
     let cwd = remoteDir;
     if (command.cwd != null) {
       assertConfinedSandboxPath(remoteDir, command.cwd, "post-upload command cwd");
+      // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
+      // root before use.
       await withProviderSpan({
-        name: "guard",
+        name: "checkSymlinkEscape",
         run: () =>
           assertSandboxPathsConfined({
             sandbox,
@@ -704,8 +719,9 @@ async function runPostUploadCommands(input: {
     // C4: first non-zero exit or timeout throws and aborts the remaining commands.
     const commandTimeoutSeconds =
       command.timeoutMs != null ? toTimeoutSeconds(command.timeoutMs) : timeoutSeconds;
+    // `postUploadCommand` span: run one caller-supplied post-upload command.
     const result = await withProviderSpan({
-      name: "provision",
+      name: "postUploadCommand",
       run: () =>
         sandbox.process.executeCommand(command.command, cwd, undefined, commandTimeoutSeconds),
     });

@@ -48,6 +48,7 @@ import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
+  type RuntimeSpanRunner,
   type StartupSpanContext,
 } from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
@@ -1354,6 +1355,14 @@ async function waitForLocalServerListen(server: net.Server): Promise<number> {
   return address.port;
 }
 
+/** Span name that wraps the socket handler's one `writeTextFile` exec — one
+ * outbound ACP message to the agent. */
+const AGENT_SESSION_SEND_INPUT_SPAN = "sandbox.agentSession.sendInput";
+
+/** Span name that wraps one 100 ms poll tick — `list`, then `read`+`remove` per
+ * file found (`1 + 2n` execs). */
+const AGENT_SESSION_POLL_OUTPUT_SPAN = "sandbox.agentSession.pollOutput";
+
 export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
@@ -1376,6 +1385,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // turn, `task.run` otherwise). When it is absent, the work runs with an empty
   // store, exactly like the earlier `runWithoutActiveStep` behavior.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each unit of run-time work in its own named span. The socket handler
+  // uses it for `sandbox.agentSession.sendInput` and the poll timer for
+  // `sandbox.agentSession.pollOutput`, so each unit's inner `sandbox.exec` spans
+  // group under one wrapper span. When it is absent, the work runs under the run
+  // parent with no wrapper span, exactly like the earlier behavior.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
@@ -1384,6 +1399,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
   const runner = requireSandboxRunner(target);
+  // Run one unit of run-time work under its named wrapper span when a span
+  // runner is injected. Without a runner, run the work under the current run
+  // parent, so the inner `sandbox.exec` spans parent to the live run span,
+  // exactly like the earlier behavior.
+  const runRuntimeWork = <T>(name: string, work: () => Promise<T>): Promise<T> =>
+    input.runtimeSpan
+      ? input.runtimeSpan(name, work)
+      : runWithRuntimeParent(input.getRuntimeParentContext?.(), work);
   const shellCommand = preferredSandboxShell(target);
   const timeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
@@ -1548,26 +1571,28 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           socket = nextSocket;
           flushPendingRemoteEvents();
         }
-        // Read the current-run parent now, at send time. The live parent
-        // switches to `agent.turn` during the turn and back to `task.run`
-        // after it. With no getter the store stays empty, exactly like the
-        // earlier unparented behavior.
-        runWithRuntimeParent(input.getRuntimeParentContext?.(), () => {
-          void (async () => {
-            if (message.type === "stdin" && typeof message.data === "string") {
-              stdinSeq += 1;
-              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
-            } else if (message.type === "stdinEnd") {
-              stdinSeq += 1;
-              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
-            }
-          })().catch((error) => {
+        // Wrap one outbound ACP message to the agent in a
+        // `sandbox.agentSession.sendInput` span, so its one `writeTextFile` exec
+        // groups under one named span. The span runner reads the current-run
+        // parent at send time: the live parent switches to `agent.turn` during
+        // the turn and back to `task.run` after it. A message that is neither
+        // `stdin` nor `stdinEnd` writes nothing, so it opens no span.
+        const stdinPayload =
+          message.type === "stdin" && typeof message.data === "string"
+            ? { type: "stdin", data: message.data }
+            : message.type === "stdinEnd"
+              ? { type: "stdinEnd" }
+              : null;
+        if (stdinPayload) {
+          stdinSeq += 1;
+          const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+          void runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+            client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
+          ).catch((error) => {
             nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
             nextSocket.destroy();
           });
-        });
+        }
       }
     });
   });
@@ -1600,15 +1625,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
 
-  // Schedule the long-lived poll timer under the current-run parent context.
-  // The poll loop reads remote event files with run-time execs, not startup
-  // work, so a poll `sandbox.exec` span parents to the live run span, not to the
-  // ended bridge step. Read the getter per tick, because the re-arm timer that
-  // the poll body schedules reads it again: the live parent switches to
-  // `agent.turn` during the turn and back to `task.run` after it. With no getter
-  // the store stays empty, exactly like the earlier unparented behavior.
+  // Schedule the long-lived poll timer. Wrap each 100 ms poll tick in a
+  // `sandbox.agentSession.pollOutput` span, so the tick's `list` plus per-file
+  // `read`/`remove` execs group under one named span. The poll loop reads remote
+  // event files with run-time execs, not startup work, so the wrapper span and
+  // its child execs parent to the live run span, not to the ended bridge step.
+  // The span runner reads the run parent per tick, because the re-arm timer that
+  // the poll body schedules opens a new tick span: the live parent switches to
+  // `agent.turn` during the turn and back to `task.run` after it.
   const schedulePoll = () => {
-    pollTimer = setTimeout(() => runWithRuntimeParent(input.getRuntimeParentContext?.(), () => void poll()), 100);
+    pollTimer = setTimeout(() => void runRuntimeWork(AGENT_SESSION_POLL_OUTPUT_SPAN, poll), 100);
     pollTimer.unref?.();
   };
 
@@ -1764,6 +1790,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // `sandbox.exec` span parents to the live run span. When it is absent, the
   // request work runs with an empty store, exactly like the earlier behavior.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each callback request in a `sandbox.callbackBridge.relayRequest` span.
+  // The factory threads it into the worker, which uses it per request so each
+  // request's execs group under one wrapper span. When it is absent, the request
+  // work runs under the run parent with no wrapper span.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -1835,6 +1866,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       queueDir,
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
+      runtimeSpan: input.runtimeSpan,
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {

@@ -507,29 +507,33 @@ const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
 const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
 
-/** The closed set of provider span names a plugin may emit. `pack` and
- * `transfer` are the host-local build and the byte upload. `mkdir`, `guard`,
- * `rename`, `extract`, and `provision` are the per-round-trip command spans in
- * the inbound sync path. `session.setup` and `session.teardown` are the short
- * spans that wrap a persistent-session create and delete. */
+/** The closed set of provider span leaf names a plugin may emit. `pack` and
+ * `transfer` are the host-local build and the byte upload. `ensureDirectory`,
+ * `checkSymlinkEscape`, `promote`, `extractTarball`, and `postUploadCommand`
+ * are the per-round-trip command spans in the inbound sync path. `session.open`
+ * and `session.close` are the short spans that wrap a persistent-session create
+ * and delete. */
 const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "pack",
   "transfer",
-  "mkdir",
-  "guard",
-  "rename",
-  "extract",
-  "provision",
-  "session.setup",
-  "session.teardown",
+  "ensureDirectory",
+  "checkSymlinkEscape",
+  "promote",
+  "extractTarball",
+  "postUploadCommand",
+  "session.open",
+  "session.close",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
- * `sandbox.provider.<name>`; any other value maps to `sandbox.provider.other`,
- * so a span name never carries free-form data. */
+ * `sandbox.daytona.<name>`; any other value maps to `sandbox.daytona.other`, so
+ * a span name never carries free-form data. Only the daytona provider emits
+ * these spans today, so the segment is the literal `daytona`. When a second
+ * provider emits provider spans, derive the segment from the normalized
+ * `provider` family attribute on the span instead of this literal. */
 function clampProviderSpanName(raw: unknown): string {
   const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
-  return `sandbox.provider.${name}`;
+  return `sandbox.daytona.${name}`;
 }
 
 /** The closed allowlist of attribute keys a provider span may carry. The host

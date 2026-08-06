@@ -709,7 +709,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   // Build the fake plugin fixture for the run-parent release tests below. A
   // plugin sandbox provider can open a persistent session on the first command
   // and delete it on lease release; the delete emits a provider
-  // `session.teardown` span. The host mints that span's parent from the active
+  // `session.close` span. The host mints that span's parent from the active
   // step context at the release RPC. So the release must run under the run
   // parent, or the span loses its traceparent and the backend drops it.
   async function seedFakePluginSandbox() {

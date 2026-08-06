@@ -1336,11 +1336,13 @@ async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promis
   // no second command can slip in between the store read and the create start.
   return sandboxHandleSessionStore.runSingle(scope, async () => {
     const sessionId = `paperclip-${randomUUID()}`;
-    // Wrap the session create in a short `session.setup` provider span. The span
+    // Wrap the session create in a short `session.open` provider span. The span
     // carries no session id and no command text, only the provider family. The
-    // host maps the name to `sandbox.provider.session.setup`.
+    // host maps the name to `sandbox.daytona.session.open`.
+    // `session.open` span: create the one persistent Daytona session for a lease,
+    // on the first in-run command — `sandbox.process.createSession`.
     await withProviderSpan({
-      name: "session.setup",
+      name: "session.open",
       run: () => sandbox.process.createSession(sessionId),
     });
     sandboxHandleSessionStore.set(scope, sessionId);
@@ -1360,10 +1362,12 @@ async function teardownSession(sandbox: Sandbox, scope: SandboxScope): Promise<v
   const sessionId = sandboxHandleSessionStore.get(scope);
   if (!sessionId) return;
   try {
-    // Wrap the session delete in a short `session.teardown` provider span. The
-    // host maps the name to `sandbox.provider.session.teardown`.
+    // Wrap the session delete in a short `session.close` provider span. The
+    // host maps the name to `sandbox.daytona.session.close`.
+    // `session.close` span: delete that persistent session on lease release —
+    // `sandbox.process.deleteSession`.
     await withProviderSpan({
-      name: "session.teardown",
+      name: "session.close",
       run: () => sandbox.process.deleteSession(sessionId),
     });
   } catch (error) {
@@ -2255,9 +2259,9 @@ const plugin = definePlugin({
       // on, and it does NOT open the session. The host sets this flag on a
       // pre-run command (the workspace provision command) that runs before the
       // run opens its trace root. Opening the session there would emit a
-      // `session.setup` span with no run parent, and the span backend would drop
+      // `session.open` span with no run parent, and the span backend would drop
       // it. With the bypass the session opens on the first in-run command, whose
-      // setup span parents to the run trace.
+      // open span parents to the run trace.
       let result: PluginEnvironmentExecuteResult;
       if (config.useSessions && !params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);

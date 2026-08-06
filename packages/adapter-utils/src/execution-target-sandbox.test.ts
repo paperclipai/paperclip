@@ -481,6 +481,131 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("wraps a stdin write in a sandbox.agentSession.sendInput span", async () => {
+    // With a span runner injected, the socket handler wraps one outbound ACP
+    // message to the agent in a `sandbox.agentSession.sendInput` span. This test
+    // connects a socket, sends one stdin line, and proves the handler opens that
+    // wrapper span around the write.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-sendinput-span-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const spanNames: string[] = [];
+    let resolveSendInput: () => void = () => {};
+    const sendInputObserved = new Promise<void>((resolve) => {
+      resolveSendInput = resolve;
+    });
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-sendinput-span",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        spanNames.push(name);
+        if (name === "sandbox.agentSession.sendInput") resolveSendInput();
+        return work();
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+
+      // The first token-bearing message authenticates and writes the stdin file.
+      peerSocket.write(
+        `${JSON.stringify({ token, type: "stdin", data: Buffer.from("hi").toString("base64") })}\n`,
+      );
+
+      await sendInputObserved;
+      expect(spanNames).toContain("sandbox.agentSession.sendInput");
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  });
+
+  it("wraps each poll tick in a sandbox.agentSession.pollOutput span", async () => {
+    // With a span runner injected, the poll timer wraps each 100 ms poll tick in
+    // a `sandbox.agentSession.pollOutput` span. This test lets the first poll tick
+    // fire and proves the timer opens that wrapper span.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-span-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const spanNames: string[] = [];
+    let resolvePoll: () => void = () => {};
+    const pollObserved = new Promise<void>((resolve) => {
+      resolvePoll = resolve;
+    });
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-span",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        spanNames.push(name);
+        if (name === "sandbox.agentSession.pollOutput") resolvePoll();
+        return work();
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      await pollObserved;
+      expect(spanNames).toContain("sandbox.agentSession.pollOutput");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
     cleanupDirs.push(rootDir);
