@@ -585,22 +585,33 @@ const OWNER_GRANT_REQUIREMENTS: Partial<Record<BoardPermissionKey, readonly Perm
 async function ownerHasRequiredGrant(
   db: Db,
   ownerUserId: string,
-  companyId: string,
+  companyIds: readonly string[],
   action: BoardPermissionKey,
 ) {
   const permissionKeys = OWNER_GRANT_REQUIREMENTS[action];
   if (!permissionKeys) return true;
   const rows = await db
-    .select({ permissionKey: principalPermissionGrants.permissionKey })
+    .select({
+      companyId: principalPermissionGrants.companyId,
+      permissionKey: principalPermissionGrants.permissionKey,
+    })
     .from(principalPermissionGrants)
     .where(and(
-      eq(principalPermissionGrants.companyId, companyId),
+      inArray(principalPermissionGrants.companyId, [...companyIds]),
       eq(principalPermissionGrants.principalType, "user"),
       eq(principalPermissionGrants.principalId, ownerUserId),
       inArray(principalPermissionGrants.permissionKey, [...permissionKeys]),
     ));
-  const liveKeys = new Set(rows.map((row) => row.permissionKey));
-  return permissionKeys.every((permissionKey) => liveKeys.has(permissionKey));
+  const liveKeysByCompany = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const liveKeys = liveKeysByCompany.get(row.companyId) ?? new Set<string>();
+    liveKeys.add(row.permissionKey);
+    liveKeysByCompany.set(row.companyId, liveKeys);
+  }
+  return companyIds.every((companyId) => {
+    const liveKeys = liveKeysByCompany.get(companyId);
+    return permissionKeys.every((permissionKey) => liveKeys?.has(permissionKey));
+  });
 }
 
 async function auditDecision(
@@ -689,8 +700,17 @@ export async function authorizeBoardKey(
       await denyBoardKey(db, req, metadata, resource, "owner_instance_admin_missing", "forbidden");
     }
   } else if (metadata.classification === "company_collection") {
-    if ((req.actor.companyIds ?? []).length === 0) {
+    const companyIds = req.actor.companyIds ?? [];
+    if (companyIds.length === 0) {
       await denyBoardKey(db, req, metadata, resource, "owner_company_membership_missing", "forbidden");
+    }
+    if (!await ownerHasRequiredGrant(
+      db,
+      req.actor.boardKeyOwnerId!,
+      companyIds,
+      action as BoardPermissionKey,
+    )) {
+      await denyBoardKey(db, req, metadata, resource, "owner_permission_grant_missing", "forbidden");
     }
   } else if (metadata.resolver === "downstream_company") {
     // A family may be inventoried before it has a safe generic resolver. It is
@@ -710,7 +730,7 @@ export async function authorizeBoardKey(
     if (!await ownerHasRequiredGrant(
       db,
       req.actor.boardKeyOwnerId!,
-      resource.companyId,
+      [resource.companyId],
       action as BoardPermissionKey,
     )) {
       await denyBoardKey(db, req, metadata, resource, "owner_permission_grant_missing", "forbidden");
