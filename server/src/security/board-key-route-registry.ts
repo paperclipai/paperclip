@@ -580,21 +580,81 @@ function isWriteAction(action: BoardPermissionKey) {
 }
 
 // Board-key actions intentionally use a stable public vocabulary that is
-// broader than the internal principal-grant vocabulary. Require the closest
-// live owner grant for every action that has an internal grant boundary. This
-// makes grant revocation effective on the next request while existing
-// membership roles remain authoritative for actions without a granular grant.
-const OWNER_GRANT_REQUIREMENTS: Partial<Record<BoardPermissionKey, readonly PermissionKey[]>> = {
-  "agents:write": ["agents:create", "agents:configure"],
-  "issues:write": ["tasks:assign"],
-  "issues:control": ["tasks:assign", "tasks:manage_active_checkouts"],
-  "skills:manage": ["skills:create"],
-  "environments:manage": ["environments:manage"],
-  "tools:manage": ["tools:admin"],
-  "audit:read": ["audit:view_agent_actions"],
-  "members:manage": ["users:invite", "users:manage_permissions", "joins:approve"],
-  "pipelines:write": ["pipelines:write"],
-};
+// broader than the internal principal-grant vocabulary. Keep this exhaustive:
+// actions with a granular grant boundary require every named live grant, while
+// membership-backed actions are re-authorized by the fresh active membership
+// and role checks in authorizeBoardKey. There is no permissive unmapped case.
+type OwnerAuthorityRequirement =
+  | { kind: "membership" }
+  | { kind: "grants"; permissionKeys: readonly PermissionKey[] };
+
+const membershipAuthority = { kind: "membership" } as const;
+const grantAuthority = (...permissionKeys: PermissionKey[]) => ({
+  kind: "grants" as const,
+  permissionKeys,
+});
+
+const OWNER_AUTHORITY_REQUIREMENTS = {
+  "companies:read": membershipAuthority,
+  "companies:write": membershipAuthority,
+  "agents:read": membershipAuthority,
+  "agents:write": grantAuthority("agents:create", "agents:configure"),
+  "agents:operate": grantAuthority("agents:configure"),
+  "projects:read": membershipAuthority,
+  "projects:write": membershipAuthority,
+  "issues:read": membershipAuthority,
+  "issues:write": grantAuthority("tasks:assign"),
+  "issues:control": grantAuthority("tasks:assign", "tasks:manage_active_checkouts"),
+  "goals:read": membershipAuthority,
+  "goals:write": membershipAuthority,
+  "routines:read": membershipAuthority,
+  "routines:write": membershipAuthority,
+  "routines:run": membershipAuthority,
+  "approvals:read": membershipAuthority,
+  "approvals:write": membershipAuthority,
+  "approvals:decide": membershipAuthority,
+  "costs:read": membershipAuthority,
+  "costs:write": membershipAuthority,
+  "activity:read": membershipAuthority,
+  "artifacts:read": membershipAuthority,
+  "artifacts:write": membershipAuthority,
+  "workspaces:read": membershipAuthority,
+  "workspaces:manage": membershipAuthority,
+  "skills:read": membershipAuthority,
+  "skills:manage": grantAuthority("skills:create"),
+  "tools:read": membershipAuthority,
+  "tools:manage": grantAuthority("tools:admin"),
+  "secrets:read_metadata": membershipAuthority,
+  "secrets:manage": membershipAuthority,
+  "members:read": membershipAuthority,
+  "members:manage": grantAuthority("users:invite", "users:manage_permissions", "joins:approve"),
+  "decisions:read": membershipAuthority,
+  "decisions:write": membershipAuthority,
+  "settings:read": membershipAuthority,
+  "settings:write": membershipAuthority,
+  "environments:read": membershipAuthority,
+  "environments:manage": grantAuthority("environments:manage"),
+  "pipelines:read": membershipAuthority,
+  "pipelines:write": grantAuthority("pipelines:write"),
+  "search:read": membershipAuthority,
+  "runtime:read": membershipAuthority,
+  "runtime:manage": membershipAuthority,
+  "audit:read": grantAuthority("audit:view_agent_actions"),
+  "instance:read": membershipAuthority,
+  "instance:manage": membershipAuthority,
+  "companies:create": membershipAuthority,
+  "companies:import_export": membershipAuthority,
+  "plugins:read": membershipAuthority,
+  "plugins:manage": membershipAuthority,
+  "adapters:read": membershipAuthority,
+  "adapters:manage": membershipAuthority,
+  "users:read": membershipAuthority,
+  "users:manage": membershipAuthority,
+  "catalogs:read": membershipAuthority,
+  "catalogs:manage": membershipAuthority,
+  "backups:create": membershipAuthority,
+  "board_api_keys:revoke_self": membershipAuthority,
+} satisfies Record<BoardPermissionKey, OwnerAuthorityRequirement>;
 
 async function ownerHasRequiredGrant(
   db: Db,
@@ -602,8 +662,9 @@ async function ownerHasRequiredGrant(
   companyIds: readonly string[],
   action: BoardPermissionKey,
 ) {
-  const permissionKeys = OWNER_GRANT_REQUIREMENTS[action];
-  if (!permissionKeys) return true;
+  const requirement = OWNER_AUTHORITY_REQUIREMENTS[action];
+  if (requirement.kind === "membership") return true;
+  const { permissionKeys } = requirement;
   const rows = await db
     .select({
       companyId: principalPermissionGrants.companyId,
