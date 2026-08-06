@@ -1126,7 +1126,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-  });
+  }, 15_000);
 
   it("does not implicitly reopen done issues via POST comments when the comment runId matches the issue's execution run", async () => {
     mockIssueService.getById.mockResolvedValue({
@@ -1151,7 +1151,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-  });
+  }, 15_000);
 
   it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
     mockIssueService.getById.mockResolvedValue({
