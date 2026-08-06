@@ -13,11 +13,13 @@ import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import {
   actorMiddleware,
   resetBoardKeyAuthFailureRateLimitForTests,
+  snapshotBoardKeyAuthFailureRateLimitForTests,
 } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import {
   BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS,
   createBoardKeyAuthFailureRateLimiter,
+  type BoardKeyAuthFailureRateLimitConfig,
 } from "../security/board-key-auth-failure-rate-limit.js";
 
 const TOKEN = "pcp_board_middleware_valid_token";
@@ -35,7 +37,9 @@ function createDbState() {
     revokeOnTouch: false,
     lastUsedAt: null as Date | null,
     boardKeyLookupBarrier: null as Promise<void> | null,
+    boardKeyLookupError: null as Error | null,
     boardKeyLookupStarts: 0,
+    auditError: null as Error | null,
   };
   const audits: Array<Record<string, unknown>> = [];
   const key = () => ({
@@ -77,6 +81,7 @@ function createDbState() {
             if (table === boardApiKeys) {
               state.boardKeyLookupStarts += 1;
               await state.boardKeyLookupBarrier;
+              if (state.boardKeyLookupError) throw state.boardKeyLookupError;
             }
             return rows;
           },
@@ -102,7 +107,10 @@ function createDbState() {
     })),
     insert: vi.fn((table: unknown) => ({
       values: async (values: Record<string, unknown>) => {
-        if (table === boardApiKeyAuthorizationEvents) audits.push(values);
+        if (table === boardApiKeyAuthorizationEvents) {
+          if (state.auditError) throw state.auditError;
+          audits.push(values);
+        }
         return [];
       },
     })),
@@ -111,8 +119,21 @@ function createDbState() {
   return { db, state, audits, companyId, keyId, ownerId };
 }
 
-function createApp(db: any, resolveSession = vi.fn(async () => null)) {
+function createApp(
+  db: any,
+  resolveSession = vi.fn(async () => null),
+  options: { sourceFromHeader?: boolean } = {},
+) {
   const app = express();
+  if (options.sourceFromHeader) {
+    app.use((req, _res, next) => {
+      Object.defineProperty(req.socket, "remoteAddress", {
+        configurable: true,
+        value: req.header("x-test-source") ?? req.socket.remoteAddress,
+      });
+      next();
+    });
+  }
   app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession }));
   app.get("/actor", (req, res) => res.json(req.actor));
   app.use(errorHandler);
@@ -249,6 +270,51 @@ describe("board-key authentication middleware", () => {
     expect(limiter.isLimited({ credentialId: "novel-credential", sourceId: "novel-source", now: 1 })).toBe(true);
   });
 
+  it("bounds direct admission by source, global capacity, and source-map storage", () => {
+    const createLimiter = (overrides: Partial<BoardKeyAuthFailureRateLimitConfig>) =>
+      createBoardKeyAuthFailureRateLimiter({
+        ...BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS,
+        credentialLimit: 100,
+        sourceLimit: 100,
+        globalLimit: 100,
+        ...overrides,
+      });
+
+    const perSource = createLimiter({ sourceMaxEntries: 3, sourceInFlightLimit: 2, globalInFlightLimit: 4 });
+    const sourceAFirst = perSource.tryAcquire({ sourceId: "source-a" });
+    const sourceASecond = perSource.tryAcquire({ sourceId: "source-a" });
+    expect(sourceAFirst).not.toBeNull();
+    expect(sourceASecond).not.toBeNull();
+    expect(perSource.tryAcquire({ sourceId: "source-a" })).toBeNull();
+    sourceAFirst?.release();
+    sourceAFirst?.release();
+    const reused = perSource.tryAcquire({ sourceId: "source-a" });
+    expect(reused).not.toBeNull();
+    sourceASecond?.release();
+    reused?.release();
+    expect(perSource.snapshot()).toMatchObject({ sourceInFlightEntries: 0, globalInFlight: 0 });
+
+    const global = createLimiter({ sourceMaxEntries: 4, sourceInFlightLimit: 2, globalInFlightLimit: 3 });
+    const globalAdmissions = ["source-a", "source-b", "source-c"]
+      .map((sourceId) => global.tryAcquire({ sourceId }));
+    expect(globalAdmissions.every(Boolean)).toBe(true);
+    expect(global.tryAcquire({ sourceId: "source-d" })).toBeNull();
+    expect(global.snapshot()).toMatchObject({ sourceInFlightEntries: 3, globalInFlight: 3 });
+    globalAdmissions.forEach((admission) => admission?.release());
+    expect(global.snapshot()).toMatchObject({ sourceInFlightEntries: 0, globalInFlight: 0 });
+
+    const bounded = createLimiter({ sourceMaxEntries: 2, sourceInFlightLimit: 2, globalInFlightLimit: 10 });
+    const boundedA = bounded.tryAcquire({ sourceId: "source-a" });
+    const boundedB = bounded.tryAcquire({ sourceId: "source-b" });
+    expect(bounded.tryAcquire({ sourceId: "source-c" })).toBeNull();
+    expect(bounded.snapshot()).toMatchObject({ sourceInFlightEntries: 2, globalInFlight: 2 });
+    boundedA?.release();
+    boundedB?.release();
+    const boundedReused = bounded.tryAcquire({ sourceId: "source-c" });
+    expect(boundedReused).not.toBeNull();
+    boundedReused?.release();
+  });
+
   it("bounds concurrent database authentication starts with pre-lookup admission", async () => {
     const { db, state } = createDbState();
     state.keyExists = false;
@@ -275,6 +341,81 @@ describe("board-key authentication middleware", () => {
     expect(responses.filter((response) => response.status === 401)).toHaveLength(inFlightLimit);
     expect(responses.filter((response) => response.status === 429)).toHaveLength(6);
     expect(state.boardKeyLookupStarts).toBe(inFlightLimit);
+  });
+
+  it("bounds concurrent database authentication starts across distinct sources by the global cap", async () => {
+    const { db, state } = createDbState();
+    state.keyExists = false;
+    let releaseLookups!: () => void;
+    state.boardKeyLookupBarrier = new Promise<void>((resolve) => {
+      releaseLookups = resolve;
+    });
+    const { app } = createApp(db, undefined, { sourceFromHeader: true });
+    const globalLimit = BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS.globalInFlightLimit;
+
+    const requests = Array.from({ length: globalLimit + 3 }, (_, index) =>
+      request(app)
+        .get("/actor")
+        .set("Authorization", `Bearer pcp_board_global_${index}`)
+        .set("x-test-source", `source-${index}`)
+        .then((response) => response),
+    );
+
+    await vi.waitFor(() => expect(state.boardKeyLookupStarts).toBe(globalLimit));
+    expect(snapshotBoardKeyAuthFailureRateLimitForTests()).toMatchObject({
+      sourceInFlightEntries: globalLimit,
+      globalInFlight: globalLimit,
+    });
+    releaseLookups();
+
+    const responses = await Promise.all(requests);
+    expect(responses.filter((response) => response.status === 401)).toHaveLength(globalLimit);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(3);
+    expect(responses.filter((response) => response.status === 429).map((response) => response.body))
+      .toEqual(Array(3).fill({ error: "Too many authentication failures" }));
+    expect(snapshotBoardKeyAuthFailureRateLimitForTests()).toMatchObject({
+      sourceInFlightEntries: 0,
+      globalInFlight: 0,
+    });
+  });
+
+  it.each([
+    "success",
+    "invalid authentication",
+    "audited denial",
+    "authentication throw",
+    "audit throw",
+  ] as const)("releases and reuses admission capacity after %s", async (outcome) => {
+    const { db, state } = createDbState();
+    if (outcome === "invalid authentication") state.keyExists = false;
+    if (outcome === "authentication throw") state.boardKeyLookupError = new Error("lookup failed");
+    if (outcome === "audited denial" || outcome === "audit throw") {
+      state.malformedScope = true;
+    }
+    if (outcome === "audit throw") {
+      state.auditError = new Error("audit failed");
+    }
+    const { app } = createApp(db);
+
+    const first = await request(app).get("/actor").set("Authorization", `Bearer ${TOKEN}`);
+    if (outcome === "success") expect(first.status).toBe(200);
+    else if (outcome === "authentication throw") expect(first.status).toBe(500);
+    else expect(first.status).toBe(401);
+    expect(snapshotBoardKeyAuthFailureRateLimitForTests()).toMatchObject({
+      sourceInFlightEntries: 0,
+      globalInFlight: 0,
+    });
+
+    state.keyExists = true;
+    state.boardKeyLookupError = null;
+    state.malformedScope = false;
+    state.auditError = null;
+    const second = await request(app).get("/actor").set("Authorization", `Bearer ${TOKEN}`);
+    expect(second.status).toBe(200);
+    expect(snapshotBoardKeyAuthFailureRateLimitForTests()).toMatchObject({
+      sourceInFlightEntries: 0,
+      globalInFlight: 0,
+    });
   });
 
   it("does not resurrect last-used state when revocation wins the authentication race", async () => {
