@@ -645,3 +645,56 @@ def test_wiederholung_ohne_quellen_bleibt_der_alte_weg(monkeypatch, tmp_path):
     ergebnis = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
     assert ergebnis == "timeout"
     assert gesendet["wf"]["6"]["inputs"]["text"] == "Hirsch"
+
+
+# --- Abschlusspruefung Befund 1 (KRITISCH): wiedereingereihtes Issue frisst ---
+# --- sein eigenes Ergebnis --------------------------------------------------
+
+def test_edit_ignoriert_eigenes_ergebnis_beim_wiedereinreihen(monkeypatch, tmp_path):
+    """Jemand setzt ein fertiges qwenedit-Issue mit geaendertem Prompt zurueck
+    auf 'todo'. job_state kennt den alten Job nicht mehr (bereits gedroppt),
+    also liest render_edit die Anhaenge neu -- und findet dort das eigene
+    Ergebnis 'bild-<8hex>.png' neben dem Original. Ohne Filter waere das ein
+    zweites Quellbild und der Prompt ('Bild 1') triffe auf das falsche Bild."""
+    api = setup(monkeypatch, tmp_path)
+    iid = "a1b2c3d4-fake-issue"
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda i: [_att("original", "2026-08-04T09:00:00.000Z"),
+                                   {"id": "ergebnis", "createdAt": "2026-08-04T10:00:00.000Z",
+                                    "contentType": "image/png", "byteSize": 500,
+                                    "originalFilename": config.output_filename(iid)}])
+    monkeypatch.setattr(bild_service.api, "fetch_attachment", lambda aid: b"BILD")
+    hochgeladen = []
+
+    def fake_upload(name, content):
+        hochgeladen.append(name)
+        return "knoten-" + name
+
+    monkeypatch.setattr(comfy_client, "upload_image", fake_upload)
+    monkeypatch.setattr(comfy_client, "submit", lambda wf: "prompt-9")
+
+    bild_service.render_edit(COMPANY, {"id": iid}, EDIT_BRIEF, now=1000.0)
+
+    assert hochgeladen == ["original.png"]
+    job = job_state.get(iid)
+    assert job["sources"] == ["knoten-original.png"]
+
+
+def test_edit_nur_eigenes_ergebnis_am_issue_bricht_ab(monkeypatch, tmp_path):
+    """Gegenprobe: haengt NUR das eigene Ergebnis am Issue (das Original
+    wurde inzwischen geloescht), gilt das wie 'kein Bildanhang' -- nicht wie
+    ein gueltiger Ein-Bild-Auftrag mit sich selbst als Quelle."""
+    api = setup(monkeypatch, tmp_path)
+    iid = "a1b2c3d4-fake-issue"
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda i: [{"id": "ergebnis", "createdAt": "2026-08-04T10:00:00.000Z",
+                                    "contentType": "image/png", "byteSize": 500,
+                                    "originalFilename": config.output_filename(iid)}])
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: pytest.fail("darf nicht abgeschickt werden"))
+
+    bild_service.render_edit(COMPANY, {"id": iid}, EDIT_BRIEF, now=1000.0)
+
+    assert api.status[iid] == "cancelled"
+    assert "Bildanhang" in api.comments[0][1]
+    assert job_state.get(iid) is None

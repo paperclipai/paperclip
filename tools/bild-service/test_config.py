@@ -1,7 +1,7 @@
 import os
 import tempfile
 import pytest
-from config import read_secret
+from config import read_secret, output_filename, OUTPUT_FILENAME_RE
 
 def test_read_secret_found():
     """Test reading an existing secret from file."""
@@ -57,3 +57,18 @@ def test_read_secret_missing_key():
         assert temp_path in error_msg
     finally:
         os.unlink(temp_path)
+
+
+# --- Befund 1 (KRITISCH): Erzeuger und Filter des Ausgabedateinamens duerfen ---
+# --- niemals auseinanderlaufen -- deshalb bildet OUTPUT_FILENAME_RE genau     ---
+# --- das ab, was output_filename() fuer eine echte UUID erzeugt.             ---
+
+def test_output_filename_matches_its_own_recognition_pattern():
+    name = output_filename("9cebf3cf-efe8-4597-a400-f06488900a87")
+    assert name == "bild-9cebf3cf.png"
+    assert OUTPUT_FILENAME_RE.match(name)
+
+
+def test_output_filename_pattern_does_not_match_arbitrary_uploads():
+    assert OUTPUT_FILENAME_RE.match("urlaubsfoto.png") is None
+    assert OUTPUT_FILENAME_RE.match("bild-zu-kurz.png") is None

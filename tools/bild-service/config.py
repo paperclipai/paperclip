@@ -1,4 +1,5 @@
 import os
+import re
 
 def read_secret(path, key):
     """Read a secret value from a KEY=value file.
@@ -68,6 +69,26 @@ LOCAL_WORKFLOWS = {
 EDIT_MODELS = {"qwenedit"}
 MAX_SOURCE_IMAGES = 3
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
+
+
+def output_filename(issue_id):
+    """Dateiname, unter dem der Dienst sein eigenes Ergebnis hochlaedt.
+
+    Erzeuger (der upload_attachment-Aufruf in bild_service.py) UND Filter
+    (sources.OUTPUT_FILENAME_RE / pick_source_images) bilden den Namen ueber
+    DIESE Funktion -- sonst koennten sie unbemerkt auseinanderlaufen und ein
+    wiedereingereihtes Issue wuerde sein eigenes Ergebnis wieder als
+    Quellbild lesen (Befund 1).
+    """
+    return "bild-%s.png" % issue_id[:8]
+
+
+# Erkennt einen vom Dienst selbst erzeugten Ausgabeanhang am Dateinamen.
+# createdByAgentId taugt NICHT als Kennzeichen: der Dienst laedt ueber das
+# Board-Token als User hoch (assets.created_by_agent_id bleibt bei eigenen
+# Uploads leer, an echten Datensaetzen geprueft) -- einzig verlaessliches
+# Merkmal ist der Dateiname.
+OUTPUT_FILENAME_RE = re.compile(r"^bild-[0-9a-f]{8}\.png$", re.IGNORECASE)
 
 ALLOWED_FORMATS = {"1024x1024", "1024x1536", "1536x1024", "1344x768", "768x1344"}
 DEFAULT_FORMAT = "1024x1024"

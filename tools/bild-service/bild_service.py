@@ -172,7 +172,7 @@ def render_openai(company, issue, brief):
         api.add_comment(iid, "⚠️ OpenAI-Fehler: %s" % e)
         api.patch_status(iid, "cancelled")
         return
-    api.upload_attachment(company["id"], iid, "bild-%s.png" % iid[:8], png)
+    api.upload_attachment(company["id"], iid, config.output_filename(iid), png)
     cost_state.record(_today(), brief["quality"])
     note = ""
     if brief["openai_size"] != brief["size"]:
@@ -247,7 +247,7 @@ def collect_one(issue_id, job, now):
         if not job.get("uploaded"):
             png = comfy_client.fetch_image(payload[0])
             api.upload_attachment(job["company_id"], issue_id,
-                                  "bild-%s.png" % issue_id[:8], png)
+                                  config.output_filename(issue_id), png)
             job_state.mark_uploaded(issue_id)
         modell = job.get("modell")
         if modell == "qwen360":

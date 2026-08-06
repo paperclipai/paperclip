@@ -1,3 +1,4 @@
+import config
 import sources
 
 
@@ -60,3 +61,28 @@ def test_fehlender_contenttype_gilt_nicht_als_bild():
     imgs, err = sources.pick_source_images(a)
     assert imgs == []
     assert err is not None
+
+
+# --- Befund 1 (KRITISCH): ein wiedereingereihtes Issue frisst sein eigenes ---
+# --- Ergebnis. Der Dienst haengt 'bild-<8hex>.png' an dasselbe Issue --      ---
+# --- ohne Filter zaehlt das als zweites Quellbild, sobald jemand das        ---
+# --- Issue mit geaendertem Prompt auf 'todo' zuruecksetzt.                  ---
+
+def _eigenes_ergebnis(issue_id, created):
+    return {"id": "ergebnis", "createdAt": created, "contentType": "image/png",
+            "byteSize": 500, "originalFilename": config.output_filename(issue_id)}
+
+
+def test_eigenes_ergebnis_zwischen_quellbildern_wird_ignoriert():
+    a = [_att("original", "2026-08-04T09:00:00.000Z"),
+         _eigenes_ergebnis("a1b2c3d4-fake-issue", "2026-08-04T10:00:00.000Z")]
+    imgs, err = sources.pick_source_images(a)
+    assert err is None
+    assert [i["id"] for i in imgs] == ["original"]
+
+
+def test_einziges_bild_ist_eigenes_ergebnis_gilt_als_kein_bildanhang():
+    a = [_eigenes_ergebnis("a1b2c3d4-fake-issue", "2026-08-04T10:00:00.000Z")]
+    imgs, err = sources.pick_source_images(a)
+    assert imgs == []
+    assert "Bildanhang" in err
