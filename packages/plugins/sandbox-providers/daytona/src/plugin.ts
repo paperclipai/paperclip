@@ -1766,15 +1766,23 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // A stopped sandbox loses its session shell, so a cached session id is stale
-    // after a resume. Clear it here; the next exec opens a fresh session.
-    sandboxHandleSessionStore.clear(scope);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return { providerLeaseId: null, metadata: { expired: true } };
       }
 
+      // A stopped sandbox loses its session shell, so the stored session id is
+      // stale after a real restart. Clear the id only when the sandbox is not
+      // already running, and clear it before the restart. A stopped sandbox has
+      // no live session, so the clear drops a dead id and a later command opens
+      // a fresh session. A running sandbox keeps its live session, so the resume
+      // leaves the id in place; a concurrent command still finds it and teardown
+      // deletes one session. An unconditional clear would drop the id of a live
+      // session and leak its shell until sandbox reaping.
+      if (sandbox.state !== "started") {
+        sandboxHandleSessionStore.clear(scope);
+      }
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
       try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);

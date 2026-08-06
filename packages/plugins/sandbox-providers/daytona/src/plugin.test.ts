@@ -1299,9 +1299,11 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
     });
 
-    it("clears the session store on resume so the next execute opens a fresh session", async () => {
+    it("clears the session store when resume restarts a stopped sandbox", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
-      const sandbox = createMockSandbox();
+      // A stopped sandbox lost its session shell, so resume must clear the stale
+      // id and the next execute must open a fresh session.
+      const sandbox = createMockSandbox({ state: "stopped" });
       mockGet.mockResolvedValue(sandbox);
 
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
@@ -1324,6 +1326,49 @@ describe("Daytona sandbox provider plugin", () => {
 
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
       expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the session when resume runs on a still-running sandbox", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      // A running sandbox keeps its live session shell. Resume must not clear the
+      // stored id, or a later command opens a second session and teardown deletes
+      // only one, so the first session leaks until sandbox reaping.
+      const sandbox = createMockSandbox({ state: "started" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+
+      await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        leaseMetadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          workspaceSentinel: {
+            path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+            token: "token-1",
+          },
+        },
+      });
+
+      // The next command reuses the one live session, so no second session opens.
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+
+      // Teardown deletes the one session id, so no shell leaks.
+      await plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+      });
+      expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
     });
 
     it("emits a session.setup span on create and a session.teardown span on delete", async () => {
