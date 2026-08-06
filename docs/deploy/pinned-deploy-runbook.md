@@ -35,12 +35,16 @@ the live database.
 ## Mandatory gates (all must be green before pointer flip)
 
 1. Candidate SHA is a committed object and ancestor of the approved branch (`live`).
-2. `plutil -lint` on rendered deploy + source coexist plists.
-3. Unique-index duplicate fixture rejects on a **disposable** database
+2. Candidate has `.paperclip/.env` (linked worktree boot contract — intentionally empty defaults for deploy).
+3. Candidate deps provisioned: `pnpm install --prefer-offline` plus
+   `pnpm --filter @paperclipai/shared build` and
+   `pnpm --filter @paperclipai/plugin-sdk build` (prevents missing-esbuild gate failures).
+4. `plutil -lint` on rendered deploy + source coexist plists.
+5. Unique-index duplicate fixture rejects on a **disposable** database
    (`uq-fixture`).
-4. `server/scripts/dev-watch-gate.mjs` in the candidate worktree.
-5. `pnpm --filter @paperclipai/server typecheck` in the candidate worktree.
-6. **Window snapshot smoke** (when a dump is provided): restore into a disposable
+6. `server/scripts/dev-watch-gate.mjs` in the candidate worktree.
+7. `pnpm --filter @paperclipai/server typecheck` in the candidate worktree.
+8. **Window snapshot smoke** (when a dump is provided): restore into a disposable
    DB only → candidate migrate → migration-status → boot candidate on a
    **disposable port** (never `:3100`/`:3101`/`:13100`/`:13101`) → `GET /api/health`
    → authenticated issue create/read against that isolated candidate → drop
@@ -48,6 +52,10 @@ the live database.
    `./scripts/pinned-deploy-snapshot-smoke.sh restore-migrate`.
 
 Failed gate ⇒ **no** deploy pointer change (`promote-pointer` refuses).
+
+`prepare-candidate` writes the worktree env and runs the install/build steps
+before gates. `promote-pointer` re-asserts `.paperclip/.env` on the staged tree
+and again on `DEPLOY_ROOT` after the rename (TSMC-20021 cutover gaps).
 
 ### Receipt ordering (promotion)
 
@@ -93,8 +101,11 @@ export PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE_DUMP=1   # or set DUMP_PATH to existin
 # 3. Pointer only (still does NOT install launchd)
 ./scripts/pinned-deploy-promote.sh promote-pointer --allow-live-pointer
 # Confirm durable receipt has deployPointerMutated=true and promotedAt set
+# OR use the sanctioned single door (pointer + deploy LaunchAgent kickstart):
+# ./scripts/pinned-deploy-promote.sh promote-and-restart --allow-live-pointer
 
 # 4. Install/reload plists manually from rendered templates
+# (skip if you used promote-and-restart and the deploy label was already loaded)
 ./scripts/pinned-deploy-verify.sh lint
 # Render to a review dir:
 PAPERCLIP_PINNED_DEPLOY_RENDER_DIR=/tmp/pinned-plists ./scripts/pinned-deploy-verify.sh lint

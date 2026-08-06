@@ -25,16 +25,17 @@ const PROMOTE = path.join(REPO_ROOT, "scripts/pinned-deploy-promote.sh");
 const VERIFY = path.join(REPO_ROOT, "scripts/pinned-deploy-verify.sh");
 const SMOKE = path.join(REPO_ROOT, "scripts/pinned-deploy-snapshot-smoke.sh");
 
-function sh(cmd, args, env = {}) {
+function sh(cmd, args, env = {}, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    cwd: opts.cwd,
   });
   return res;
 }
 
-function runOk(cmd, args, env = {}) {
-  const res = sh(cmd, args, env);
+function runOk(cmd, args, env = {}, opts = {}) {
+  const res = sh(cmd, args, env, opts);
   assert.equal(res.status, 0, `expected ok: ${cmd} ${args.join(" ")}\n${res.stderr}\n${res.stdout}`);
   return res;
 }
@@ -45,6 +46,8 @@ function greenReceipt(candidateSha = "abc") {
     candidateSha,
     gates: {
       committed_sha: { status: "pass" },
+      worktree_env: { status: "pass" },
+      candidate_deps: { status: "pass" },
       plist_lint: { status: "pass" },
       uq_fixture: { status: "pass" },
       source_gate: { status: "pass" },
@@ -53,6 +56,8 @@ function greenReceipt(candidateSha = "abc") {
     failedGateCount: 0,
     mandatoryGates: [
       "committed_sha",
+      "worktree_env",
+      "candidate_deps",
       "plist_lint",
       "uq_fixture",
       "source_gate",
@@ -162,6 +167,11 @@ test("successful temporary-pointer promote records transition metadata on durabl
     assert.match(res.stderr, /PROMOTION COMPLETE/);
     assert.equal(readFileSync(path.join(deploy, "MARKER"), "utf8"), "after-promote");
     assert.ok(existsSync(path.join(deploy, "EXTRA")));
+    // TSMC-20021: promote must leave .paperclip/.env even when candidate lacked it
+    assert.ok(
+      existsSync(path.join(deploy, ".paperclip", ".env")),
+      "promoted deploy must include .paperclip/.env",
+    );
 
     const currentReceipt = JSON.parse(readFileSync(current, "utf8"));
     assert.equal(currentReceipt.deployPointerMutated, true);
@@ -184,6 +194,80 @@ test("successful temporary-pointer promote records transition metadata on durabl
     assert.ok(durableNamed.length >= 1);
     const named = JSON.parse(readFileSync(path.join(receipts, durableNamed[0]), "utf8"));
     assert.equal(named.deployPointerMutated, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepare-candidate provisions .paperclip/.env and records worktree_env + candidate_deps (SKIP_HEAVY)", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-prepare-env-"));
+  try {
+    const source = path.join(tmp, "source");
+    const candidate = path.join(tmp, "candidate");
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(receipts, { recursive: true });
+
+    // Minimal git repo with one commit.
+    runOk("git", ["init", "-b", "live"], {}, { cwd: source });
+    runOk("git", ["config", "user.email", "test@example.com"], {}, { cwd: source });
+    runOk("git", ["config", "user.name", "test"], {}, { cwd: source });
+    writeFileSync(path.join(source, "README"), "candidate-source\n");
+    // package.json so path looks like a monorepo root (install skipped via SKIP_HEAVY)
+    writeFileSync(
+      path.join(source, "package.json"),
+      JSON.stringify({ name: "paperclip-fixture", private: true }, null, 2),
+    );
+    runOk("git", ["add", "."], {}, { cwd: source });
+    runOk("git", ["commit", "-m", "init"], {}, { cwd: source });
+    const sha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+
+    const res = runOk("bash", [PROMOTE, "prepare-candidate", sha], {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH: "live",
+      PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY: "1",
+    });
+    assert.match(res.stderr, /candidate ready/);
+    assert.ok(existsSync(path.join(candidate, ".paperclip", ".env")));
+    const receipt = JSON.parse(readFileSync(path.join(receipts, "working-receipt.json"), "utf8"));
+    assert.equal(receipt.gates.committed_sha.status, "pass");
+    assert.equal(receipt.gates.worktree_env.status, "pass");
+    assert.equal(receipt.gates.candidate_deps.status, "pass");
+    assert.ok(receipt.mandatoryGates.includes("worktree_env"));
+    assert.ok(receipt.mandatoryGates.includes("candidate_deps"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("promote-and-restart refuses without allow flags (fail closed, no pointer move)", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-restart-refuse-"));
+  try {
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    const deploy = path.join(tmp, "deploy");
+    const candidate = path.join(tmp, "candidate");
+    mkdirSync(receipts, { recursive: true });
+    mkdirSync(deploy, { recursive: true });
+    mkdirSync(candidate, { recursive: true });
+    writeFileSync(path.join(deploy, "MARKER"), "before");
+    writeFileSync(
+      path.join(receipts, "working-receipt.json"),
+      JSON.stringify(greenReceipt(), null, 2),
+    );
+    const res = sh("bash", [PROMOTE, "promote-and-restart"], {
+      PAPERCLIP_DEPLOY_ROOT: deploy,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE: "0",
+    });
+    assert.notEqual(res.status, 0);
+    assert.equal(readFileSync(path.join(deploy, "MARKER"), "utf8"), "before");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

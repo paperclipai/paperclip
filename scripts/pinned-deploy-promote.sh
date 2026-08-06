@@ -37,9 +37,13 @@ Usage: pinned-deploy-promote.sh <command> [args]
 
 Commands:
   prepare-candidate <sha>   Detached worktree at CANDIDATE_ROOT for committed SHA
+                            (also provisions deps + .paperclip/.env — TSMC-20021)
   run-gates                 Run all mandatory gates; update working receipt
   promote-pointer           Atomically stage candidate -> DEPLOY_ROOT if gates green
-                            (requires --allow-live-pointer and ALLOW_LIVE=1)
+                            (requires --allow-live-pointer and ALLOW_LIVE=1;
+                            re-asserts .paperclip/.env on the staged tree)
+  promote-and-restart       promote-pointer then kickstart deploy LaunchAgent
+                            (same dual allow flags; sanctioned single door)
   rollback-drill            Non-production pointer swap drill under STATE_DIR/drill
   lint-plists               Render+plutil templates via pinned-deploy-verify.sh
   uq-fixture                Disposable unique-index duplicate reject smoke
@@ -51,6 +55,7 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_STATE_DIR PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR
   PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE=1   # required with --allow-live-pointer
   PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY=1   # tests only
+  PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL  # default ie.thinkstack.paperclip-deploy
 USAGE
 }
 
@@ -88,6 +93,8 @@ init_receipt() {
   "failedGateCount": 0,
   "mandatoryGates": [
     "committed_sha",
+    "worktree_env",
+    "candidate_deps",
     "plist_lint",
     "uq_fixture",
     "source_gate",
@@ -98,6 +105,57 @@ init_receipt() {
 }
 JSON
   log "initialized working receipt for $sha at $(working_receipt_path)"
+}
+
+# Linked git worktrees refuse to boot without .paperclip/.env
+# (bootstrapDevRunnerWorktreeEnv). Production deploy uses an intentionally
+# empty defaults file — presence is the contract, not secret values (TSMC-20021).
+ensure_worktree_env() {
+  local root="$1"
+  [ -n "$root" ] || fail "ensure_worktree_env requires root"
+  [ -d "$root" ] || fail "ensure_worktree_env: root missing: $root"
+  mkdir -p "$root/.paperclip"
+  local envf="$root/.paperclip/.env"
+  if [ -f "$envf" ]; then
+    log "worktree env already present: $envf"
+    return 0
+  fi
+  cat >"$envf" <<'EOF'
+# Pinned deploy worktree env (auto-provisioned by pinned-deploy-promote / TSMC-20021).
+# Intentionally empty: defaults reproduce main-tree behaviour; this IS the production server.
+EOF
+  log "wrote worktree env $envf"
+}
+
+# Fresh worktrees have no node_modules; gates need esbuild + built workspace pkgs.
+provision_candidate_deps() {
+  local root="$1"
+  [ -d "$root" ] || fail "provision_candidate_deps: root missing: $root"
+
+  ensure_worktree_env "$root"
+  if [ ! -f "$root/.paperclip/.env" ]; then
+    receipt_set_gate "worktree_env" "fail" "missing .paperclip/.env after ensure"
+    fail "worktree_env gate failed"
+  fi
+  receipt_set_gate "worktree_env" "pass" ".paperclip/.env present"
+
+  if [ "$SKIP_HEAVY" = "1" ]; then
+    receipt_set_gate "candidate_deps" "pass" "skipped heavy (test mode)"
+    return 0
+  fi
+
+  log "pnpm install --prefer-offline in $root"
+  if ! (cd "$root" && pnpm install --prefer-offline); then
+    receipt_set_gate "candidate_deps" "fail" "pnpm install failed"
+    fail "candidate_deps install failed"
+  fi
+
+  log "build @paperclipai/shared + @paperclipai/plugin-sdk in $root"
+  if ! (cd "$root" && pnpm --filter @paperclipai/shared build && pnpm --filter @paperclipai/plugin-sdk build); then
+    receipt_set_gate "candidate_deps" "fail" "shared/plugin-sdk build failed"
+    fail "candidate_deps build failed"
+  fi
+  receipt_set_gate "candidate_deps" "pass" "install + shared/plugin-sdk build ok"
 }
 
 receipt_set_gate() {
@@ -210,6 +268,10 @@ cmd_prepare_candidate() {
   local head
   head="$(git -C "$CANDIDATE_ROOT" rev-parse HEAD)"
   [ "$head" = "$full" ] || fail "candidate HEAD $head != $full"
+
+  # TSMC-20021: bare worktree is not bootable/gateable until deps + .env exist.
+  provision_candidate_deps "$CANDIDATE_ROOT"
+
   log "candidate ready HEAD=$head"
 }
 
@@ -312,11 +374,20 @@ cmd_promote_pointer() {
     cp -a "$CANDIDATE_ROOT"/. "$staging"/
   fi
 
+  # Re-assert worktree env on the staged tree before pointer swap (TSMC-20021).
+  # rsync should already carry it from candidate, but missing env crash-loops launchd.
+  ensure_worktree_env "$staging"
+  [ -f "$staging/.paperclip/.env" ] || fail "staging missing .paperclip/.env after ensure"
+
   if [ -n "$backup" ]; then
     log "moving existing deploy to $backup"
     mv "$DEPLOY_ROOT" "$backup"
   fi
   mv "$staging" "$DEPLOY_ROOT"
+
+  # Final belt-and-braces on the live pointer path.
+  ensure_worktree_env "$DEPLOY_ROOT"
+  [ -f "$DEPLOY_ROOT/.paperclip/.env" ] || fail "DEPLOY_ROOT missing .paperclip/.env after promote"
 
   # Finalize transition metadata on the working receipt FIRST, then write the
   # durable immutable copy so the receipt that lands under receipts/ includes
@@ -352,7 +423,29 @@ fs.writeFileSync(current, body);
 fs.writeFileSync(durable, body);
 NODE
   log "PROMOTION COMPLETE deployRoot=$DEPLOY_ROOT receipt=$CURRENT_RECEIPT durable=$durable"
-  log "NOTE: launchd install/reload is intentionally NOT performed by this script"
+  log "NOTE: promote-pointer does not reload launchd; use promote-and-restart for the sanctioned single door"
+}
+
+# Single sanctioned door: pointer flip + deploy LaunchAgent kickstart (TSMC-20021).
+# Still requires dual allow flags; never touches source coexist agents.
+cmd_promote_and_restart() {
+  cmd_promote_pointer "$@"
+  local label="${PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL:-ie.thinkstack.paperclip-deploy}"
+  local uid domain target
+  uid="$(id -u)"
+  domain="gui/$uid"
+  target="$domain/$label"
+  if ! command -v launchctl >/dev/null 2>&1; then
+    fail "promote-and-restart: launchctl not available"
+  fi
+  if launchctl print "$target" >/dev/null 2>&1; then
+    log "kickstarting deploy LaunchAgent $target"
+    launchctl kickstart -k "$target" \
+      || fail "promote-and-restart: launchctl kickstart failed for $target"
+    log "promote-and-restart: kickstart issued for $target"
+  else
+    fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then kickstart manually)"
+  fi
 }
 
 # Non-production drill: operate only under STATE_DIR/drill
@@ -380,7 +473,7 @@ cmd_rollback_drill() {
   "candidateSha": "bad",
   "gates": {"committed_sha":{"status":"fail"}},
   "failedGateCount": 1,
-  "mandatoryGates": ["committed_sha","plist_lint","uq_fixture","source_gate","server_typecheck"],
+  "mandatoryGates": ["committed_sha","worktree_env","candidate_deps","plist_lint","uq_fixture","source_gate","server_typecheck"],
   "deployPointerMutated": false
 }
 JSON
@@ -444,6 +537,7 @@ main() {
     prepare-candidate) cmd_prepare_candidate "$@" ;;
     run-gates) cmd_run_gates "$@" ;;
     promote-pointer) cmd_promote_pointer "$@" ;;
+    promote-and-restart) cmd_promote_and_restart "$@" ;;
     rollback-drill) cmd_rollback_drill "$@" ;;
     lint-plists) 
       if [ -f "$(working_receipt_path)" ]; then cmd_lint_plists; else bash "$SCRIPT_DIR/pinned-deploy-verify.sh" lint; fi
