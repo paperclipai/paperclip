@@ -5,9 +5,19 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  executionWorkspaces,
+  heartbeatRuns,
+  issueComments,
+  issueWorkProducts,
+  issues,
+  projects,
+  projectWorkspaces,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
+  ExecutionWorkspaceDeliveryState,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseGitReadiness,
@@ -32,6 +42,14 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { logActivity } from "./activity-log.js";
+import {
+  createPullRequestMergeDetailsResolver,
+  extractGitHubPullRequestReferences,
+  setBoundedPullRequestCacheEntry,
+  type GitHubPullRequestReference,
+  type PullRequestMergeDetailsResolver,
+} from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
@@ -47,6 +65,44 @@ const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+export type ExecutionWorkspaceServiceOptions = {
+  resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
+  now?: () => Date;
+  beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
+};
+
+function parseGitHubRepository(repoUrl: string | null) {
+  if (!repoUrl) return null;
+  const match = /^(?:https?:\/\/(?:www\.)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(repoUrl.trim());
+  if (!match) return null;
+  return { owner: match[1]!.toLowerCase(), repo: match[2]!.toLowerCase() };
+}
+
+function pullRequestMatchesWorkspaceRepository(
+  reference: GitHubPullRequestReference,
+  workspace: Pick<ExecutionWorkspaceRow, "repoUrl">,
+) {
+  const repository = parseGitHubRepository(workspace.repoUrl);
+  return Boolean(
+    repository
+    && repository.owner === reference.owner.toLowerCase()
+    && repository.repo === reference.repo.toLowerCase(),
+  );
+}
+
+export function deriveExecutionWorkspaceDeliveryState(input: {
+  sourceIssueTerminal: boolean;
+  mergedPullRequest: boolean;
+  pullRequestStateUnknown: boolean;
+  isMergedIntoBase: boolean | null;
+}): ExecutionWorkspaceDeliveryState {
+  if (input.sourceIssueTerminal && input.mergedPullRequest) return "merged_via_pr";
+  if (input.isMergedIntoBase === true) return "merged_by_ancestry";
+  if (input.isMergedIntoBase === false && !input.pullRequestStateUnknown) return "unmerged";
+  return "unknown";
+}
 
 export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
 
@@ -798,6 +854,7 @@ function toRuntimeService(
 function toExecutionWorkspace(
   row: ExecutionWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
+  deliveryState: ExecutionWorkspaceDeliveryState = "unknown",
 ): ExecutionWorkspace {
   return {
     id: row.id,
@@ -809,6 +866,7 @@ function toExecutionWorkspace(
     strategyType: row.strategyType as ExecutionWorkspace["strategyType"],
     name: row.name,
     status: row.status as ExecutionWorkspace["status"],
+    deliveryState,
     cwd: row.cwd ?? null,
     repoUrl: row.repoUrl ?? null,
     baseRef: row.baseRef ?? null,
@@ -992,8 +1050,299 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
-export function executionWorkspaceService(db: Db) {
+export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
+  const now = opts.now ?? (() => new Date());
+  const pullRequestStateCache = new Map<
+    string,
+    {
+      details: Awaited<ReturnType<PullRequestMergeDetailsResolver>>;
+      checkedAtMs: number;
+    }
+  >();
+  const pullRequestStateCacheTtlMs = 5 * 60 * 1000;
+
+  async function listWorkspaceIssueTree(workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">) {
+    if (!workspace.sourceIssueId) return [];
+    return db
+      .select({
+        id: issues.id,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, workspace.companyId),
+        sql<boolean>`
+          ${issues.id} IN (
+            WITH RECURSIVE issue_tree(id) AS (
+              SELECT ${issues.id}
+              FROM ${issues}
+              WHERE ${issues.companyId} = ${workspace.companyId}
+                AND ${issues.id} = ${workspace.sourceIssueId}
+              UNION ALL
+              SELECT child.id
+              FROM ${issues} child
+              JOIN issue_tree parent ON child.parent_id = parent.id
+              WHERE child.company_id = ${workspace.companyId}
+            )
+            SELECT id FROM issue_tree
+          )
+        `,
+      ));
+  }
+
+  async function listDeliveryPullRequestProducts(
+    workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">,
+  ) {
+    if (!workspace.sourceIssueId) return [];
+
+    return db
+      .select({
+        id: issueWorkProducts.id,
+        url: issueWorkProducts.url,
+        externalId: issueWorkProducts.externalId,
+        title: issueWorkProducts.title,
+        summary: issueWorkProducts.summary,
+        metadata: issueWorkProducts.metadata,
+      })
+      .from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, workspace.companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.issueId, workspace.sourceIssueId),
+      ))
+      .orderBy(desc(issueWorkProducts.updatedAt))
+      .limit(100);
+  }
+
+  async function assessDelivery(
+    workspace: ExecutionWorkspaceRow,
+    git: ExecutionWorkspaceCloseGitReadiness | null,
+  ) {
+    const issueTree = await listWorkspaceIssueTree(workspace);
+    const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
+    const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
+    const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    let mergedPullRequest = false;
+    let pullRequestStateUnknown = false;
+    const workspaceHeadSha = git?.repoRoot && git.workspacePath
+      ? await runGit(["rev-parse", "HEAD"], git.workspacePath)
+        .then((result) => result.stdout.trim() || null)
+        .catch(() => null)
+      : null;
+
+    if (sourceIssueTerminal) {
+      const products = await listDeliveryPullRequestProducts(workspace);
+      for (const product of products) {
+        const references = extractGitHubPullRequestReferences([
+          product.url,
+          product.externalId,
+          product.title,
+          product.summary,
+          product.metadata ? JSON.stringify(product.metadata) : null,
+        ]);
+        if (references.length === 0) continue;
+        for (const reference of references) {
+          if (!pullRequestMatchesWorkspaceRepository(reference, workspace)) continue;
+          const key = `${workspace.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
+          const cached = pullRequestStateCache.get(key);
+          let details;
+          if (cached && now().getTime() - cached.checkedAtMs < pullRequestStateCacheTtlMs) {
+            details = cached.details;
+          } else {
+            details = await resolvePullRequestDetails(workspace.companyId, reference);
+            setBoundedPullRequestCacheEntry(
+              pullRequestStateCache,
+              key,
+              { details, checkedAtMs: now().getTime() },
+            );
+          }
+          if (
+            details.state === "merged"
+            && details.headRef === workspace.branchName
+            && details.headSha === workspaceHeadSha
+            && workspaceHeadSha !== null
+          ) {
+            mergedPullRequest = true;
+            break;
+          }
+          if (
+            details.state === "unknown"
+            || (details.state === "merged" && (!details.headRef || !details.headSha || !workspaceHeadSha))
+          ) {
+            pullRequestStateUnknown = true;
+          }
+        }
+        if (mergedPullRequest) break;
+      }
+    }
+
+    return {
+      deliveryState: deriveExecutionWorkspaceDeliveryState({
+        sourceIssueTerminal,
+        mergedPullRequest,
+        pullRequestStateUnknown,
+        isMergedIntoBase: git?.isMergedIntoBase ?? null,
+      }),
+      sourceIssueTerminal,
+      subtreeTerminal,
+      workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
+      workspaceHeadSha,
+    };
+  }
+
+  async function assertTerminalCleanupGitStateUnchanged(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+  ) {
+    if (workspace.providerType !== "git_worktree") return;
+    const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+    if (!workspacePath || !expectedHeadSha) {
+      throw new Error("Refusing terminal workspace cleanup because the expected git HEAD is unknown");
+    }
+
+    const [current, currentHeadSha, currentBranchName] = await Promise.all([
+      inspectGitCloseReadiness(toExecutionWorkspace(workspace)),
+      readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
+      readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
+    ]);
+    if (
+      !current.git?.repoRoot
+      || current.git.hasDirtyTrackedFiles
+      || current.git.hasUntrackedFiles
+      || currentHeadSha !== expectedHeadSha
+      || (workspace.branchName && currentBranchName !== workspace.branchName)
+    ) {
+      throw new Error("Refusing terminal workspace cleanup because the git worktree changed after delivery was verified");
+    }
+  }
+
+  async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
+    const workspace = toExecutionWorkspace(row, runtimeServices);
+    const { git } = await inspectGitCloseReadiness(workspace);
+    const assessment = await assessDelivery(row, git);
+    return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
+  }
+
+  async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
+    const linkedIssues = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, workspace.companyId),
+        or(
+          eq(issues.executionWorkspaceId, workspace.id),
+          ...(workspace.sourceIssueId ? [eq(issues.id, workspace.sourceIssueId)] : []),
+        ),
+      ));
+    const runIds = [...new Set(linkedIssues.flatMap((issue) => [
+      issue.checkoutRunId,
+      issue.executionRunId,
+    ]).filter((runId): runId is string => Boolean(runId)))];
+    if (runIds.length === 0) return false;
+    const active = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, workspace.companyId),
+        inArray(heartbeatRuns.id, runIds),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      ))
+      .limit(1);
+    return active.length > 0;
+  }
+
+  async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+    const [
+      {
+        acquireGitWorktreeCleanupLock,
+        cleanupExecutionWorkspaceArtifacts,
+        stopRuntimeServicesForExecutionWorkspace,
+      },
+      { workspaceOperationService },
+    ] = await Promise.all([
+      import("./workspace-runtime.js"),
+      import("./workspace-operations.js"),
+    ]);
+    const [projectWorkspace, projectPolicy] = await Promise.all([
+      workspace.projectWorkspaceId
+        ? db
+            .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
+            .from(projectWorkspaces)
+            .where(and(
+              eq(projectWorkspaces.companyId, workspace.companyId),
+              eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+            ))
+            .then((rows) => rows[0] ?? null)
+        : null,
+      db
+        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .from(projects)
+        .where(and(eq(projects.companyId, workspace.companyId), eq(projects.id, workspace.projectId)))
+        .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+    ]);
+    const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+
+    const cleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
+      ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
+      : null;
+    try {
+      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await opts.beforeTerminalWorkspaceCleanup?.(workspace);
+      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      });
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace,
+        projectWorkspace,
+        cleanupCommand: config?.cleanupCommand ?? null,
+        teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+        recorder: workspaceOperationService(db).createRecorder({
+          companyId: workspace.companyId,
+          executionWorkspaceId: workspace.id,
+        }),
+        assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
+        beforeBranchDelete: () => cleanupLock?.releaseBranchRefLock() ?? Promise.resolve(),
+        expectedBranchHeadSha: expectedHeadSha,
+        // Git index, HEAD, and branch-ref locks prevent a clean HEAD change
+        // from crossing final validation. The branch lock is released only
+        // after non-forced worktree removal, then deletion is anchored to the
+        // verified HEAD so a raced ref update fails closed.
+        runCleanupCommands: false,
+        forceWorktreeRemoval: false,
+      });
+      if (cleanup.cleaned && workspace.mode === "shared_workspace") {
+        await db
+          .update(issues)
+          .set({ executionWorkspaceId: null, updatedAt: now() })
+          .where(and(
+            eq(issues.companyId, workspace.companyId),
+            eq(issues.executionWorkspaceId, workspace.id),
+          ));
+      }
+      const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
+      if (!cleanup.cleaned || cleanup.warnings.length > 0) {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            ...(cleanup.cleaned ? {} : { status: "cleanup_failed" }),
+            cleanupReason,
+            updatedAt: now(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+      }
+      return cleanup;
+    } finally {
+      await cleanupLock?.release();
+    }
+  }
 
   function buildListConditions(
     companyId: string,
@@ -1260,12 +1609,12 @@ export function executionWorkspaceService(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
-      return rows.map((row) =>
-        toExecutionWorkspace(
+      return Promise.all(rows.map((row) =>
+        hydrateWorkspace(
           row,
           (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
         ),
-      );
+      ));
     },
 
     listSummaries: async (companyId: string, filters?: {
@@ -1419,7 +1768,7 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
-      return toExecutionWorkspace(
+      return hydrateWorkspace(
         row,
         (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
       );
@@ -1493,6 +1842,7 @@ export function executionWorkspaceService(db: Db) {
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
       const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
+      const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
@@ -1550,7 +1900,12 @@ export function executionWorkspaceService(db: Db) {
             : `The workspace has ${git.untrackedEntryCount} untracked files.`,
         );
       }
-      if (git?.aheadCount && git.aheadCount > 0 && git.isMergedIntoBase === false) {
+      if (
+        git?.aheadCount
+        && git.aheadCount > 0
+        && git.isMergedIntoBase === false
+        && deliveryState !== "merged_via_pr"
+      ) {
         warnings.push(
           git.aheadCount === 1
             ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
@@ -1663,6 +2018,7 @@ export function executionWorkspaceService(db: Db) {
 
       return {
         workspaceId: workspace.id,
+        deliveryState,
         state,
         blockingReasons,
         warnings,
@@ -1674,6 +2030,154 @@ export function executionWorkspaceService(db: Db) {
         git,
         runtimeServices,
       };
+    },
+
+    sweepTerminalWorkspaces: async (limit = 50) => {
+      const candidates = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(and(
+          inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+          isNull(executionWorkspaces.closedAt),
+          sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
+        ))
+        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
+        .limit(limit);
+      const result = {
+        checked: candidates.length,
+        eligible: 0,
+        archived: 0,
+        cleanupFailed: 0,
+        skippedActiveRun: 0,
+        skippedNonTerminalTree: 0,
+        skippedUndelivered: 0,
+        skippedRace: 0,
+      };
+
+      for (const workspace of candidates) {
+        const executionWorkspace = toExecutionWorkspace(workspace);
+        const { git } = await inspectGitCloseReadiness(executionWorkspace);
+        const assessment = await assessDelivery(workspace, git);
+        if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
+          result.skippedNonTerminalTree += 1;
+          continue;
+        }
+        if (assessment.workspaceDirty) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
+        if (
+          assessment.deliveryState !== "merged_via_pr"
+          && assessment.deliveryState !== "merged_by_ancestry"
+        ) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
+        if (await workspaceHasActiveRun(workspace)) {
+          result.skippedActiveRun += 1;
+          continue;
+        }
+        result.eligible += 1;
+        const closedAt = now();
+        const archived = await db
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            closedAt,
+            cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
+            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+            updatedAt: closedAt,
+          })
+          .where(and(
+            eq(executionWorkspaces.id, workspace.id),
+            eq(executionWorkspaces.companyId, workspace.companyId),
+            inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+            isNull(executionWorkspaces.closedAt),
+            sql<boolean>`EXISTS (
+              SELECT 1
+              FROM ${issues} source_issue
+              WHERE source_issue.company_id = ${workspace.companyId}
+                AND source_issue.id = ${workspace.sourceIssueId}
+                AND source_issue.status IN ('done', 'cancelled')
+            )`,
+            sql<boolean>`NOT EXISTS (
+              SELECT 1
+              FROM ${issues} linked_issue
+              JOIN ${heartbeatRuns} live_run
+                ON live_run.id = linked_issue.checkout_run_id
+                OR live_run.id = linked_issue.execution_run_id
+              WHERE linked_issue.company_id = ${workspace.companyId}
+                AND (
+                  linked_issue.execution_workspace_id = ${workspace.id}
+                  OR linked_issue.id = ${workspace.sourceIssueId}
+                )
+                AND live_run.company_id = ${workspace.companyId}
+                AND live_run.status IN ('queued', 'running')
+            )`,
+            sql<boolean>`NOT EXISTS (
+              WITH RECURSIVE issue_tree(id, status) AS (
+                SELECT root.id, root.status
+                FROM ${issues} root
+                WHERE root.company_id = ${workspace.companyId}
+                  AND root.id = ${workspace.sourceIssueId}
+                UNION ALL
+                SELECT child.id, child.status
+                FROM ${issues} child
+                JOIN issue_tree parent ON child.parent_id = parent.id
+                WHERE child.company_id = ${workspace.companyId}
+              )
+              SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
+            )`,
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!archived) {
+          result.skippedRace += 1;
+          continue;
+        }
+
+        await logActivity(db, {
+          companyId: archived.companyId,
+          actorType: "system",
+          actorId: "workspace_terminality_reaper",
+          action: "execution_workspace.issue_terminal_archived",
+          entityType: "execution_workspace",
+          entityId: archived.id,
+          details: {
+            sourceIssueId: archived.sourceIssueId,
+            deliveryState: assessment.deliveryState,
+            cleanupEligibleAt: archived.cleanupEligibleAt?.toISOString() ?? null,
+            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+          },
+        });
+
+        try {
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha);
+          if (!cleanup.cleaned) result.cleanupFailed += 1;
+          else result.archived += 1;
+        } catch (error) {
+          result.cleanupFailed += 1;
+          const failure = error instanceof Error ? error.message : String(error);
+          await db
+            .update(executionWorkspaces)
+            .set({
+              status: "cleanup_failed",
+              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
+              updatedAt: now(),
+            })
+            .where(eq(executionWorkspaces.id, archived.id));
+          await logActivity(db, {
+            companyId: archived.companyId,
+            actorType: "system",
+            actorId: "workspace_terminality_reaper",
+            action: "execution_workspace.issue_terminal_cleanup_failed",
+            entityType: "execution_workspace",
+            entityId: archived.id,
+            details: { sourceIssueId: archived.sourceIssueId, failure },
+          });
+        }
+      }
+      return result;
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {

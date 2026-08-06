@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { readSanitizedOriginRemoteUrl } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -776,6 +777,7 @@ async function importGitWorkspaceToSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
 
     const remoteSetupScript = [
       "set -e",
@@ -784,6 +786,15 @@ async function importGitWorkspaceToSsh(input: {
       'trap \'rm -f "$tmp_bundle"\' EXIT',
       'cat > "$tmp_bundle"',
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
+      // Carry the workspace's (credential-scrubbed) origin into the transported
+      // repo so branches there keep a publishable remote instead of reading as
+      // remote-less snapshots. set-url covers a reused workspace whose origin
+      // changed; add covers the fresh-init case. Best-effort under `set -e`.
+      ...(originUrl
+        ? [
+          `{ git -C ${shellQuote(input.remoteDir)} remote set-url origin ${shellQuote(originUrl)} >/dev/null 2>&1 || git -C ${shellQuote(input.remoteDir)} remote add origin ${shellQuote(originUrl)} >/dev/null 2>&1; } || true`,
+        ]
+        : []),
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
       input.snapshot.branchName
         ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`

@@ -39,6 +39,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { AppLogo } from "./AppLogo";
 import { parseGoogleSheetIds } from "./google-sheets";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
@@ -1092,7 +1093,7 @@ function KeyStep({
                   type="button"
                   variant="outline"
                   className="shrink-0"
-                  onClick={() => void navigator.clipboard?.writeText(robotEmail)}
+                  onClick={() => void copyTextToClipboard(robotEmail).catch(() => {})}
                 >
                   <Copy className="mr-2 h-4 w-4" />
                   Copy

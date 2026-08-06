@@ -666,6 +666,9 @@ type PaperclipWakePayload = {
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  // Experimental: write user-interaction content in ASD-STE100 Simplified
+  // Technical English with brief decision context.
+  simplifiedEnglishInteractions: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
   activeTreeHold: PaperclipWakeTreeHoldSummary | null;
@@ -1317,6 +1320,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     recovery,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    simplifiedEnglishInteractions: asBoolean(payload.simplifiedEnglishInteractions, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
     activeTreeHold,
@@ -1622,6 +1626,11 @@ export function renderPaperclipWakePrompt(
   if (!resumedSession && normalized.executionWorkspace?.branchName) {
     lines.push(
       `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
+    );
+  }
+  if (normalized.simplifiedEnglishInteractions) {
+    lines.push(
+      "- interaction language (experimental): write every user interaction you post (request_confirmation, ask_user_questions, suggest_tasks, checkbox prompts and options, and any other content rendered inside an interaction block) in ASD-STE100 Simplified Technical English. In each interaction, briefly tell the user what information they need to make the decision and what happens for each choice. This applies only to interaction content — write your thinking, comments, documents, and other responses in your usual style.",
     );
   }
   if (normalized.dependencyBlockedInteraction) {

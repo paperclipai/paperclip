@@ -230,6 +230,7 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
+- `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `assignee_user_id` text null
 - checkout/execution locks: `checkout_run_id`, `execution_run_id`, `execution_agent_name_key`, `execution_locked_at`
@@ -646,6 +647,15 @@ The approved term set is:
 
 When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
 
+A protected-agent hard block is represented canonically as
+`authorizationPolicy.protectedAgent.blockAssignment: true`. It denies assignment
+even when the caller has a broad or scoped assignment grant. A company
+administrator must remove the block before assignment can be retried; no pending
+approval is created. The legacy fields `protectedAgent.requiresApproval` and
+`assignmentPolicy.protectedAgentRequiresApproval` remain fail-closed compatibility
+aliases for the same hard block, but API denial copy must describe the block and
+administrator remediation rather than promising a nonexistent approval step.
+
 ## 9.9 Task Watchdog Authority Contract
 
 A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
@@ -1028,7 +1038,10 @@ The current app also exposes V1-supporting surfaces for:
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
   bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
-- execution workspaces, project workspaces, workspace runtime services, and workspace operations
+- execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
+  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
+  through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration

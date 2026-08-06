@@ -58,6 +58,7 @@ import {
   trackRecentAssigneeUser,
 } from "@/lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "@/lib/recent-projects";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 // ---------------------------------------------------------------------------
 // Global bridge registry
@@ -682,6 +683,7 @@ export function initPluginBridge(
       useHostNavigation,
       usePluginStream,
       usePluginToast,
+      copyTextToClipboard,
       MarkdownBlock: ({
         content,
         className,

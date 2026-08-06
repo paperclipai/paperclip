@@ -530,9 +530,9 @@ export function agentService(db: Db) {
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const updated = await tx
+    type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
+    const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
         .where(eq(agents.id, id))
@@ -553,7 +553,7 @@ export function agentService(db: Db) {
         const afterConfig = buildConfigSnapshot(normalizedUpdated);
         const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
         if (changedKeys.length > 0) {
-          await tx.insert(agentConfigRevisions).values({
+          await txDb.insert(agentConfigRevisions).values({
             companyId: normalizedUpdated.companyId,
             agentId: normalizedUpdated.id,
             createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
@@ -568,7 +568,13 @@ export function agentService(db: Db) {
       }
 
       return normalizedUpdated;
-    });
+    };
+
+    const transaction = (db as unknown as {
+      transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
+    }).transaction;
+    if (typeof transaction !== "function") return applyUpdate(db);
+    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
   }
 
   return {

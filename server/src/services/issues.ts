@@ -3102,6 +3102,7 @@ const issueListSelect = {
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
+  reviewPolicy: issues.reviewPolicy,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
@@ -3891,7 +3892,7 @@ async function listIssueBlockedInboxAttentionMap(
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
     const hasLiveHandoffContinuation = Boolean(
-      handoff?.state === "required"
+      (handoff?.state === "required" || handoff?.state === "escalated")
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
@@ -7651,6 +7652,38 @@ export function issueService(db: Db) {
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
         if (existing.status !== updated.status) {
+          if (
+            (existing.status === "done" || existing.status === "cancelled")
+            && updated.status !== "done"
+            && updated.status !== "cancelled"
+          ) {
+            const terminalWorkspaces = await tx
+              .select({ id: executionWorkspaces.id })
+              .from(executionWorkspaces)
+              .where(and(
+                eq(executionWorkspaces.companyId, updated.companyId),
+                eq(executionWorkspaces.sourceIssueId, updated.id),
+                eq(executionWorkspaces.status, "archived"),
+                like(executionWorkspaces.cleanupReason, "issue_terminal%"),
+              ));
+            for (const workspace of terminalWorkspaces) {
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+                actorId: actorAgentId ?? actorUserId ?? "issue_service",
+                agentId: actorAgentId ?? null,
+                action: "execution_workspace.source_issue_reopened",
+                entityType: "execution_workspace",
+                entityId: workspace.id,
+                details: {
+                  sourceIssueId: updated.id,
+                  previousIssueStatus: existing.status,
+                  nextIssueStatus: updated.status,
+                  workspaceAction: "left_archived",
+                },
+              });
+            }
+          }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct

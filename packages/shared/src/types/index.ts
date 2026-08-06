@@ -1,3 +1,4 @@
+export { decisionEffectTargetIssueIds } from "./decision.js";
 export type {
   Company,
   InteractionResolverGovernance,
@@ -127,6 +128,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {
@@ -348,6 +351,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  ExecutionWorkspaceDeliveryState,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceOverviewPrimaryService,
@@ -749,6 +753,13 @@ export type {
   SecretProviderDescriptor,
   SecretStatus,
   SecretVersionStatus,
+  SecretProposalKind,
+  SecretProposalStatus,
+  SecretProposalAgentRef,
+  SecretProposalIssueRef,
+  SecretProposalView,
+  ApproveSecretProposalInput,
+  RejectSecretProposalInput,
 } from "./secrets.js";
 export type {
   Routine,

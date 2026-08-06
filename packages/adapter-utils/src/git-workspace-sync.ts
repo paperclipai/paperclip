@@ -110,6 +110,67 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
+// scp-like ssh remote (`user@host:path`). The syntax has no password slot, so
+// it cannot embed a secret. Conservative shape: exactly one `@`, no colon in
+// the user segment (a colon there could smuggle credential-looking material),
+// no scheme separator (a `://` form parses as a URL and never reaches this).
+const SCP_LIKE_REMOTE_PATTERN = /^[^@:/\s]+@[^@:/\s]+:\S+$/;
+
+/**
+ * Reduce a git remote URL to a credential-free form before it is copied into a
+ * transported workspace, or null when the URL must not be carried at all.
+ * Allowlist, fail closed: only shapes whose credential surface is fully known
+ * are kept — http(s) with userinfo/query/fragment stripped (tokens ride in any
+ * of those), ssh/git schemes with password/query/fragment stripped, and
+ * scp-like `user@host:path` (no password slot exists in that syntax). Every
+ * other form — filesystem paths, unknown schemes, unparseable strings — is
+ * dropped rather than risk persisting an embedded secret in the execution
+ * host's git config.
+ */
+export function sanitizeGitRemoteUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+    if (parsed.protocol === "ssh:" || parsed.protocol === "git:" || parsed.protocol === "git+ssh:") {
+      // The username (conventionally `git`) is addressing, not a secret; a
+      // password or query string can be, so those are stripped.
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return SCP_LIKE_REMOTE_PATTERN.test(trimmed) ? trimmed : null;
+  }
+}
+
+/**
+ * The workspace's `origin` remote URL with credentials scrubbed, or null when
+ * the workspace has no `origin` remote (or is not a git repository).
+ */
+export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["remote", "get-url", "origin"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    return sanitizeGitRemoteUrl(result.stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -120,6 +181,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
@@ -128,6 +190,19 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 10_000,
       maxBuffer: 64 * 1024,
     });
+    if (originUrl) {
+      // The clone is what lands in the sandbox. Without `origin`, the branch
+      // there reads as an unpublishable root snapshot even though its head is a
+      // commit the upstream remote already holds — so fetch (to reconnect
+      // ancestry) and push (to publish the branch; the shallow boundary commit
+      // is already on the remote, so the pack closes) are both mechanically
+      // possible once the remote is carried over. Best-effort: a failure to
+      // record the remote must not fail the transport.
+      await runLocalGit(cloneDir, ["remote", "add", "origin", originUrl], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     await runLocalGit(cloneDir, ["fetch", "--depth=1", input.localDir, tempRef], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,

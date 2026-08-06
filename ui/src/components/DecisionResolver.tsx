@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import type { Agent, AttentionSubject } from "@paperclipai/shared";
+import { decisionEffectTargetIssueIds, type Agent, type AttentionSubject } from "@paperclipai/shared";
 import { decisionsApi, type DecisionOutcome } from "../api/decisions";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
@@ -78,8 +78,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     }
     for (const option of decision.options) {
       for (const effect of option.effects) {
-        ids.add(effect.targetIssueId);
-        if (effect.type === "create_issue" && effect.draft.parentId) ids.add(effect.draft.parentId);
+        for (const id of decisionEffectTargetIssueIds(effect)) ids.add(id);
       }
     }
     for (const execution of decision.executions ?? []) {

@@ -73,6 +73,29 @@ function StackIcon({ displayName }: { displayName: string }) {
   return <CompanyPatternIcon companyName={displayName} className={WORKSPACE_ICON_CLASS} />;
 }
 
+/**
+ * The switcher trigger on a Cloud instance. A Cloud tenant holds exactly one
+ * company and the harness pushes the stack's uploaded workspace icon into
+ * that company's branding, so the company logo is the stack logo here.
+ * The stack rows keep the monogram treatment above.
+ */
+function CurrentStackIcon({
+  displayName,
+  company,
+}: {
+  displayName: string;
+  company: Company | null;
+}) {
+  return (
+    <CompanyPatternIcon
+      companyName={displayName}
+      logoUrl={company?.logoUrl}
+      brandColor={company?.brandColor}
+      className={WORKSPACE_ICON_CLASS}
+    />
+  );
+}
+
 function CloudStackItem({
   stack,
   isSelected,
@@ -336,7 +359,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {isCloud
-              ? currentName ? <StackIcon displayName={currentName} /> : null
+              ? currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null
               : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to

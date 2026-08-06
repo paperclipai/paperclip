@@ -5,6 +5,7 @@ import type {
 } from "@paperclipai/shared";
 import { cn, formatShortDate } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -88,10 +89,12 @@ export function AgentBubbleActionRow({
         title="Copy message"
         aria-label="Copy message"
         onClick={() => {
-          void navigator.clipboard.writeText(copyText).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          });
+          void copyTextToClipboard(copyText)
+            .then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            })
+            .catch(() => {});
         }}
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
@@ -134,7 +137,7 @@ export function AgentBubbleActionRow({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void navigator.clipboard.writeText(copyText);
+              void copyTextToClipboard(copyText).catch(() => {});
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />

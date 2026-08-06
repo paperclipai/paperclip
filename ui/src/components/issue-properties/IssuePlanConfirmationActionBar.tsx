@@ -51,8 +51,18 @@ export function IssuePlanConfirmationActionBar({ issue, inline }: IssuePlanConfi
       setFooterSlot(null);
       return;
     }
-    setFooterSlot(document.getElementById(PROPERTIES_PANE_FOOTER_SLOT_ID));
-  }, [inline]);
+
+    const resolveFooterSlot = () => {
+      setFooterSlot(document.getElementById(PROPERTIES_PANE_FOOTER_SLOT_ID));
+    };
+
+    // The properties pane and this action bar can mount in either order. Check
+    // once synchronously, then again on the next paint so the footer slot is
+    // found when it is mounted later in the same commit.
+    resolveFooterSlot();
+    const frame = requestAnimationFrame(resolveFooterSlot);
+    return () => cancelAnimationFrame(frame);
+  }, [confirmation?.id, inline]);
 
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -113,7 +123,9 @@ export function IssuePlanConfirmationActionBar({ issue, inline }: IssuePlanConfi
             onChange={(event) => setRejectReason(event.target.value)}
             placeholder={
               confirmation.payload.declineReasonPlaceholder
-              ?? "Optional: what would you like revised?"
+              ?? (confirmation.payload.acceptLabel === "Approve plan"
+                ? "Optional: what would you like revised?"
+                : "Optional: tell the agent what you'd change.")
             }
             aria-invalid={rejectAttempted && reasonInvalid}
             className={cn(

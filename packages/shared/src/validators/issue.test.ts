@@ -48,6 +48,22 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
+  it("accepts review policies on create and update while rejecting unknown values", () => {
+    expect(createIssueSchema.parse({ title: "Human review", reviewPolicy: "human_only" }).reviewPolicy)
+      .toBe("human_only");
+    expect(updateIssueSchema.parse({ reviewPolicy: "not_creator" }).reviewPolicy)
+      .toBe("not_creator");
+    expect(updateIssueSchema.parse({ reviewPolicy: null }).reviewPolicy).toBeNull();
+    expect(updateIssueSchema.safeParse({ reviewPolicy: "creator_only" }).success).toBe(false);
+  });
+
+  it("accepts only UUID review interaction bindings on update", () => {
+    expect(updateIssueSchema.parse({
+      reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+    }).reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(updateIssueSchema.safeParse({ reviewInteractionId: "interaction-1" }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

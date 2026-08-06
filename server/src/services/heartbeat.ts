@@ -258,6 +258,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -5464,6 +5465,9 @@ export async function buildPaperclipWakePayload(input: {
       }
     | null;
   exposeLowTrustRaw?: boolean;
+  // Experimental: agents write user-interaction content in ASD-STE100
+  // Simplified Technical English (rendered as a prompt directive downstream).
+  simplifiedEnglishInteractions?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
@@ -5681,7 +5685,7 @@ export async function buildPaperclipWakePayload(input: {
       .then((rows) => rows[0] ?? null)
     : null;
 
-  return {
+  const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     recovery: recoveryAction || recoveryCause
       ? {
@@ -5739,6 +5743,7 @@ export async function buildPaperclipWakePayload(input: {
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
+    simplifiedEnglishInteractions: input.simplifiedEnglishInteractions === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
     activeTreeHold: parseObject(input.contextSnapshot.activeTreeHold),
@@ -5777,6 +5782,9 @@ export async function buildPaperclipWakePayload(input: {
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
+  return issueId
+    ? createRunSecretRedactionRegistry(input.db).redactForIssue(input.companyId, issueId, payload)
+    : payload;
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -13655,7 +13663,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issueContext.assigneeAdapterOverrides,
           )
         : null;
-    const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    const experimentalInstanceSettings = await instanceSettings.getExperimental();
+    const isolatedWorkspacesEnabled = experimentalInstanceSettings.enableIsolatedWorkspaces;
     const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
       issueContext?.executionWorkspaceSettings,
     );
@@ -13857,6 +13866,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
       exposeLowTrustRaw,
+      simplifiedEnglishInteractions: experimentalInstanceSettings.enableSimplifiedEnglishInteractions === true,
     });
     if (paperclipWakePayload) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
@@ -13910,6 +13920,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdownCompact = taskMarkdownCompact;
     } else {
       delete context.paperclipTaskMarkdownCompact;
+    }
+    if (issueRef) {
+      const redactedWakeContext = await createRunSecretRedactionRegistry(db).redactForIssue(
+        agent.companyId,
+        issueRef.id,
+        {
+          paperclipIssue: context.paperclipIssue,
+          paperclipWakeComment: context.paperclipWakeComment,
+          paperclipTaskMarkdown: context.paperclipTaskMarkdown,
+          paperclipTaskMarkdownCompact: context.paperclipTaskMarkdownCompact,
+        },
+      );
+      context.paperclipIssue = redactedWakeContext.paperclipIssue;
+      if (redactedWakeContext.paperclipWakeComment) {
+        context.paperclipWakeComment = redactedWakeContext.paperclipWakeComment;
+      }
+      if (redactedWakeContext.paperclipTaskMarkdown) {
+        context.paperclipTaskMarkdown = redactedWakeContext.paperclipTaskMarkdown;
+      }
+      if (redactedWakeContext.paperclipTaskMarkdownCompact) {
+        context.paperclipTaskMarkdownCompact = redactedWakeContext.paperclipTaskMarkdownCompact;
+      }
     }
     const requestedExecutionWorkspaceId = readNonEmptyString(issueRef?.executionWorkspaceId);
     const existingExecutionWorkspace =

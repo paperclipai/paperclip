@@ -69,6 +69,10 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockDecisionsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
@@ -132,6 +136,10 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/decisions", () => ({
+  decisionsApi: mockDecisionsApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -1010,6 +1018,7 @@ describe("IssueDetail", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
+    mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
@@ -1064,6 +1073,39 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("does not load or render decision sections in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      reviewAttention: {
+        state: "covered",
+        reason: "Review has a maintained action path.",
+        paths: [
+          {
+            kind: "interaction",
+            label: "Pending request confirmation",
+            responder: "Board",
+            since: "2026-04-21T00:00:00.000Z",
+            ref: "interaction-1",
+          },
+        ],
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Issue detail smoke");
+    expect(container.querySelector('[data-testid="issue-review-panel"]')).toBeNull();
+    expect(mockDecisionsApi.list).not.toHaveBeenCalled();
   });
 
   it("updates status and priority from the task header controls", async () => {
