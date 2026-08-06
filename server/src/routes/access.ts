@@ -2912,21 +2912,25 @@ export function accessRoutes(
       if (req.actor.type !== "board" || !req.actor.userId) {
         throw unauthorized("Board authentication required");
       }
+      if (req.actor.source === "board_key") {
+        throw forbidden("Board API keys cannot create board API keys");
+      }
 
-      if (req.body.requestedCompanyId) {
-        assertCompanyAccess(req, req.body.requestedCompanyId);
+      for (const companyId of req.body.scopeConfig.companyIds) {
+        assertCompanyAccess(req, companyId);
       }
 
       const key = await boardAuth.createNamedBoardApiKey({
         userId: req.actor.userId,
         name: req.body.name,
-        expiresAt: req.body.expiresAt === undefined ? undefined : req.body.expiresAt,
+        expiresAt: req.body.expiresAt === undefined
+          ? undefined
+          : req.body.expiresAt === null
+            ? null
+            : new Date(req.body.expiresAt),
+        scopeConfig: req.body.scopeConfig,
       });
-      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
-        userId: req.actor.userId,
-        requestedCompanyId: req.body.requestedCompanyId ?? null,
-        boardApiKeyId: key.id,
-      });
+      const companyIds = key.scopeConfig.companyIds;
       for (const companyId of companyIds) {
         await logActivity(db, {
           companyId,
@@ -2938,7 +2942,9 @@ export function accessRoutes(
           details: {
             boardApiKeyId: key.id,
             name: key.name,
-            requestedCompanyId: req.body.requestedCompanyId ?? null,
+            scopeCompanyIds: key.scopeConfig.companyIds,
+            permissions: key.scopeConfig.permissions,
+            instanceCapabilities: key.scopeConfig.instanceCapabilities,
             expiresAt: key.expiresAt?.toISOString() ?? null,
           },
         });

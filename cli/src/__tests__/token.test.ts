@@ -165,8 +165,14 @@ describe("token commands", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:3100/api/board-api-keys");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       name: "external-admin",
-      requestedCompanyId: COMPANY_ID,
       expiresAt: "2026-06-06T00:00:00.000Z",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [COMPANY_ID],
+        permissions: expect.any(Array),
+        instanceCapabilities: [],
+      },
     });
     expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
       key: {
@@ -205,8 +211,14 @@ describe("token commands", () => {
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       name: "external-admin",
-      requestedCompanyId: COMPANY_ID,
       expiresAt: null,
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [COMPANY_ID],
+        permissions: expect.any(Array),
+        instanceCapabilities: [],
+      },
     });
   });
 
