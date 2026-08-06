@@ -1293,6 +1293,15 @@ function evictSandboxHandle(scope: SandboxScope): void {
 // session through `createSession` and records its id; every later call returns
 // the stored id, so one lease runs every command in one persistent shell. The
 // provider never falls back to a one-shot command to open a session.
+//
+// Leak bound: the Daytona SDK exposes NO per-session TTL. `createSession` takes
+// only a session id, and there is no session update or expiry field. Two
+// backstops bound the session against a leak. First, `teardownSession` runs a
+// guaranteed `deleteSession` in every teardown hook's `try/finally`. Second, the
+// sandbox-level `autoStopInterval` (15 minutes idle by default) stops the
+// sandbox and, with it, every session; the `autoArchiveInterval` and
+// `autoDeleteInterval` intervals then reap the sandbox. A session is a shell
+// inside its sandbox and cannot outlive it.
 async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promise<string> {
   const existing = sandboxHandleSessionStore.get(scope);
   if (existing) return existing;

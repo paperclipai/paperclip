@@ -1240,6 +1240,27 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.delete).toHaveBeenCalledWith(300);
     });
 
+    it("clears the session store after delete so no orphan id survives a second teardown", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      const releaseParams = {
+        driverKey: "daytona" as const,
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: true, useSessions: true },
+      };
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      await plugin.definition.onEnvironmentReleaseLease?.(releaseParams);
+      // The store is now clear. A second teardown finds no id and does not delete
+      // a session again, which proves no orphan id survived the first delete.
+      await plugin.definition.onEnvironmentReleaseLease?.(releaseParams);
+
+      expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
+    });
+
     it("clears the session store on resume so the next execute opens a fresh session", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
