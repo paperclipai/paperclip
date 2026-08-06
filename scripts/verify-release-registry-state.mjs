@@ -3,9 +3,9 @@
 import { pathToFileURL } from "node:url";
 
 const CANARY_VERSION_RE = /-canary\.\d+$/;
-const PRERELEASE_VERSION_RE = /-(?:canary|nightly)\.\d+$/;
+const PRERELEASE_VERSION_RE = /-(?:canary|nightly|beta)\.\d+$/;
 // Channels that publish prerelease versions and must never move `latest`.
-const PRERELEASE_CHANNELS = new Set(["canary", "nightly"]);
+const PRERELEASE_CHANNELS = new Set(["canary", "nightly", "beta"]);
 const EXIT_RETRIABLE_FAILURE = 1;
 const EXIT_NON_RETRIABLE_FAILURE = 2;
 
@@ -29,7 +29,7 @@ function usage() {
   process.stderr.write(
     [
       "Usage:",
-      "  node scripts/verify-release-registry-state.mjs --channel <canary|nightly|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest]",
+      "  node scripts/verify-release-registry-state.mjs --channel <canary|nightly|beta|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest]",
       "",
     ].join("\n"),
   );
@@ -77,7 +77,7 @@ function parseArgs(argv) {
   }
 
   if (!PRERELEASE_CHANNELS.has(options.channel) && options.channel !== "stable") {
-    throw createExitError("--channel must be canary, nightly, or stable", EXIT_NON_RETRIABLE_FAILURE);
+    throw createExitError("--channel must be canary, nightly, beta, or stable", EXIT_NON_RETRIABLE_FAILURE);
   }
 
   if (!options.distTag) {

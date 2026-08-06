@@ -18,12 +18,13 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|nightly|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
   ./scripts/release.sh nightly --dry-run
+  ./scripts/release.sh beta --dry-run
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
@@ -37,6 +38,9 @@ Notes:
     must carry a canary/v* tag) as YYYY.MDD.P-nightly.N under the npm
     dist-tag "nightly", with the git tag nightly/vYYYY.MDD.P-nightly.N.
     The version dates the nightly cut, not the source canary.
+  - Beta releases republish a commit that already shipped a nightly (HEAD
+    must carry a nightly/v* tag) as YYYY.MDD.P-beta.N under the npm
+    dist-tag "beta", with the git tag beta/vYYYY.MDD.P-beta.N.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
   - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
@@ -90,7 +94,7 @@ set_cleanup_trap() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    canary|nightly|stable)
+    canary|nightly|beta|stable)
       if [ -n "$channel" ]; then
         release_fail "only one release channel may be provided."
       fi
@@ -162,6 +166,13 @@ elif [ "$channel" = "nightly" ]; then
   TARGET_PUBLISH_VERSION="$(next_prerelease_version nightly "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
   DIST_TAG="nightly"
   tag_name="$(prerelease_tag_name nightly "$TARGET_PUBLISH_VERSION")"
+elif [ "$channel" = "beta" ]; then
+  # Beta promotes an already-shipped nightly commit.
+  require_channel_tag_at_head nightly
+  require_channel_tag_absent_at_head beta
+  TARGET_PUBLISH_VERSION="$(next_prerelease_version beta "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
+  DIST_TAG="beta"
+  tag_name="$(prerelease_tag_name beta "$TARGET_PUBLISH_VERSION")"
 else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
 fi
@@ -209,6 +220,7 @@ release_info "  Target stable version: $TARGET_STABLE_VERSION"
 case "$channel" in
   canary) release_info "  Canary version: $TARGET_PUBLISH_VERSION" ;;
   nightly) release_info "  Nightly version: $TARGET_PUBLISH_VERSION" ;;
+  beta) release_info "  Beta version: $TARGET_PUBLISH_VERSION" ;;
   *) release_info "  Stable version: $TARGET_PUBLISH_VERSION" ;;
 esac
 release_info "  Dist-tag: $DIST_TAG"
@@ -372,7 +384,7 @@ if [ "$dry_run" = true ]; then
   release_info "Dry run complete for $channel ${TARGET_PUBLISH_VERSION}."
 else
   case "$channel" in
-    canary|nightly)
+    canary|nightly|beta)
       release_info "Published $channel ${TARGET_PUBLISH_VERSION}."
       release_info "Install with: npx paperclipai@$channel onboard"
       release_info "Next step: git push ${PUBLISH_REMOTE} refs/tags/${tag_name}"

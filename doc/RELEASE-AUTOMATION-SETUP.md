@@ -113,9 +113,10 @@ Goal:
 
 ## 4. Create GitHub Environments
 
-Create two environments in the GitHub repository:
+Create three environments in the GitHub repository:
 
 - `npm-canary`
+- `npm-beta`
 - `npm-stable`
 
 Path:
@@ -146,6 +147,29 @@ trust level (fully automated, no human gate), its runs execute on `master` so
 the branch rule is satisfied, and reusing the environment means the nightly
 lane required no new environments and no npm trusted-publisher changes
 (publishing still happens from `release.yml`, see section 2.2).
+
+## 5.1. Configure `npm-beta`
+
+Recommended settings for `npm-beta`:
+
+- environment name: `npm-beta`
+- required reviewers: at least one maintainer
+- prevent self-review: enabled when your team size allows it
+- wait timer: none
+- deployment branches and tags:
+  - selected branches only
+  - allow `master`
+
+Reasoning:
+
+- beta promotions are deliberate human decisions; the required reviewer on
+  this environment is the promotion gate
+- create this environment before the first `channel: beta` dispatch. If the
+  workflow runs first, GitHub auto-creates the environment with no
+  protection rules, and that first beta would publish without approval
+
+Like nightly, beta publishing lives in `release.yml`, so no npm
+trusted-publisher changes are needed (see section 2.2).
 
 ## 6. Configure `npm-stable`
 

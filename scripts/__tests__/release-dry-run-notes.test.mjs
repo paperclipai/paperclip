@@ -195,3 +195,35 @@ test("nightly refuses commits that already shipped as a nightly", () => {
   assert.match(result.output, /HEAD already shipped as nightly\/v/);
   assert.doesNotMatch(result.calls, /^pnpm /m);
 });
+
+test("beta dry-run publishes under the beta identity without release notes", () => {
+  const result = runRelease(["beta", "--skip-verify", "--dry-run"]);
+
+  assert.equal(result.status, 42);
+  assert.match(result.output, /\[fixture\] require_channel_tag_at_head nightly/);
+  assert.match(result.output, /Beta version: 2026\.710\.0-beta\.0/);
+  assert.match(result.output, /Dist-tag: beta/);
+  assert.match(result.output, /Git tag: beta\/v2026\.710\.0-beta\.0/);
+  assert.doesNotMatch(result.output, /stable release notes file is required/);
+  assert.match(result.calls, /^pnpm build$/m);
+});
+
+test("beta refuses commits that already shipped as a beta", () => {
+  const result = runRelease(["beta", "--skip-verify", "--dry-run"], {
+    FAKE_PRESENT_CHANNEL_TAG: "beta",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /HEAD already shipped as beta\/v/);
+  assert.doesNotMatch(result.calls, /^pnpm /m);
+});
+
+test("beta refuses commits that never shipped a nightly", () => {
+  const result = runRelease(["beta", "--skip-verify", "--dry-run"], {
+    FAKE_MISSING_CHANNEL_TAG: "nightly",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /HEAD has no nightly\/v\* tag/);
+  assert.doesNotMatch(result.calls, /^pnpm /m);
+});

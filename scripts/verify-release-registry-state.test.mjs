@@ -19,6 +19,7 @@ test("isCanaryVersion matches release canaries", () => {
 test("isPrereleaseVersion matches canary and nightly versions", () => {
   assert.equal(isPrereleaseVersion("2026.427.0-canary.3"), true);
   assert.equal(isPrereleaseVersion("2026.427.0-nightly.0"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0-beta.2"), true);
   assert.equal(isPrereleaseVersion("2026.427.0"), false);
 });
 
