@@ -1209,6 +1209,41 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(issues)).toHaveLength(2);
   });
 
+  it("falls back to an assignee wake when an accepted-plan child owner scheduler rejects", async () => {
+    const companyId = await seedCompany();
+    const sourceIssue = await seedParent(companyId);
+    const owner = await seedAgent(companyId);
+    const acceptedPlanRevisionId = await seedAcceptedPlanRevision(companyId, sourceIssue.id);
+    const app = createApp({
+      blockedOwnerEnqueueWakeup: async () => {
+        throw new Error("canonical unblock scheduler unavailable");
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/issues/${sourceIssue.id}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId,
+        children: [{
+          title: "Fallback after accepted-plan owner scheduler failure",
+          status: "blocked",
+          assigneeAgentId: owner.id,
+          unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the plan finding" },
+        }],
+      })
+      .expect(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const wakeRequests = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, owner.id));
+
+    expect(response.body.newlyCreatedChildIssueIds).toHaveLength(1);
+    expect(wakeRequests).toEqual([{ reason: "issue_assigned" }]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+  });
+
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
