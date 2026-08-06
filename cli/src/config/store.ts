@@ -100,6 +100,17 @@ export function writeConfig(
   configPath?: string,
 ): void {
   const filePath = resolveConfigPath(configPath);
+
+  // Validate at the write boundary so a runtime-mutated config (e.g. an ad-hoc
+  // script that set $meta.source to a label string) cannot be persisted. The TS
+  // type narrows the literal at compile time but objects are mutable; without
+  // this gate, an invalid value round-trips to disk and only blows up the next
+  // time doctor or the server reads it back. BASA-29492.
+  const validated = paperclipConfigSchema.safeParse(config);
+  if (!validated.success) {
+    throw new Error(`Refusing to write invalid config to ${filePath}: ${formatValidationError(validated.error)}`);
+  }
+
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -110,7 +121,7 @@ export function writeConfig(
     fs.chmodSync(backupPath, 0o600);
   }
 
-  fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + "\n", {
+  fs.writeFileSync(filePath, JSON.stringify(validated.data, null, 2) + "\n", {
     mode: 0o600,
   });
 }
