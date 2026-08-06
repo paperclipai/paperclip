@@ -9429,6 +9429,73 @@ export function issueRoutes(
 
       await issueReferencesSvc.syncComment(result.comment.id);
 
+      // TAKEOVER CHECKPOINT DIGEST (2026-08-06, TSMC-20213). A takeover exists to
+      // CONTINUE work, not re-derive it — measured 2026-08-06: 90% of claude runs after
+      // takeovers/purges started fresh sessions at ~38k input tokens each (~89% of the
+      // day's spend was context rebuild). Hand the sister the previous assignee's last
+      // recorded state as a compact checkpoint so its first run reads a digest, not the
+      // whole thread. Best-effort: a reassign must never fail because the digest did.
+      try {
+        const [lastGoodRun] = await db
+          .select({
+            id: heartbeatRuns.id,
+            resultJson: heartbeatRuns.resultJson,
+            nextAction: heartbeatRuns.nextAction,
+            finishedAt: heartbeatRuns.finishedAt,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, existing.companyId),
+              eq(heartbeatRuns.agentId, effectivePrimaryAgentId),
+              eq(heartbeatRuns.status, "succeeded"),
+              sql`(
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${existing.id}
+                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${existing.id}
+              )`,
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.finishedAt))
+          .limit(1);
+        const digestClip = (value: string, max: number) =>
+          value.length > max ? `${value.slice(0, max)}…` : value;
+        const lastResult =
+          typeof lastGoodRun?.resultJson === "object" && lastGoodRun?.resultJson !== null
+            ? (lastGoodRun.resultJson as Record<string, unknown>)
+            : {};
+        const lastSummary = [lastResult.summary, lastResult.result, lastResult.message].find(
+          (value): value is string => typeof value === "string" && value.trim().length > 0,
+        );
+        const lastNextAction =
+          typeof lastGoodRun?.nextAction === "string" && lastGoodRun.nextAction.trim().length > 0
+            ? lastGoodRun.nextAction.trim()
+            : null;
+        if (lastSummary || lastNextAction) {
+          const digestLines = [
+            "## Takeover checkpoint (auto-generated)",
+            "",
+            `Previous assignee's last successful run${lastGoodRun?.finishedAt ? ` (${lastGoodRun.finishedAt.toISOString()})` : ""}:`,
+            ...(lastSummary ? ["", digestClip(lastSummary.trim(), 1200)] : []),
+            ...(lastNextAction ? ["", `**Recorded next action:** ${digestClip(lastNextAction, 400)}`] : []),
+            "",
+            "Resume from this checkpoint. Do not re-read the full issue thread — read the",
+            "issue description's acceptance section and any comment newer than this one,",
+            "then continue the work.",
+          ];
+          await svc.addComment(
+            existing.id,
+            digestLines.join("\n"),
+            { runId: actorRunId ?? null },
+            { authorType: "system" },
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, issueId: existing.id, fromAgentId: effectivePrimaryAgentId },
+          "takeover checkpoint digest failed (reassign unaffected)",
+        );
+      }
+
       await logActivity(db, {
         companyId: existing.companyId,
         actorType: req.actor.type,

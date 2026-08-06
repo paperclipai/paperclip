@@ -1329,9 +1329,15 @@ export async function startServer(): Promise<StartedServer> {
         // compact task: ... ran out of room"). The sprint-end purge skips exempt agents,
         // so without this their sessions accumulate unbounded (some hit 1000+). Set
         // HEARTBEAT_EXEMPT_TASK_SESSION_PURGE=false to disable; tune the age cap with
-        // HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS (default 48h).
+        // HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS.
+        //
+        // Default raised 48h -> 7d (2026-08-06, TSMC-20213): measured overnight, 90% of
+        // claude runs started FRESH sessions at ~38k input tokens each — ~89% of daily
+        // claude spend was context rebuild after purges/pauses, not work. Reuse is nearly
+        // free (41k vs 38k avg input); throwing sessions away every 48h forced the fleet
+        // to re-buy its own context daily. 7d still bounds compaction blowup.
         if (process.env.HEARTBEAT_EXEMPT_TASK_SESSION_PURGE !== "false") {
-          const maxAgeMs = Number(process.env.HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS) || 48 * 60 * 60 * 1000;
+          const maxAgeMs = Number(process.env.HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS) || 7 * 24 * 60 * 60 * 1000;
           void heartbeat
             .reapAgedTaskSessions({ maxAgeMs })
             .then((result) => {

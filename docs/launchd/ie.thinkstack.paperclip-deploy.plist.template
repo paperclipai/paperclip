@@ -40,6 +40,8 @@
     <string>__HOME__/.paperclip/deploy/logs</string>
     <key>HEARTBEAT_HUNG_RUN_MAX_RUNTIME_MS</key>
     <string>7200000</string>
+    <key>HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS</key>
+    <string>604800000</string>
     <key>PAPERCLIP_RUN_LOG_RETENTION_DAYS</key>
     <string>7</string>
     <key>PAPERCLIP_RUN_LOG_ARCHIVE_PATH</key>
