@@ -248,8 +248,10 @@ function cleanResponse(raw: string): string {
   // "Warning: Unknown toolsets: <name>" is similarly a session-start diagnostic line emitted
   // before the agent produces any response.
   // (See: SSC-1832 raw_prompt_echo sightings, 2026-08-01 → 2026-08-05)
+  // The regex matches leading diagnostic lines (each ending with \n OR at end-of-string
+  // if stdout was captured without a final newline).
   const withoutLeadingEcho = raw.replace(
-    /^(?:Warning: Unknown toolsets:[^\n]*\n|Query:[^\n]*\n)*/,
+    /^(?:(?:Warning: Unknown toolsets:|Query:)[^\n]*(?:\n|$))*/,
     ""
   );
 

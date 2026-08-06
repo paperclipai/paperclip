@@ -31,9 +31,10 @@ import { describe, expect, it } from "vitest";
 
 function applyCleanResponseGuards(raw: string): string {
   // Mirrors the leading-echo regex in execute.ts cleanResponse():
-  // strip only the leading block of Query: / Warning: lines before real output.
+  // strip only the leading block of Query: / Warning: lines.
+  // Each line may end with \n OR be at end-of-string (no trailing newline).
   return raw.replace(
-    /^(?:Warning: Unknown toolsets:[^\n]*\n|Query:[^\n]*\n)*/,
+    /^(?:(?:Warning: Unknown toolsets:|Query:)[^\n]*(?:\n|$))*/,
     ""
   );
 }
@@ -95,6 +96,19 @@ describe("cleanResponse — raw_prompt_echo guards (SSC-1832)", () => {
   it("handles input with only safe lines (no leading echo)", () => {
     const input = "The task is complete.\nStatus: done.";
     expect(applyCleanResponseGuards(input)).toBe(input);
+  });
+
+  it("strips a diagnostic-only stdout with no trailing newline (Greptile P2)", () => {
+    // Greptile finding: if subprocess stdout is "Query: prompt" with no trailing
+    // newline, the prior regex required \n and would miss it. This test ensures
+    // the fix handles unterminated final diagnostic lines.
+    const input = "Query: You are an AI assistant."; // no trailing \n
+    expect(applyCleanResponseGuards(input)).toBe("");
+  });
+
+  it("strips Warning: without trailing newline", () => {
+    const input = "Warning: Unknown toolsets: mcp-codegraph"; // no trailing \n
+    expect(applyCleanResponseGuards(input)).toBe("");
   });
 
   it("strips multiple consecutive leading echo lines", () => {
