@@ -56,6 +56,7 @@ function pruneCloudTenantWriteDebounce(
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, tooManyRequests, unauthorized, unprocessable } from "../errors.js";
+import { createBoardKeyAuthFailureRateLimiter } from "../security/board-key-auth-failure-rate-limit.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -63,27 +64,14 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-const BOARD_KEY_AUTH_FAILURE_WINDOW_MS = 60_000;
-const BOARD_KEY_AUTH_FAILURE_LIMIT = 10;
-const boardKeyAuthFailures = new Map<string, { count: number; resetAt: number }>();
+const boardKeyAuthFailureRateLimiter = createBoardKeyAuthFailureRateLimiter();
 
-function recordBoardKeyAuthFailure(token: string, now = Date.now()) {
-  const identity = hashToken(token);
-  const existing = boardKeyAuthFailures.get(identity);
-  const entry = !existing || existing.resetAt <= now
-    ? { count: 1, resetAt: now + BOARD_KEY_AUTH_FAILURE_WINDOW_MS }
-    : { count: existing.count + 1, resetAt: existing.resetAt };
-  boardKeyAuthFailures.set(identity, entry);
-  if (boardKeyAuthFailures.size > 10_000) {
-    for (const [key, value] of boardKeyAuthFailures) {
-      if (value.resetAt <= now) boardKeyAuthFailures.delete(key);
-    }
-  }
-  return entry.count > BOARD_KEY_AUTH_FAILURE_LIMIT;
+function boardKeyAuthFailureSource(req: Request) {
+  return req.socket.remoteAddress || req.ip || "unknown";
 }
 
 export function resetBoardKeyAuthFailureRateLimitForTests() {
-  boardKeyAuthFailures.clear();
+  boardKeyAuthFailureRateLimiter.reset();
 }
 
 async function auditBoardKeyAuthenticationFailure(
@@ -355,10 +343,22 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     }
 
     if (token.startsWith("pcp_board_")) {
+      const failureIdentity = {
+        credentialId: hashToken(token),
+        sourceId: boardKeyAuthFailureSource(req),
+      };
+      if (boardKeyAuthFailureRateLimiter.isLimited(failureIdentity)) {
+        next(tooManyRequests("Too many authentication failures"));
+        return;
+      }
       const authentication = await boardAuth.authenticateBoardApiKey(token);
       if (!authentication.ok) {
         await auditBoardKeyAuthenticationFailure(db, req, authentication);
-        next(recordBoardKeyAuthFailure(token) ? tooManyRequests("Too many authentication failures") : unauthorized());
+        next(
+          boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity)
+            ? tooManyRequests("Too many authentication failures")
+            : unauthorized(),
+        );
         return;
       }
       const { key: boardKey, access, scopeConfig } = authentication;

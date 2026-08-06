@@ -15,6 +15,10 @@ import {
   resetBoardKeyAuthFailureRateLimitForTests,
 } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import {
+  BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS,
+  createBoardKeyAuthFailureRateLimiter,
+} from "../security/board-key-auth-failure-rate-limit.js";
 
 const TOKEN = "pcp_board_middleware_valid_token";
 
@@ -166,6 +170,69 @@ describe("board-key authentication middleware", () => {
     expect(statuses.slice(0, 10)).toEqual(Array(10).fill(401));
     expect(statuses[10]).toBe(429);
     expect(JSON.stringify(audits)).not.toContain(`${TOKEN}bad`);
+  });
+
+  it("rate-limits rotating invalid credentials from one source before another database lookup", async () => {
+    const { db, state } = createDbState();
+    state.keyExists = false;
+    const { app } = createApp(db);
+    const sourceLimit = BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS.sourceLimit;
+
+    for (let index = 0; index < sourceLimit; index += 1) {
+      const response = await request(app)
+        .get("/actor")
+        .set("Authorization", `Bearer pcp_board_rotating_${index}`);
+      expect(response.status).toBe(401);
+    }
+    const lookupsBeforeThrottle = db.select.mock.calls.length;
+    const limited = await request(app)
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_board_rotating_blocked");
+
+    expect(limited.status).toBe(429);
+    expect(db.select.mock.calls.length).toBe(lookupsBeforeThrottle);
+  });
+
+  it("strictly bounds credential and source failure storage during identity floods", () => {
+    const limiter = createBoardKeyAuthFailureRateLimiter({
+      windowMs: 60_000,
+      credentialLimit: 10_000,
+      sourceLimit: 10_000,
+      globalLimit: 10_000,
+      credentialMaxEntries: 7,
+      sourceMaxEntries: 5,
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      limiter.recordFailure({
+        credentialId: `credential-${index}`,
+        sourceId: `source-${index}`,
+        now: 1,
+      });
+    }
+
+    expect(limiter.snapshot()).toEqual({
+      credentialEntries: 7,
+      sourceEntries: 5,
+      globalEntries: 1,
+    });
+  });
+
+  it("opens the global circuit breaker across rotating sources and credentials", () => {
+    const limiter = createBoardKeyAuthFailureRateLimiter({
+      windowMs: 60_000,
+      credentialLimit: 100,
+      sourceLimit: 100,
+      globalLimit: 3,
+      credentialMaxEntries: 10,
+      sourceMaxEntries: 10,
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      limiter.recordFailure({ credentialId: `credential-${index}`, sourceId: `source-${index}`, now: 1 });
+    }
+
+    expect(limiter.isLimited({ credentialId: "novel-credential", sourceId: "novel-source", now: 1 })).toBe(true);
   });
 
   it("does not resurrect last-used state when revocation wins the authentication race", async () => {
