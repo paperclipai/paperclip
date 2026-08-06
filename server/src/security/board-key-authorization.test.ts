@@ -65,7 +65,7 @@ function createLiveAuthorityDb() {
               : table === instanceUserRoles
                 ? (state.instanceAdmin ? [{ id: randomUUID() }] : [])
                 : table === principalPermissionGrants
-                  ? [...state.permissionGrants].map((permissionKey) => ({ permissionKey }))
+                  ? [...state.permissionGrants].map((permissionKey) => ({ companyId, permissionKey }))
                 : [];
         return {
           where: () => Promise.resolve(rows),
@@ -258,6 +258,33 @@ describe("board-key effective authority", () => {
       req,
       metadata.action,
       async () => ({ companyId, resourceType: "agent", resourceId: randomUUID() }),
+      metadata,
+    ), 403);
+  });
+
+  it("applies owner permission-grant revocation to company collections on the next request", async () => {
+    const { db, state, companyId } = createLiveAuthorityDb();
+    const authentication = await boardAuthService(db).authenticateBoardApiKey(TOKEN);
+    const req = requestFor(authentication);
+    const metadata = {
+      ...lookupBoardKeyRoute("GET", "/api/companies"),
+      action: "agents:write" as const,
+    };
+
+    await expect(authorizeBoardKey(
+      db,
+      req,
+      metadata.action,
+      async () => ({ companyId: null, resourceType: "company_collection", resourceId: null }),
+      metadata,
+    )).resolves.toBeUndefined();
+
+    state.permissionGrants.delete("agents:configure");
+    await expectDenied(authorizeBoardKey(
+      db,
+      req,
+      metadata.action,
+      async () => ({ companyId: null, resourceType: "company_collection", resourceId: null }),
       metadata,
     ), 403);
   });
