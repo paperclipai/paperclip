@@ -842,14 +842,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         // Scanning the whole policy could wrap back to the first stage when
         // earlier completedStageIds no longer match the policy (for example after
         // a mid-flow policy edit), turning a final-stage approval into an endless
-        // re-review loop (#7893). Explicit return_to_executor also requires a
-        // later stage because it is a continuation step, not a completion override.
+        // re-review loop (#7893). An explicit return_to_executor always hands
+        // control back to the recorded executor, even for a terminal stage: the
+        // executor must be the actor that decides whether the issue is done.
         // A terminal review using the default "advance" action is the exception:
         // return it to the original executor for post-review work before closing.
         const nextStage = nextPendingStageAfter(input.policy, activeStage, approvedState);
-        const shouldReturnToExecutor = activeStage.onApprove === "return_to_executor"
-          ? Boolean(nextStage)
-          : activeStage.type === "review" && !nextStage && Boolean(existingState?.returnAssignee);
+        const shouldReturnToExecutor = activeStage.onApprove === "return_to_executor" ||
+          (activeStage.type === "review" && !nextStage && Boolean(existingState?.returnAssignee));
 
         if (shouldReturnToExecutor) {
           if (!existingState?.returnAssignee) {

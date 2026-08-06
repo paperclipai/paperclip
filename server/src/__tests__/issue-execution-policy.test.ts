@@ -508,6 +508,73 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("honors an explicit terminal return_to_executor stage instead of closing the issue", () => {
+      const terminalPolicy = makePolicy([
+        {
+          type: "approval",
+          onApprove: "return_to_executor",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+      ]);
+      const terminalStageId = terminalPolicy.stages[0].id;
+
+      const approval = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: terminalPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: terminalStageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRequest: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: terminalPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Approval complete; return it to the executor.",
+      });
+
+      expect(approval.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionState: {
+          status: "execution_pending",
+          completedStageIds: [terminalStageId],
+          lastDecisionOutcome: "approved",
+        },
+      });
+      expect(approval.workflowControlledAssignment).toBe(true);
+
+      const executorCompletion = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: terminalPolicy,
+          executionState: approval.patch.executionState as IssueExecutionState,
+        },
+        policy: terminalPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Executor completed the approved work.",
+      });
+
+      expect(executorCompletion.patch.executionState).toMatchObject({ status: "completed" });
+      expect(executorCompletion.patch.status).toBeUndefined();
+    });
+
     it("preserves trust controls when a user executor handoff clears an invalid monitor", () => {
       const securedPolicy = normalizeIssueExecutionPolicy({
         monitor: {
@@ -574,7 +641,7 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.executionPolicy).not.toHaveProperty("monitor");
     });
 
-    it("completes a final stage when return_to_executor has no later stage", () => {
+    it("returns a final review stage to the executor when return_to_executor is explicit", () => {
       const finalPolicy = makePolicy([
         {
           type: "review",
@@ -610,10 +677,15 @@ describe("issue execution policy transitions", () => {
       });
 
       expect(result.patch.executionState).toMatchObject({
-        status: "completed",
+        status: "execution_pending",
         completedStageIds: [finalStageId],
       });
-      expect(result.patch.status).toBeUndefined();
+      expect(result.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+      });
+      expect(result.workflowControlledAssignment).toBe(true);
     });
   });
 
@@ -2303,8 +2375,14 @@ describe("review round circuit breaker", () => {
     });
 
     expect(result.decision).toMatchObject({ outcome: "approved" });
+    expect(result.patch.status).toBe("in_progress");
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
     expect(result.patch.executionState).toMatchObject({
-      status: "completed",
+      // A terminal review returns to the recorded executor so the approved
+      // work can perform its prescribed post-review step before completion.
+      status: "execution_pending",
+      returnAssignee: { type: "agent", agentId: coderAgentId },
       changesRequestedCount: 0,
     });
   });
