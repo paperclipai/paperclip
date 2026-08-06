@@ -1241,6 +1241,22 @@ export async function startServer(): Promise<StartedServer> {
             });
         }
 
+        // Thread checkpoint sweep (TSMC-20242): deterministic, zero-LLM checkpoint
+        // comments on long threads so runs read the checkpoint + newer comments
+        // instead of the whole thread. Tunables: PAPERCLIP_THREAD_CHECKPOINT_COMMENTS
+        // (default 15) / PAPERCLIP_THREAD_CHECKPOINT_CHARS (default 20000); set
+        // PAPERCLIP_THREAD_CHECKPOINTS=false to disable.
+        if (process.env.PAPERCLIP_THREAD_CHECKPOINTS !== "false") {
+          void heartbeat
+            .sweepThreadCheckpoints({
+              commentThreshold: Number(process.env.PAPERCLIP_THREAD_CHECKPOINT_COMMENTS) || 15,
+              charThreshold: Number(process.env.PAPERCLIP_THREAD_CHECKPOINT_CHARS) || 20_000,
+            })
+            .catch((err) => {
+              logger.error({ err }, "thread checkpoint sweep failed");
+            });
+        }
+
         // Sprint-end session purge: clear agent sessions for companies whose
         // activity window has just closed so the next sprint starts fresh.
         void heartbeat

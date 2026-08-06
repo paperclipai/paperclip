@@ -944,6 +944,11 @@ export function routineService(
         trustExplicitResponsibleUserId: true,
         originKind: ROUTINE_HEALTH_ISSUE_ORIGIN_KIND,
         originId: input.routine.id,
+        // Routine-health triage is diagnosis of a dead-fire, not deliverable work —
+        // the only system review class still running on full-profile models
+        // (0/43 cheap in the week of 2026-07-30; every sibling class was ~100%).
+        // TSMC-20243 two-tier QA.
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
       });
       if (issue.assigneeAgentId) {
         await queueIssueAssignmentWakeup({

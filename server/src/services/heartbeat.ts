@@ -14512,6 +14512,139 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   /**
+   * THREAD CHECKPOINT SWEEP (2026-08-06, TSMC-20242 — operator burn directive).
+   *
+   * Long issue threads are re-read in full by every run; measured 2026-08-06 the
+   * context-rebuild tax was ~89% of daily claude spend. When an issue accumulates
+   * enough thread since its last checkpoint, post ONE deterministic, zero-LLM
+   * checkpoint comment assembled from state the platform already holds (status,
+   * latest successful run summary + next action, open blockers). The checkpoint
+   * carries the read discipline in its own text, so any lane reading the thread
+   * newest-first can stop there. Additive only — never edits or deletes prior
+   * comments; the audit trail stays intact. Numbers/ids come verbatim from the
+   * source fields, never paraphrased.
+   */
+  async function sweepThreadCheckpoints(opts?: {
+    commentThreshold?: number;
+    charThreshold?: number;
+    maxPerPass?: number;
+    now?: Date;
+  }) {
+    const commentThreshold = Math.max(3, opts?.commentThreshold ?? 15);
+    const charThreshold = Math.max(2_000, opts?.charThreshold ?? 20_000);
+    const maxPerPass = Math.max(1, opts?.maxPerPass ?? 20);
+    const checkpointMarker = "## Thread checkpoint (auto";
+
+    // Candidates: non-terminal issues whose comment volume SINCE the latest
+    // checkpoint (or since the beginning) crosses either threshold.
+    const candidates = await db.execute(sql`
+      with latest_checkpoint as (
+        select issue_id, max(created_at) as at
+        from issue_comments
+        where author_type = 'system' and body like ${checkpointMarker + "%"} and deleted_at is null
+        group by issue_id
+      )
+      select i.id as issue_id,
+             count(c.id) as fresh_comments,
+             coalesce(sum(length(c.body)), 0) as fresh_chars
+      from issues i
+      join issue_comments c on c.issue_id = i.id and c.deleted_at is null
+      left join latest_checkpoint lc on lc.issue_id = i.id
+      where i.status in ('todo','in_progress','in_review','blocked')
+        and i.hidden_at is null
+        and (lc.at is null or c.created_at > lc.at)
+      group by i.id
+      having count(c.id) >= ${commentThreshold} or coalesce(sum(length(c.body)), 0) >= ${charThreshold}
+      limit ${maxPerPass}
+    `);
+    const rows = (candidates as unknown as { rows?: Array<Record<string, unknown>> }).rows
+      ?? (candidates as unknown as Array<Record<string, unknown>>);
+    let posted = 0;
+    for (const row of rows) {
+      const issueId = String(row.issue_id ?? "");
+      if (!issueId) continue;
+      const issue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((r) => r[0] ?? null);
+      if (!issue) continue;
+
+      const [lastGoodRun] = await db
+        .select({
+          resultJson: heartbeatRuns.resultJson,
+          nextAction: heartbeatRuns.nextAction,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          eq(heartbeatRuns.status, "succeeded"),
+          sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id} or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id})`,
+        ))
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1);
+      const runResult =
+        typeof lastGoodRun?.resultJson === "object" && lastGoodRun?.resultJson !== null
+          ? (lastGoodRun.resultJson as Record<string, unknown>)
+          : {};
+      const runSummary = [runResult.summary, runResult.result, runResult.message].find(
+        (v): v is string => typeof v === "string" && v.trim().length > 0,
+      );
+      const clip = (v: string, n: number) => (v.length > n ? `${v.slice(0, n)}…` : v);
+
+      const openBlockers = await db
+        .select({ identifier: issues.identifier, title: issues.title })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+        .where(and(
+          eq(issueRelations.companyId, issue.companyId),
+          eq(issueRelations.relatedIssueId, issue.id),
+          eq(issueRelations.type, "blocks"),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ))
+        .limit(5);
+
+      const lines = [
+        `## Thread checkpoint (auto, ${new Date(opts?.now ?? Date.now()).toISOString()})`,
+        "",
+        `Status: \`${issue.status}\`${issue.assigneeAgentId ? "" : " · unassigned"}. ` +
+          `${Number(row.fresh_comments ?? 0)} comments (${Number(row.fresh_chars ?? 0)} chars) compacted below this point.`,
+        ...(runSummary
+          ? ["", "**Latest successful run:**", clip(runSummary.trim(), 1200)]
+          : []),
+        ...(typeof lastGoodRun?.nextAction === "string" && lastGoodRun.nextAction.trim()
+          ? ["", `**Recorded next action:** ${clip(lastGoodRun.nextAction.trim(), 400)}`]
+          : []),
+        ...(openBlockers.length
+          ? ["", `**Open blockers:** ${openBlockers.map((b) => b.identifier).join(", ")}`]
+          : []),
+        "",
+        "**Read discipline (token-burn control):** to work this issue, read the issue",
+        "description's acceptance section, THIS checkpoint, and comments newer than it.",
+        "Do not re-read the thread below unless those are genuinely insufficient —",
+        "and say so in your run summary if you do.",
+      ];
+      try {
+        await issuesSvc.addComment(issue.id, lines.join("\n"), {}, { authorType: "system" });
+        posted += 1;
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "thread checkpoint post failed");
+      }
+    }
+    if (posted > 0) {
+      logger.info({ posted }, "thread checkpoint sweep posted checkpoints");
+    }
+    return { posted };
+  }
+
+  /**
    * Sprint-end session purge: when a company's activity window closes, clear
    * the persisted agent task sessions (and legacy runtime session pointers) so
    * the next sprint starts with a fresh context instead of resuming a bloated
@@ -20795,6 +20928,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     resumeQueuedRuns,
     sweepActivityWindowSessionPurges,
+    sweepThreadCheckpoints,
 
     scheduleBoundedRetry: async (
       runId: string,
