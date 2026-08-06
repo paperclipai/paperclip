@@ -272,6 +272,15 @@ export type IssueThreadInteractionResolverPolicy =
   (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
+
+/**
+ * Soft cap on the number of simultaneously pending board asks for one issue
+ * (RBR-791). Creation is never blocked — the non-goal is to change what agents
+ * are allowed to ask — but crossing the cap is recorded as a warning so that
+ * runaway ask behaviour is visible in the activity log instead of silently
+ * inflating the board's decision queue.
+ */
+export const ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP = 2;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [

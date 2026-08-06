@@ -2157,4 +2157,168 @@ describe.sequential("issue thread interaction routes", () => {
     expect(lowTrust.body.error).toContain("Low-trust");
     expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
   });
+
+  // RBR-791 AC4: retirement must never widen agent authority over board
+  // decisions. Withdrawal is author-scoped and allowed; accept/reject on a
+  // board-only confirmation stays 403 for every agent actor, including the
+  // agent that authored the card.
+  it("keeps board-only confirmation resolution board-only while allowing author withdrawal", async () => {
+    const boardOnlyConfirmation = {
+      id: "interaction-board-only",
+      kind: "request_confirmation",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: "run-1",
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+      continuationPolicy: "wake_assignee",
+      status: "pending",
+      payload: { version: 1, prompt: "Ship it?" },
+    };
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValue(boardOnlyConfirmation);
+
+    const authorApp = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-42",
+    });
+
+    const accept = await request(authorApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-board-only/accept")
+      .send({});
+    expect(accept.status).toBe(403);
+    expect(accept.body.error).toContain("board-only");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+
+    const reject = await request(authorApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-board-only/reject")
+      .send({ reason: "Nope" });
+    expect(reject.status).toBe(403);
+    expect(reject.body.error).toContain("board-only");
+    expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+
+    // Same actor, same board-only card: withdrawal is permitted because it
+    // retires the ask rather than answering it.
+    const withdraw = await request(authorApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-board-only/withdraw")
+      .send({ reason: "No longer relevant" });
+    expect(withdraw.status).toBe(200);
+    expect(mockInteractionService.withdrawInteraction).toHaveBeenCalled();
+  });
+
+  // RBR-791 item 4: the per-issue pending soft cap warns, it does not block.
+  it("records a soft-cap warning when an issue accumulates too many pending asks", async () => {
+    mockInteractionService.listForIssue.mockResolvedValue([
+      { id: "p-1", status: "pending" },
+      { id: "p-2", status: "pending" },
+      { id: "p-3", status: "pending" },
+      { id: "done-1", status: "accepted" },
+    ]);
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_created",
+        details: expect.objectContaining({
+          pendingInteractionCount: 3,
+          pendingInteractionSoftCap: 2,
+          pendingInteractionSoftCapExceeded: true,
+        }),
+      }),
+    );
+  });
+
+  it("does not flag the soft cap at or below the allowed pending depth", async () => {
+    mockInteractionService.listForIssue.mockResolvedValue([
+      { id: "p-1", status: "pending" },
+      { id: "p-2", status: "pending" },
+    ]);
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    const createdCall = mockLogActivity.mock.calls.find(
+      ([, entry]) => (entry as { action?: string }).action === "issue.thread_interaction_created",
+    );
+    expect(createdCall).toBeDefined();
+    const details = (createdCall?.[1] as { details?: Record<string, unknown> }).details ?? {};
+    expect(details.pendingInteractionCount).toBe(2);
+    expect(details.pendingInteractionSoftCapExceeded).toBeUndefined();
+  });
+
+  // RBR-802 F1: the soft-cap count runs after `create()` has committed. If that
+  // read throws and the route 500s, the caller retries against an interaction
+  // that already exists and files a duplicate ask — the exact failure this work
+  // exists to prevent. Non-essential instrumentation must never fail the
+  // essential write.
+  it("still returns 201 with exactly one interaction row when the post-commit count query throws", async () => {
+    mockInteractionService.listForIssue.mockRejectedValue(new Error("count query exploded"));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    // The interaction committed, so the response must say so.
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("interaction-1");
+    // Exactly one row: the write ran once and the caller has no reason to retry.
+    expect(mockInteractionService.create).toHaveBeenCalledTimes(1);
+    // The depth probe is degraded, but `issue.thread_interaction_created` is the
+    // only audit record of this creation, so it must still be written — with the
+    // count explicitly marked unavailable rather than silently absent or wrong.
+    const createdCall = mockLogActivity.mock.calls.find(
+      ([, entry]) => (entry as { action?: string }).action === "issue.thread_interaction_created",
+    );
+    expect(createdCall).toBeDefined();
+    const details = (createdCall?.[1] as { details?: Record<string, unknown> }).details ?? {};
+    expect(details.pendingInteractionCountUnavailable).toBe(true);
+    expect(details.pendingInteractionCount).toBeUndefined();
+    expect(details.pendingInteractionSoftCap).toBeUndefined();
+    expect(details.pendingInteractionSoftCapExceeded).toBeUndefined();
+  });
+
+  // The activity write is post-commit instrumentation too, so it gets the same
+  // containment: a logging failure cannot retract a persisted interaction.
+  it("still returns 201 when the post-commit activity log write throws", async () => {
+    mockInteractionService.listForIssue.mockResolvedValue([{ id: "p-1", status: "pending" }]);
+    mockLogActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe("interaction-1");
+    expect(mockInteractionService.create).toHaveBeenCalledTimes(1);
+    // The audit write was attempted — it failed in the store, not because the
+    // route skipped it — and the failure was contained rather than surfaced.
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_created" }),
+    );
+  });
 });

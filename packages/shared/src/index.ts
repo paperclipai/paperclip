@@ -474,6 +474,7 @@ export {
   type IssueThreadInteractionStatus,
   type IssueThreadInteractionContinuationPolicy,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
+  ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
   type BuiltInIssueOriginKind,
   type PluginIssueOriginKind,

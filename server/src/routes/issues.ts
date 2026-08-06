@@ -54,6 +54,7 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   rejectIssueThreadInteractionSchema,
@@ -10208,26 +10209,98 @@ export function issueRoutes(
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.thread_interaction_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
+    // RBR-791 item 4: more than a couple of simultaneously pending asks on one
+    // issue is almost always an agent-behaviour bug, not a genuine need for
+    // that many board decisions. Creation is deliberately not blocked (the
+    // issue's stated non-goal is to leave "what agents may ask" alone) — the
+    // breach is surfaced in the activity log so the pattern is attributable to
+    // an agent and a run instead of quietly inflating the board queue.
+    //
+    // RBR-802 F1: everything below runs *after* `create()` has committed, and
+    // all of it is non-essential instrumentation. It must never be able to turn
+    // a persisted interaction into a 5xx: a caller that retries on that 5xx
+    // files a duplicate ask, which is the exact failure this work exists to
+    // prevent. So each post-commit step is contained and the route still
+    // returns 201. The interaction committed; the response says so.
+    //
+    // The depth probe and the activity-log write are contained *separately* on
+    // purpose. `issue.thread_interaction_created` is the only audit record of
+    // this creation, so a failing count query must not take the audit entry
+    // down with it: on a probe failure we still log the activity, marked
+    // `pendingInteractionCountUnavailable`, rather than silently dropping the
+    // interaction out of the activity feed.
+    let pendingInteractionCount: number | null = null;
+    let pendingSoftCapExceeded = false;
+    try {
+      pendingInteractionCount = (await issueThreadInteractionService(db).listForIssue(issue.id))
+        .filter((entry) => entry.status === "pending")
+        .length;
+      pendingSoftCapExceeded = pendingInteractionCount > ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP;
+    } catch (err) {
+      pendingInteractionCount = null;
+      pendingSoftCapExceeded = false;
+      logger.error({
+        err,
+        issueId: issue.id,
+        identifier: issue.identifier,
         interactionId: interaction.id,
-        interactionKind: interaction.kind,
-        interactionStatus: interaction.status,
-        continuationPolicy: interaction.continuationPolicy,
-        addresseeAgentId: interaction.addresseeAgentId ?? null,
-        requestedResolverPolicy: interaction.requestedResolverPolicy,
-        effectiveResolverPolicy: interaction.effectiveResolverPolicy,
-      },
-    });
+        agentId: actor.agentId,
+        runId: actor.runId,
+      }, "failed to measure pending issue-thread interaction depth; interaction is committed and the request still succeeds");
+    }
+
+    try {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          continuationPolicy: interaction.continuationPolicy,
+          addresseeAgentId: interaction.addresseeAgentId ?? null,
+          requestedResolverPolicy: interaction.requestedResolverPolicy,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          ...(pendingInteractionCount === null
+            ? { pendingInteractionCountUnavailable: true }
+            : { pendingInteractionCount }),
+          ...(pendingSoftCapExceeded
+            ? {
+                pendingInteractionSoftCap: ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP,
+                pendingInteractionSoftCapExceeded: true,
+              }
+            : {}),
+        },
+      });
+    } catch (err) {
+      logger.error({
+        err,
+        issueId: issue.id,
+        identifier: issue.identifier,
+        interactionId: interaction.id,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      }, "failed to log issue.thread_interaction_created; interaction is committed and the request still succeeds");
+    }
+
+    if (pendingSoftCapExceeded) {
+      logger.warn({
+        issueId: issue.id,
+        identifier: issue.identifier,
+        interactionId: interaction.id,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        pendingInteractionCount,
+        softCap: ISSUE_THREAD_INTERACTION_PENDING_SOFT_CAP,
+      }, "issue exceeds the pending issue-thread interaction soft cap");
+    }
 
     if (interaction.addresseeAgentId) {
       void heartbeat.wakeup(interaction.addresseeAgentId, {
