@@ -24,6 +24,10 @@ const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
@@ -39,6 +43,7 @@ function registerModuleMocks() {
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
+    issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
   }));
@@ -137,6 +142,7 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueService.listReviewAttention.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
@@ -148,6 +154,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -443,6 +450,47 @@ describe("approval routes idempotent retries", () => {
           authorizationMode: "requester",
           reason: "Superseded",
           withdrawnByAgentId: "agent-1",
+        }),
+      }),
+    );
+  });
+
+  it("wakes a linked issue assignee when withdrawal removes its review path", async () => {
+    const pending = {
+      id: "approval-linked",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue(pending);
+    mockApprovalService.withdraw.mockResolvedValue({
+      approval: { ...pending, status: "withdrawn", decisionNote: "No longer needed" },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "issue-1", assigneeAgentId: "agent-2" },
+    ]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map([
+      ["issue-1", { state: "stalled" }],
+    ]));
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-linked/withdraw")
+      .send({ reason: "No longer needed" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-2",
+      expect.objectContaining({
+        reason: "approval_withdrawn",
+        requestedByActorType: "agent",
+        requestedByActorId: "agent-1",
+        payload: expect.objectContaining({
+          approvalStatus: "withdrawn",
+          issueId: "issue-1",
+          reviewPathLost: true,
         }),
       }),
     );

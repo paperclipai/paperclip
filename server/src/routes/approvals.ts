@@ -82,7 +82,8 @@ export function approvalRoutes(
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     lostIssueIds: Set<string>;
     alreadyWoken?: { agentId: string; issueId: string } | null;
-    requestedByUserId: string;
+    requestedByActorType: "agent" | "user";
+    requestedByActorId: string;
   }) {
     for (const issue of input.linkedIssues) {
       if (!input.lostIssueIds.has(issue.id) || !issue.assigneeAgentId) continue;
@@ -104,8 +105,8 @@ export function approvalRoutes(
             issueId: issue.id,
             ...approvalReviewPathContext(input.approvalId),
           },
-          requestedByActorType: "user",
-          requestedByActorId: input.requestedByUserId,
+          requestedByActorType: input.requestedByActorType,
+          requestedByActorId: input.requestedByActorId,
           contextSnapshot: {
             source: `approval.${input.approvalStatus}`,
             approvalId: input.approvalId,
@@ -119,8 +120,8 @@ export function approvalRoutes(
 
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.requestedByActorType,
+          actorId: input.requestedByActorId,
           action: "approval.review_path_wakeup_queued",
           entityType: "approval",
           entityId: input.approvalId,
@@ -138,8 +139,8 @@ export function approvalRoutes(
         );
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.requestedByActorType,
+          actorId: input.requestedByActorId,
           action: "approval.review_path_wakeup_failed",
           entityType: "approval",
           entityId: input.approvalId,
@@ -319,6 +320,9 @@ export function approvalRoutes(
     );
 
     if (applied) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: actor.actorType,
@@ -334,7 +338,17 @@ export function approvalRoutes(
           withdrawnByAgentId: approval.withdrawnByAgentId,
           withdrawnByUserId: approval.withdrawnByUserId,
           reason: approval.decisionNote,
+          linkedIssueIds,
         },
+      });
+      await queueAdditionalApprovalReviewPathWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        lostIssueIds: lostReviewIssueIds,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
       });
     }
 
@@ -450,7 +464,8 @@ export function approvalRoutes(
         alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
           ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
           : null,
-        requestedByUserId: req.actor.userId ?? "board",
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
       });
     }
 
@@ -485,7 +500,8 @@ export function approvalRoutes(
         companyId: approval.companyId,
         linkedIssues,
         lostIssueIds: lostReviewIssueIds,
-        requestedByUserId: req.actor.userId ?? "board",
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
       });
     }
 
