@@ -99,5 +99,10 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskId')`,
       table.createdAt.desc(),
     ),
+    companyCtxTaskKeyCreatedIdx: index("heartbeat_runs_company_ctx_taskkey_created_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot} ->> 'taskKey')`,
+      table.createdAt.desc(),
+    ),
   }),
 );
