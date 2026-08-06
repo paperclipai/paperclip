@@ -2990,6 +2990,17 @@ export function issueRoutes(
     return reconciled as T;
   }
 
+  function hasCanonicalBlockedOwnerWakeForAssignee(
+    issue: Parameters<typeof buildAgentUnblockWakeIntent>[0] & { assigneeAgentId?: string | null },
+  ) {
+    const intent = buildAgentUnblockWakeIntent(issue);
+    return Boolean(
+      issue.blockedOwnerNotifiedAt &&
+      issue.assigneeAgentId &&
+      intent?.ownerAgentId === issue.assigneeAgentId,
+    );
+  }
+
   async function sourceTrustForActorWrite(
     issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
     actor: ReturnType<typeof getActorInfo>,
@@ -7997,7 +8008,14 @@ export function issueRoutes(
       });
       return;
     }
-    issue = await deliverBlockedOwnerNotification(issue);
+    try {
+      issue = await deliverBlockedOwnerNotification(issue);
+    } catch (err) {
+      // The durable marker remains null, so a retry can redrive the canonical
+      // unblock intent. Continue to the generic assignee wake below instead of
+      // turning a committed blocked issue into a 500 with no delivery attempt.
+      logger.warn({ err, issueId: issue.id }, "blocked owner wake failed; falling back to assignee wake");
+    }
     await issueReferencesSvc.syncIssue(issue.id);
     await externalObjectsSvc.syncIssueSafely(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -8085,15 +8103,17 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
     res.status(201).json({
@@ -8291,7 +8311,7 @@ export function issueRoutes(
       });
     }
 
-    if (!serializationContext || !currentSerializedChild) {
+    if ((!serializationContext || !currentSerializedChild) && !hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
       void queueIssueAssignmentWakeup({
         heartbeat,
         issue,
@@ -8505,7 +8525,7 @@ export function issueRoutes(
         });
       }
 
-      if (!serializedBlockedChildIds.has(issue.id)) {
+      if (!serializedBlockedChildIds.has(issue.id) && !hasCanonicalBlockedOwnerWakeForAssignee(issue)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
