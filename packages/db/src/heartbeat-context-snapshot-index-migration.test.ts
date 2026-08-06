@@ -33,6 +33,12 @@ d("heartbeat context_snapshot expression index migration", () => {
     const planText = plan.map((r) => Object.values(r)[0]).join("\n");
     expect(planText).toContain("heartbeat_runs_company_ctx_issue_created_idx");
 
+    const taskPlan = await sql.unsafe(
+      "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot ->> 'taskId' = 'x' ORDER BY created_at DESC, id DESC LIMIT 1",
+    );
+    const taskText = taskPlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(taskText).toContain("heartbeat_runs_company_ctx_task_created_idx");
+
     const wakePlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM agent_wakeup_requests WHERE company_id = '00000000-0000-0000-0000-000000000001' AND status = 'deferred_issue_execution' AND payload ->> 'issueId' = 'x' LIMIT 1",
     );
