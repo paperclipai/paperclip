@@ -151,6 +151,42 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     expect(row?.errorCode).toBe("lease_released_before_terminal");
   });
 
+  it("forces a still-queued run to interrupted when the lease releases before it starts", async () => {
+    // A queued run holds a lease but never reached "running". The teardown
+    // released the lease, so the run must not stay queued and show a phantom
+    // live run. A running-only update would miss it.
+    const { runId, run } = await seed({ issueStatus: "in_progress", runStatus: "queued" });
+
+    const heartbeat = heartbeatService(db);
+    const terminal = await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(terminal.status).toBe("interrupted");
+
+    const row = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(row?.status).toBe("interrupted");
+    expect(row?.errorCode).toBe("lease_released_before_terminal");
+  });
+
+  it("forces a still-queued run to succeeded when the issue already reached done", async () => {
+    const { runId, run } = await seed({ issueStatus: "done", runStatus: "queued" });
+
+    const heartbeat = heartbeatService(db);
+    const terminal = await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(terminal.status).toBe("succeeded");
+
+    const runStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.status);
+    expect(runStatus).toBe("succeeded");
+  });
+
   it("keeps an already-terminal run authoritative and records no new event", async () => {
     const { runId, run } = await seed({ issueStatus: "done", runStatus: "failed" });
 

@@ -36,6 +36,8 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const STALE_ERROR_START_TEST_ADAPTER = "stale_error_start_test";
+let staleErrorStartGate: Promise<void> | null = null;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -89,6 +91,24 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: STALE_ERROR_START_TEST_ADAPTER,
+      execute: async () => {
+        await staleErrorStartGate;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType: STALE_ERROR_START_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -104,6 +124,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(STALE_ERROR_START_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -212,6 +233,60 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       createdAt: input.now,
     });
   }
+
+  it("clears a stale timeout error when a follow-up run actually starts", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Late callback follow-up",
+      role: "engineer",
+      status: "error",
+      errorReason: "OpenClaw gateway run timed out after 600000ms",
+      adapterType: STALE_ERROR_START_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const gate = Promise.withResolvers<void>();
+    staleErrorStartGate = gate.promise;
+    try {
+      const run = await heartbeat.invoke(agentId, "on_demand", {}, "callback");
+      expect(run).not.toBeNull();
+
+      await expect
+        .poll(
+          () =>
+            db
+              .select({ status: agents.status, errorReason: agents.errorReason })
+              .from(agents)
+              .where(eq(agents.id, agentId))
+              .then((rows) => rows[0] ?? null),
+          { timeout: 5_000, interval: 25 },
+        )
+        .toEqual({ status: "running", errorReason: null });
+
+      gate.resolve();
+      expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
+    } finally {
+      gate.resolve();
+      staleErrorStartGate = null;
+    }
+  });
 
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();

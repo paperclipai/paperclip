@@ -5529,7 +5529,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const issueStatus = await db
         .select({ status: issues.status })
         .from(issues)
-        .where(eq(issues.id, issueId))
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
         .then((rows) => rows[0]?.status ?? null);
       if (issueStatus === "done") issueTerminalStatus = "succeeded";
       else if (issueStatus === "cancelled") issueTerminalStatus = "cancelled";
@@ -5588,6 +5588,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     runningProcesses.delete(run.id);
+
+    // Recovery bypasses the normal heartbeat finalizer. Reconcile the agent as
+    // part of the same backstop so a terminalized orphan cannot leave the
+    // operator-facing status at running/error with a stale timeout. Another
+    // active run remains authoritative and keeps the agent running.
+    const [{ count: remainingRunningCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, updated.agentId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+    if (Number(remainingRunningCount ?? 0) === 0) {
+      await db
+        .update(agents)
+        .set({ status: "idle", errorReason: null, updatedAt: now })
+        .where(
+          and(
+            eq(agents.id, updated.agentId),
+            eq(agents.companyId, updated.companyId),
+            notInArray(agents.status, ["paused", "terminated"]),
+          ),
+        );
+    }
+
     // The run update above already committed the terminal status. The audit
     // event is best-effort: if the insert fails, the caller must still treat
     // the run as terminalized and clear the lock in the same sweep. So catch
@@ -5665,11 +5692,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runStatusById = new Map<string, string>();
     for (const row of runRows) runStatusById.set(row.id, row.status);
 
+    // Collect the runs that a non-terminal issue still references. Such a run is
+    // the live run of an active issue. A different, terminal issue can also hold
+    // the same run id in a stale lock column. The terminal reference alone must
+    // not terminalize a run that an active issue still owns, so exclude these
+    // runs from the issue-terminal authority below.
+    const runIdsReferencedByActiveIssue = new Set<string>();
+    for (const issue of candidates) {
+      if (issue.status === "done" || issue.status === "cancelled") continue;
+      for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
+        if (runId) runIdsReferencedByActiveIssue.add(runId);
+      }
+    }
+
     // Map each referenced run to the terminal run status implied by its
     // referencing issue. When a terminal issue still holds the run in a lock
     // column, that run is orphaned: the issue is the stuck "Live" task the UI
     // shows. A "done" issue implies "succeeded"; a "cancelled" issue implies
-    // "cancelled".
+    // "cancelled". Skip a run that an active issue also references, because that
+    // run is still live for the active issue.
     const issueTerminalStatusByRunId = new Map<string, "succeeded" | "cancelled">();
     for (const issue of candidates) {
       const implied =
@@ -5680,7 +5721,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : null;
       if (!implied) continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
-        if (runId) issueTerminalStatusByRunId.set(runId, implied);
+        if (runId && !runIdsReferencedByActiveIssue.has(runId)) {
+          issueTerminalStatusByRunId.set(runId, implied);
+        }
       }
     }
 
@@ -5736,22 +5779,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.cleared += 1;
       result.issueIds.push(updated.id);
 
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: "system",
-        actorId: "system",
-        agentId: null,
-        runId: null,
-        action: "issue.stale_lock_cleared",
-        entityType: "issue",
-        entityId: updated.id,
-        details: {
-          source: "recovery.sweep_stale_issue_locks",
-          clearedCheckoutRunId: issue.checkoutRunId,
-          clearedExecutionRunId: issue.executionRunId,
-          referencedRunStatuses: Object.fromEntries(runStatusById),
-        },
-      });
+      try {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.stale_lock_cleared",
+          entityType: "issue",
+          entityId: updated.id,
+          details: {
+            source: "recovery.sweep_stale_issue_locks",
+            clearedCheckoutRunId: issue.checkoutRunId,
+            clearedExecutionRunId: issue.executionRunId,
+            referencedRunStatuses: Object.fromEntries(runStatusById),
+          },
+        });
+      } catch (error) {
+        // The CAS already cleared the stale lock. Audit failure must not abort
+        // the remaining sweep or misreport the successful recovery.
+        logger.error(
+          { err: error, issueId: updated.id },
+          "failed to append activity after clearing stale issue lock",
+        );
+      }
     }
 
     if (result.cleared > 0 || result.terminalizedRunIds.length > 0) {

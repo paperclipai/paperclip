@@ -8826,10 +8826,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    return setRunStatusFromLive(runId, status, ["running"], patch);
+  }
+
+  // Atomically move a run only from the supplied live statuses. A competing
+  // terminal writer remains authoritative when this compare-and-set loses.
+  async function setRunStatusFromLive(
+    runId: string,
+    status: string,
+    fromStatuses: string[],
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, fromStatuses)))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -8880,7 +8891,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const issueStatus = await db
         .select({ status: issues.status })
         .from(issues)
-        .where(eq(issues.id, issueId))
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
         .then((rows) => rows[0]?.status ?? null);
       if (issueStatus === "done") terminalStatus = "succeeded";
       else if (issueStatus === "cancelled") terminalStatus = "cancelled";
@@ -8888,7 +8899,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const message =
       `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
-    const write = await setRunStatusIfRunning(run.id, terminalStatus, {
+    // A queued run can release its lease before it ever reaches "running".
+    // Match both live states so the lease invariant is complete.
+    const write = await setRunStatusFromLive(run.id, terminalStatus, ["running", "queued"], {
       finishedAt: run.finishedAt ?? new Date(),
       error: run.error ?? (terminalStatus === "interrupted" ? message : null),
       errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? "lease_released_before_terminal" : null),
@@ -15059,7 +15072,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", updatedAt: new Date() })
+        .set({
+          status: "running",
+          // A new execution is authoritative for the agent's current state.
+          // Preserve the previous run's timeout on that run, but do not carry
+          // its human-facing error banner into this live follow-up run.
+          errorReason: null,
+          updatedAt: new Date(),
+        })
         .where(and(eq(agents.id, agent.id), notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES])))
         .returning()
         .then((rows) => rows[0] ?? null);
