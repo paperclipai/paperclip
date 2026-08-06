@@ -8,7 +8,6 @@ import {
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
-import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
@@ -18,6 +17,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
+import { useSignOut } from "@/hooks/useSignOut";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -26,16 +26,7 @@ export function InstanceGeneralSettings() {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-    onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
-    },
-  });
+  const signOutMutation = useSignOut();
 
   useEffect(() => {
     setBreadcrumbs([
@@ -98,9 +89,12 @@ export function InstanceGeneralSettings() {
         </p>
       </div>
 
-      {actionError && (
+      {(actionError || signOutMutation.error) && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError}
+          {actionError
+            ?? (signOutMutation.error instanceof Error
+              ? signOutMutation.error.message
+              : "Failed to sign out.")}
         </div>
       )}
 
