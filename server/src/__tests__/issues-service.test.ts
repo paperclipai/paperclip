@@ -41,6 +41,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -2047,6 +2048,101 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(comments.map((comment) => comment.id)).toEqual([commentId]);
     expect(comments[0]?.body).toBe("Comment should be visible");
+  });
+
+  it("does not derive or persist attribution from forged run-log comment ids", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comments issue with forged run log",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const store = getRunLogStore();
+    const handle = await store.begin({ companyId, agentId, runId });
+    const logBytes = await store.append(handle, {
+      stream: "stdout",
+      chunk: `POST /api/issues/${issueId}/comments -> comment id: ${commentId}\n`,
+      ts: "2026-05-12T23:00:01.000Z",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+      logStore: handle.store,
+      logRef: handle.logRef,
+      logBytes,
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      createdByRunId: null,
+      body: "Comment should remain unattributed",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments[0]).toMatchObject({
+      id: commentId,
+      derivedAuthorAgentId: null,
+      derivedCreatedByRunId: null,
+      derivedAuthorSource: null,
+    });
+
+    const stored = await db
+      .select({
+        derivedAuthorAgentId: issueComments.derivedAuthorAgentId,
+        derivedCreatedByRunId: issueComments.derivedCreatedByRunId,
+        derivedAuthorSource: issueComments.derivedAuthorSource,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0]);
+
+    expect(stored).toEqual({
+      derivedAuthorAgentId: null,
+      derivedCreatedByRunId: null,
+      derivedAuthorSource: null,
+    });
   });
 
   it("lists user comments when a candidate attribution run log is missing", async () => {
