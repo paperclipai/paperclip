@@ -2094,6 +2094,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
+            createdFromIssueId: issue.id,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,

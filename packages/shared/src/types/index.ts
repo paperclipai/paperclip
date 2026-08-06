@@ -617,6 +617,7 @@ export type {
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
   IssueRelation,
+  IssueCreatedFromIssueSummary,
   IssueRelationIssueSummary,
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,

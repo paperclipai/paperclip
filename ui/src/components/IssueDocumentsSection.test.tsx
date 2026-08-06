@@ -247,6 +247,7 @@ function createIssue(): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: "Plan rendering",
     description: null,
     status: "in_progress",

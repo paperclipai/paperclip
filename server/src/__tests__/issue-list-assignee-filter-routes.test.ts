@@ -153,7 +153,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const companyId = randomUUID();
     const ownerAgentId = randomUUID();
     const issueId = randomUUID();
+    const originatingIssueId = randomUUID();
     const sourceRunId = randomUUID();
+    const responsibleUserId = "responsible-user";
 
     await db.insert(companies).values({
       id: companyId,
@@ -173,15 +175,27 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       runtimeConfig: {},
       permissions: {},
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Compact issue",
-      description: "This long detail belongs on the issue detail endpoint, not the board list.",
-      status: "todo",
-      priority: "medium",
-      billingCode: "product",
-    });
+    await db.insert(issues).values([
+      {
+        id: originatingIssueId,
+        companyId,
+        title: "Originating issue",
+        status: "in_progress",
+        priority: "high",
+        hiddenAt: new Date(),
+      },
+      {
+        id: issueId,
+        companyId,
+        createdFromIssueId: originatingIssueId,
+        responsibleUserId,
+        title: "Compact issue",
+        description: "This long detail belongs on the issue detail endpoint, not the board list.",
+        status: "todo",
+        priority: "medium",
+        billingCode: "product",
+      },
+    ]);
     const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
       companyId,
       sourceIssueId: issueId,
@@ -226,6 +240,14 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       status: "todo",
       priority: "medium",
       billingCode: "product",
+      responsibleUserId,
+      createdFromIssueId: originatingIssueId,
+      createdFromIssue: {
+        id: originatingIssueId,
+        identifier: null,
+        title: "Originating issue",
+        status: "in_progress",
+      },
       activeRecoveryAction: {
         id: recoveryAction.id,
         sourceIssueId: issueId,

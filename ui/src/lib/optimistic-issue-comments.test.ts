@@ -443,6 +443,7 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: null,
         goalId: null,
         parentId: null,
+        createdFromIssueId: null,
         title: "Fix comment flow",
         description: null,
         status: "done",
@@ -499,6 +500,7 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: "workspace-1",
         goalId: null,
         parentId: null,
+        createdFromIssueId: null,
         ancestors: [
           {
             id: "issue-9",
@@ -692,6 +694,7 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: null,
         goalId: null,
         parentId: null,
+        createdFromIssueId: null,
         title: "Fix property pane",
         description: null,
         status: "todo",
@@ -736,6 +739,7 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: null,
         goalId: null,
         parentId: null,
+        createdFromIssueId: null,
         title: "Leave me alone",
         description: null,
         status: "todo",

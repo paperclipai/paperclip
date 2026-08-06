@@ -218,6 +218,11 @@ export interface IssueRelationIssueSummary {
   activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
+export type IssueCreatedFromIssueSummary = Pick<
+  IssueRelationIssueSummary,
+  "id" | "identifier" | "title" | "status"
+>;
+
 export type IssueBlockerDiagnosticFlag =
   | "done_but_blocking"
   | "cancelled_blocker_in_set"
@@ -776,6 +781,8 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  createdFromIssueId: string | null;
+  createdFromIssue?: IssueCreatedFromIssueSummary | null;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
@@ -862,6 +869,8 @@ export type CompactIssue = Pick<
   | "projectWorkspaceId"
   | "goalId"
   | "parentId"
+  | "createdFromIssueId"
+  | "createdFromIssue"
   | "title"
   | "description"
   | "status"
@@ -876,6 +885,7 @@ export type CompactIssue = Pick<
   | "executionLockedAt"
   | "createdByAgentId"
   | "createdByUserId"
+  | "responsibleUserId"
   | "issueNumber"
   | "identifier"
   | "originKind"

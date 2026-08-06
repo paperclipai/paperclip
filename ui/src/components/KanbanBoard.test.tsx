@@ -38,6 +38,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: `Issue ${index}`,
     description: null,
     status,

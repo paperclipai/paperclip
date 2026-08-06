@@ -11,6 +11,7 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId,
+    createdFromIssueId: null,
     title: `Issue ${id}`,
     description: null,
     status: "todo",
