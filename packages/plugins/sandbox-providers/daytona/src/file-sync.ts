@@ -43,7 +43,7 @@ const SPAN_STATUS_CODE_ERROR = 2;
  * their existing `*.wall_ms` attribute. A per-round-trip span omits it, so it
  * carries no `*.wall_ms` attribute and relies on the native span width.
  */
-async function withProviderSpan<T>(input: {
+export async function withProviderSpan<T>(input: {
   name: string;
   wallMsAttr?: string;
   attributes?: Record<string, string | number | boolean>;

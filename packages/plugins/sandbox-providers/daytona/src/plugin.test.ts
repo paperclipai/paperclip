@@ -1086,6 +1086,39 @@ describe("Daytona sandbox provider plugin", () => {
   });
 
   describe("session model lifecycle (per-lease session store)", () => {
+    // A recording plugin tracer that captures every provider span the session
+    // hooks open. It satisfies the structural plugin tracer contract.
+    const makeRecordingTracer = () => {
+      const spans: Array<{
+        name: string;
+        attributes: Record<string, unknown>;
+        status: { code: number; message?: string } | null;
+        ended: boolean;
+      }> = [];
+      const tracer = {
+        startSpan(name: string, options?: { attributes?: Record<string, string | number | boolean> }) {
+          const span = {
+            name,
+            attributes: { ...(options?.attributes ?? {}) } as Record<string, unknown>,
+            status: null as { code: number; message?: string } | null,
+            ended: false,
+            setAttribute(key: string, value: unknown) {
+              span.attributes[key] = value;
+            },
+            setStatus(status: { code: number; message?: string }) {
+              span.status = status;
+            },
+            end() {
+              span.ended = true;
+            },
+          };
+          spans.push(span);
+          return span;
+        },
+      };
+      return { tracer, spans };
+    };
+
     const sessionExecParams = (overrides: Record<string, unknown> = {}) => ({
       driverKey: "daytona" as const,
       companyId: "company-1",
@@ -1233,6 +1266,55 @@ describe("Daytona sandbox provider plugin", () => {
 
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
       expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("emits a session.setup span on create and a session.teardown span on delete", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      const { tracer, spans } = makeRecordingTracer();
+      const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+        const setup = spans.find((span) => span.name === "session.setup");
+        expect(setup).toBeDefined();
+        expect(setup!.ended).toBe(true);
+        expect(setup!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+
+        await plugin.definition.onEnvironmentReleaseLease?.({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: "sandbox-123",
+          config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        });
+        const teardown = spans.find((span) => span.name === "session.teardown");
+        expect(teardown).toBeDefined();
+        expect(teardown!.ended).toBe(true);
+        expect(teardown!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+      } finally {
+        restore();
+      }
+    });
+
+    it("marks the session.setup span failed when the session create throws", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.createSession.mockRejectedValueOnce(new Error("create boom"));
+      mockGet.mockResolvedValue(sandbox);
+      const { tracer, spans } = makeRecordingTracer();
+      const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+      try {
+        await expect(
+          plugin.definition.onEnvironmentExecute?.(sessionExecParams()),
+        ).rejects.toThrow(/create boom/);
+        const setup = spans.find((span) => span.name === "session.setup");
+        expect(setup).toBeDefined();
+        expect(setup!.ended).toBe(true);
+        expect(setup!.status?.code).toBe(2);
+      } finally {
+        restore();
+      }
     });
   });
 

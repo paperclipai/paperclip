@@ -40,7 +40,7 @@ import type {
   PluginEnvironmentValidationResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { performSyncIn, performSyncOut } from "./file-sync.js";
+import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
 
 // Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
 // to the real wall clock; `plugin.test.ts` overrides it via
@@ -1449,7 +1449,13 @@ async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promis
   const existing = sandboxHandleSessionStore.get(scope);
   if (existing) return existing;
   const sessionId = `paperclip-${randomUUID()}`;
-  await sandbox.process.createSession(sessionId);
+  // Wrap the session create in a short `session.setup` provider span. The span
+  // carries no session id and no command text, only the provider family. The
+  // host maps the name to `sandbox.provider.session.setup`.
+  await withProviderSpan({
+    name: "session.setup",
+    run: () => sandbox.process.createSession(sessionId),
+  });
   sandboxHandleSessionStore.set(scope, sessionId);
   return sessionId;
 }
@@ -1466,7 +1472,12 @@ async function teardownSession(sandbox: Sandbox, scope: SandboxScope): Promise<v
   const sessionId = sandboxHandleSessionStore.get(scope);
   if (!sessionId) return;
   try {
-    await sandbox.process.deleteSession(sessionId);
+    // Wrap the session delete in a short `session.teardown` provider span. The
+    // host maps the name to `sandbox.provider.session.teardown`.
+    await withProviderSpan({
+      name: "session.teardown",
+      run: () => sandbox.process.deleteSession(sessionId),
+    });
   } catch (error) {
     console.error(
       `Failed to delete Daytona session ${sessionId} during teardown: ${formatErrorMessage(error)}`,
