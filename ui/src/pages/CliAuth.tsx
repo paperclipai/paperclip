@@ -147,6 +147,38 @@ export function CliAuthPage() {
               <div className="text-foreground">{challenge.requestedCompanyName}</div>
             </div>
           )}
+          {challenge.requestedScopeConfig && (
+            <div className="space-y-3">
+              <div>
+                <div className="text-muted-foreground">Scoped companies</div>
+                <ul className="space-y-1">
+                  {challenge.requestedScopeConfig.companyIds.map((companyId) => (
+                    <li key={companyId} className="font-mono text-foreground">{companyId}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Permissions</div>
+                <ul className="space-y-1">
+                  {challenge.requestedScopeConfig.permissions.map((permission) => (
+                    <li key={permission} className="font-mono text-foreground">{permission}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Instance capabilities</div>
+                {challenge.requestedScopeConfig.instanceCapabilities.length > 0 ? (
+                  <ul className="space-y-1">
+                    {challenge.requestedScopeConfig.instanceCapabilities.map((capability) => (
+                      <li key={capability} className="font-mono text-foreground">{capability}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-foreground">None</div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {(approveMutation.error || cancelMutation.error) && (
@@ -159,7 +191,9 @@ export function CliAuthPage() {
 
         {!challenge.canApprove && (
           <p className="mt-4 text-sm text-destructive">
-            This challenge requires instance-admin access. Sign in with an instance admin account to approve it.
+            {challenge.requestedScopeConfig
+              ? "This challenge requires instance-admin access. Sign in with an instance admin account to approve it."
+              : "This challenge does not contain a valid board-key scope. Start the CLI auth flow again."}
           </p>
         )}
 

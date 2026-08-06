@@ -7,6 +7,7 @@ import {
   boardApiKeys,
   companyMemberships,
   instanceUserRoles,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
@@ -35,6 +36,7 @@ function createLiveAuthorityDb() {
     membershipRole: "owner",
     instanceAdmin: true,
     revoked: false,
+    permissionGrants: new Set(["agents:create", "agents:configure", "tasks:assign"]),
   };
   const key = {
     id: keyId,
@@ -62,6 +64,8 @@ function createLiveAuthorityDb() {
               ? (state.membershipActive ? [{ companyId, membershipRole: state.membershipRole, status: "active" }] : [])
               : table === instanceUserRoles
                 ? (state.instanceAdmin ? [{ id: randomUUID() }] : [])
+                : table === principalPermissionGrants
+                  ? [...state.permissionGrants].map((permissionKey) => ({ permissionKey }))
                 : [];
         return {
           where: () => Promise.resolve(rows),
@@ -232,5 +236,29 @@ describe("board-key effective authority", () => {
     state.ownerExists = false; // owner deletion rejects authentication itself
     authentication = await service.authenticateBoardApiKey(TOKEN);
     expect(authentication).toMatchObject({ ok: false, reason: "owner_deleted" });
+  });
+
+  it("applies owner permission-grant revocation on the next request", async () => {
+    const { db, state, companyId } = createLiveAuthorityDb();
+    const authentication = await boardAuthService(db).authenticateBoardApiKey(TOKEN);
+    const req = requestFor(authentication);
+    const metadata = lookupBoardKeyRoute("PATCH", `/api/agents/${randomUUID()}`);
+
+    await expect(authorizeBoardKey(
+      db,
+      req,
+      metadata.action,
+      async () => ({ companyId, resourceType: "agent", resourceId: randomUUID() }),
+      metadata,
+    )).resolves.toBeUndefined();
+
+    state.permissionGrants.delete("agents:configure");
+    await expectDenied(authorizeBoardKey(
+      db,
+      req,
+      metadata.action,
+      async () => ({ companyId, resourceType: "agent", resourceId: randomUUID() }),
+      metadata,
+    ), 403);
   });
 });
