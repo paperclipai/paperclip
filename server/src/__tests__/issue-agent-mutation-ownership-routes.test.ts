@@ -1050,6 +1050,88 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects patch comments from the checked-out owner using an agent key run id", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: ownerRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with forgeable agent key run id." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent run JWT required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("rejects patch comments from the checked-out owner with a mismatched run JWT", async () => {
+    const mismatchedRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: mismatchedRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with mismatched run JWT." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows patch comments from the checked-out owner with a matching run JWT", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: ownerRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with signed run identity." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Patch comment with signed run identity.",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: ownerRunId,
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {
     const app = await createApp(ownerActor());
 

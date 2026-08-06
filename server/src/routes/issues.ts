@@ -2946,6 +2946,11 @@ export function issueRoutes(
     return actor.runId;
   }
 
+  function sameRunCommentRunIdForActor(req: Request, actor: ReturnType<typeof getActorInfo>) {
+    if (req.actor.type === "agent" && req.actor.source !== "agent_jwt") return null;
+    return actor.runId;
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -7065,6 +7070,7 @@ export function issueRoutes(
     }
     if (commentBody && !(await assertAgentCommentRunAttributionAllowed(req, res, existing))) return;
     const trustedCommentRunId = issueCommentRunIdForActor(req, actor);
+    const sameRunCommentRunId = sameRunCommentRunIdForActor(req, actor);
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: !!commentBody,
@@ -7094,7 +7100,7 @@ export function issueRoutes(
             assigneeAgentId: requestedAssigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
-            actorRunId: trustedCommentRunId,
+            actorRunId: sameRunCommentRunId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
           })) ||
@@ -7324,7 +7330,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: trustedCommentRunId ?? null,
           });
 
           return updated;
@@ -8955,6 +8961,7 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const trustedCommentRunId = issueCommentRunIdForActor(req, actor);
+    const sameRunCommentRunId = sameRunCommentRunIdForActor(req, actor);
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -9012,7 +9019,7 @@ export function issueRoutes(
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
-          actorRunId: trustedCommentRunId,
+          actorRunId: sameRunCommentRunId,
           checkoutRunId: issue.checkoutRunId,
           executionRunId: issue.executionRunId,
         }) ||
@@ -9199,7 +9206,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: trustedCommentRunId ?? null,
             });
           }
 
