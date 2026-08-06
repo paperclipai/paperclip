@@ -258,10 +258,17 @@ function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor:
   ) {
     throw forbidden("Tool-action confirmations are always board-only");
   }
-  if (actor.reviewVerdictAuthorized && isRequestConfirmationLikeKind(current.kind)) return;
+  if (actor.reviewVerdictAuthorized && isRequestConfirmationLikeKind(current.kind)) {
+    assertAgentInteractionActorAllowed(current, actor);
+    return;
+  }
   if (current.effectiveResolverPolicy !== "board_or_agents") {
     throw forbidden("This issue-thread interaction is board-only");
   }
+  assertAgentInteractionActorAllowed(current, actor);
+}
+
+function assertAgentInteractionActorAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
     throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
   }

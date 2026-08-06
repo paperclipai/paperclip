@@ -1769,6 +1769,53 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it.each([
+    {
+      name: "it addresses a different agent",
+      interaction: {
+        addresseeAgentId: "agent-other-reviewer",
+        createdByAgentId: CREATED_AGENT_ID,
+        sourceRunId: "run-1",
+      },
+      error: "Only the addressed agent or a board user may resolve this issue-thread interaction",
+    },
+    {
+      name: "the agent created it",
+      interaction: { createdByAgentId: ASSIGNEE_AGENT_ID, sourceRunId: "run-1" },
+      error: "Agents cannot resolve interactions they created",
+    },
+    {
+      name: "the same run created it",
+      interaction: { createdByAgentId: CREATED_AGENT_ID, sourceRunId: "run-2" },
+      error: "Agents cannot resolve interactions created by the same run",
+    },
+  ])("rejects an agent review verdict when $name", async ({ interaction, error }) => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "in_review", reviewPolicy: null }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-agent-review-scope",
+      kind: "request_confirmation",
+      status: "pending",
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+      payload: { version: 1, prompt: "Approve this review?" },
+      ...interaction,
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-agent-review-scope/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error });
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("rejects an agent review-confirmation verdict under human_only with actionable copy", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({
       status: "in_review",

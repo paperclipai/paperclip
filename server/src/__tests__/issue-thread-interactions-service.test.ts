@@ -1522,6 +1522,67 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("preserves creator and same-run guards for authorized agent review verdicts", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Guard agent review verdicts");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve your own request?" },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ createdByAgentId: resolverAgentId })
+      .where(eq(issueThreadInteractions.id, createdByResolver.id));
+
+    const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the same run?",
+        options: [{ id: "approve", label: "Approve" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ sourceRunId: resolverRunId })
+      .where(eq(issueThreadInteractions.id, createdBySameRun.id));
+
+    const issue = { id: issueId, companyId, goalId, projectId: null };
+    const actor = {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      reviewVerdictAuthorized: true,
+    };
+    await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
+      .rejects.toThrow("Agents cannot resolve interactions they created");
+    await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
+      selectedOptionIds: ["approve"],
+    }, actor)).rejects.toThrow("Agents cannot resolve interactions created by the same run");
+  });
+
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation accept");
 

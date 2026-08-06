@@ -4072,6 +4072,7 @@ export function issueRoutes(
       return false;
     }
     if (isReviewConfirmationVerdict) {
+      if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)) return false;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
       return true;
     }
@@ -4079,6 +4080,19 @@ export function issueRoutes(
       res.status(403).json({ error: "This issue-thread interaction is board-only" });
       return false;
     }
+    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId);
+  }
+
+  function assertAgentInteractionActorAllowed(
+    res: Response,
+    interaction: {
+      addresseeAgentId?: string | null;
+      createdByAgentId?: string | null;
+      sourceRunId?: string | null;
+    },
+    actorAgentId: string,
+    runId: string,
+  ) {
     if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
       res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
       return false;
