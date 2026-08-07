@@ -4,12 +4,12 @@
 Läuft bei jedem Watcher-Tick vor der Mail-Prüfung. Zwei Quellen, beide ohne LLM:
 
 1. **Postfach-Lernen:** Für jede eingehende Mail mit eindeutigem Zielpostfach
-   (whitestag.ai/.film, sorbart.de/.shop) wird die Absender-Domain dem Bereich
-   zugeordnet und — falls neu — als Domain-Zeile ergänzt (Quelle `postfach`).
+   (whitestag.ai/.film) wird die Absender-Domain dem Bereich zugeordnet und —
+   falls neu — als Domain-Zeile ergänzt (Quelle `postfach`).
 
 2. **Walters Rückfrage-Antworten:** Mails von Walter mit Betreff
    `Re:/AW: [Luna] Bereich? <adresse>` werden gelesen; der Bereich aus der
-   Antwort (AI/FILM/SORBART/PRIVAT, case-insensitive) wird als konkrete
+   Antwort (AI/FILM/PRIVAT, case-insensitive) wird als konkrete
    Adress-Zeile eingetragen (Quelle `walter`, überschreibt `auto`/`postfach`).
 
 Idempotent: bereits erfasste Einträge werden nicht dupliziert. Adress-Einträge
@@ -25,7 +25,7 @@ MAILDIR = Path.home() / "Obsidian" / "WHITESTAG-Vault" / "E-Mails"
 KARTEI = Path.home() / "Obsidian" / "WHITESTAG-Vault" / "Paperclip" / "Luna" / "empfaenger-signaturen.md"
 
 WALTER_SENDERS = ("ws@whitestag.", "walter@schoenenbroecher.de", "ws@sorbart.")
-VALID = {"AI", "FILM", "SORBART", "PRIVAT"}
+VALID = {"AI", "FILM", "PRIVAT"}
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 
 
@@ -35,8 +35,8 @@ def _postfach_bereich(an: str) -> str | None:
         return "AI"
     if "whitestag.film" in an:
         return "FILM"
-    if "sorbart.de" in an or "sorbart.shop" in an:
-        return "SORBART"
+    # sorbART stillgelegt (08/2026) -- bewusst kein Treffer mehr. Kein Treffer
+    # heisst bei Luna: Rueckfrage-Regel greift, genau das ist hier gewollt.
     return None
 
 
@@ -151,7 +151,7 @@ def sync() -> list[str]:
 
 
 def _bereich_from_body(path: Path) -> str | None:
-    """Erste Nennung von AI/FILM/SORBART/PRIVAT im Mail-Body (nach Frontmatter)."""
+    """Erste Nennung von AI/FILM/PRIVAT im Mail-Body (nach Frontmatter)."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
