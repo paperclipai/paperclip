@@ -717,6 +717,58 @@ describe.sequential("plugin tool and bridge authz", () => {
     });
   });
 
+  it.each([
+    [
+      "legacy action",
+      `/api/plugins/${pluginId}/bridge/action`,
+      { key: "catalog.prepare-company-import" },
+      "catalog.prepare-company-import",
+    ],
+    [
+      "url action",
+      `/api/plugins/${pluginId}/actions/catalog.prepare-company-import`,
+      {},
+      "catalog.prepare-company-import",
+    ],
+  ] as const)("preserves plugin-owned params for %s bridge calls when company-scoped", async (_name, path, body, key) => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const pluginCompanyId = "repo-9bffb087:aeon-intelligence/COMPANY.md";
+    const params = {
+      companyId: pluginCompanyId,
+      agentPath: "agents/ceo/AGENTS.md",
+    };
+
+    const res = await request(app)
+      .post(path)
+      .send({
+        ...body,
+        companyId: companyA,
+        params,
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key,
+      companyId: companyA,
+      params,
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: null,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });
@@ -737,6 +789,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
+      companyId: null,
       params: {},
       actorContext: {
         type: "user",
@@ -771,8 +824,9 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
+      companyId: companyA,
       params: {
-        companyId: companyA,
+        companyId: companyB,
         reviewerUserId: "spoofed-user",
       },
       actorContext: {
@@ -831,8 +885,9 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
+      companyId: companyA,
       params: {
-        companyId: companyA,
+        companyId: companyB,
         reviewerAgentId: "spoofed-agent",
       },
       actorContext: {
@@ -860,8 +915,9 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(legacyRes.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
+      companyId: companyA,
       params: {
-        companyId: companyA,
+        companyId: companyB,
         reviewerAgentId: "spoofed-agent",
       },
       actorContext: {

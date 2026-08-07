@@ -41,6 +41,21 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
     context.resumeRequiresNormalModel === true;
 }
 
+function resolveApprovalDecisionActor(req: Request): string {
+  const externalActor = typeof req.body?.decidedByUserId === "string"
+    ? req.body.decidedByUserId.trim()
+    : "";
+  if (
+    req.actor.source === "board_key" &&
+    externalActor.startsWith("telegram:") &&
+    externalActor.length > "telegram:".length &&
+    !/[\r\n]/.test(externalActor)
+  ) {
+    return externalActor;
+  }
+  return req.actor.userId ?? "board";
+}
+
 export function approvalRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -292,7 +307,7 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
+    const decidedByUserId = resolveApprovalDecisionActor(req);
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -307,7 +322,7 @@ export function approvalRoutes(
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: decidedByUserId,
         action: "approval.approved",
         entityType: "approval",
         entityId: approval.id,
@@ -333,7 +348,7 @@ export function approvalRoutes(
               ...(primaryReviewPathContext ?? {}),
             },
             requestedByActorType: "user",
-            requestedByActorId: req.actor.userId ?? "board",
+            requestedByActorId: decidedByUserId,
             contextSnapshot: {
               source: "approval.approved",
               approvalId: approval.id,
@@ -350,7 +365,7 @@ export function approvalRoutes(
           await logActivity(db, {
             companyId: approval.companyId,
             actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorId: decidedByUserId,
             action: "approval.requester_wakeup_queued",
             entityType: "approval",
             entityId: approval.id,
@@ -372,7 +387,7 @@ export function approvalRoutes(
           await logActivity(db, {
             companyId: approval.companyId,
             actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorId: decidedByUserId,
             action: "approval.requester_wakeup_failed",
             entityType: "approval",
             entityId: approval.id,
@@ -408,7 +423,7 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
+    const decidedByUserId = resolveApprovalDecisionActor(req);
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -417,7 +432,7 @@ export function approvalRoutes(
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorId: decidedByUserId,
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
