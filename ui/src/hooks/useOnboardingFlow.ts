@@ -106,9 +106,40 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
   const [adapterEnvLoading, setAdapterEnvLoading] = useState(false);
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] = useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
+  /**
+   * Identifies the adapter selection that produced `adapterEnvResult`. The local
+   * flow lets the user pick a different adapter and retry after a failed hire,
+   * so a cached probe result is only evidence about the adapter it actually
+   * ran against — see `hireLeadAgent`.
+   */
+  const [adapterEnvProbedKey, setAdapterEnvProbedKey] = useState<string | null>(null);
 
   function buildAdapterConfig(adapter: AdapterInput): Record<string, unknown> {
     return buildOnboardingAdapterConfig({ ...adapter, forceUnsetAnthropicApiKey });
+  }
+
+  /**
+   * Stable identity for a probe: the adapter type plus the exact config posted
+   * to the environment-test endpoint. `buildOnboardingAdapterConfig` builds its
+   * object in a fixed key order for a given adapter, so `JSON.stringify` is
+   * stable across calls.
+   */
+  function adapterProbeKey(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): string {
+    return JSON.stringify([adapterType, adapterConfig]);
+  }
+
+  /**
+   * Forget any cached probe result. Callers invoke this when the user changes
+   * the adapter selection, so neither the UI nor `hireLeadAgent` keeps showing
+   * or trusting a verdict about the adapter that is no longer selected.
+   */
+  function clearAdapterEnvResult(): void {
+    setAdapterEnvResult(null);
+    setAdapterEnvError(null);
+    setAdapterEnvProbedKey(null);
   }
 
   /**
@@ -167,16 +198,20 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
     }
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
+    const adapterConfig = adapterConfigOverride ?? buildAdapterConfig(adapter);
     try {
       const result = await agentsApi.testEnvironment(createdCompanyId, adapter.adapterType, {
-        adapterConfig: adapterConfigOverride ?? buildAdapterConfig(adapter),
+        adapterConfig,
       });
       setAdapterEnvResult(result);
+      setAdapterEnvProbedKey(adapterProbeKey(adapter.adapterType, adapterConfig));
       return result;
     } catch (err) {
       setAdapterEnvError(
         err instanceof Error ? err.message : "Adapter environment test failed",
       );
+      setAdapterEnvResult(null);
+      setAdapterEnvProbedKey(null);
       return null;
     } finally {
       setAdapterEnvLoading(false);
@@ -244,9 +279,19 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
 
     setLoading(true);
     setError(null);
+    const adapterConfig = buildAdapterConfig(input.adapter);
     try {
       if (input.requireEnvProbe) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest(input.adapter));
+        // Reuse the cached probe only when it ran against this exact adapter
+        // selection. After a failed hire the user can go back and pick a
+        // different adapter, and the previous adapter's verdict says nothing
+        // about the new one.
+        const cacheHit =
+          adapterEnvResult !== null &&
+          adapterEnvProbedKey === adapterProbeKey(input.adapter.adapterType, adapterConfig);
+        const result = cacheHit
+          ? adapterEnvResult
+          : await runAdapterEnvironmentTest(input.adapter, adapterConfig);
         if (!result) return null;
       }
 
@@ -254,7 +299,7 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
         name: input.agentName.trim(),
         role: "ceo",
         adapterType: input.adapter.adapterType,
-        adapterConfig: buildAdapterConfig(input.adapter),
+        adapterConfig,
         runtimeConfig: buildNewAgentRuntimeConfig(),
       });
       if (hire.approval) {
@@ -395,6 +440,7 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
+    setAdapterEnvProbedKey(null);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
   }
@@ -423,6 +469,7 @@ export function useOnboardingFlow(initial?: Partial<CreatedOnboardingEntities>) 
     unsetAnthropicLoading,
     buildAdapterConfig,
     runAdapterEnvironmentTest,
+    clearAdapterEnvResult,
     unsetAnthropicApiKeyAndRetry,
 
     // actions

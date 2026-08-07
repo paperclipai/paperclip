@@ -76,6 +76,14 @@ export function LocalOnboardingFlow({
 
   const adapterInput = { adapterType, model: "", command: "", args: "", url: "" };
 
+  // Switching adapters invalidates the previous adapter's environment probe:
+  // drop it so the retry re-probes and the step stops showing a verdict about
+  // an adapter the user is no longer hiring on.
+  function handleAdapterChange(value: string) {
+    setAdapterType(value);
+    flow.clearAdapterEnvResult();
+  }
+
   function handleRoleChange(value: string) {
     setAgentRole(value);
     setAgentName(value in ROLE_ACRONYMS ? ROLE_ACRONYMS[value] : "");
@@ -190,7 +198,7 @@ export function LocalOnboardingFlow({
             <AdapterStep
               {...stepper("adapter")}
               adapterType={adapterType}
-              onAdapterChange={setAdapterType}
+              onAdapterChange={handleAdapterChange}
               agentName={agentName}
               agentRole={agentRole}
               onBack={() => setStep("agent")}
