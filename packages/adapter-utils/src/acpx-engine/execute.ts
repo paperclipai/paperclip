@@ -96,6 +96,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
+import { redactCommandText } from "../command-redaction.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -409,6 +410,7 @@ interface AcpxPreparedRuntime {
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
+  codexSessionRetention: CodexSessionRetentionContext | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
   // Per-step round-trip / provider-duration readers sourced from the sandbox
@@ -417,6 +419,11 @@ interface AcpxPreparedRuntime {
   // `acp.handshake` `measureStartupStep` call in the executor (the other six
   // boundaries live inside `buildRuntime` and read it directly).
   stepMetrics: StartupStepMeasureOptions;
+}
+
+interface CodexSessionRetentionContext {
+  runHome: string;
+  retainedSessionsDir: string;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -716,6 +723,132 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+function safePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+async function chmodPrivateTree(root: string): Promise<void> {
+  const stat = await fs.lstat(root).catch(() => null);
+  if (!stat) return;
+  if (stat.isDirectory()) {
+    await fs.chmod(root, 0o700).catch(() => {});
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries.map((entry) => chmodPrivateTree(path.join(root, entry.name))));
+    return;
+  }
+  if (stat.isFile()) {
+    await fs.chmod(root, 0o600).catch(() => {});
+  }
+}
+
+async function removeDirectoryContents(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir).catch(() => []);
+  await Promise.all(entries.map((entry) => fs.rm(path.join(dir, entry), { recursive: true, force: true })));
+}
+
+async function prepareRunIsolatedCodexHome(input: {
+  sourceHome: string;
+  runHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  await fs.rm(input.runHome, { recursive: true, force: true });
+  await fs.mkdir(input.runHome, { recursive: true, mode: 0o700 });
+
+  const authJson = path.join(input.sourceHome, "auth.json");
+  if (await pathExists(authJson)) await ensureSymlink(path.join(input.runHome, "auth.json"), authJson);
+
+  for (const name of ["config.json", "config.toml", "instructions.md"]) {
+    const source = path.join(input.sourceHome, name);
+    if (await pathExists(source)) await ensureCopiedFile(path.join(input.runHome, name), source);
+  }
+
+  await chmodPrivateTree(input.runHome);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Using run-isolated ACPX Codex home "${input.runHome}" (seeded from "${input.sourceHome}").\n`,
+  );
+}
+
+async function listCodexSessionJsonlFiles(input: {
+  root: string;
+  dir: string;
+  relativeDir?: string;
+}): Promise<string[]> {
+  const entries = await fs.readdir(input.dir, { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+  for (const entry of entries) {
+    const relativePath = input.relativeDir ? path.join(input.relativeDir, entry.name) : entry.name;
+    const absolutePath = path.join(input.dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      files.push(...await listCodexSessionJsonlFiles({
+        root: input.root,
+        dir: absolutePath,
+        relativeDir: relativePath,
+      }));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const resolved = path.resolve(absolutePath);
+    const root = path.resolve(input.root) + path.sep;
+    if (!resolved.startsWith(root)) continue;
+    files.push(relativePath);
+  }
+  return files;
+}
+
+async function retainSanitizedCodexSessionJsonl(input: {
+  retention: CodexSessionRetentionContext;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const sessionsDir = path.join(input.retention.runHome, "sessions");
+  await chmodPrivateTree(input.retention.runHome);
+  const sessionFiles = await listCodexSessionJsonlFiles({
+    root: sessionsDir,
+    dir: sessionsDir,
+  });
+
+  await fs.mkdir(input.retention.retainedSessionsDir, { recursive: true, mode: 0o700 });
+  await removeDirectoryContents(input.retention.retainedSessionsDir);
+
+  for (const relativePath of sessionFiles) {
+    const source = path.join(sessionsDir, relativePath);
+    const target = path.join(input.retention.retainedSessionsDir, relativePath);
+    const raw = await fs.readFile(source, "utf8");
+    await writeFileAtomically({
+      target,
+      contents: redactCommandText(raw),
+      mode: 0o600,
+    });
+  }
+
+  await chmodPrivateTree(input.retention.retainedSessionsDir);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Retained ${sessionFiles.length} sanitized ACPX Codex session JSONL file(s) in "${input.retention.retainedSessionsDir}".\n`,
+  );
+}
+
+async function retainSanitizedCodexSessionsAfterClose(input: {
+  prepared: AcpxPreparedRuntime;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  if (!input.prepared.codexSessionRetention) return;
+  try {
+    await retainSanitizedCodexSessionJsonl({
+      retention: input.prepared.codexSessionRetention,
+      onLog: input.onLog,
+    });
+  } catch (err) {
+    await chmodPrivateTree(input.prepared.codexSessionRetention.runHome).catch(() => {});
+    await fs.rm(input.prepared.codexSessionRetention.retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+    await input.onLog(
+      "stderr",
+      `[paperclip] Failed to retain sanitized ACPX Codex session JSONL; raw run home is quarantined at "${input.prepared.codexSessionRetention.runHome}": ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
 async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
@@ -942,7 +1075,10 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  adapterType: string;
   moduleDir: string;
+  runId: string;
+  stateDir: string;
   onLog: AdapterExecutionContext["onLog"];
   // Step-timing seam: threaded from `buildRuntime` so the nested
   // `skills.reconcile` boundary (step 3) can emit its own `run.startup.step`
@@ -956,7 +1092,7 @@ async function prepareCodexSkillRuntime(input: {
   // same host→sandbox counters as its siblings (0 here — skill prep is
   // host-only — which is itself the answer to "does this step exec?").
   stepMetrics?: StartupStepMeasureOptions;
-}): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+}): Promise<{ identity: Record<string, unknown>; commandNotes: string[]; retention: CodexSessionRetentionContext | null }> {
   const now = input.now ?? (() => Date.now());
   const envConfig = parseObject(input.config.env);
   const configuredCodexHome =
@@ -968,13 +1104,29 @@ async function prepareCodexSkillRuntime(input: {
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
   const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
-  const effectiveCodexHome = configuredCodexHome ??
+  const seededCodexHome = configuredCodexHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
+  let effectiveCodexHome = seededCodexHome;
+  let retention: CodexSessionRetentionContext | null = null;
+  if (input.adapterType === "codex_local") {
+    const runKey = safePathSegment(input.runId);
+    const runHome = path.join(input.stateDir, "codex-run-homes", runKey, "home");
+    retention = {
+      runHome,
+      retainedSessionsDir: path.join(input.stateDir, "codex-session-retention", runKey, "sessions"),
+    };
+    await prepareRunIsolatedCodexHome({
+      sourceHome: seededCodexHome,
+      runHome,
+      onLog: input.onLog,
+    });
+    effectiveCodexHome = runHome;
+  }
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
@@ -1030,6 +1182,7 @@ async function prepareCodexSkillRuntime(input: {
       skillsHome,
     },
     commandNotes: [`Prepared ACPX Codex skill home at ${skillsHome}.`],
+    retention,
   };
 }
 
@@ -1596,6 +1749,7 @@ async function buildRuntime(input: {
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
+  let codexSessionRetention: CodexSessionRetentionContext | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -1626,7 +1780,10 @@ async function buildRuntime(input: {
         companyId: agent.companyId,
         config,
         env,
+        adapterType: input.engine.adapterType,
         moduleDir: input.engine.moduleDir,
+        runId,
+        stateDir,
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,
         now: nowMs,
@@ -1636,6 +1793,7 @@ async function buildRuntime(input: {
     );
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    codexSessionRetention = preparedSkills.retention;
   } else if (acpxAgent === "gemini") {
     const preparedSkills = await prepareGeminiSkillRuntime({
       config,
@@ -2084,6 +2242,7 @@ async function buildRuntime(input: {
     },
     childStderrLogPath,
     paperclipClaudeSettings,
+    codexSessionRetention,
     mcpServers,
     mcpIdentity,
     stepMetrics,
@@ -3442,6 +3601,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           reason: "paperclip config cleanup",
           discardPersistentState: false,
         }).catch(() => {});
+        await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
           clearWarmHandleTimer(existing);
@@ -3591,7 +3751,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               discardPersistentState: terminal.status === "cancelled" || timedOut,
             }).catch(() => {});
           }
-        } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
+        } else if (
+          prepared.mode === "persistent" &&
+          warmIdleMs > 0 &&
+          !prepared.processSessionBridge &&
+          !prepared.codexSessionRetention
+        ) {
           const existing = warmHandles.get(prepared.sessionKey);
           if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
             await runtime.close({
@@ -3634,6 +3799,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }).catch(() => {});
           }
         }
+        await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
 
         // PR 3: keep the staged runtime warm for the next compatible resume only
         // after a clean turn; a failed/cancelled/timed-out turn discards it so the
@@ -3705,6 +3871,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
           discardPersistentState: timedOut,
         }).catch(() => {});
+        await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
           clearWarmHandleTimer(existing);
