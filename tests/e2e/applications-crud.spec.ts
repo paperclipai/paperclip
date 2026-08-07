@@ -88,7 +88,7 @@ test.describe.serial("applications lifecycle", () => {
     // background health sweep then probes the connection endpoint. The test
     // endpoint is an unreachable fixture URL, so the probe fails and the pill
     // becomes "Needs attention" and the action becomes "Reconnect". Both are
-    // connected states that navigate to the same connection detail. This test
+    // connected states that navigate to the same provider setup page. This test
     // proves the connected-vs-not-connected split, not the transient health
     // label, so accept either connected state instead of the racy exact label.
     // The pill is derived from two react-query fetches (applications +
@@ -107,11 +107,17 @@ test.describe.serial("applications lifecycle", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
     await connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connected.id}`), { timeout: 20_000 });
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${connected.applicationId}/setup$`),
+      { timeout: 20_000 },
+    );
 
     await gotoApps(page, seed.prefix);
     await notConnectedRow.getByRole("button", { name: "Connect" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}`), { timeout: 20_000 });
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/setup$`),
+      { timeout: 20_000 },
+    );
   });
 
   test("connected app detail supports pause, rename, and removal", async ({ page, request }) => {

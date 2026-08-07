@@ -143,9 +143,11 @@ test.describe.serial("not-connected app page", () => {
     expect(appConns[0].status).not.toBe("archived");
   });
 
-  test("connected app page redirects from the app route and its row says Open", async ({ page }) => {
+  test("connected app page shows provider setup and its row says Open", async ({ page }) => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connectionId}/setup$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
+    await expect(page.getByText("1 connected", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Already connected to Bla" })).toBeVisible();
 
     await page.goto(`/${seed.prefix}/apps/connections`);
     const row = page.locator("tbody tr", { hasText: "Bla" });
