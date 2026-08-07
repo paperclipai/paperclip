@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendTwoTierQaRubricDirectiveToTaskMarkdown,
   applyTwoTierQaMintOverrides,
   buildTwoTierQaEscalateOverrides,
+  buildTwoTierQaRubricBinding,
   classifyProductQaClass,
   classifyTwoTierQa,
   resolveTwoTierQaIssueModelProfile,
@@ -23,6 +25,32 @@ describe("two-tier QA routing (TSMC-20345 / TSKB0404)", () => {
     expect(
       classifyProductQaClass({ title: "Cerberus independent QA signoff — EP-001 pilot pack" }),
     ).toBe("other_qa_review_verify");
+  });
+
+  it("stamps tier-1 rubric skill keys on mint (TSMC-20358)", () => {
+    const result = applyTwoTierQaMintOverrides({
+      title: "CC fee-drag v5.3 governed assembly and all-green QA",
+    });
+    expect(result.applied).toBe(true);
+    expect(result.assigneeAdapterOverrides).toMatchObject({
+      twoTierQa: {
+        requiredSkills: [
+          "ship-it-qa-checklist",
+          "video-assembly-pipeline",
+          "never-again-gates",
+        ],
+        visualTruthTextOnlyIsDefect: true,
+      },
+    });
+  });
+
+  it("keeps visual-truth on strong and still names rubric skills as non-weakened VA1 floor", () => {
+    const result = classifyTwoTierQa({
+      title: "Render TSM-6048 R4 real-motion visual source pack and run visual QA",
+    });
+    expect(result.floorReason).toBe("visual_truth");
+    expect(result.requestedModelProfile).toBe("strong");
+    // Rubric binding is orthogonal — floors not cheap-away.
   });
 
   it("pins cheap at mint for eligible deck assembly QA", () => {
@@ -137,8 +165,33 @@ describe("two-tier QA routing (TSMC-20345 / TSKB0404)", () => {
         tier: 2,
         escalateReason: "tier1_fail",
         qaClass: "deck_video_assembly_qa",
+        requiredSkills: [
+          "ship-it-qa-checklist",
+          "video-assembly-pipeline",
+          "never-again-gates",
+        ],
+        visualTruthTextOnlyIsDefect: true,
       },
     });
+  });
+
+  it("builds prompt directive with VA1 non-weakening language", () => {
+    const binding = buildTwoTierQaRubricBinding();
+    expect(binding.requiredSkillKeys).toContain("paperclipai/paperclip/ship-it-qa-checklist");
+    const md = appendTwoTierQaRubricDirectiveToTaskMarkdown(
+      "Paperclip task context:\n- Issue: \"TSMC-1\"",
+      { tier: 1, qaClass: "deck_video_assembly_qa", modelProfile: "cheap" },
+    );
+    expect(md).toContain("ship-it-qa-checklist");
+    expect(md).toContain("video-assembly-pipeline");
+    expect(md).toContain("never-again-gates");
+    expect(md).toMatch(/text-only visual QA of frames remains a defect/i);
+    // idempotent
+    const twice = appendTwoTierQaRubricDirectiveToTaskMarkdown(md, {
+      tier: 1,
+      qaClass: "deck_video_assembly_qa",
+    });
+    expect(twice).toBe(md);
   });
 
   it("does not escalate non-QA cheap recovery runs", () => {

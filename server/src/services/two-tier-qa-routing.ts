@@ -10,6 +10,12 @@
  * force strong until cleared after remeasure. Weekly metric:
  * company `scripts/qa_defect_escape_weekly.py` + work-products/TSMC-20243/escape-ledger/.
  *
+ * Skill/rubric binding (TSMC-20358 / Child C): product QA runs stamp
+ * `requiredSkills` / `requiredSkillKeys` for the existing free company skills
+ * ship-it-qa-checklist, video-assembly-pipeline (assembly gate), and
+ * never-again-gates. Heartbeat injects the same names into task markdown.
+ * Text-only visual QA of frames remains a defect (VA1) — never weakened here.
+ *
  * K25/K26 artifact-binding and identity stay deterministic outside this module
  * (issue-close-evidence / never-again gates) — do not model-judge them here.
  *
@@ -24,6 +30,29 @@ import { fileURLToPath } from "node:url";
 
 export const TWO_TIER_QA_POLICY = "TSKB0404" as const;
 export const TWO_TIER_QA_SOURCE = "two_tier_qa_routing" as const;
+
+/** Existing company skill slugs — no new paid tools (TSMC-20358). */
+export const TIER1_PRODUCT_QA_RUBRIC_SKILL_SLUGS = [
+  "ship-it-qa-checklist",
+  "video-assembly-pipeline",
+  "never-again-gates",
+] as const;
+
+/** Canonical company skill keys (inventory / paperclipSkillSync.desiredSkills). */
+export const TIER1_PRODUCT_QA_RUBRIC_SKILL_KEYS = [
+  "paperclipai/paperclip/ship-it-qa-checklist",
+  "paperclipai/paperclip/video-assembly-pipeline",
+  "paperclipai/paperclip/never-again-gates",
+] as const;
+
+export type TwoTierQaRubricBinding = {
+  requiredSkills: string[];
+  requiredSkillKeys: string[];
+  /** VA1: text-only visual QA of frames is always a defect. */
+  visualTruthTextOnlyIsDefect: true;
+  policy: typeof TWO_TIER_QA_POLICY;
+  source: typeof TWO_TIER_QA_SOURCE;
+};
 
 export type ProductQaClass =
   | "deck_video_assembly_qa"
@@ -66,6 +95,85 @@ const PRODUCT_QA_CLASS_SET = new Set<string>([
   "guard_card_triage",
   "other_qa_review_verify",
 ]);
+
+/**
+ * Rubric skills every product-QA run must load (tier-1 cheap and tier-2 strong).
+ * Brief Child C / TSMC-20358: no new paid tools; assembly gate = video-assembly-pipeline.
+ */
+export function buildTwoTierQaRubricBinding(): TwoTierQaRubricBinding {
+  return {
+    requiredSkills: [...TIER1_PRODUCT_QA_RUBRIC_SKILL_SLUGS],
+    requiredSkillKeys: [...TIER1_PRODUCT_QA_RUBRIC_SKILL_KEYS],
+    visualTruthTextOnlyIsDefect: true,
+    policy: TWO_TIER_QA_POLICY,
+    source: TWO_TIER_QA_SOURCE,
+  };
+}
+
+/** Compact twoTierQa meta blob stamped on assigneeAdapterOverrides / run context. */
+export function buildTwoTierQaMeta(input: {
+  tier: TwoTierQaTier;
+  qaClass: ProductQaClass | null;
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const rubric = buildTwoTierQaRubricBinding();
+  return {
+    policy: TWO_TIER_QA_POLICY,
+    source: TWO_TIER_QA_SOURCE,
+    tier: input.tier,
+    qaClass: input.qaClass,
+    requiredSkills: rubric.requiredSkills,
+    requiredSkillKeys: rubric.requiredSkillKeys,
+    visualTruthTextOnlyIsDefect: rubric.visualTruthTextOnlyIsDefect,
+    ...(input.extra ?? {}),
+  };
+}
+
+/**
+ * Prompt directive injected into paperclipTaskMarkdown when the run is product QA.
+ * Instructs assignees to load existing free skills; does not weaken VA1 floors.
+ */
+export function buildTwoTierQaRubricPromptDirective(input?: {
+  tier?: TwoTierQaTier | null;
+  qaClass?: ProductQaClass | null;
+  modelProfile?: "cheap" | "strong" | null;
+}): string {
+  const skills = TIER1_PRODUCT_QA_RUBRIC_SKILL_SLUGS.map((s) => `\`${s}\``).join(", ");
+  const tierLabel =
+    input?.tier === 2 || input?.modelProfile === "strong"
+      ? "Tier-2 (strong)"
+      : input?.tier === 1 || input?.modelProfile === "cheap"
+        ? "Tier-1 (cheap)"
+        : "Product QA";
+  const classLine = input?.qaClass ? `\n- QA class: \`${input.qaClass}\`` : "";
+  return [
+    `${tierLabel} rubric binding (TSKB0404 / TSMC-20358):`,
+    `- Load and follow these existing company skills before disposition (no new paid tools): ${skills}.`,
+    "- Assembly gate skill key/slug: `video-assembly-pipeline` (tsm-assembly-gate equivalent).",
+    "- VA1: text-only visual QA of frames remains a defect — do not mark visual/frame truth from prose alone; look-at-a-frame / visual-truth requires a capable lane and real frame evidence.",
+    "- G-class / K25 / K26 binding floors unchanged; never-again-gates still apply.",
+    classLine.trimEnd(),
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+/** Append rubric directive once to task markdown (idempotent). */
+export function appendTwoTierQaRubricDirectiveToTaskMarkdown(
+  markdown: string | null | undefined,
+  binding: {
+    tier?: TwoTierQaTier | null;
+    qaClass?: ProductQaClass | null;
+    modelProfile?: "cheap" | "strong" | null;
+  } | null,
+): string | null {
+  if (!markdown) return markdown ?? null;
+  if (!binding) return markdown;
+  if (markdown.includes("TSMC-20358") || markdown.includes("rubric binding (TSKB0404")) {
+    return markdown;
+  }
+  return `${markdown}\n\n${buildTwoTierQaRubricPromptDirective(binding)}`;
+}
 
 /** Test/process override; null = load from JSON file beside this module. */
 let escapeForceStrongOverride: ReadonlySet<ProductQaClass> | null = null;
@@ -374,12 +482,10 @@ export function applyTwoTierQaMintOverrides(input: {
   const next: Record<string, unknown> = {
     ...(existingObj ?? {}),
     modelProfile: "cheap",
-    twoTierQa: {
-      policy: TWO_TIER_QA_POLICY,
-      source: TWO_TIER_QA_SOURCE,
-      tier: 1 as TwoTierQaTier,
+    twoTierQa: buildTwoTierQaMeta({
+      tier: 1,
       qaClass: classification.qaClass,
-    },
+    }),
   };
 
   return {
@@ -447,6 +553,13 @@ export function buildTwoTierQaEscalateOverrides(input: {
 } {
   const existing = readObject(input.assigneeAdapterOverrides);
   const prevTwoTier = readObject(existing.twoTierQa);
+  const qaClass =
+    (typeof input.qaClass === "string" && PRODUCT_QA_CLASS_SET.has(input.qaClass)
+      ? input.qaClass
+      : null) ??
+    (typeof prevTwoTier.qaClass === "string" && PRODUCT_QA_CLASS_SET.has(prevTwoTier.qaClass)
+      ? (prevTwoTier.qaClass as ProductQaClass)
+      : null);
   return {
     modelProfile: "strong",
     reason: input.reason,
@@ -455,13 +568,15 @@ export function buildTwoTierQaEscalateOverrides(input: {
       modelProfile: "strong",
       twoTierQa: {
         ...prevTwoTier,
-        policy: TWO_TIER_QA_POLICY,
-        source: TWO_TIER_QA_SOURCE,
-        tier: 2 as TwoTierQaTier,
-        qaClass: input.qaClass ?? prevTwoTier.qaClass ?? null,
-        escalatedAt: new Date().toISOString(),
-        escalateReason: input.reason,
-        escalateDetail: input.detail ?? null,
+        ...buildTwoTierQaMeta({
+          tier: 2,
+          qaClass,
+          extra: {
+            escalatedAt: new Date().toISOString(),
+            escalateReason: input.reason,
+            escalateDetail: input.detail ?? null,
+          },
+        }),
       },
     },
   };
@@ -524,6 +639,7 @@ export function buildTwoTierQaEscalateSystemComment(input: {
   qaClass?: ProductQaClass | null;
   fromRunId?: string | null;
 }): string {
+  const rubric = buildTwoTierQaRubricBinding();
   const lines = [
     "## Two-tier QA escalate (auto, TSKB0404 / TSMC-20243)",
     "",
@@ -532,8 +648,9 @@ export function buildTwoTierQaEscalateSystemComment(input: {
     ...(input.qaClass ? [`- QA class: \`${input.qaClass}\``] : []),
     ...(input.fromRunId ? [`- Failed tier-1 run: \`${input.fromRunId}\``] : []),
     ...(input.detail ? [`- Detail: ${input.detail}`] : []),
+    `- Required rubric skills: ${rubric.requiredSkills.map((s) => `\`${s}\``).join(", ")}`,
     "",
-    "Floors intact: visual-truth, G-class, K25/K26 deterministic gates unchanged.",
+    "Floors intact: visual-truth (text-only frame QA remains a defect / VA1), G-class, K25/K26 deterministic gates unchanged.",
   ];
   return lines.join("\n");
 }

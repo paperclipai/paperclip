@@ -243,8 +243,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import {
+  appendTwoTierQaRubricDirectiveToTaskMarkdown,
   buildTwoTierQaEscalateOverrides,
   buildTwoTierQaEscalateSystemComment,
+  buildTwoTierQaMeta,
+  classifyProductQaClass,
   resolveTwoTierQaIssueModelProfile,
   shouldEscalateTwoTierQaAfterFailedRun,
 } from "./two-tier-qa-routing.js";
@@ -15647,6 +15650,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // TSMC-20345 / TSKB0404: product QA tier-1 cheap routing when the running
     // agent is the issue assignee (same scope as assigneeAdapterOverrides) and
     // the issue has no stronger explicit override. Covers pre-mint cards too.
+    // TSMC-20358: stamp required rubric skills + inject task-markdown directive.
     const twoTierIssueProfile =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? resolveTwoTierQaIssueModelProfile({
@@ -15657,16 +15661,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
         : null;
     const issueModelProfile = twoTierIssueProfile?.modelProfile ?? null;
-    if (
+    const productQaClass =
+      twoTierIssueProfile?.classification.qaClass ??
+      (issueContext && issueContext.assigneeAgentId === agent.id
+        ? classifyProductQaClass({
+            title: issueContext.title,
+            originKind: issueContext.originKind,
+          })
+        : null);
+    if (productQaClass && twoTierIssueProfile) {
+      const tier: 1 | 2 =
+        twoTierIssueProfile.modelProfile === "strong" ||
+        twoTierIssueProfile.classification.requestedModelProfile === "strong"
+          ? 2
+          : 1;
+      context.twoTierQa = {
+        ...buildTwoTierQaMeta({
+          tier,
+          qaClass: productQaClass,
+          extra: {
+            floorReason: twoTierIssueProfile.classification.floorReason,
+            modelProfile: twoTierIssueProfile.modelProfile,
+            routingSource: twoTierIssueProfile.source,
+          },
+        }),
+      };
+      const rubricBinding = {
+        tier,
+        qaClass: productQaClass,
+        modelProfile: twoTierIssueProfile.modelProfile,
+      };
+      if (typeof context.paperclipTaskMarkdown === "string") {
+        const next = appendTwoTierQaRubricDirectiveToTaskMarkdown(
+          context.paperclipTaskMarkdown,
+          rubricBinding,
+        );
+        if (next) context.paperclipTaskMarkdown = next;
+      }
+      if (typeof context.paperclipTaskMarkdownCompact === "string") {
+        const next = appendTwoTierQaRubricDirectiveToTaskMarkdown(
+          context.paperclipTaskMarkdownCompact,
+          rubricBinding,
+        );
+        if (next) context.paperclipTaskMarkdownCompact = next;
+      }
+    } else if (
       twoTierIssueProfile?.source === "two_tier_qa_routing" &&
       twoTierIssueProfile.modelProfile
     ) {
       context.twoTierQa = {
-        policy: "TSKB0404",
-        source: "two_tier_qa_routing",
-        tier: twoTierIssueProfile.modelProfile === "cheap" ? 1 : 2,
-        qaClass: twoTierIssueProfile.classification.qaClass,
-        floorReason: twoTierIssueProfile.classification.floorReason,
+        ...buildTwoTierQaMeta({
+          tier: twoTierIssueProfile.modelProfile === "cheap" ? 1 : 2,
+          qaClass: twoTierIssueProfile.classification.qaClass,
+          extra: {
+            floorReason: twoTierIssueProfile.classification.floorReason,
+            modelProfile: twoTierIssueProfile.modelProfile,
+            routingSource: twoTierIssueProfile.source,
+          },
+        }),
       };
     }
     const modelProfileApplication = resolveModelProfileApplication({

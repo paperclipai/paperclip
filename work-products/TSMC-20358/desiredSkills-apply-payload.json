@@ -1,0 +1,39 @@
+{
+  "note": "Optional CTO/GLaD0S follow-up (agents:configure). Merge into existing desiredSkills; do not replace wholesale. TSMC-20358.",
+  "requiredSkillKeys": [
+    "paperclipai/paperclip/ship-it-qa-checklist",
+    "paperclipai/paperclip/video-assembly-pipeline",
+    "paperclipai/paperclip/never-again-gates"
+  ],
+  "recommendedAssignees": [
+    {
+      "name": "Auditor-Codex",
+      "id": "0a126fa0-fa3f-4774-bc04-1f9d0cdddf1e",
+      "reason": "CTO egress matrix: QA replay / ship-gate"
+    },
+    {
+      "name": "Engineer-Codex",
+      "id": "7349cc4f-460f-4f39-9eed-ab9a0c188cfa",
+      "reason": "Common product QA implementer/reviewer"
+    },
+    {
+      "name": "Engineer-Hermes",
+      "id": "51aef791-932c-41d9-86b1-559b26bc6cb2",
+      "reason": "Already has ship-it; add assembly + never-again"
+    },
+    {
+      "name": "Designer-Media",
+      "id": "45f217fd-ba3b-4a9c-90a7-ffde208bfcc0",
+      "reason": "Deck/video assembly QA adjacent"
+    }
+  ],
+  "endpoint": "POST /api/agents/{id}/skills/sync",
+  "bodyShape": {
+    "desiredSkills": [
+      "<existing keys...>",
+      "paperclipai/paperclip/ship-it-qa-checklist",
+      "paperclipai/paperclip/video-assembly-pipeline",
+      "paperclipai/paperclip/never-again-gates"
+    ]
+  }
+}
