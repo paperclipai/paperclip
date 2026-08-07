@@ -266,6 +266,24 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // provider execution marks the span failed. A later log-callback
                 // rejection sits outside this block and never flips a successful
                 // execution to failed.
+                // Incremental log sink. The provider streams each output chunk
+                // through the execute.log notification while the command runs.
+                // Serialize the delivery per execute call so the runner sees the
+                // chunks in order, and mark that incremental delivery happened,
+                // so the final-result delivery below does not repeat already
+                // streamed bytes.
+                let incrementalLogChain: Promise<void> = Promise.resolve();
+                let deliveredIncrementalLog = false;
+                const onIncrementalLog = (
+                  stream: "stdout" | "stderr",
+                  chunk: string,
+                ): Promise<void> => {
+                  deliveredIncrementalLog = true;
+                  incrementalLogChain = incrementalLogChain.then(() =>
+                    commandInput.onLog?.(stream, chunk),
+                  );
+                  return incrementalLogChain;
+                };
                 let result;
                 try {
                   result = await input.environmentRuntime!.execute({
@@ -277,6 +295,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    onLog: commandInput.onLog ? onIncrementalLog : undefined,
                   });
                 } catch (error) {
                   // The provider execution threw. Mark the span failed with the
@@ -322,12 +341,22 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // Observability must not change execution control flow.
                   }
                 }
-                // Deliver the captured output. A rejected `onLog` still
-                // propagates to the caller (control flow is unchanged), but the
-                // span already carries the successful outcome, so a log failure
-                // never marks the execution failed.
-                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+                // Drain the ordered incremental delivery before the final
+                // result. The provider streamed chunks arrive as execute.log
+                // notifications while the command runs; awaiting the chain keeps
+                // the runner order and surfaces a log-sink rejection.
+                await incrementalLogChain;
+                // Deliver the captured output only when the provider did NOT
+                // stream it incrementally. This stops a duplicate live delivery
+                // of the same bytes; the result fields stay available to the
+                // caller for parsing and the fallback path. A rejected `onLog`
+                // still propagates to the caller (control flow is unchanged), but
+                // the span already carries the successful outcome, so a log
+                // failure never marks the execution failed.
+                if (!deliveredIncrementalLog) {
+                  if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+                  if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+                }
                 return {
                   exitCode: result.exitCode,
                   signal: result.signal ?? null,

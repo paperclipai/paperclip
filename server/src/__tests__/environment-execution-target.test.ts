@@ -947,6 +947,69 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(onLog).toHaveBeenCalledTimes(1);
   });
 
+  it("delivers incremental logs before the final result and does not duplicate them", async () => {
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        // The provider streams the output while the command runs.
+        await input.onLog?.("stdout", "chunk-1");
+        await input.onLog?.("stderr", "chunk-2");
+        await input.onLog?.("stdout", "chunk-3");
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "chunk-1chunk-3",
+          stderr: "chunk-2",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    const result = await (runner as {
+      execute(input: unknown): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+    }).execute({ command: "echo", onLog });
+
+    // The runner receives the incremental chunks in order, and NOT a repeated
+    // delivery of the final stdout/stderr.
+    expect(onLog.mock.calls).toEqual([
+      ["stdout", "chunk-1"],
+      ["stderr", "chunk-2"],
+      ["stdout", "chunk-3"],
+    ]);
+    // The final result stays available to the caller for parsing and fallback.
+    expect(result).toMatchObject({ exitCode: 0, stdout: "chunk-1chunk-3", stderr: "chunk-2" });
+  });
+
+  it("still delivers the final result to the runner when the provider does not stream", async () => {
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      // A provider that never calls onLog returns only the final result.
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "final-out",
+        stderr: "final-err",
+      })),
+    });
+
+    const onLog = vi.fn();
+    const result = await (runner as {
+      execute(input: unknown): Promise<{ stdout: string; stderr: string }>;
+    }).execute({ command: "echo", onLog });
+
+    expect(onLog.mock.calls).toEqual([
+      ["stdout", "final-out"],
+      ["stderr", "final-err"],
+    ]);
+    expect(result).toMatchObject({ stdout: "final-out", stderr: "final-err" });
+  });
+
   // Fire one run-time exec from a bridge continuation that runs after the step
   // span ended. Each bridge step (`bridge.paperclip`, `bridge.process-session`)
   // starts long-lived work with `criticalPath: false`. The bridge boundary wraps
