@@ -150,7 +150,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     agentId: string;
     now: Date;
     errorCode: string;
-    errorFamily?: "transient_upstream" | "provider_quota" | null;
+    error?: string;
+    errorFamily?: "transient_upstream" | "provider_quota" | "billing_402" | "auth_key" | "auth_eacces" | null;
     retryNotBefore?: string | null;
     scheduledRetryAttempt?: number;
     resultJson?: Record<string, unknown> | null;
@@ -190,7 +191,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       agentId: input.agentId,
       invocationSource: "assignment",
       status: "failed",
-      error: "upstream overload",
+      error: input.error ?? "upstream overload",
       errorCode: input.errorCode,
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
@@ -2305,5 +2306,138 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  it("hard-stops scheduled_retry for HTTP 402 Insufficient Balance even when mis-tagged provider_quota", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-07T12:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      error: "HTTP 402: Insufficient Balance — payment required",
+      errorFamily: "provider_quota",
+      retryNotBefore: "2030-04-22T21:00:00.000Z",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "terminal_adapter_failure",
+    });
+
+    const retryChildren = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retryChildren).toEqual([]);
+
+    const suppressedEvent = await db
+      .select({
+        message: heartbeatRunEvents.message,
+        payload: heartbeatRunEvents.payload,
+      })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(sql`${heartbeatRunEvents.id} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(suppressedEvent?.payload).toMatchObject({
+      event: "retry_suppressed_terminal_adapter_failure",
+      failureClass: "billing_402",
+    });
+  });
+
+  it("hard-stops scheduled_retry for explicit auth_key family", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-07T12:05:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      error: "provider rejected credentials",
+      errorFamily: "auth_key",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "terminal_adapter_failure",
+    });
+    const retryChildren = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retryChildren).toEqual([]);
+  });
+
+  it("hard-stops scheduled_retry for auth_eacces / EACCES credential path cues", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-07T12:10:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      error: "EACCES: permission denied, open '/home/agent/.config/opencode/credentials.json'",
+      resultJson: {
+        stderr: "EACCES: permission denied, open '/home/agent/.config/opencode/credentials.json'",
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "terminal_adapter_failure",
+    });
+    const retryChildren = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retryChildren).toEqual([]);
+  });
+
+  it("still schedules provider_quota retries with a reset time (regression)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-07T12:15:00.000Z");
+    const retryNotBefore = "2030-04-22T21:00:00.000Z";
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      error: "You've hit your session limit - resets at 4pm (America/Chicago).",
+      errorFamily: "provider_quota",
+      retryNotBefore,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    expect(scheduled.run.status).toBe("scheduled_retry");
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    expect(scheduled.run.scheduledRetryAt?.toISOString()).toBe(retryNotBefore);
   });
 });

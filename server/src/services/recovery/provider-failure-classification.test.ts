@@ -77,6 +77,27 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toEqual({ kind: "configuration_incomplete" });
   });
 
+  it("classifies HTTP 402 Insufficient Balance as billing_402, not provider_quota", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "HTTP 402: Insufficient Balance — payment required",
+      resultJson: { errorFamily: "provider_quota" },
+    })).toEqual({ kind: "billing_402" });
+  });
+
+  it("classifies explicit auth_key / auth_eacces as terminal (no provider_quota recovery)", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "provider rejected credentials",
+      resultJson: { errorFamily: "auth_key" },
+    })).toEqual({ kind: "auth_key" });
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "EACCES: permission denied, open '/home/agent/.config/opencode/credentials.json'",
+      resultJson: null,
+    })).toEqual({ kind: "auth_eacces" });
+  });
+
   it("ignores quota-like text from non-adapter failures", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "timeout",

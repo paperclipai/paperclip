@@ -39,7 +39,18 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
+  AdapterExecutionErrorFamily,
 } from "./types.js";
+export {
+  TERMINAL_ADAPTER_FAILURE_FAMILIES,
+  classifyTerminalAdapterFailure,
+  isTerminalAdapterFailureFamily,
+} from "./terminal-adapter-failure.js";
+export type {
+  TerminalAdapterFailureFamily,
+  TerminalAdapterFailureClassification,
+  TerminalAdapterFailureClassifierInput,
+} from "./terminal-adapter-failure.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,

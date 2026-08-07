@@ -260,10 +260,12 @@ import {
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
+  classifyTerminalAdapterFailure,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
+  type TerminalAdapterFailureFamily,
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
@@ -559,6 +561,22 @@ function readHeartbeatRunErrorFamily(
   return null;
 }
 
+function detectTerminalAdapterFailureFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
+): TerminalAdapterFailureFamily | null {
+  const resultJson = parseObject(run.resultJson);
+  return (
+    classifyTerminalAdapterFailure({
+      errorCode: run.errorCode,
+      errorMessage: run.error,
+      errorFamily: readNonEmptyString(resultJson.errorFamily),
+      resultJson,
+      stderr: readNonEmptyString(resultJson.stderr),
+      stdout: readNonEmptyString(resultJson.stdout),
+    })?.family ?? null
+  );
+}
+
 function isMaxTurnExhaustionRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -580,8 +598,11 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
 }
 
 function readTransientRecoveryContractFromRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
+  // Terminal auth/billing classes must never become scheduled_retry (defense if mis-tagged).
+  if (detectTerminalAdapterFailureFromRun(run)) return null;
+
   const errorFamily = readHeartbeatRunErrorFamily(run);
   return errorFamily === "transient_upstream" || errorFamily === "provider_quota"
     ? {
@@ -10978,6 +10999,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const terminalFailureClass = detectTerminalAdapterFailureFromRun(run);
+    if (terminalFailureClass) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Scheduled retry suppressed for terminal adapter failure (${terminalFailureClass})`,
+        payload: {
+          event: "retry_suppressed_terminal_adapter_failure",
+          failureClass: terminalFailureClass,
+          retryReason,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: `Scheduled retry suppressed for terminal adapter failure (${terminalFailureClass})`,
+        errorCode: "terminal_adapter_failure" as const,
+        issueId,
+      };
+    }
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -11002,8 +11045,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {

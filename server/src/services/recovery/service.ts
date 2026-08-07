@@ -10,6 +10,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
+import { classifyTerminalAdapterFailure } from "@paperclipai/adapter-utils";
 import {
   agents,
   agentWakeupRequests,
@@ -161,6 +162,9 @@ type StrandedRecoveryCause =
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
+  | "billing_402"
+  | "auth_key"
+  | "auth_eacces"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
@@ -250,9 +254,18 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 }
 
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
-  if (latestRun?.errorCode === "provider_quota") return true;
+  if (!latestRun) return false;
+  if (classifyTerminalAdapterFailure({
+    errorCode: latestRun.errorCode,
+    errorMessage: latestRun.error,
+    errorFamily: readRecoveryRunErrorFamily(latestRun),
+    resultJson: latestRun.resultJson,
+  })) {
+    return false;
+  }
+  if (latestRun.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
-  if (latestRun?.errorCode !== "adapter_failed") return false;
+  if (latestRun.errorCode !== "adapter_failed") return false;
   return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
 }
 
@@ -389,7 +402,29 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
   | { kind: "configuration_incomplete" }
+  | { kind: "billing_402" }
+  | { kind: "auth_key" }
+  | { kind: "auth_eacces" }
   | null;
+
+function classifyTerminalAdapterFailureForRecovery(
+  latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
+): Extract<
+  NonNullable<AdapterFailureRecoveryClassification>,
+  { kind: "billing_402" | "auth_key" | "auth_eacces" }
+> | null {
+  const resultJson = parseObject(latestRun.resultJson);
+  const terminal = classifyTerminalAdapterFailure({
+    errorCode: latestRun.errorCode,
+    errorMessage: latestRun.error,
+    errorFamily: readNonEmptyString(resultJson.errorFamily),
+    resultJson,
+    stderr: readNonEmptyString(resultJson.stderr),
+    stdout: readNonEmptyString(resultJson.stdout),
+  });
+  if (!terminal) return null;
+  return { kind: terminal.family };
+}
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
@@ -466,15 +501,28 @@ export function classifyAdapterFailureForRecovery(
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    latestRun.errorCode !== "billing_402" &&
+    latestRun.errorCode !== "auth_key" &&
+    latestRun.errorCode !== "auth_eacces"
   ) {
     return null;
   }
+
   const resultJson = parseObject(latestRun.resultJson);
   const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
+  const terminal = classifyTerminalAdapterFailureForRecovery(latestRun);
+
+  // Billing hard-stop always wins over provider_quota (and other retryable classes).
+  if (terminal?.kind === "billing_402") return terminal;
+
   if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
     return { kind: "configuration_incomplete" };
   }
+
+  // Auth terminal classes escalate/park blocked — never provider_quota_recovery.
+  if (terminal) return terminal;
+
   if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
 
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
@@ -3538,7 +3586,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           transientRetryNotBefore: classification.retryAt.toISOString(),
           providerQuotaRetryNotBefore: classification.retryAt.toISOString(),
         }
-      : { errorFamily: "configuration_incomplete" };
+      : { errorFamily: classification.kind };
     const errorCode = classification.kind;
 
     return {
@@ -3780,14 +3828,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         } else {
+          const recoveryCause = adapterFailureClassification.kind;
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
-            recoveryCause: "configuration_incomplete",
+            recoveryCause,
             comment:
-              "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
-              "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
+              `Paperclip classified the latest adapter failure as \`${recoveryCause}\`. ` +
+              "Moving the issue to `blocked` with the configuration/auth/billing fix recorded instead of creating a recovery takeover.",
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
@@ -3944,16 +3993,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         }
-        if (participantAdapterFailureClassification?.kind === "configuration_incomplete") {
+        if (
+          participantAdapterFailureClassification?.kind === "configuration_incomplete" ||
+          participantAdapterFailureClassification?.kind === "billing_402" ||
+          participantAdapterFailureClassification?.kind === "auth_key" ||
+          participantAdapterFailureClassification?.kind === "auth_eacces"
+        ) {
+          const recoveryCause = participantAdapterFailureClassification.kind;
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_review",
             latestRun: participantLatestRun,
-            recoveryCause: "configuration_incomplete",
+            recoveryCause,
             recoveryOwnerAgentId: participantAgentId,
             comment:
-              "Paperclip classified the active review participant's latest adapter failure as " +
-              "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
+              `Paperclip classified the active review participant's latest adapter failure as ` +
+              `\`${recoveryCause}\`. Moving the issue to \`blocked\` with the configuration/auth/billing fix ` +
               "recorded instead of repeatedly requeueing the reviewer.",
           });
           if (updated) {

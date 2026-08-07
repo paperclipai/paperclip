@@ -68,6 +68,9 @@ export interface AdapterRuntimeServiceReport {
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
   | "provider_quota"
+  | "billing_402"
+  | "auth_key"
+  | "auth_eacces"
   | "model_refusal"
   | "refresh_token_reused"
   | "refresh_token_expired"
