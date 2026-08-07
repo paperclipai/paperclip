@@ -98,18 +98,31 @@ test("linkSdkInto replaces a symlink that points somewhere else", () => {
 //
 // The window only opens under real parallelism, so this uses separate processes.
 // In-process calls cannot interleave, because the underlying fs calls are
-// synchronous. Every worker targets the same package directory and busy-waits to a
-// shared start instant so they collide.
+// synchronous. Every worker targets the same package directory and converges on a
+// shared start instant so they collide. Twelve workers over five rounds is well
+// past what the bug needs — one round already fails 11/12 workers without the fix
+// — and the redundancy covers machines where a given round happens to miss.
+//
+// Cost is small enough not to matter: ~2.2s on a GitHub-hosted runner, inside a
+// job that takes ~4m.
 test("linkSdkInto tolerates a concurrent create of the same link", async () => {
   const moduleUrl = new URL("./link-plugin-dev-sdk.mjs", import.meta.url).href;
   const WORKERS = 12;
   const ROUNDS = 5;
+  // Enough for a worker to boot Node and load the module before the barrier.
+  const STARTUP_BUDGET_MS = 400;
+  // Spin only over the last stretch. Spinning the whole budget would pin every
+  // core on a small CI runner for no extra alignment.
+  const SPIN_MS = 5;
 
   const runWorker = (pkg, startAt) =>
     new Promise((resolve) => {
       const source = [
-        `while (Date.now() < ${startAt}) {}`,
+        // Import before the barrier so module load time is not part of the race
+        // window; every worker arrives at the symlink call already warm.
         `const { linkSdkInto } = await import(${JSON.stringify(moduleUrl)});`,
+        `await new Promise((r) => setTimeout(r, ${startAt} - ${SPIN_MS} - Date.now()));`,
+        `while (Date.now() < ${startAt}) {}`,
         `linkSdkInto(${JSON.stringify(pkg)});`,
       ].join("\n");
       const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
@@ -117,21 +130,28 @@ test("linkSdkInto tolerates a concurrent create of the same link", async () => {
       });
       let stderr = "";
       child.stderr.on("data", (chunk) => { stderr += chunk; });
+      // A spawn that never starts (e.g. EAGAIN under process pressure) emits
+      // "error" and may never emit "close". Without this the promise would not
+      // settle and the run would hang until the CI job timeout.
+      child.on("error", (error) => resolve({ code: -1, stderr: String(error) }));
       child.on("close", (code) => resolve({ code, stderr }));
     });
 
   for (let round = 0; round < ROUNDS; round += 1) {
     const pkg = makePackage(join(workDir, `race-${round}`));
-    const startAt = Date.now() + 400;
+    const startAt = Date.now() + STARTUP_BUDGET_MS;
     const results = await Promise.all(
       Array.from({ length: WORKERS }, () => runWorker(pkg, startAt)),
     );
 
-    const failures = results
-      .filter((result) => result.code !== 0)
-      .map((result) => result.stderr.trim().split("\n").find((line) => line.includes("Error")) ?? "unknown");
+    const failed = results.filter((result) => result.code !== 0);
+    // Workers fail identically, so report the distinct errors rather than one
+    // long line per worker.
+    const failures = [...new Set(
+      failed.map((result) => result.stderr.trim().split("\n").find((line) => line.includes("Error")) ?? "unknown"),
+    )];
 
-    assert.deepEqual(failures, [], `round ${round}: ${failures.length}/${WORKERS} workers failed`);
+    assert.deepEqual(failures, [], `round ${round}: ${failed.length}/${WORKERS} workers failed`);
     assert.ok(lstatSync(join(pkg, "node_modules", "@paperclipai", "plugin-sdk")).isSymbolicLink());
   }
 });
