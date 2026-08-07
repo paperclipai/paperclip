@@ -108,6 +108,17 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+// The route under test wires the real `createGuardrailAlertHandler` (see
+// ../services/guardrail-notify.ts) so budget alerts recorded via this API
+// trigger the same notification path as heartbeat-driven alerts. That handler
+// is unit-tested on its own in budgets.guardrail.test.ts against a mocked
+// mailer/db, so here we just stub it out — a no-op mailer/handler double,
+// never a real SMTP client — to keep these route tests focused on authz/CRUD.
+const mockMailer = vi.hoisted(() => ({
+  sendMail: vi.fn().mockResolvedValue(undefined),
+  isConfigured: () => true,
+}));
+const mockGuardrailAlertHandler = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -120,6 +131,8 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
+    mailerService: () => mockMailer,
+    createGuardrailAlertHandler: () => mockGuardrailAlertHandler,
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({

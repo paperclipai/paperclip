@@ -19,6 +19,8 @@ import {
   heartbeatService,
   accessService,
   logActivity,
+  mailerService,
+  createGuardrailAlertHandler,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
@@ -53,8 +55,20 @@ export function costRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  // Same canonical guardrail notification handler used by heartbeatService, so
+  // cost events recorded directly via the API (this route) trigger the exact
+  // same email + issue-comment notification as cost events recorded during
+  // heartbeat runs. Keeps notification behavior in one place (see
+  // ./services/guardrail-notify.ts) instead of a second, divergent implementation.
+  const onGuardrailAlert = createGuardrailAlertHandler({
+    db,
+    mailer: mailerService(),
+    notifyEmail: process.env.GUARDRAIL_NOTIFY_EMAIL || null,
+    notifyIssueId: process.env.GUARDRAIL_NOTIFY_ISSUE_ID || null,
+  });
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
+    onBudgetAlert: onGuardrailAlert,
   };
   const costs = costService(db, budgetHooks);
   const finance = financeService(db);

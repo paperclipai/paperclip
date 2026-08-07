@@ -140,6 +140,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     adapterType: "codex_local",
     adapterConfig: {},
     runtimeConfig: {},
+    costClass: "metered",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,

@@ -51,6 +51,7 @@ export async function notifyHireApproved(
     agentId,
     agentName: row.name,
     adapterType,
+    costClass: (row.costClass ?? "metered") as "free" | "metered" | "critical",
     source,
     sourceId,
     approvedAt: approvedAt.toISOString(),

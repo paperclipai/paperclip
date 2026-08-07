@@ -32,6 +32,7 @@ function makeAgent(): Agent {
         intervalSec: 300,
       },
     },
+    costClass: "metered",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,

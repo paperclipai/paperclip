@@ -190,6 +190,15 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+// Edit mode always renders an Identity "Cost Class" <select> ahead of the
+// (conditionally rendered) Environment override <select>, so tests that care
+// about the environment control specifically must not assume it's the only
+// (or first) select in the container.
+function getEnvironmentSelect(container: HTMLElement): HTMLSelectElement | null {
+  const selects = Array.from(container.querySelectorAll("select"));
+  return selects.length > 1 ? (selects[selects.length - 1] as HTMLSelectElement) : null;
+}
+
 async function renderForm(
   environments: Environment[],
   agentOverrides: Partial<Agent> = {},
@@ -316,7 +325,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(getEnvironmentSelect(result.container)).toBeNull();
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {
@@ -332,7 +341,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = getEnvironmentSelect(result.container);
 
     expect(text).toContain("Environment");
     expect(text).toContain("Environment override");
@@ -359,7 +368,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = getEnvironmentSelect(result.container);
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -381,7 +390,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = getEnvironmentSelect(result.container);
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");

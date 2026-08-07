@@ -1310,7 +1310,7 @@ export interface PluginBudgetIncidentSummary {
 export interface PluginIssueInvocationBlockSummary {
   issueId: string;
   agentId: string;
-  scopeType: "company" | "agent" | "project";
+  scopeType: "company" | "agent" | "project" | "adapter";
   scopeId: string;
   scopeName: string;
   reason: string;

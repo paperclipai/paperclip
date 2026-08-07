@@ -54,6 +54,7 @@ function makeAgent(id: string, name: string, role: string): Agent {
     adapterType: "claude_local" as Agent["adapterType"],
     adapterConfig: {},
     runtimeConfig: {} as Agent["runtimeConfig"],
+    costClass: "metered",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,

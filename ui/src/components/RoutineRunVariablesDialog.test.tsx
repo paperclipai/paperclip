@@ -122,6 +122,7 @@ function createAgent(): Agent {
     adapterType: "process",
     adapterConfig: {},
     runtimeConfig: {},
+    costClass: "metered",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     lastHeartbeatAt: null,

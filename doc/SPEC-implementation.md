@@ -1217,6 +1217,29 @@ Validation:
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
 
+## 13.5 Guardrail Levels, Cost-Class Breakdown, and Notifications
+
+Budget enforcement reports a per-scope guardrail level derived from the
+applicable `BudgetPolicy` thresholds and the invoking agent's cost class
+(`free`/`metered`/`critical`):
+
+- `0` (OK): below the soft warn threshold
+- `1` (WARN): at/above the soft warn threshold
+- `2` (HIGH): at/above the high warn threshold
+- `3` (HARD STOP): at/above the hard limit; blocks new invocations
+
+The company dashboard summary (`GET /companies/:companyId/dashboard`) exposes
+the current live guardrail level plus a month-to-date spend breakdown by
+agent cost class, for board-facing visibility.
+
+When a `BudgetPolicy` has `notifyEnabled` set, a stage transition (`0`→`1`,
+`1`→`2`, or any stage to `3`) triggers an owner notification: an email via
+the backend mailer service (restricted to internal company-domain
+recipients; external recipients are rejected rather than sent) and a
+system-authored comment on the configured owner/dashboard issue. Both are
+best-effort side effects and never block or fail the underlying budget
+enforcement decision.
+
 ## 14. UI Requirements (Board App)
 
 V1 UI routes:

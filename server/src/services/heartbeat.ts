@@ -96,6 +96,8 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { mailerService } from "./mailer.js";
+import { createGuardrailAlertHandler } from "./guardrail-notify.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -6636,8 +6638,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
+  const mailer = mailerService();
+  const NOTIFY_EMAIL = process.env.GUARDRAIL_NOTIFY_EMAIL ?? "";
+  const NOTIFY_ISSUE_ID = process.env.GUARDRAIL_NOTIFY_ISSUE_ID ?? "";
+
+  const onGuardrailAlert = createGuardrailAlertHandler({
+    db,
+    mailer,
+    notifyEmail: NOTIFY_EMAIL || null,
+    notifyIssueId: NOTIFY_ISSUE_ID || null,
+  });
+
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
+    onBudgetAlert: onGuardrailAlert,
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });

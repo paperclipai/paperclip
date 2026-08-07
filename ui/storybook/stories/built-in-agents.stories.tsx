@@ -37,6 +37,7 @@ const briefsAgent: Agent = {
   adapterType: "codex_local",
   adapterConfig: { model: "gpt-5" },
   runtimeConfig: {},
+  costClass: "metered",
   budgetMonthlyCents: 0,
   spentMonthlyCents: 0,
   pauseReason: null,

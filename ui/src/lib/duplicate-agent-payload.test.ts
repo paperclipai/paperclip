@@ -28,6 +28,7 @@ const baseAgent: AgentDetail = {
     heartbeat: { enabled: true },
   },
   defaultEnvironmentId: "environment-1",
+  costClass: "metered",
   budgetMonthlyCents: 500,
   spentMonthlyCents: 123,
   pauseReason: null,

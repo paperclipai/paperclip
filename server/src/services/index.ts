@@ -176,3 +176,11 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { mailerService, type MailerService, type MailOptions } from "./mailer.js";
+export {
+  createGuardrailAlertHandler,
+  guardrailLevelForAlert,
+  isAllowedGuardrailNotifyRecipient,
+  GUARDRAIL_LEVEL_LABELS,
+  type GuardrailNotifyOptions,
+} from "./guardrail-notify.js";

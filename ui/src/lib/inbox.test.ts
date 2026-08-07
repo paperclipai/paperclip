@@ -306,6 +306,11 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  guardrail: {
+    level: 0,
+    utilizationPercent: 90,
+  },
+  costByClass: [],
   runActivity: [],
 };
 

@@ -490,6 +490,7 @@ function wikiMaintainerAgent(): Agent {
     runtimeConfig: {},
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
+    costClass: "metered",
     pauseReason: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },

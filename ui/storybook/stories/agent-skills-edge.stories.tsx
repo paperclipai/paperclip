@@ -85,6 +85,7 @@ function buildAgent(agentId: string, desiredSkills: string[]): Agent {
       paperclipSkillSync: { desiredSkills },
     },
     runtimeConfig: {},
+    costClass: "metered",
     budgetMonthlyCents: 100_000,
     spentMonthlyCents: 0,
     pauseReason: null,

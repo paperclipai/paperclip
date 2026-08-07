@@ -867,12 +867,16 @@ export function AgentDetail() {
       utilizationPercent:
         budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
       warnPercent: 80,
+      warnHighPercent: 85,
+      warnRecoveryPercent: 55,
+      warnHighRecoveryPercent: 75,
       hardStopEnabled: true,
       notifyEnabled: true,
       isActive: budgetMonthlyCents > 0,
       status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
       paused: agent?.status === "paused",
       pauseReason: agent?.pauseReason ?? null,
+      adapterName: null,
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;

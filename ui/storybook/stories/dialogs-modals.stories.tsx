@@ -433,6 +433,7 @@ const HERMES_AGENT: Agent = {
   adapterType: "opencode_local",
   adapterConfig: {},
   runtimeConfig: {},
+  costClass: "metered",
   budgetMonthlyCents: 60_000,
   spentMonthlyCents: 9_000,
   pauseReason: null,

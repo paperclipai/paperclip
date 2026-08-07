@@ -21,6 +21,7 @@ function makeAgent(id: string, name: string): Agent {
     adapterConfig: {},
     runtimeConfig: {},
     defaultEnvironmentId: null,
+    costClass: "metered",
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,

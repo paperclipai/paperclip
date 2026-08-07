@@ -24,6 +24,11 @@ export interface DashboardRunActivityDay {
   failedByErrorCode: Record<string, number>;
 }
 
+export interface DashboardCostByClass {
+  costClass: string;
+  spentCents: number;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -50,5 +55,10 @@ export interface DashboardSummary {
     pausedAgents: number;
     pausedProjects: number;
   };
+  guardrail: {
+    level: 0 | 1 | 2 | 3;
+    utilizationPercent: number;
+  };
+  costByClass: DashboardCostByClass[];
   runActivity: DashboardRunActivityDay[];
 }

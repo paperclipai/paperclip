@@ -56,6 +56,7 @@ const CONFIG_REVISION_FIELDS = [
   "runtimeConfig",
   "defaultEnvironmentId",
   "budgetMonthlyCents",
+  "costClass",
   "metadata",
 ] as const;
 
@@ -124,6 +125,7 @@ function buildConfigSnapshot(
     runtimeConfig,
     defaultEnvironmentId: row.defaultEnvironmentId,
     budgetMonthlyCents: row.budgetMonthlyCents,
+    costClass: row.costClass,
     metadata,
   };
 }
@@ -243,6 +245,10 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         ? snapshot.defaultEnvironmentId
         : null,
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
+    costClass:
+      snapshot.costClass === "free" || snapshot.costClass === "critical"
+        ? snapshot.costClass
+        : "metered",
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
 }
