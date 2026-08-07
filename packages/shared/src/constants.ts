@@ -814,13 +814,13 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "adapter"] as const;
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
 export const BUDGET_METRICS = ["billed_cents"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
-export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "calendar_day_utc", "lifetime"] as const;
+export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;
 export type BudgetWindowKind = (typeof BUDGET_WINDOW_KINDS)[number];
 
 export const BUDGET_THRESHOLD_TYPES = ["soft", "hard"] as const;

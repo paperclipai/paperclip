@@ -34,7 +34,6 @@ function makeAlert(overrides: Partial<BudgetAlertPayload> = {}): BudgetAlertPayl
     scopeType: "company",
     scopeId: "company-1",
     scopeName: "RENDE",
-    adapterName: null,
     thresholdType: "soft",
     observedCents: 6100,
     limitCents: 10000,

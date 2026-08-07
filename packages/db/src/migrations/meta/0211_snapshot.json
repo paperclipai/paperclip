@@ -1,5 +1,5 @@
 {
-  "id": "567be724-78cc-466d-b2d5-22c2b8a61b1a",
+  "id": "c0fcb5b9-345e-404b-b2bf-d29ae6d56fa1",
   "prevId": "ecc034cd-9b49-418f-b40e-7372ef1e6eeb",
   "version": "7",
   "dialect": "postgresql",
@@ -2811,12 +2811,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "adapter_name": {
-          "name": "adapter_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "metric": {
           "name": "metric",
           "type": "text",
@@ -3009,41 +3003,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"budget_policies\".\"adapter_name\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "budget_policies_adapter_metric_unique_idx": {
-          "name": "budget_policies_adapter_metric_unique_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "adapter_name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "metric",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "window_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"budget_policies\".\"scope_type\" = 'adapter'",
           "concurrently": false,
           "method": "btree",
           "with": {}

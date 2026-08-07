@@ -1,5 +1,4 @@
 import { boolean, index, integer, pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 export const budgetPolicies = pgTable(
@@ -9,7 +8,6 @@ export const budgetPolicies = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     scopeType: text("scope_type").notNull(),
     scopeId: uuid("scope_id").notNull(),
-    adapterName: text("adapter_name"),
     metric: text("metric").notNull().default("billed_cents"),
     windowKind: text("window_kind").notNull(),
     amount: integer("amount").notNull().default(0),
@@ -37,13 +35,12 @@ export const budgetPolicies = pgTable(
       table.windowKind,
       table.metric,
     ),
-    // Partial unique index for non-adapter policies (adapter_name IS NULL)
-    companyScopeMetricUniqueIdx: uniqueIndex("budget_policies_company_scope_metric_unique_idx")
-      .on(table.companyId, table.scopeType, table.scopeId, table.metric, table.windowKind)
-      .where(sql`${table.adapterName} IS NULL`),
-    // Partial unique index for adapter-type policies
-    adapterMetricUniqueIdx: uniqueIndex("budget_policies_adapter_metric_unique_idx")
-      .on(table.companyId, table.adapterName, table.metric, table.windowKind)
-      .where(sql`${table.scopeType} = 'adapter'`),
+    companyScopeMetricUniqueIdx: uniqueIndex("budget_policies_company_scope_metric_unique_idx").on(
+      table.companyId,
+      table.scopeType,
+      table.scopeId,
+      table.metric,
+      table.windowKind,
+    ),
   }),
 );

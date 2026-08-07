@@ -9,7 +9,6 @@ import {
 export const upsertBudgetPolicySchema = z.object({
   scopeType: z.enum(BUDGET_SCOPE_TYPES),
   scopeId: z.string().uuid(),
-  adapterName: z.string().min(1).max(64).optional().nullable(),
   metric: z.enum(BUDGET_METRICS).optional().default("billed_cents"),
   windowKind: z.enum(BUDGET_WINDOW_KINDS).optional().default("calendar_month_utc"),
   amount: z.number().int().nonnegative(),
@@ -20,14 +19,6 @@ export const upsertBudgetPolicySchema = z.object({
   hardStopEnabled: z.boolean().optional().default(true),
   notifyEnabled: z.boolean().optional().default(true),
   isActive: z.boolean().optional().default(true),
-}).superRefine((value, ctx) => {
-  if (value.scopeType === "adapter" && !value.adapterName) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterName is required when scopeType is 'adapter'",
-      path: ["adapterName"],
-    });
-  }
 });
 
 export type UpsertBudgetPolicy = z.infer<typeof upsertBudgetPolicySchema>;

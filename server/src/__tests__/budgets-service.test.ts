@@ -96,7 +96,6 @@ describe("budgetService", () => {
     };
 
     const dbStub = createDbStub([
-      [{ adapterType: "codex_local" }],
       [policy],
       [{ total: 150 }],
       [],
@@ -345,7 +344,7 @@ describe("budgetService", () => {
 
     function makeBlockStub(costClass: "free" | "metered" | "critical", observed: number, hasSoftIncident = false) {
       return createDbStub([
-        [{ status: "active", pauseReason: null, companyId: "company-1", name: "Test Agent", adapterType: null, costClass }],
+        [{ status: "active", pauseReason: null, companyId: "company-1", name: "Test Agent", costClass }],
         [{ status: "active", pauseReason: null, name: "Paperclip" }],
         [],
         [agentPolicy],

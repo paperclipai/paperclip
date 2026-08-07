@@ -1,0 +1,83 @@
+Scope: 31 of 32 workspace projects
+packages/adapter-utils typecheck$ tsc --noEmit
+packages/google-sheets-mcp-server typecheck$ tsc --noEmit
+packages/kv-demo-mcp-server typecheck$ tsc --noEmit
+packages/shared typecheck$ tsc --noEmit
+packages/kv-demo-mcp-server typecheck: Done
+packages/teams-catalog typecheck$ tsc -p tsconfig.json --noEmit
+packages/teams-catalog typecheck: Done
+packages/adapter-utils typecheck: Done
+packages/shared typecheck: Done
+packages/google-sheets-mcp-server typecheck: Done
+packages/adapters/codex-local typecheck$ tsc --noEmit
+packages/adapters/claude-local typecheck$ tsc --noEmit
+packages/adapters/cursor-cloud typecheck$ tsc --noEmit
+packages/adapters/cursor-local typecheck$ tsc --noEmit
+packages/adapters/cursor-local typecheck: Done
+packages/adapters/gemini-local typecheck$ tsc --noEmit
+packages/adapters/cursor-cloud typecheck: Done
+packages/adapters/grok-local typecheck$ tsc --noEmit
+packages/adapters/claude-local typecheck: Done
+packages/adapters/hermes typecheck$ tsc --noEmit
+packages/adapters/codex-local typecheck: Done
+packages/adapters/openclaw-gateway typecheck$ tsc --noEmit
+packages/adapters/grok-local typecheck: Done
+packages/adapters/opencode-local typecheck$ tsc --noEmit
+packages/adapters/gemini-local typecheck: Done
+packages/adapters/pi-local typecheck$ tsc --noEmit
+packages/adapters/hermes typecheck: Done
+packages/db typecheck$ pnpm run check:migrations && tsc --noEmit
+packages/adapters/openclaw-gateway typecheck: Done
+packages/mcp-server typecheck$ tsc --noEmit
+packages/db typecheck: > @paperclipai/db@0.3.1 check:migrations C:\Claude\_work\rena-15208\packages\db
+packages/db typecheck: > tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts
+packages/db typecheck: Migration safety check passed: 20 historical finding(s) covered by baseline (1 stale baseline id(s) ignored).
+packages/adapters/opencode-local typecheck: Done
+packages/plugins/sdk typecheck$ pnpm --filter @paperclipai/shared build && tsc --noEmit
+packages/adapters/pi-local typecheck: Done
+packages/skills-catalog typecheck$ tsc -p tsconfig.json --noEmit
+packages/plugins/sdk typecheck: > @paperclipai/shared@0.3.1 build C:\Claude\_work\rena-15208\packages\shared
+packages/plugins/sdk typecheck: > tsc
+packages/mcp-server typecheck: Done
+packages/skills-catalog typecheck: Done
+packages/db typecheck: Done
+packages/plugins/sdk typecheck: Done
+packages/adapters/hermes-gateway typecheck$ tsc --noEmit
+packages/plugins/create-paperclip-plugin typecheck$ tsc --noEmit
+.../plugin-authoring-smoke-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+.../examples/plugin-file-browser-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../plugin-authoring-smoke-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+.../plugin-authoring-smoke-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/create-paperclip-plugin typecheck: Done
+.../examples/plugin-hello-world-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-hello-world-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+.../examples/plugin-hello-world-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/adapters/hermes-gateway typecheck: Done
+.../examples/plugin-kitchen-sink-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-kitchen-sink-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+.../examples/plugin-kitchen-sink-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../examples/plugin-hello-world-example typecheck: Done
+.../paperclip-plugin-fake-sandbox typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../plugin-authoring-smoke-example typecheck: Done
+packages/plugins/plugin-llm-wiki typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck: Done
+packages/plugins/plugin-workspace-diff typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+.../paperclip-plugin-fake-sandbox typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+.../paperclip-plugin-fake-sandbox typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/plugin-llm-wiki typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+packages/plugins/plugin-llm-wiki typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/plugin-workspace-diff typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+packages/plugins/plugin-workspace-diff typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../examples/plugin-kitchen-sink-example typecheck: Done
+server typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+server typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps C:\Claude\_work\rena-15208\packages\plugins\sdk
+server typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../paperclip-plugin-fake-sandbox typecheck: Done
+ui typecheck$ tsc -b
+packages/plugins/plugin-llm-wiki typecheck: Done
+packages/plugins/plugin-workspace-diff typecheck: Done
+server typecheck: Done
+ui typecheck: Done
+cli typecheck$ tsc --noEmit

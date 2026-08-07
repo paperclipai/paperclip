@@ -876,7 +876,6 @@ export function AgentDetail() {
       status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
       paused: agent?.status === "paused",
       pauseReason: agent?.pauseReason ?? null,
-      adapterName: null,
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;

@@ -13,7 +13,6 @@ export interface BudgetPolicy {
   companyId: string;
   scopeType: BudgetScopeType;
   scopeId: string;
-  adapterName: string | null;
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
   amount: number;
@@ -35,7 +34,6 @@ export interface BudgetPolicySummary {
   companyId: string;
   scopeType: BudgetScopeType;
   scopeId: string;
-  adapterName: string | null;
   scopeName: string;
   metric: BudgetMetric;
   windowKind: BudgetWindowKind;
@@ -91,7 +89,6 @@ export interface BudgetOverview {
 export interface BudgetPolicyUpsertInput {
   scopeType: BudgetScopeType;
   scopeId: string;
-  adapterName?: string | null;
   metric?: BudgetMetric;
   windowKind?: BudgetWindowKind;
   amount: number;
