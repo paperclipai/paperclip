@@ -87,6 +87,138 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     return parent;
   }
 
+  async function seedAgent(companyId: string, name: string) {
+    const [agent] = await db.insert(agents).values({
+      companyId,
+      name,
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning();
+    return agent;
+  }
+
+  it("rejects an ineligible approval participant when a policy is created or patched", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const qa = await seedAgent(companyId, "QA");
+    const app = createApp();
+    const executionPolicy = {
+      stages: [
+        { type: "review", participants: [{ type: "agent", agentId: qa.id }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coder.id }] },
+      ],
+    };
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Reject invalid policy on create", assigneeAgentId: coder.id, executionPolicy })
+      .expect(400);
+    expect(await db.select().from(issues)).toHaveLength(0);
+
+    const [existing] = await db.insert(issues).values({
+      companyId,
+      title: "Reject invalid policy on patch",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+    }).returning();
+
+    await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({ executionPolicy })
+      .expect(400);
+    const [persisted] = await db.select().from(issues).where(eq(issues.id, existing.id));
+    expect(persisted.executionPolicy).toBeNull();
+
+    await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        assigneeAgentId: qa.id,
+        executionPolicy: {
+          mode: "normal",
+          stages: [
+            {
+              type: "review",
+              participants: [{ type: "agent", agentId: qa.id }],
+            },
+            {
+              type: "approval",
+              participants: [{ type: "agent", agentId: coder.id }],
+            },
+          ],
+        },
+      })
+      .expect(400);
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, existing.id));
+    expect(unchanged).toMatchObject({
+      status: "todo",
+      assigneeAgentId: coder.id,
+      executionPolicy: null,
+    });
+
+    const validPolicy = {
+      stages: [{ type: "approval", participants: [{ type: "agent", agentId: qa.id }] }],
+    };
+    const [assigneeOnlyPatch] = await db.insert(issues).values({
+      companyId,
+      title: "Reject assignee-only invalidation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: validPolicy,
+    }).returning();
+    await request(app)
+      .patch(`/api/issues/${assigneeOnlyPatch.id}`)
+      .send({ assigneeAgentId: qa.id })
+      .expect(400);
+    const [assigneeOnlyPersisted] = await db.select().from(issues).where(eq(issues.id, assigneeOnlyPatch.id));
+    expect(assigneeOnlyPersisted.assigneeAgentId).toBe(coder.id);
+
+    const activeReviewStageId = randomUUID();
+    const nullReturnPolicy = {
+      stages: [
+        {
+          id: activeReviewStageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: qa.id }],
+        },
+        {
+          id: randomUUID(),
+          type: "approval",
+          participants: [{ type: "agent", agentId: coder.id }],
+        },
+      ],
+    };
+    const [nullReturnAssignee] = await db.insert(issues).values({
+      companyId,
+      title: "Allow a null workflow return assignee",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionState: {
+        status: "pending",
+        currentStageId: activeReviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qa.id },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).returning();
+    await request(app)
+      .patch(`/api/issues/${nullReturnAssignee.id}`)
+      .send({ executionPolicy: nullReturnPolicy })
+      .expect(200);
+  });
+
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
