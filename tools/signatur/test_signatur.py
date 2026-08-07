@@ -84,5 +84,61 @@ def test_zu_cid_ignoriert_data_src_falsch_positiv():
     assert len(anhaenge_normal) == 1
 
 
+def test_zu_cid_verarbeitet_mehrere_eingebettete_bilder():
+    """Mehrere base64-Bilder in einem Aufruf bekommen fortlaufende CIDs."""
+    # Zwei Bilder in einer HTML-Zeichenkette
+    html = (
+        '<img src="data:image/png;base64,AAAA">'
+        '<img src="data:image/png;base64,BBBB">'
+    )
+    result_html, anhaenge = signatur.zu_cid(html)
+
+    # Zwei Anhänge mit fortlaufenden Indices
+    assert len(anhaenge) == 2
+    assert anhaenge[0]["cid"] == "attachment_0"
+    assert anhaenge[1]["cid"] == "attachment_1"
+
+    # Unterschiedliche Dateinamen
+    assert anhaenge[0]["filename"] == "logo-0.png"
+    assert anhaenge[1]["filename"] == "logo-1.png"
+
+    # Beide unterschiedliche base64-Inhalte
+    assert anhaenge[0]["content"] == "AAAA"
+    assert anhaenge[1]["content"] == "BBBB"
+
+    # Beide CID-Referenzen im HTML
+    assert 'src="cid:attachment_0"' in result_html
+    assert 'src="cid:attachment_1"' in result_html
+
+    # Kein base64 mehr übrig
+    assert "data:image/png;base64," not in result_html
+
+
+def test_zu_cid_mehrere_bilder_mit_startindex():
+    """Mehrere Bilder mit ab_index berechnen korrekte fortlaufende Indices."""
+    # Zwei Bilder, Mail bringt bereits 2 Anhänge mit (ab_index=2)
+    html = (
+        '<img src="data:image/png;base64,XXXX">'
+        '<img src="data:image/png;base64,YYYY">'
+    )
+    result_html, anhaenge = signatur.zu_cid(html, ab_index=2)
+
+    # Zwei Anhänge mit Indices ab 2
+    assert len(anhaenge) == 2
+    assert anhaenge[0]["cid"] == "attachment_2"
+    assert anhaenge[1]["cid"] == "attachment_3"
+
+    # Dateinamen spiegeln den Index
+    assert anhaenge[0]["filename"] == "logo-2.png"
+    assert anhaenge[1]["filename"] == "logo-3.png"
+
+    # Beide CID-Referenzen im HTML
+    assert 'src="cid:attachment_2"' in result_html
+    assert 'src="cid:attachment_3"' in result_html
+
+    # Kein base64 mehr übrig
+    assert "data:image/png;base64," not in result_html
+
+
 def test_vorgabe_bereich_ist_ai():
     assert signatur.VORGABE_BEREICH == "ai"
