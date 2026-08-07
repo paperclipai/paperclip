@@ -321,6 +321,8 @@ Issue-thread comments and document-scoped comments have different wake semantics
 
 A top-level issue comment created by a board user or other user on an agent-assigned, non-terminal issue may wake that issue's assignee. This is the normal "the owner should see new issue-thread feedback" path, and the wake payload should identify the issue comment that caused the wake when possible.
 
+For wake decisions only, a user-shaped comment carrying a run id is self-authored when the persisted heartbeat run belongs to the same company and assignee and its context explicitly names the commented issue through `issueId` or `taskId`. That proven origin suppresses the ordinary assignee `issue_commented` wake and only that agent's self-mention; missing, invalid, cross-company, other-agent, or other-issue run attribution remains external feedback. Dependency-resolution wakes remain independent of comment origin and retain their established idempotency semantics.
+
 Issue document comments, document annotation comments, and document review comments do not wake the issue assignee by default. They remain visible as document activity and should be discoverable from the issue's document/review surfaces, but document activity is not itself an issue execution path. A document comment can provide evidence or context for the next run, but it must not be treated as a queued wake, monitor, approval, interaction response, blocker, or terminal disposition.
 
 Document-scoped activity may still route work when it is converted into an explicit action-path primitive. Valid routing exceptions include:

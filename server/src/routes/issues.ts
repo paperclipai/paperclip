@@ -4051,6 +4051,30 @@ export function issueRoutes(
       : {};
   }
 
+  async function resolveCommentWakeOriginAgentId(
+    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    actor: ReturnType<typeof getActorInfo>,
+  ): Promise<string | null> {
+    if (actor.actorType === "agent") return actor.agentId;
+    if (actor.actorType !== "user" || !actor.runId || !issue.assigneeAgentId) return null;
+
+    const run = await heartbeat.getRun(actor.runId).catch((err) => {
+      logger.warn({ err, runId: actor.runId, issueId: issue.id }, "failed to resolve comment wake origin run");
+      return null;
+    });
+    if (
+      !run ||
+      run.companyId !== issue.companyId ||
+      run.agentId !== issue.assigneeAgentId
+    ) {
+      return null;
+    }
+
+    const context = readObject(run.contextSnapshot);
+    if (context.issueId !== issue.id && context.taskId !== issue.id) return null;
+    return run.agentId;
+  }
+
   async function deriveRecoveryCommentPresentation(
     req: Request,
     companyId: string,
@@ -8790,6 +8814,9 @@ export function issueRoutes(
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
     });
+    const commentWakeOriginAgentId = comment
+      ? await resolveCommentWakeOriginAgentId(issue, actor)
+      : null;
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -8914,8 +8941,7 @@ export function issueRoutes(
 
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
-        const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment = commentWakeOriginAgentId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
@@ -8955,7 +8981,7 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          if (commentWakeOriginAgentId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -10502,6 +10528,7 @@ export function issueRoutes(
       reopened,
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
+    const commentWakeOriginAgentId = await resolveCommentWakeOriginAgentId(currentIssue, actor);
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -10567,8 +10594,7 @@ export function issueRoutes(
       }
 
       const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment = commentWakeOriginAgentId === assigneeId;
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
@@ -10637,7 +10663,7 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
+        if (commentWakeOriginAgentId === mentionedId) continue;
         addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",

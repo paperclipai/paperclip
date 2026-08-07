@@ -173,7 +173,18 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+function userActorWithRun(runId: string) {
+  return {
+    type: "user",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    runId,
+    isInstanceAdmin: false,
+  };
+}
+
+async function createApp(actorOverride?: Record<string, unknown>) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -181,7 +192,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actorOverride ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -515,6 +526,108 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+
+  it.each([
+    { label: "issue updates", method: "patch" as const },
+    { label: "top-level comments", method: "post" as const },
+  ])("does not wake the assignee for a proven self-run comment from $label", async ({ method }) => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: `comment-self-${method}`,
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "progress report",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-self",
+      companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID,
+      contextSnapshot: { issueId: existing.id },
+    });
+
+    const app = await createApp(userActorWithRun("run-self"));
+    const res = method === "patch"
+      ? await request(app).patch(`/api/issues/${existing.id}`).send({ comment: "progress report" })
+      : await request(app).post(`/api/issues/${existing.id}/comments`).send({ body: "progress report" });
+
+    expect(res.status).toBe(method === "patch" ? 200 : 201);
+    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "a run for another agent",
+      run: { companyId: "company-1", agentId: PREVIOUS_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } },
+    },
+    {
+      label: "a run from another company",
+      run: { companyId: "company-2", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } },
+    },
+    {
+      label: "a run for another issue",
+      run: { companyId: "company-1", agentId: ASSIGNEE_AGENT_ID, contextSnapshot: { issueId: "other-issue" } },
+    },
+  ])("keeps $label external to the assignee", async ({ run }) => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-unproven-run",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "external feedback",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({ id: "run-unproven", ...run });
+
+    const res = await request(await createApp(userActorWithRun("run-unproven")))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "external feedback" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
+  it("delivers a proven self-run comment's mention to another agent without a self wake", async () => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "in_progress" });
+    const body = "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect";
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-self-mention",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID, MENTIONED_AGENT_ID]);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-self-mention",
+      companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID,
+      contextSnapshot: { taskId: existing.id },
+    });
+
+    const res = await request(await createApp(userActorWithRun("run-self-mention")))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      MENTIONED_AGENT_ID,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.anything(),
     );
   });
 

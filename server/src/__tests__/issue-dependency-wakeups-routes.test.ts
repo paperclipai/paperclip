@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGetRun = vi.hoisted(() => vi.fn(async () => null));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -12,10 +13,12 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getRelationSummaries: vi.fn(),
   update: vi.fn(),
+  addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
+  getCurrentScheduledRetry: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -46,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   }),
   heartbeatService: () => ({
     wakeup: mockWakeup,
+    getRun: mockGetRun,
     reportRunActivity: vi.fn(async () => undefined),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
@@ -100,7 +104,7 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
-async function createApp() {
+async function createApp(actorOverride?: Record<string, unknown>) {
   const emptyRows: unknown[] = [];
   const whereResult = {
     limit: vi.fn(async () => emptyRows),
@@ -121,7 +125,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actorOverride ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -143,6 +147,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockGetRun.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -151,6 +156,7 @@ describe("issue dependency wakeups in issue routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "issue-1",
       blockerIssueIds: [],
@@ -221,6 +227,67 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("keeps the established blocker-resolution wake when a terminal self-run comment is suppressed", async () => {
+    const sourceIssue = {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Finish blocker",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById.mockResolvedValue(sourceIssue);
+    mockIssueService.update.mockResolvedValue({ ...sourceIssue, status: "done" });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-self-terminal",
+      issueId: sourceIssue.id,
+      companyId: sourceIssue.companyId,
+      body: "finished",
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      { id: "issue-2", assigneeAgentId: "agent-2", blockerIssueIds: ["issue-1"] },
+    ]);
+    mockGetRun.mockResolvedValue({
+      id: "run-source",
+      companyId: sourceIssue.companyId,
+      agentId: "agent-1",
+      contextSnapshot: { issueId: sourceIssue.id },
+    });
+
+    const res = await request(await createApp({
+      type: "user",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      runId: "run-source",
+      isInstanceAdmin: false,
+    })).patch("/api/issues/issue-1").send({ status: "done", comment: "finished" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-2",
+      expect.objectContaining({
+        reason: "issue_blockers_resolved",
+        idempotencyKey: expect.any(String),
+        payload: expect.objectContaining({ issueId: "issue-2", resolvedBlockerIssueId: "issue-1" }),
+      }),
+    ));
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+    expect(mockWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
