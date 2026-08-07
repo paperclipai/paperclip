@@ -50,6 +50,7 @@ export const serverConfigSchema = z.object({
   exposure: z.enum(DEPLOYMENT_EXPOSURES).default("private"),
   bind: z.enum(BIND_MODES).optional(),
   customBindHost: z.string().optional(),
+  adapterPluginsDir: z.string().optional(),
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(1).max(65535).default(3100),
   allowedHostnames: z.array(z.string().min(1)).default([]),
