@@ -1449,7 +1449,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not emit a continuation wake when request confirmations are rejected", async () => {
+  it("wakes the assignee when a rejected request confirmation carries a reason, even under wake_assignee_on_accept", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
       id: "interaction-3",
       companyId: "company-1",
@@ -1478,6 +1478,45 @@ describe.sequential("issue thread interaction routes", () => {
     const res = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/reject")
       .send({ reason: "Needs changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ rejectionReason: "Needs changes" }),
+        contextSnapshot: expect.objectContaining({ rejectionReason: "Needs changes" }),
+      }),
+    );
+  });
+
+  it("does not wake the assignee for a reason-less rejection under wake_assignee_on_accept", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-3b",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-3b",
+      payload: {
+        version: 1,
+        prompt: "Apply this plan?",
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3b/reject")
+      .send({});
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
@@ -1522,6 +1561,47 @@ describe.sequential("issue thread interaction routes", () => {
         contextSnapshot: expect.objectContaining({
           reviewPathLost: true,
           reviewPathInstruction: expect.stringContaining("Restore a reviewer"),
+        }),
+      }),
+    );
+  });
+
+  it("wakes the assignee when a rejected request confirmation carries a reason, even under continuationPolicy none", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-3c",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "none",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-3c",
+      payload: {
+        version: 1,
+        prompt: "Approve v4?",
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Diagnose the looping problem and present a plan before continuing.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3c/reject")
+      .send({ reason: "Diagnose the looping problem and present a plan before continuing." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          rejectionReason: "Diagnose the looping problem and present a plan before continuing.",
         }),
       }),
     );
@@ -1580,7 +1660,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not emit an accept-only continuation wake for rejected suggested tasks", async () => {
+  it("wakes the assignee for a rejected suggested-tasks interaction that carries a reason", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
       id: "interaction-5",
       companyId: "company-1",
@@ -1610,7 +1690,12 @@ describe.sequential("issue thread interaction routes", () => {
       .send({ reason: "Not now" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ rejectionReason: "Not now" }),
+      }),
+    );
   });
 
   it("allows agent-authored interaction creation and stamps the active run id", async () => {
