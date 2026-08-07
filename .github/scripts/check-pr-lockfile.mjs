@@ -6,12 +6,19 @@
  */
 import { fileURLToPath } from 'node:url';
 
+// refresh-lockfile.yml opens its heal PR as the commitperclip app, because PRs
+// created with GITHUB_TOKEN never trigger the checks the auto-merge waits on.
+// github-actions[bot] stays accepted so the gate keeps working if that workflow
+// ever falls back to github.token.
+export const REFRESH_BOT_AUTHORS = ['github-actions[bot]', 'commitperclip[bot]'];
+export const REFRESH_BOT_BRANCH = 'chore/refresh-lockfile';
+
 export function checkLockfile(files, prAuthor, prBranch) {
   const lockfileChanged = files.some(f => f.filename === 'pnpm-lock.yaml');
   if (!lockfileChanged) return { passed: true, failures: [] };
 
   const isRefreshBot =
-    prAuthor === 'github-actions[bot]' && prBranch === 'chore/refresh-lockfile';
+    REFRESH_BOT_AUTHORS.includes(prAuthor) && prBranch === REFRESH_BOT_BRANCH;
 
   return {
     passed: isRefreshBot,
