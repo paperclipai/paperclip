@@ -118,6 +118,7 @@ import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
+import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -143,6 +144,7 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  pluginToolDispatcher?: Pick<PluginToolDispatcher, "listToolsForAgent">;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1245,6 +1247,13 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
         status: "failed",
         message: "OAuth credentials have expired and need to be reconnected.",
         code: "oauth_refresh_missing",
+      };
+    }
+    if (code === "plugin_unavailable") {
+      return {
+        status: "failed",
+        message: error.message,
+        code: "plugin_unavailable",
       };
     }
     if (code === "binding_missing" || code === "secret_deleted" || code === "secret_inactive" || code === "version_missing") {
@@ -2873,15 +2882,34 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     try {
-      if (connection.transport === "mcp_remote") {
+      const config = asRecord(connection.config);
+      const isPaperclipPlugin = config.type === "paperclip_plugin";
+      let successMessage: string;
+      if (isPaperclipPlugin) {
+        const pluginKey = typeof config.pluginKey === "string" ? config.pluginKey.trim() : "";
+        if (!pluginKey) {
+          throw badRequest("Paperclip plugin connection requires config.pluginKey", {
+            code: "plugin_config_invalid",
+          });
+        }
+        const tools = options.pluginToolDispatcher?.listToolsForAgent({ pluginId: pluginKey }) ?? [];
+        if (tools.length === 0) {
+          throw new HttpError(
+            503,
+            `Plugin worker ${pluginKey} is not running or has no registered tools.`,
+            { code: "plugin_unavailable" },
+          );
+        }
+        successMessage = `Plugin worker is running with ${tools.length} registered ${tools.length === 1 ? "tool" : "tools"}.`;
+      } else if (connection.transport === "mcp_remote") {
         await remoteTools(connection);
+        successMessage = "Remote MCP server responded to tools/list.";
       } else {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
+        successMessage = "Approved stdio template is ready.";
       }
-      const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
-        ? "Approved stdio template is ready."
-        : "Remote MCP server responded to tools/list.");
+      const updated = await updateConnectionHealth(connection, "ok", successMessage);
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
         companyId: connection.companyId,

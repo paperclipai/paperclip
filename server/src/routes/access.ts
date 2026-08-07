@@ -1266,10 +1266,17 @@ async function getProtectedMemberReason(
   opts?: {
     actorRole?: HumanCompanyMembershipRole | null;
     instanceAdminUserIds?: ReadonlySet<string>;
-    operation?: "archive" | "update";
+    operation?: "archive" | "update" | "permissions";
   },
 ): Promise<string | null> {
-  if (member.principalType !== "user") return "Only human company members can be removed.";
+  if (member.principalType !== "user") {
+    if (opts?.operation !== "permissions") {
+      return "Only human company members can be removed.";
+    }
+    return req.actor.type === "board"
+      ? null
+      : "Board access is required to manage agent permissions.";
+  }
   if (req.actor.type !== "board") return "Board access is required to remove members.";
   if (member.principalId === req.actor.userId) return "You cannot remove yourself.";
   const isTargetInstanceAdmin = opts?.instanceAdminUserIds
@@ -1301,7 +1308,7 @@ async function assertCanManageCompanyMember(
   access: ReturnType<typeof accessService>,
   companyId: string,
   member: { principalId: string; principalType: string; membershipRole: string | null },
-  operation: "archive" | "update" = "update",
+  operation: "archive" | "update" | "permissions" = "update",
 ) {
   const reason = await getProtectedMemberReason(req, access, companyId, member, { operation });
   if (reason) throw forbidden(reason);
@@ -4725,7 +4732,7 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate, "permissions");
       const updated = await access.setMemberPermissions(
         companyId,
         memberId,
@@ -4744,9 +4751,20 @@ export function accessRoutes(
           grantCount: req.body.grants?.length ?? 0,
         },
       });
-      const member = (await loadCompanyMemberRecords(db, companyId)).find(
-        (entry) => entry.id === memberId,
-      );
+      const member = updated.principalType === "user"
+        ? (await loadCompanyMemberRecords(db, companyId)).find(
+            (entry) => entry.id === memberId,
+          )
+        : updated.principalType === "agent"
+          ? {
+              ...updated,
+              grants: await access.listPrincipalGrants(
+                companyId,
+                updated.principalType,
+                updated.principalId,
+              ),
+            }
+          : null;
       if (!member) throw notFound("Member not found");
       res.json(member);
     }

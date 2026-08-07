@@ -455,6 +455,7 @@ export async function createApp(
     deploymentExposure: opts.deploymentExposure,
     trustedLocalStdioRuntimeHost,
     toolGateway,
+    pluginToolDispatcher: toolDispatcher,
   }));
   api.use(smokeLabRoutes(db, {
     deploymentMode: opts.deploymentMode,

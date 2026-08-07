@@ -3,11 +3,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import type { Agent, Company, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
+  NOTION_SYNC_JOB_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
   WIKI_MAINTAINER_AGENT_KEY,
   WIKI_MAINTAINER_SKILL_CANONICAL_KEY,
@@ -680,6 +681,12 @@ describe("LLM Wiki plugin scaffold", () => {
     expect(manifest.agents?.[0]?.instructions?.files?.["AGENTS.md"]).toContain("{{localFolders.wiki-root.path}}");
     expect(manifest.agents?.[0]?.instructions?.assetPath).toBe("agents/wiki-maintainer");
     expect(manifest.projects?.[0]?.projectKey).toBe("llm-wiki");
+    expect(manifest.capabilities).toContain("jobs.schedule");
+    expect(manifest.capabilities).toContain("http.outbound");
+    expect(manifest.jobs).toContainEqual(expect.objectContaining({
+      jobKey: NOTION_SYNC_JOB_KEY,
+      schedule: "*/15 * * * *",
+    }));
     expect(manifest.routines?.map((routine) => routine.routineKey)).toEqual([
       CURSOR_WINDOW_ROUTINE_KEY,
       NIGHTLY_LINT_ROUTINE_KEY,
@@ -735,6 +742,30 @@ describe("LLM Wiki plugin scaffold", () => {
     expect(packageJson.devDependencies?.["react-dom"]).toBeDefined();
     expect(packageJson.devDependencies?.["@types/react-dom"]).toBeDefined();
     expect(packageJson.peerDependencies?.react).toBe(">=18");
+  });
+
+  it("registers the Notion sync job handler without requiring an agent", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: { notionSyncCompanyIds: [COMPANY_ID] },
+    });
+    harness.seed({
+      companies: [{
+        id: COMPANY_ID,
+        name: "Test Company",
+        slug: "test-company",
+        createdAt: "2026-06-24T00:00:00.000Z",
+        updatedAt: "2026-06-24T00:00:00.000Z",
+      } as unknown as Company],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.runJob(NOTION_SYNC_JOB_KEY, {
+      runId: "notion-sync-test-run",
+      trigger: "manual",
+      scheduledAt: "2026-06-24T00:00:00.000Z",
+    });
+
+    expect(harness.logs.some((entry) => entry.message === "Notion Wiki sync job completed")).toBe(true);
   });
 
   it("renders a host-aligned sidebar link with an open-book icon", () => {

@@ -6,11 +6,16 @@ import {
   type PluginManagedRoutineDeclaration,
   type PluginManagedRoutineResolution,
 } from "@paperclipai/plugin-sdk";
+import { randomUUID } from "node:crypto";
 import {
   PAPERCLIP_DISTILL_SKILL_KEY,
+  NOTION_SYNC_JOB_KEY,
+  NOTION_STRATEGY_POLL_JOB_KEY,
   WIKI_MAINTENANCE_ROUTINE_KEYS,
   WIKI_ROOT_FOLDER_KEY,
 } from "./manifest.js";
+import { runNotionWikiSync } from "./notion-sync.js";
+import { runNotionStrategyPoll } from "./notion-strategy-poll.js";
 import {
   bootstrapWikiRoot,
   bootstrapSpace,
@@ -188,6 +193,14 @@ const plugin = definePlugin({
     activeContext = ctx;
     await registerWikiTools(ctx);
 
+    ctx.jobs.register(NOTION_SYNC_JOB_KEY, async (job) => {
+      await runNotionWikiSync(ctx, job);
+    });
+
+    ctx.jobs.register(NOTION_STRATEGY_POLL_JOB_KEY, async (job) => {
+      await runNotionStrategyPoll(ctx, job);
+    });
+
     for (const eventName of PAPERCLIP_EVENT_INGESTION_EVENTS) {
       ctx.events.on(eventName, async (event) => {
         const result = await handlePaperclipEventIngestion(ctx, event);
@@ -213,6 +226,15 @@ const plugin = definePlugin({
       return companyId
         ? getOverview(ctx, companyId)
         : { status: "ok", checkedAt: new Date().toISOString(), message: "LLM Wiki worker is running" };
+    });
+
+    ctx.actions.register("run-notion-sync", async (params) => {
+      return runNotionWikiSync(ctx, {
+        jobKey: NOTION_SYNC_JOB_KEY,
+        runId: stringField(params.runId) ?? randomUUID(),
+        trigger: "manual",
+        scheduledAt: new Date().toISOString(),
+      });
     });
 
     ctx.actions.register("bootstrap-root", async (params) => {

@@ -1017,6 +1017,70 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(health.connection.healthStatus).toBe("ok");
   });
 
+  it("checks Paperclip plugin connections through the lifecycle registry without MCP HTTP", async () => {
+    const company = await createCompany(db);
+    const pluginKey = "paperclipai.plugin-llm-wiki";
+    const pluginToolDispatcher = {
+      listToolsForAgent: vi.fn(({ pluginId }: { pluginId?: string } = {}) => pluginId === pluginKey
+        ? [{
+            name: `${pluginKey}:search`,
+            displayName: "Search wiki",
+            description: "Search the wiki",
+            parametersSchema: {},
+            pluginId: pluginKey,
+          }]
+        : []),
+    };
+    const service = toolAccessService(db, { pluginToolDispatcher });
+    const connection = await service.createConnection(company.id, {
+      name: "Plugin: Wiki",
+      transport: "mcp_remote",
+      config: { url: "https://must-not-be-called.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    await db.update(toolConnections).set({
+      config: { type: "paperclip_plugin", pluginKey },
+    }).where(eq(toolConnections.id, connection.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const health = await service.checkHealth(connection.id);
+
+    expect(health.connection).toMatchObject({
+      healthStatus: "ok",
+      healthMessage: "Plugin worker is running with 1 registered tool.",
+    });
+    expect(pluginToolDispatcher.listToolsForAgent).toHaveBeenCalledWith({ pluginId: pluginKey });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("marks Paperclip plugin connections unhealthy when the worker is not registered", async () => {
+    const company = await createCompany(db);
+    const pluginKey = "paperclipai.plugin-llm-wiki";
+    const pluginToolDispatcher = { listToolsForAgent: vi.fn(() => []) };
+    const service = toolAccessService(db, { pluginToolDispatcher });
+    const connection = await service.createConnection(company.id, {
+      name: "Plugin: Wiki unavailable",
+      transport: "mcp_remote",
+      config: { url: "https://must-not-be-called.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    await db.update(toolConnections).set({
+      config: { type: "paperclip_plugin", pluginKey },
+    }).where(eq(toolConnections.id, connection.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(service.checkHealth(connection.id)).rejects.toMatchObject({ status: 502 });
+
+    const [persisted] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(persisted).toMatchObject({
+      healthStatus: "failed",
+      healthMessage: `Plugin worker ${pluginKey} is not running or has no registered tools.`,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

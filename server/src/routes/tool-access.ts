@@ -45,6 +45,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, hasCompanyAccess } from
 import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -85,6 +86,7 @@ export function toolAccessRoutes(
     deploymentExposure?: DeploymentExposure;
     trustedLocalStdioRuntimeHost?: string | null;
     toolGateway?: ToolGatewayService;
+    pluginToolDispatcher?: Pick<PluginToolDispatcher, "listToolsForAgent">;
   } = {},
 ) {
   const router = Router();
