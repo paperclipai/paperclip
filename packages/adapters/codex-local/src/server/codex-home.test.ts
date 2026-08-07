@@ -16,6 +16,29 @@ import {
   writeManagedCodexMcpConfig,
 } from "./codex-home.js";
 
+async function withTempHomes<T>(
+  fn: (input: { root: string; sourceHome: string; paperclipHome: string; targetHome: string }) => Promise<T>,
+): Promise<T> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+  const sourceHome = path.join(root, "shared-codex");
+  const paperclipHome = path.join(root, "paperclip-home");
+  const targetHome = path.join(
+    paperclipHome,
+    "instances",
+    "default",
+    "companies",
+    "company-1",
+    "codex-home",
+  );
+
+  await fs.mkdir(sourceHome, { recursive: true });
+  try {
+    return await fn({ root, sourceHome, paperclipHome, targetHome });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("mergeManagedCodexMcpGateways", () => {
   it("keeps runtime gateways and appends non-overlapping context gateways", () => {
     expect(
@@ -222,6 +245,100 @@ describe("codex managed home", () => {
     }
   });
 
+  it("writes api-key auth into managed CODEX_HOME when OPENAI_API_KEY is set", async () => {
+    await withTempHomes(async ({ sourceHome, paperclipHome, targetHome }) => {
+      await fs.writeFile(
+        path.join(sourceHome, "auth.json"),
+        JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null }, null, 2),
+        "utf8",
+      );
+
+      await prepareManagedCodexHome(
+        {
+          CODEX_HOME: sourceHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+          OPENAI_API_KEY: "sk-test-key",
+        },
+        async () => {},
+        "company-1",
+      );
+
+      const authPath = path.join(targetHome, "auth.json");
+      const stat = await fs.lstat(authPath);
+      expect(stat.isSymbolicLink()).toBe(false);
+      const auth = JSON.parse(await fs.readFile(authPath, "utf8")) as Record<string, unknown>;
+      expect(auth).toEqual({
+        auth_mode: "apikey",
+        OPENAI_API_KEY: "sk-test-key",
+      });
+    });
+  });
+
+  it("replaces api-key auth with a shared auth symlink when OPENAI_API_KEY is removed", async () => {
+    await withTempHomes(async ({ sourceHome, paperclipHome, targetHome }) => {
+      const sourceAuthPath = path.join(sourceHome, "auth.json");
+      await fs.writeFile(
+        sourceAuthPath,
+        JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null }, null, 2),
+        "utf8",
+      );
+
+      await prepareManagedCodexHome(
+        {
+          CODEX_HOME: sourceHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+          OPENAI_API_KEY: "sk-test-key",
+        },
+        async () => {},
+        "company-1",
+      );
+
+      await prepareManagedCodexHome(
+        {
+          CODEX_HOME: sourceHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+        },
+        async () => {},
+        "company-1",
+      );
+
+      const authPath = path.join(targetHome, "auth.json");
+      const stat = await fs.lstat(authPath);
+      expect(stat.isSymbolicLink()).toBe(true);
+      const linkedPath = await fs.readlink(authPath);
+      expect(path.resolve(path.dirname(authPath), linkedPath)).toBe(sourceAuthPath);
+    });
+  });
+
+  it("removes stale managed auth when OPENAI_API_KEY is removed and no shared auth exists", async () => {
+    await withTempHomes(async ({ sourceHome, paperclipHome, targetHome }) => {
+      await prepareManagedCodexHome(
+        {
+          CODEX_HOME: sourceHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+          OPENAI_API_KEY: "sk-test-key",
+        },
+        async () => {},
+        "company-1",
+      );
+
+      await prepareManagedCodexHome(
+        {
+          CODEX_HOME: sourceHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+        },
+        async () => {},
+        "company-1",
+      );
+
+      await expect(fs.lstat(path.join(targetHome, "auth.json"))).rejects.toThrow();
+    });
+  });
 });
 
 describe("isManagedCodexHomePath", () => {
@@ -395,7 +512,7 @@ describe("seedManagedCodexHome", () => {
       });
 
       const written = JSON.parse(await fs.readFile(path.join(agentHome, "auth.json"), "utf8"));
-      expect(written).toEqual({ OPENAI_API_KEY: "sk-test-123" });
+      expect(written).toEqual({ auth_mode: "apikey", OPENAI_API_KEY: "sk-test-123" });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -567,7 +684,7 @@ describe("reconcileManagedCodexHome", () => {
       });
       expect(result.status).toBe("seeded");
       const written = JSON.parse(await fs.readFile(fx.agentAuth, "utf8"));
-      expect(written).toEqual({ OPENAI_API_KEY: "sk-reconcile-1" });
+      expect(written).toEqual({ auth_mode: "apikey", OPENAI_API_KEY: "sk-reconcile-1" });
 
       const second = await reconcileManagedCodexHome({
         companyId: "company-1",
@@ -577,6 +694,36 @@ describe("reconcileManagedCodexHome", () => {
       });
       expect(second.status).toBe("already_seeded");
       expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        auth_mode: "apikey",
+        OPENAI_API_KEY: "sk-reconcile-1",
+      });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a legacy key-only auth.json (no auth_mode) to the canonical apikey shape", async () => {
+    const fx = await makeFixture();
+    try {
+      // Written by a pre-auth_mode Paperclip version: the key matches, but the
+      // codex CLI (>= 0.122) ignores the file without `auth_mode: "apikey"`.
+      await fs.mkdir(fx.agentHome, { recursive: true });
+      await fs.writeFile(
+        fx.agentAuth,
+        JSON.stringify({ OPENAI_API_KEY: "sk-reconcile-1" }),
+        { mode: 0o600 },
+      );
+
+      const result = await reconcileManagedCodexHome({
+        companyId: "company-1",
+        configuredCodexHome: fx.agentHome,
+        apiKey: "sk-reconcile-1",
+        env: fx.env,
+      });
+
+      expect(result.status).toBe("seeded");
+      expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
+        auth_mode: "apikey",
         OPENAI_API_KEY: "sk-reconcile-1",
       });
     } finally {
