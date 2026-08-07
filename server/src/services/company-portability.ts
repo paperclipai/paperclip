@@ -2154,6 +2154,7 @@ function normalizePortableConfig(
       key === "instructionsBundleMode" ||
       key === "instructionsRootPath" ||
       key === "instructionsEntryFile" ||
+      key === "instructionsStockHash" ||
       key === "promptTemplate" ||
       key === "bootstrapPromptTemplate" || // deprecated — kept for backward compat
       key === "paperclipSkillSync"
@@ -3510,6 +3511,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     delete nextAdapterConfig.instructionsBundleMode;
     delete nextAdapterConfig.instructionsRootPath;
     delete nextAdapterConfig.instructionsEntryFile;
+    delete nextAdapterConfig.instructionsStockHash;
     const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
       companyId,
       nextAdapterConfig,
@@ -5303,6 +5305,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const preImportExistingAgentIds = new Set<string>();
       const agentStatusById = new Map<string, string | null | undefined>();
       const existingAgents = await agents.list(targetCompany.id);
+      const existingAgentById = new Map(existingAgents.map((agent) => [agent.id, agent]));
       for (const existing of existingAgents) {
         const slug = normalizeAgentUrlKey(existing.name) ?? existing.id;
         existingSlugToAgentId.set(slug, existing.id);
@@ -5418,8 +5421,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
+            const existingTarget = existingAgentById.get(planAgent.existingAgentId);
+            const existingTargetConfig = isPlainRecord(existingTarget?.adapterConfig)
+              ? existingTarget.adapterConfig
+              : {};
+            const targetInstructionsStockHash = asString(existingTargetConfig.instructionsStockHash);
+            const updateAdapterConfig = { ...patch.adapterConfig };
+            if (targetInstructionsStockHash) {
+              updateAdapterConfig.instructionsStockHash = targetInstructionsStockHash;
+            }
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
+              adapterConfig: updateAdapterConfig,
               ...automationPausePatch,
             });
             if (!updated) {
@@ -5436,8 +5449,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             try {
               const materialized = await instructions.materializeManagedBundle(updated, bundleFiles, {
                 clearLegacyPromptTemplate: true,
-                replaceExisting: true,
               });
+              if (materialized.materialization.action === "skipped") {
+                warnings.push(`Preserved operator-modified instructions bundle for ${manifestAgent.slug}; imported stock files were skipped.`);
+              }
               updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
@@ -5483,8 +5498,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           try {
             const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
               clearLegacyPromptTemplate: true,
-              replaceExisting: true,
             });
+            if (materialized.materialization.action === "skipped") {
+              warnings.push(`Preserved operator-modified instructions bundle for ${manifestAgent.slug}; imported stock files were skipped.`);
+            }
             created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);

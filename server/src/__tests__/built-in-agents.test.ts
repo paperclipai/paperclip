@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -797,6 +798,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const instructions = agentInstructionsService();
 
     await instructions.writeFile(created.agent!, "AGENTS.md", "# Custom Reflection Coach\n\nOperator edit.\n");
+    await instructions.writeFile(created.agent!, "OPERATOR.md", "Operator-added file.\n");
 
     const reconciled = await builtIns.ensure(companyId, "reflection-coach");
     const drift = reconciled.resources.find((resource) => resource.resourceKind === "instructions");
@@ -804,12 +806,16 @@ describeEmbeddedPostgres("built-in agents", () => {
       stockStatus: "operator_modified",
       updateAvailable: true,
       resetAvailable: true,
-      changedFiles: ["AGENTS.md"],
+      changedFiles: ["AGENTS.md", "OPERATOR.md"],
     });
     await expect(instructions.readFile(reconciled.agent!, "AGENTS.md")).resolves.toMatchObject({
       content: "# Custom Reflection Coach\n\nOperator edit.\n",
     });
+    await expect(instructions.readFile(reconciled.agent!, "OPERATOR.md")).resolves.toMatchObject({
+      content: "Operator-added file.\n",
+    });
 
+    const managedRoot = String(reconciled.agent?.adapterConfig.instructionsRootPath);
     const reset = await builtIns.reset(companyId, "reflection-coach");
     expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
       stockStatus: "stock_current",
@@ -818,6 +824,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     const resetFile = await instructions.readFile(reset.agent!, "AGENTS.md");
     expect(resetFile.content).toContain("Reflection Coach");
     expect(resetFile.content).not.toContain("Operator edit.");
+    await expect(fs.readFile(path.join(`${managedRoot}.backup-1`, "AGENTS.md"), "utf8")).resolves.toBe(
+      "# Custom Reflection Coach\n\nOperator edit.\n",
+    );
+    await expect(fs.readFile(path.join(`${managedRoot}.backup-1`, "OPERATOR.md"), "utf8")).resolves.toBe(
+      "Operator-added file.\n",
+    );
   });
 
   it("blocks deleting a built-in agent", async () => {

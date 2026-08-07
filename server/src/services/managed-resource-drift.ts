@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-
 export type ManagedResourceStockStatus =
   | "missing"
   | "stock_current"
@@ -20,7 +19,6 @@ export function stableJson(value: unknown): string {
 export function stockHash(value: unknown) {
   return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
 }
-
 export function resourceStatus(input: {
   resourceId: string | null;
   currentHash: string | null;

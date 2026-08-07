@@ -1,7 +1,12 @@
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resourceStatus } from "./managed-resource-drift.js";
+import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -9,6 +14,7 @@ const ROOT_KEY = "instructionsRootPath";
 const ENTRY_KEY = "instructionsEntryFile";
 const FILE_KEY = "instructionsFilePath";
 const PROMPT_KEY = "promptTemplate";
+const STOCK_HASH_KEY = "instructionsStockHash";
 /** @deprecated Use the managed instructions bundle system instead. */
 const BOOTSTRAP_PROMPT_KEY = "bootstrapPromptTemplate";
 const LEGACY_PROMPT_TEMPLATE_PATH = "promptTemplate.legacy.md";
@@ -24,6 +30,15 @@ const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   "node_modules",
   "venv",
 ]);
+const MANAGED_BUNDLE_LOCK_SUFFIX = ".paperclip-materialize.lock";
+const MANAGED_BUNDLE_LOCK_TIMEOUT_MS = 30_000;
+const MANAGED_BUNDLE_LOCK_HEARTBEAT_MS = 1_000;
+const MANAGED_BUNDLE_LOCK_STALE_MS = 10_000;
+const MANAGED_BUNDLE_LOCK_PROBE_CACHE_MS = 1_000;
+const MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS = 3;
+const MANAGED_BUNDLE_LOCK_PROBE_RETRY_MS = 25;
+const MANAGED_BUNDLE_LOCK_PROBE_TIMEOUT_MS = 250;
+const managedBundleProbeConfirmedAt = new Map<string, number>();
 
 type BundleMode = "managed" | "external";
 
@@ -63,6 +78,20 @@ type AgentInstructionsBundle = {
   legacyPromptTemplateActive: boolean;
   legacyBootstrapPromptTemplateActive: boolean;
   files: AgentInstructionsFileSummary[];
+};
+
+export type ManagedBundleMaterialization = {
+  stockStatus: ManagedResourceStockStatus;
+  action: "added" | "updated" | "unchanged" | "skipped" | "reset";
+  stockHash: string;
+  previousHash: string | null;
+  recordedStockHash: string | null;
+  added: string[];
+  removed: string[];
+  updated: string[];
+  skipped: string[];
+  backedUp: string[];
+  backupPath: string | null;
 };
 
 type BundleState = {
@@ -156,6 +185,383 @@ async function statIfExists(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+type ProcessStartMarkerScheme = "linux" | "ps";
+
+function processStartMarkerScheme(marker: string): ProcessStartMarkerScheme | null {
+  if (marker.startsWith("linux:")) return "linux";
+  if (marker.startsWith("ps:")) return "ps";
+  return null;
+}
+
+async function processStartMarker(
+  pid: number,
+  preferredScheme?: ProcessStartMarkerScheme,
+): Promise<string | null> {
+  if (!isProcessAlive(pid)) return null;
+  if (process.platform === "linux" && preferredScheme !== "ps") {
+    try {
+      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      const fieldsAfterCommand = commandEnd >= 0
+        ? stat.slice(commandEnd + 1).trim().split(/\s+/)
+        : [];
+      const startTime = fieldsAfterCommand[19];
+      if (startTime) return `linux:${startTime}`;
+    } catch {
+      // Fall through to ps for non-standard procfs environments.
+    }
+    if (preferredScheme === "linux") return null;
+  }
+
+  if (preferredScheme === "linux") return null;
+
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      { timeout: 1_000 },
+      (error, stdout) => {
+        const startedAt = error ? "" : stdout.trim();
+        resolve(startedAt ? `ps:${startedAt}` : null);
+      },
+    );
+  });
+}
+
+async function managedBundleLockAgeMs(targetPath: string): Promise<number> {
+  const stat = await statIfExists(targetPath);
+  return stat ? Date.now() - stat.mtimeMs : Number.POSITIVE_INFINITY;
+}
+
+function managedBundleLockProbePath(token: string): string {
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\paperclip-managed-bundle-${token}`;
+  }
+  if (process.platform === "linux") {
+    return `\0paperclip-managed-bundle-${token}`;
+  }
+  return path.join("/tmp", `.paperclip-managed-bundle-${token}.sock`);
+}
+
+function managedBundleLockProbeHasFilesystemPath(): boolean {
+  return process.platform !== "win32" && process.platform !== "linux";
+}
+
+async function startManagedBundleLockProbe(token: string): Promise<{
+  path: string;
+  server: net.Server;
+}> {
+  const probePath = managedBundleLockProbePath(token);
+  const server = net.createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen(probePath, () => {
+      server.off("error", onError);
+      server.on("error", () => undefined);
+      server.unref();
+      resolve();
+    });
+  });
+  return { path: probePath, server };
+}
+
+async function stopManagedBundleLockProbe(probe: {
+  path: string;
+  server: net.Server;
+}): Promise<void> {
+  await new Promise<void>((resolve) => probe.server.close(() => resolve()));
+  managedBundleProbeConfirmedAt.delete(probe.path);
+  if (managedBundleLockProbeHasFilesystemPath()) {
+    await fs.rm(probe.path, { force: true }).catch(() => undefined);
+  }
+}
+
+type ManagedBundleLockProbeStatus = "alive" | "absent" | "indeterminate";
+
+function managedBundleLockProbeErrorStatus(error: Error): ManagedBundleLockProbeStatus {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ECONNREFUSED" || code === "ENOENT"
+    ? "absent"
+    : "indeterminate";
+}
+
+async function probeManagedBundleLockOnce(
+  probePath: string,
+): Promise<ManagedBundleLockProbeStatus> {
+  return new Promise<ManagedBundleLockProbeStatus>((resolve) => {
+    const socket = net.createConnection(probePath);
+    let settled = false;
+    const finish = (result: ManagedBundleLockProbeStatus) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.unref();
+    socket.once("connect", () => finish("alive"));
+    socket.once("error", (error) => finish(managedBundleLockProbeErrorStatus(error)));
+    // A timeout does not prove the listener is absent. Under load, evicting on
+    // this ambiguous result could let two processes displace the live tree.
+    socket.setTimeout(MANAGED_BUNDLE_LOCK_PROBE_TIMEOUT_MS, () => finish("indeterminate"));
+  });
+}
+
+async function managedBundleLockProbeStatus(
+  probePath: string,
+): Promise<ManagedBundleLockProbeStatus> {
+  const confirmedAt = managedBundleProbeConfirmedAt.get(probePath);
+  if (confirmedAt !== undefined && Date.now() - confirmedAt < MANAGED_BUNDLE_LOCK_PROBE_CACHE_MS) {
+    return "alive";
+  }
+
+  let sawIndeterminateResult = false;
+  for (let attempt = 0; attempt < MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS; attempt += 1) {
+    const status = await probeManagedBundleLockOnce(probePath);
+    if (status === "alive") {
+      managedBundleProbeConfirmedAt.set(probePath, Date.now());
+      return status;
+    }
+    if (status === "indeterminate") sawIndeterminateResult = true;
+    if (attempt + 1 < MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, MANAGED_BUNDLE_LOCK_PROBE_RETRY_MS));
+    }
+  }
+
+  managedBundleProbeConfirmedAt.delete(probePath);
+  // Reap only after every attempt definitively reports no listener. Any
+  // transient socket error or timeout keeps the lock, preferring a bounded
+  // acquisition timeout over concurrent materialization of the same tree.
+  return sawIndeterminateResult ? "indeterminate" : "absent";
+}
+
+async function restoreManagedBundleLockOwner(ownerPath: string, claimedOwnerPath: string): Promise<void> {
+  await fs.rename(claimedOwnerPath, ownerPath).catch(() => undefined);
+}
+
+async function claimManagedBundleLockOwner(
+  lockPath: string,
+  expectedOwner: string,
+  purpose: "release" | "reap",
+): Promise<string | null> {
+  const ownerPath = path.join(lockPath, "owner.json");
+  const claimedOwnerPath = path.join(lockPath, `owner.${purpose}-${randomUUID()}.json`);
+  try {
+    await fs.rename(ownerPath, claimedOwnerPath);
+  } catch {
+    return null;
+  }
+
+  const claimedOwner = await fs.readFile(claimedOwnerPath, "utf8").catch(() => null);
+  if (claimedOwner !== expectedOwner) {
+    await restoreManagedBundleLockOwner(ownerPath, claimedOwnerPath);
+    return null;
+  }
+  return claimedOwnerPath;
+}
+
+async function claimOwnerlessManagedBundleLock(lockPath: string): Promise<string | null> {
+  const ownerPath = path.join(lockPath, "owner.json");
+  const claimPath = path.join(lockPath, "owner.reaping");
+  try {
+    await fs.writeFile(claimPath, randomUUID(), { encoding: "utf8", flag: "wx" });
+  } catch {
+    return null;
+  }
+  if (await statIfExists(ownerPath)) {
+    await fs.rm(claimPath, { force: true }).catch(() => undefined);
+    return null;
+  }
+  return claimPath;
+}
+
+function processStartMarkersComparable(left: string, right: string): boolean {
+  const leftSeparator = left.indexOf(":");
+  const rightSeparator = right.indexOf(":");
+  return leftSeparator > 0
+    && rightSeparator > 0
+    && left.slice(0, leftSeparator) === right.slice(0, rightSeparator);
+}
+
+function processStartMarkerTimestamp(marker: string | null): number | null {
+  if (!marker?.startsWith("ps:")) return null;
+  const timestamp = Date.parse(marker.slice("ps:".length));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+async function processStartedAfterLockCreation(pid: number, createdAt: unknown): Promise<boolean> {
+  if (typeof createdAt !== "string") return false;
+  const lockCreatedAt = Date.parse(createdAt);
+  if (!Number.isFinite(lockCreatedAt)) return false;
+  const processStartedAt = processStartMarkerTimestamp(await processStartMarker(pid, "ps"));
+  return processStartedAt !== null && processStartedAt > lockCreatedAt;
+}
+
+async function removeStaleManagedBundleLock(lockPath: string): Promise<boolean> {
+  let shouldRemove = false;
+  let ownerSnapshot: string | null = null;
+  let staleProbePath: string | null = null;
+  try {
+    ownerSnapshot = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
+    const owner = JSON.parse(ownerSnapshot) as {
+      pid?: unknown;
+      token?: unknown;
+      probePath?: unknown;
+      processStartMarker?: unknown;
+      createdAt?: unknown;
+    };
+    const pid = typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0
+      ? owner.pid
+      : null;
+    const token = typeof owner.token === "string" && /^[0-9a-f-]{36}$/i.test(owner.token)
+      ? owner.token
+      : null;
+    const probePath = token !== null
+      && owner.probePath === managedBundleLockProbePath(token)
+      ? owner.probePath
+      : null;
+    if (probePath !== null) {
+      shouldRemove = await managedBundleLockProbeStatus(probePath) === "absent";
+      if (shouldRemove) staleProbePath = probePath;
+    } else if (pid !== null && isProcessAlive(pid)) {
+      const recordedStart = typeof owner.processStartMarker === "string"
+        ? owner.processStartMarker
+        : null;
+      const recordedScheme = recordedStart ? processStartMarkerScheme(recordedStart) : null;
+      const currentStart = await processStartMarker(pid, recordedScheme ?? undefined);
+      if (
+        recordedStart
+        && currentStart
+        && processStartMarkersComparable(recordedStart, currentStart)
+      ) {
+        shouldRemove = recordedStart !== currentStart;
+      } else {
+        // Probe-less legacy locks still record when they were created. A live
+        // process that started later cannot be the original owner, which lets
+        // us recover a reused PID without ever evicting an owner merely because
+        // its heartbeat was delayed.
+        shouldRemove = await processStartedAfterLockCreation(pid, owner.createdAt);
+      }
+    } else if (pid !== null) {
+      shouldRemove = true;
+    } else {
+      shouldRemove = await managedBundleLockAgeMs(lockPath) > MANAGED_BUNDLE_LOCK_STALE_MS;
+    }
+  } catch {
+    shouldRemove = await managedBundleLockAgeMs(lockPath) > MANAGED_BUNDLE_LOCK_STALE_MS;
+  }
+  if (!shouldRemove) return false;
+  const claimPath = ownerSnapshot === null
+    ? await claimOwnerlessManagedBundleLock(lockPath)
+    : await claimManagedBundleLockOwner(lockPath, ownerSnapshot, "reap");
+  if (!claimPath) return false;
+  return fs.rm(lockPath, { recursive: true, force: true })
+    .then(async () => {
+      if (staleProbePath !== null) {
+        managedBundleProbeConfirmedAt.delete(staleProbePath);
+        if (managedBundleLockProbeHasFilesystemPath()) {
+          await fs.rm(staleProbePath, { force: true }).catch(() => undefined);
+        }
+      }
+      return true;
+    })
+    .catch(async () => {
+      if (ownerSnapshot !== null) {
+        await restoreManagedBundleLockOwner(path.join(lockPath, "owner.json"), claimPath);
+      } else {
+        await fs.rm(claimPath, { force: true }).catch(() => undefined);
+      }
+      return false;
+    });
+}
+
+async function withManagedBundleMaterializationLock<T>(
+  rootPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${rootPath}${MANAGED_BUNDLE_LOCK_SUFFIX}`;
+  const ownerPath = path.join(lockPath, "owner.json");
+  const token = randomUUID();
+  const heartbeatPath = path.join(lockPath, `heartbeat-${token}`);
+  const pendingLockPath = `${lockPath}.pending-${token}`;
+  const ownerProcessStartMarker = await processStartMarker(process.pid);
+  const deadline = Date.now() + MANAGED_BUNDLE_LOCK_TIMEOUT_MS;
+  const probe = await startManagedBundleLockProbe(token);
+  await fs.mkdir(path.dirname(rootPath), { recursive: true });
+  try {
+    await fs.mkdir(pendingLockPath);
+    await fs.writeFile(
+      path.join(pendingLockPath, "owner.json"),
+      `${JSON.stringify({
+        pid: process.pid,
+        token,
+        probePath: probe.path,
+        processStartMarker: ownerProcessStartMarker,
+        createdAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(pendingLockPath, `heartbeat-${token}`), "", "utf8");
+    while (true) {
+      try {
+        await fs.rename(pendingLockPath, lockPath);
+        break;
+      } catch (error) {
+        if (!(await statIfExists(lockPath))) throw error;
+        if (await removeStaleManagedBundleLock(lockPath)) continue;
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out waiting for managed instructions lock at ${lockPath}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  } catch (error) {
+    await fs.rm(pendingLockPath, { recursive: true, force: true }).catch(() => undefined);
+    await stopManagedBundleLockProbe(probe);
+    throw error;
+  }
+
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void fs.utimes(heartbeatPath, now, now).catch(() => undefined);
+  }, MANAGED_BUNDLE_LOCK_HEARTBEAT_MS);
+  heartbeat.unref?.();
+  try {
+    return await operation();
+  } finally {
+    clearInterval(heartbeat);
+    const ownerSnapshot = await fs.readFile(ownerPath, "utf8").catch(() => null);
+    const owner = ownerSnapshot === null
+      ? null
+      : (() => {
+          try {
+            return JSON.parse(ownerSnapshot) as { token?: unknown };
+          } catch {
+            return null;
+          }
+        })();
+    if (owner?.token === token && ownerSnapshot !== null) {
+      const claimPath = await claimManagedBundleLockOwner(lockPath, ownerSnapshot, "release");
+      if (claimPath) {
+        await fs.rm(lockPath, { recursive: true, force: true }).catch(async () => {
+          await restoreManagedBundleLockOwner(ownerPath, claimPath);
+        });
+      }
+    }
+    await stopManagedBundleLockProbe(probe);
+  }
+}
+
 function shouldIgnoreInstructionsEntry(entry: { name: string; isDirectory(): boolean; isFile(): boolean }) {
   if (entry.name === "." || entry.name === "..") return true;
   if (entry.isDirectory()) {
@@ -191,7 +597,80 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   }
 
   await walk(rootPath, "");
-  return output.sort((left, right) => left.localeCompare(right));
+  return output.sort(compareInstructionPaths);
+}
+
+function canonicalizeInstructionsContent(content: string) {
+  return content.replace(/\r\n?/g, "\n");
+}
+
+function compareInstructionPaths(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function managedInstructionsTreeHash(files: Record<string, string>) {
+  const canonicalEntries = Object.entries(files)
+    .map(([relativePath, content]) => [
+      normalizeRelativeFilePath(relativePath),
+      canonicalizeInstructionsContent(content),
+    ] as const)
+    .sort(([left], [right]) => compareInstructionPaths(left, right));
+  const canonicalJson = `{${canonicalEntries
+    .map(([relativePath, content]) => `${JSON.stringify(relativePath)}:${JSON.stringify(content)}`)
+    .join(",")}}`;
+  return `sha256:${createHash("sha256").update(canonicalJson).digest("hex")}`;
+}
+
+async function readInstructionsTree(rootPath: string): Promise<Record<string, string> | null> {
+  const rootStat = await statIfExists(rootPath);
+  if (!rootStat) return null;
+  if (!rootStat.isDirectory()) return {};
+  const relativePaths = await listFilesRecursive(rootPath);
+  return Object.fromEntries(await Promise.all(relativePaths.map(async (relativePath) => [
+    relativePath,
+    await fs.readFile(resolvePathWithinRoot(rootPath, relativePath), "utf8"),
+  ] as const)));
+}
+
+function normalizeMaterializedFiles(files: Record<string, string>, entryFile: string) {
+  const normalized = new Map<string, string>();
+  for (const [relativePath, content] of Object.entries(files)) {
+    const normalizedPath = normalizeRelativeFilePath(relativePath);
+    if (normalized.has(normalizedPath)) {
+      throw unprocessable(`Duplicate instructions file path after normalization: ${normalizedPath}`);
+    }
+    normalized.set(normalizedPath, content);
+  }
+  if (!normalized.has(entryFile)) normalized.set(entryFile, "");
+  return Object.fromEntries(
+    [...normalized.entries()].sort(([left], [right]) => compareInstructionPaths(left, right)),
+  );
+}
+
+function changedInstructionFiles(current: Record<string, string>, prospective: Record<string, string>) {
+  const added: string[] = [];
+  const removed: string[] = [];
+  const updated: string[] = [];
+  const paths = [...new Set([...Object.keys(current), ...Object.keys(prospective)])]
+    .sort(compareInstructionPaths);
+  for (const relativePath of paths) {
+    const hasCurrent = Object.prototype.hasOwnProperty.call(current, relativePath);
+    const hasProspective = Object.prototype.hasOwnProperty.call(prospective, relativePath);
+    if (!hasCurrent && hasProspective) added.push(relativePath);
+    else if (hasCurrent && !hasProspective) removed.push(relativePath);
+    else if (
+      canonicalizeInstructionsContent(current[relativePath]!)
+      !== canonicalizeInstructionsContent(prospective[relativePath]!)
+    ) updated.push(relativePath);
+  }
+  return { added, removed, updated };
+}
+
+async function nextInstructionsBackupPath(rootPath: string) {
+  for (let index = 1; ; index += 1) {
+    const candidate = `${rootPath}.backup-${index}`;
+    if (!(await statIfExists(candidate))) return candidate;
+  }
 }
 
 async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
@@ -344,7 +823,7 @@ function toBundle(agent: AgentLike, state: BundleState, files: AgentInstructions
       virtual: true,
     });
   }
-  nextFiles.sort((left, right) => left.path.localeCompare(right.path));
+  nextFiles.sort((left, right) => compareInstructionPaths(left.path, right.path));
   return {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -381,6 +860,7 @@ function applyBundleConfig(
     delete next[PROMPT_KEY];
     delete next[BOOTSTRAP_PROMPT_KEY];
   }
+  if (input.mode === "external") delete next[STOCK_HASH_KEY];
   return next;
 }
 
@@ -439,6 +919,7 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[MODE_KEY];
     delete next[ROOT_KEY];
     delete next[ENTRY_KEY];
+    delete next[STOCK_HASH_KEY];
     return next;
   }
   const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
@@ -682,44 +1163,187 @@ export function agentInstructionsService() {
     };
   }
 
+  async function materializeManagedBundleInternal(
+    agent: AgentLike,
+    files: Record<string, string>,
+    options?: {
+      clearLegacyPromptTemplate?: boolean;
+      entryFile?: string;
+      recordedStockHash?: string | null;
+      forceReset?: boolean;
+    },
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown>;
+    materialization: ManagedBundleMaterialization;
+  }> {
+    const rootPath = resolveManagedInstructionsRoot(agent);
+    const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
+    await fs.mkdir(path.dirname(rootPath), { recursive: true });
+
+    const prospectiveFiles = normalizeMaterializedFiles(files, entryFile);
+    const stockHash = managedInstructionsTreeHash(prospectiveFiles);
+    const configuredStockHash = asString(asRecord(agent.adapterConfig)[STOCK_HASH_KEY]);
+    const recordedStockHash = options?.recordedStockHash ?? configuredStockHash;
+    const initialFiles = await readInstructionsTree(rootPath);
+    const initialHash = initialFiles === null ? null : managedInstructionsTreeHash(initialFiles);
+    const initialStatus = resourceStatus({
+      resourceId: initialFiles === null ? null : agent.id,
+      currentHash: initialHash,
+      bindingStockHash: recordedStockHash,
+      latestStockHash: stockHash,
+    });
+    const configuredEntryFile = deriveBundleState(agent).entryFile;
+    const preservedEntryFile = (currentFiles: Record<string, string>) => {
+      if (Object.prototype.hasOwnProperty.call(currentFiles, entryFile)) return entryFile;
+      if (Object.prototype.hasOwnProperty.call(currentFiles, configuredEntryFile)) return configuredEntryFile;
+      if (Object.prototype.hasOwnProperty.call(currentFiles, ENTRY_FILE_DEFAULT)) return ENTRY_FILE_DEFAULT;
+      return Object.keys(currentFiles).sort(compareInstructionPaths)[0] ?? entryFile;
+    };
+    const configFor = (advanceStockHash: boolean, currentFiles: Record<string, string>) => {
+      const next = applyBundleConfig(asRecord(agent.adapterConfig), {
+        mode: "managed",
+        rootPath,
+        entryFile: advanceStockHash ? entryFile : preservedEntryFile(currentFiles),
+        clearLegacyPromptTemplate: options?.clearLegacyPromptTemplate,
+      });
+      if (advanceStockHash) next[STOCK_HASH_KEY] = stockHash;
+      return next;
+    };
+
+    const finish = async (
+      action: ManagedBundleMaterialization["action"],
+      stockStatus: ManagedResourceStockStatus,
+      currentFiles: Record<string, string>,
+      currentHash: string | null,
+      input: { advanceStockHash: boolean; backupPath?: string | null },
+    ) => {
+      const changes = changedInstructionFiles(currentFiles, prospectiveFiles);
+      const backupPath = input.backupPath ?? null;
+      const adapterConfig = configFor(input.advanceStockHash, currentFiles);
+      const bundle = await getBundle({ ...agent, adapterConfig });
+      const changedPaths = [...changes.added, ...changes.removed, ...changes.updated]
+        .sort(compareInstructionPaths);
+      return {
+        bundle,
+        adapterConfig,
+        materialization: {
+          stockStatus,
+          action,
+          stockHash,
+          previousHash: currentHash,
+          recordedStockHash,
+          ...changes,
+          skipped: action === "skipped" ? changedPaths : [],
+          backedUp: backupPath ? Object.keys(currentFiles).sort(compareInstructionPaths) : [],
+          backupPath,
+        },
+      };
+    };
+
+    if (!options?.forceReset && initialStatus === "operator_modified") {
+      return finish("skipped", initialStatus, initialFiles ?? {}, initialHash, { advanceStockHash: false });
+    }
+    if (!options?.forceReset && initialStatus === "stock_current") {
+      return finish("unchanged", initialStatus, initialFiles ?? {}, initialHash, { advanceStockHash: true });
+    }
+
+    const stagingRoot = await fs.mkdtemp(path.join(path.dirname(rootPath), ".instructions-materialize-"));
+    const stagedPath = path.join(stagingRoot, "staged");
+    await fs.mkdir(stagedPath, { recursive: true });
+    try {
+      await writeBundleFiles(stagedPath, prospectiveFiles, { overwriteExisting: true });
+      const stagedFiles = await readInstructionsTree(stagedPath);
+      if (!stagedFiles || managedInstructionsTreeHash(stagedFiles) !== stockHash) {
+        throw new Error("Staged instructions bundle hash did not match the prospective stock hash");
+      }
+
+      const recheckedFiles = await readInstructionsTree(rootPath);
+      const recheckedHash = recheckedFiles === null ? null : managedInstructionsTreeHash(recheckedFiles);
+      const recheckedStatus = resourceStatus({
+        resourceId: recheckedFiles === null ? null : agent.id,
+        currentHash: recheckedHash,
+        bindingStockHash: recordedStockHash,
+        latestStockHash: stockHash,
+      });
+      if (!options?.forceReset && recheckedStatus === "operator_modified") {
+        return finish("skipped", recheckedStatus, recheckedFiles ?? {}, recheckedHash, { advanceStockHash: false });
+      }
+      if (!options?.forceReset && recheckedStatus === "stock_current") {
+        return finish("unchanged", recheckedStatus, recheckedFiles ?? {}, recheckedHash, { advanceStockHash: true });
+      }
+
+      const backupPath = options?.forceReset && recheckedFiles !== null
+        ? await nextInstructionsBackupPath(rootPath)
+        : null;
+      const displacedPath = recheckedFiles === null
+        ? null
+        : backupPath ?? path.join(stagingRoot, "previous");
+      if (displacedPath) {
+        await fs.rename(rootPath, displacedPath);
+        if (!options?.forceReset) {
+          const displacedFiles = await readInstructionsTree(displacedPath);
+          const displacedHash = displacedFiles === null ? null : managedInstructionsTreeHash(displacedFiles);
+          if (displacedHash !== recheckedHash) {
+            await fs.rename(displacedPath, rootPath);
+            return finish("skipped", "operator_modified", displacedFiles ?? {}, displacedHash, {
+              advanceStockHash: false,
+            });
+          }
+        }
+      }
+
+      try {
+        await fs.rename(stagedPath, rootPath);
+      } catch (error) {
+        if (displacedPath && !(await statIfExists(rootPath))) {
+          await fs.rename(displacedPath, rootPath).catch(() => undefined);
+        }
+        throw error;
+      }
+
+      const action: ManagedBundleMaterialization["action"] = options?.forceReset
+        ? "reset"
+        : recheckedStatus === "missing"
+          ? "added"
+          : "updated";
+      return finish(action, recheckedStatus, recheckedFiles ?? {}, recheckedHash, {
+        advanceStockHash: true,
+        backupPath,
+      });
+    } finally {
+      await fs.rm(stagingRoot, { recursive: true, force: true });
+    }
+  }
+
   async function materializeManagedBundle(
     agent: AgentLike,
     files: Record<string, string>,
     options?: {
       clearLegacyPromptTemplate?: boolean;
-      replaceExisting?: boolean;
       entryFile?: string;
+      recordedStockHash?: string | null;
     },
-  ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
+  ) {
     const rootPath = resolveManagedInstructionsRoot(agent);
-    const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
+    return withManagedBundleMaterializationLock(rootPath, () =>
+      materializeManagedBundleInternal(agent, files, options),
+    );
+  }
 
-    if (options?.replaceExisting) {
-      await fs.rm(rootPath, { recursive: true, force: true });
-    }
-    await fs.mkdir(rootPath, { recursive: true });
-
-    const normalizedEntries = Object.entries(files).map(([relativePath, content]) => [
-      normalizeRelativeFilePath(relativePath),
-      content,
-    ] as const);
-    for (const [relativePath, content] of normalizedEntries) {
-      const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      await fs.writeFile(absolutePath, content, "utf8");
-    }
-    if (!normalizedEntries.some(([relativePath]) => relativePath === entryFile)) {
-      await fs.writeFile(resolvePathWithinRoot(rootPath, entryFile), "", "utf8");
-    }
-
-    const adapterConfig = applyBundleConfig(asRecord(agent.adapterConfig), {
-      mode: "managed",
-      rootPath,
-      entryFile,
-      clearLegacyPromptTemplate: options?.clearLegacyPromptTemplate,
-    });
-    const bundle = await getBundle({ ...agent, adapterConfig });
-    return { bundle, adapterConfig };
+  async function forceResetManagedBundle(
+    agent: AgentLike,
+    files: Record<string, string>,
+    options?: {
+      clearLegacyPromptTemplate?: boolean;
+      entryFile?: string;
+      recordedStockHash?: string | null;
+    },
+  ) {
+    const rootPath = resolveManagedInstructionsRoot(agent);
+    return withManagedBundleMaterializationLock(rootPath, () =>
+      materializeManagedBundleInternal(agent, files, { ...options, forceReset: true }),
+    );
   }
 
   return {
@@ -731,5 +1355,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    forceResetManagedBundle,
   };
 }
