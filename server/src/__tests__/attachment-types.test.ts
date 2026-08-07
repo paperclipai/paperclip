@@ -198,4 +198,9 @@ describe("isInlineAttachmentContentType", () => {
     expect(isInlineAttachmentContentType("text/html")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
   });
+
+  it("rejects text/markdown because browsers cannot render it inline", () => {
+    expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/markdown");
+    expect(isInlineAttachmentContentType("text/markdown")).toBe(false);
+  });
 });
