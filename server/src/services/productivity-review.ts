@@ -1,8 +1,10 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   costEvents,
@@ -21,6 +23,14 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import {
+  collectIssueWorkTrace,
+  completionArtifacts,
+  hasCompletionEvidence,
+  type IssueWorkTrace,
+  progressOnlyArtifacts,
+  toWorkTraceIssue,
+} from "./productivity-review-work-trace.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -35,11 +45,20 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+const FAILED_RUN_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+/** What an `unreported_completion` review states about itself; read back to detect reclassification. */
+const UNREPORTED_COMPLETION_MARKER = "Classification: `unreported_completion`";
+/**
+ * Wakeup-request states that mean the wake will still reach the agent, or already did. A request
+ * that was `skipped`, `cancelled` or `failed` was persisted but never ran, so it must not be read
+ * as proof of delivery.
+ */
+const DELIVERED_WAKEUP_STATUSES = ["queued", "claimed", "deferred_issue_execution", "coalesced"];
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -51,6 +70,15 @@ type ProductivityRunSample = Pick<
   "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson"
 >;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
+/**
+ * `stall` — no evidence that the deliverable is finished since the issue went `in_progress`. This
+ * is the fallback: planning documents, attachments and in-flight work products land here, because
+ * a stuck agent produces exactly those.
+ * `unreported_completion` — the deliverable demonstrably exists (a commit carrying the issue key,
+ * or a work product the assignee moved into a completion status), only the report/close is
+ * missing. Reassign/decompose would rebuild finished work, so it is never advised.
+ */
+export type ProductivityReviewClassification = "stall" | "unreported_completion";
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
@@ -67,6 +95,9 @@ type ProductivityReviewThresholds = {
 
 type ProductivityReviewEvidence = {
   trigger: ProductivityReviewTrigger;
+  classification: ProductivityReviewClassification;
+  workTrace: IssueWorkTrace;
+  lastFailedRun: HeartbeatRunRow | null;
   triggerReasons: string[];
   sourceIssue: IssueRow;
   sourceAgent: AgentRow;
@@ -92,6 +123,7 @@ type ProductivityReviewEvidence = {
 type EnqueueWakeup = (
   agentId: string,
   opts?: {
+    idempotencyKey?: string | null;
     source?: "timer" | "assignment" | "on_demand" | "automation";
     triggerDetail?: "manual" | "ping" | "callback" | "system";
     reason?: string | null;
@@ -214,7 +246,14 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+export function productivityReviewService(
+  db: Db,
+  deps?: {
+    enqueueWakeup?: EnqueueWakeup;
+    /** Test seam: where the assignee's default agent workspace checkout lives. */
+    resolveAgentWorkspaceDir?: (agentId: string) => string | null;
+  },
+) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
 
@@ -556,6 +595,20 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
+    // Counter-check before anything is reported: liveness is measured on assignee comments, so a
+    // run that dies after committing looks stalled while the deliverable is already finished.
+    const workTrace = await collectIssueWorkTrace(db, {
+      issue: toWorkTraceIssue(sourceIssue),
+      agentId: sourceAgent.id,
+      resolveAgentWorkspaceDir: deps?.resolveAgentWorkspaceDir,
+    });
+    const classification: ProductivityReviewClassification = hasCompletionEvidence(workTrace)
+      ? "unreported_completion"
+      : "stall";
+    const lastFailedRun = latestRuns.find((run) =>
+      FAILED_RUN_STATUSES.includes(run.status as (typeof FAILED_RUN_STATUSES)[number]),
+    ) ?? null;
+
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
     if (longActive) triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)}`);
@@ -565,8 +618,27 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       );
     }
 
+    if (classification === "unreported_completion") {
+      triggerReasons.push(
+        `work-trace counter-check found ${workTrace.commits.length} matching commit(s) and ${
+          completionArtifacts(workTrace).length
+        } completed artifact(s) since ${workTrace.since.toISOString()} — the deliverable exists, only the report/close is missing`,
+      );
+    } else if (progressOnlyArtifacts(workTrace).length > 0) {
+      // Named explicitly so the manager sees that in-flight work was found and still did not
+      // count: the review stays a stall precisely because started is not finished.
+      triggerReasons.push(
+        `work-trace counter-check found ${
+          progressOnlyArtifacts(workTrace).length
+        } in-flight artifact(s) but no completion evidence — started is not finished, so this is still reported as a stall`,
+      );
+    }
+
     return {
       trigger,
+      classification,
+      workTrace,
+      lastFailedRun,
       triggerReasons,
       sourceIssue,
       sourceAgent,
@@ -593,8 +665,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
   }
 
-  async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
+  async function resolveReviewOwnerAgentId(
+    sourceIssue: IssueRow,
+    sourceAgent: AgentRow,
+    classification: ProductivityReviewClassification = "stall",
+  ) {
     const candidateIds: string[] = [];
+    // An unreported completion is the assignee's own loose end: waking them to record and close is
+    // the correct action, and it keeps a manager from reassigning work that is already done.
+    if (classification === "unreported_completion") candidateIds.push(sourceAgent.id);
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
     if (sourceIssue.projectId) {
@@ -627,7 +706,95 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return null;
   }
 
+  function buildWorkTraceSection(evidence: ProductivityReviewEvidence) {
+    const trace = evidence.workTrace;
+    const lines: string[] = [
+      `- Counter-check window: work since \`in_progress\` at ${trace.since.toISOString()}`,
+      `- Commit key searched: ${trace.grepPattern ? `\`${trace.grepPattern}\`` : "not searched (issue has no `PREFIX-NUMBER` identifier)"}`,
+      `- Repos checked: ${trace.repoPathsChecked.length > 0 ? trace.repoPathsChecked.map((repoPath) => `\`${repoPath}\``).join(", ") : "none reachable"}`,
+    ];
+    if (trace.repoLookupErrors.length > 0) {
+      lines.push(`- Repos skipped: ${trace.repoLookupErrors.map((error) => truncateInline(error, 160)).join("; ")}`);
+    }
+    lines.push(
+      trace.commits.length > 0
+        ? `- Commits carrying the issue key:\n${
+          trace.commits.map((commit) => `  - \`${commit.sha.slice(0, 7)}\` ${commit.committedAt} — ${truncateInline(commit.subject, 160)}`).join("\n")
+        }`
+        : "- Commits carrying the issue key: none",
+    );
+    const formatArtifact = (artifact: IssueWorkTrace["artifacts"][number]) =>
+      `  - ${artifact.kind} ${artifact.recordedAt.toISOString()} — ${truncateInline(artifact.label, 160)}`;
+    const completed = completionArtifacts(trace);
+    const inFlight = progressOnlyArtifacts(trace);
+    lines.push(
+      completed.length > 0
+        ? `- Completed artifacts since \`in_progress\` (count as completion evidence):\n${completed.map(formatArtifact).join("\n")}`
+        : "- Completed artifacts since `in_progress`: none",
+    );
+    lines.push(
+      inFlight.length > 0
+        ? `- In-flight artifacts since \`in_progress\` (progress only — do **not** count as completion evidence):\n${
+          inFlight.map(formatArtifact).join("\n")
+        }`
+        : "- In-flight artifacts since `in_progress`: none",
+    );
+    return lines.join("\n");
+  }
+
+  function buildLastFailedRunSection(evidence: ProductivityReviewEvidence, prefix: string) {
+    const run = evidence.lastFailedRun;
+    if (!run) return "- No failed assignee run recorded on this issue.";
+    return [
+      `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}`,
+      `- This failed run — not an unresponsive agent — is why the completion was never reported.`,
+    ].join("\n");
+  }
+
+  function buildUnreportedCompletionMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    return [
+      "Paperclip detected finished-but-unreported work on an assigned issue.",
+      "",
+      `The productivity detector fired (\`${evidence.trigger}\`), but the work-trace counter-check found demonstrable work since the issue went \`in_progress\`. This is **not** a stall: the deliverable exists and only the report/close is missing.`,
+      "",
+      "## Source",
+      "",
+      `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
+      `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
+      `- ${UNREPORTED_COMPLETION_MARKER}`,
+      `- Raw detector trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
+      `- Reasons: ${evidence.triggerReasons.join("; ")}`,
+      `- Generated at: ${evidence.generatedAt.toISOString()}`,
+      "",
+      "## Work Trace (counter-check)",
+      "",
+      buildWorkTraceSection(evidence),
+      "",
+      "## Why the completion is missing",
+      "",
+      buildLastFailedRunSection(evidence, prefix),
+      "",
+      "## Evidence",
+      "",
+      `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
+      `- Terminal sampled runs: ${evidence.terminalRunCount}`,
+      `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
+      `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
+      `- Assignee run-linked comments total: ${evidence.commentCount}`,
+      "",
+      "## Required Action",
+      "",
+      "- Wake the assignee to record the outcome on the source issue and give it a final disposition.",
+      "- Do **not** reassign, decompose, or restart the source work: that would rebuild work that already exists.",
+      "- Only if the assignee cannot report: verify the listed commits/artifacts yourself and close the source issue against them.",
+    ].join("\n");
+  }
+
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    if (evidence.classification === "unreported_completion") {
+      return buildUnreportedCompletionMarkdown(evidence, prefix);
+    }
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
         `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
@@ -648,6 +815,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
       `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
+      `- Classification: \`stall\` (work-trace counter-check found no commits and no completed artifacts)`,
       `- Primary trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Trigger reasons: ${evidence.triggerReasons.join("; ")}`,
       `- Generated at: ${evidence.generatedAt.toISOString()}`,
@@ -670,6 +838,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Long active duration: ${msToHuman(evidence.thresholds.longActiveMs)}`,
       `- High churn: ${evidence.thresholds.highChurnHourly}/1h or ${evidence.thresholds.highChurnSixHours}/6h runs/assignee-run comments`,
       `- Resolved-review snooze: ${msToHuman(evidence.thresholds.resolvedSnoozeMs)}`,
+      "",
+      "## Work Trace (counter-check)",
+      "",
+      buildWorkTraceSection(evidence),
       "",
       "## Latest Runs",
       "",
@@ -696,12 +868,249 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "Productivity review evidence refreshed.",
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
+      `- Classification: \`${evidence.classification}\``,
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
+      `- Work trace: ${evidence.workTrace.commits.length} commit(s), ${
+        completionArtifacts(evidence.workTrace).length
+      } completed / ${progressOnlyArtifacts(evidence.workTrace).length} in-flight artifact(s) since \`in_progress\``,
       `- No-comment streak: ${evidence.noCommentStreak}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
     ].join("\n");
+  }
+
+  /** The classification an already-written review states about itself, read back from its body. */
+  function readReviewClassification(review: IssueRow): ProductivityReviewClassification {
+    return (review.description ?? "").includes(UNREPORTED_COMPLETION_MARKER) ? "unreported_completion" : "stall";
+  }
+
+  /**
+   * Whether a reclassification was recorded for this review without a confirmed wake.
+   *
+   * The rollback below covers a wake that fails while the process is alive. It cannot cover the
+   * process dying between the review update and the wake — and after that the review reads
+   * `unreported_completion`, so the stall-based retry can never match again and the finished work
+   * stays assigned to an agent nobody triggered. So the intent is recorded *before* the review is
+   * touched and confirmed *after* the wake: a newest marker that is not `wakeDelivered` means the
+   * reclassification is unfinished, whatever killed it.
+   */
+  async function readOutstandingReclassification(tx: Db, companyId: string, reviewIssueId: string) {
+    const marker = await tx
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.productivity_review_updated"),
+        eq(activityLog.entityId, reviewIssueId),
+        sql`jsonb_exists(${activityLog.details}, 'wakeDelivered')`,
+      ))
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!marker) return null;
+    const details = marker.details as Record<string, unknown>;
+    if (details?.wakeDelivered === true) return null;
+    // The cycle id makes the retry's wake carry the same idempotency key as the attempt that was
+    // interrupted, so a crash *after* a successful wake and before its confirmation cannot produce
+    // a second report-and-close run.
+    return { reclassificationId: typeof details?.reclassificationId === "string" ? details.reclassificationId : null };
+  }
+
+  /**
+   * Rewrite an open stall review into an unreported completion: new title and body (so the
+   * reassign/decompose menu is replaced by "report and close"), reassigned from the manager to the
+   * source assignee, and the assignee woken — the same shape the review would have had if the
+   * evidence had been there when it was first written.
+   */
+  async function reclassifyReviewAsUnreportedCompletion(
+    existing: IssueRow,
+    evidence: ProductivityReviewEvidence,
+    opts: { prefix: string; thresholds: ProductivityReviewThresholds },
+    claim: { reclassificationId: string; resumed: boolean },
+  ) {
+    // One id per reclassification *cycle*, reused when an interrupted attempt is resumed, so the
+    // retry's wake carries the same idempotency key as the one that may already have landed.
+    const { reclassificationId, resumed } = claim;
+    const wakeIdempotencyKey = `productivity-review-reclassify:${reclassificationId}`;
+    const ownerAgentId = await resolveReviewOwnerAgentId(
+      evidence.sourceIssue,
+      evidence.sourceAgent,
+      evidence.classification,
+    );
+    const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
+    await db
+      .update(issues)
+      .set({
+        title: `Report and close finished work on ${sourceLabel}`,
+        description: buildReviewMarkdown(evidence, opts.prefix),
+        priority: "medium",
+        ...(ownerAgentId ? { assigneeAgentId: ownerAgentId } : {}),
+        updatedAt: evidence.generatedAt,
+      })
+      .where(eq(issues.id, existing.id));
+    if (!resumed) {
+      await addRefreshComment(
+        existing.id,
+        [
+            "Reclassified from `stall` to `unreported_completion`.",
+          "",
+          "The work-trace counter-check found completion evidence that did not exist when this review was written, so the decision menu above no longer applies — reassigning or decomposing would rebuild work that already exists.",
+          "",
+          buildRefreshComment(evidence, opts.prefix),
+        ].join("\n"),
+        evidence.generatedAt,
+      );
+    }
+    // Wake on every reclassification, not only when ownership moved. What changed is the
+    // *instruction* — from "decide what to do about a stall" to "report and close finished work" —
+    // and an owner who was already assigned has no other trigger to act on it.
+    //
+    // The reclassification is only finished once that wake exists. If it fails, the review already
+    // reads as `unreported_completion`, so the retry condition above can never fire again and the
+    // finished work would sit assigned to an agent nobody ever triggers. On failure the review is
+    // therefore restored to the stall it was, and the next reconcile pass retries the whole thing.
+    // No invokable owner means nobody can be told, so the reclassification cannot be completed:
+    // confirming delivery here would record a wake that never happened and close the retry path.
+    // Rolling back keeps the manager-owned review until a candidate becomes invokable again.
+    let wakeFailed = !ownerAgentId;
+    // `agent_wakeup_requests.idempotency_key` is stored but carries no unique constraint and the
+    // enqueue path never reads it, so passing the key alone would not stop a duplicate. On a
+    // resumed cycle the row is looked up here instead: if the interrupted attempt's wake already
+    // landed, the work is already queued and re-enqueuing would produce a second
+    // report-and-close run.
+    //
+    // The mere existence of the row is not enough — a wake can be persisted and then dropped
+    // (`skipped`, `cancelled`, `failed`), which triggers no run at all. So delivery is claimed only
+    // for a row that is still live, was coalesced into another wake, or already produced a run.
+    // The bias is deliberate: an unrecognised state re-wakes, which costs at worst a duplicate the
+    // agent no-ops on, whereas guessing "delivered" strands finished work for good.
+    const alreadyWoken = resumed
+      ? await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, evidence.sourceIssue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, wakeIdempotencyKey),
+          or(
+            sql`${agentWakeupRequests.runId} is not null`,
+            inArray(agentWakeupRequests.status, DELIVERED_WAKEUP_STATUSES),
+          ),
+        ))
+        .limit(1)
+        .then((rows) => rows.length > 0)
+      : false;
+    if (ownerAgentId && !alreadyWoken && deps?.enqueueWakeup) {
+      try {
+        wakeFailed = !(await deps.enqueueWakeup(ownerAgentId, {
+          idempotencyKey: wakeIdempotencyKey,
+          source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: existing.id,
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          classification: evidence.classification,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: "productivity_review",
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "issue_assigned",
+          source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          sourceIssueId: evidence.sourceIssue.id,
+          productivityReviewTrigger: evidence.trigger,
+          productivityReviewClassification: evidence.classification,
+        }, "status_only"),
+        }));
+      } catch (error) {
+        wakeFailed = true;
+        logger.warn(
+          { reviewIssueId: existing.id, sourceIssueId: evidence.sourceIssue.id, err: error },
+          "productivity review reclassification wake failed",
+        );
+      }
+    }
+    if (wakeFailed) {
+      // Put the review back exactly as it was so the next pass sees a `stall` again and retries.
+      await db
+        .update(issues)
+        .set({
+          title: existing.title,
+          description: existing.description,
+          priority: existing.priority,
+          assigneeAgentId: existing.assigneeAgentId,
+          updatedAt: evidence.generatedAt,
+        })
+        .where(eq(issues.id, existing.id));
+      // Restoring the fields alone would leave the review contradicting itself: the comment above
+      // still declares `unreported_completion` and the activity above still records a transition
+      // away from `stall`, while title, body and owner say `stall` again. A reader — a human, or the
+      // next pass reading the trail — would act on an instruction that no longer applies and count a
+      // transition that did not survive. The comment and the activity are history and stay put; a
+      // compensating pair states that the transition was rolled back and why.
+      await addRefreshComment(
+        existing.id,
+        [
+          "Rolled back to `stall`.",
+          "",
+          "The reclassification above did not complete: the assignee could not be woken. A reclassified"
+            + " review that nobody is triggered on would leave the finished work sitting unreported, so the"
+            + " decision menu in the review body applies again and the next reconcile pass retries the"
+            + " counter-check.",
+        ].join("\n"),
+        evidence.generatedAt,
+      );
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: existing.id,
+        agentId: existing.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          classification: "stall",
+          rolledBackFrom: "unreported_completion",
+          reason: "assignee_wake_failed",
+          attemptedAssigneeAgentId: ownerAgentId ?? null,
+        },
+      });
+      return { kind: "existing" as const, reviewIssueId: existing.id };
+    }
+    // Delivery confirmed. This row is what `readOutstandingReclassification` reads: until it
+    // exists, the intent row above still marks the reclassification unfinished.
+    await logActivity(db, {
+      companyId: evidence.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.productivity_review_updated",
+      entityType: "issue",
+      entityId: existing.id,
+      agentId: ownerAgentId ?? existing.assigneeAgentId,
+      details: {
+        source: "productivity_review.reconcile",
+        sourceIssueId: evidence.sourceIssue.id,
+        trigger: evidence.trigger,
+        classification: evidence.classification,
+        reclassifiedFrom: "stall",
+        previousAssigneeAgentId: existing.assigneeAgentId,
+        reclassificationId,
+        wakeDelivered: true,
+        workTraceCommitCount: evidence.workTrace.commits.length,
+        workTraceArtifactCount: evidence.workTrace.artifacts.length,
+        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
+        noCommentStreak: evidence.noCommentStreak,
+        runCountLastHour: evidence.runCountLastHour,
+        commentCountLastHour: evidence.commentCountLastHour,
+      },
+    });
+    return { kind: "updated" as const, reviewIssueId: existing.id };
   }
 
   async function createOrUpdateReview(
@@ -710,6 +1119,65 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
+      // Evidence can arrive after the review was written: the run that finished the work commits,
+      // dies, and the stall review already exists. Leaving it alone would keep a manager owning a
+      // review whose decision menu says reassign/decompose — against work that now demonstrably
+      // exists. Rewriting it is therefore not cosmetic, and it must happen before the refresh
+      // throttle, which exists to limit comment spam, not to defer a wrong instruction.
+      //
+      // One direction only. Evidence disappearing (a rewritten branch, a deleted artifact) must
+      // not silently hand a review back to a manager with the destructive actions re-enabled; that
+      // call belongs to a human reading the refresh comment.
+      //
+      // Deciding and claiming the cycle happen under a row lock. Two reconcile passes overlapping
+      // on the same review would otherwise each read "still a stall", each mint its own cycle id,
+      // and each enqueue a wake — different idempotency keys, so the deduplication above cannot
+      // see the collision and the assignee gets two report-and-close runs. Serialised here, the
+      // second pass reads the first pass's marker and resumes *its* cycle instead of starting one.
+      const claim = evidence.classification === "unreported_completion"
+        ? await db.transaction(async (tx) => {
+          const locked = await tx
+            .select({ description: issues.description })
+            .from(issues)
+            .where(eq(issues.id, existing.id))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!locked) return null;
+          const outstanding = await readOutstandingReclassification(
+            tx as unknown as Db,
+            evidence.sourceIssue.companyId,
+            existing.id,
+          );
+          const stillStall = !(locked.description ?? "").includes(UNREPORTED_COMPLETION_MARKER);
+          // Already reclassified and confirmed — nothing to redo.
+          if (!stillStall && !outstanding) return null;
+          if (outstanding?.reclassificationId) {
+            return { reclassificationId: outstanding.reclassificationId, resumed: true };
+          }
+          const reclassificationId = randomUUID();
+          await logActivity(tx as unknown as Db, {
+            companyId: evidence.sourceIssue.companyId,
+            actorType: "system",
+            actorId: "system",
+            action: "issue.productivity_review_updated",
+            entityType: "issue",
+            entityId: existing.id,
+            agentId: existing.assigneeAgentId,
+            details: {
+              source: "productivity_review.reconcile",
+              sourceIssueId: evidence.sourceIssue.id,
+              classification: evidence.classification,
+              reclassifiedFrom: "stall",
+              reclassificationId,
+              wakeDelivered: false,
+            },
+          });
+          return { reclassificationId, resumed: !stillStall };
+        })
+        : null;
+      if (claim) {
+        return await reclassifyReviewAsUnreportedCompletion(existing, evidence, opts, claim);
+      }
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
       if (
@@ -731,6 +1199,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: "productivity_review.reconcile",
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
+          classification: evidence.classification,
+          workTraceCommitCount: evidence.workTrace.commits.length,
+          workTraceArtifactCount: evidence.workTrace.artifacts.length,
+          workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
@@ -758,14 +1230,23 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "no_action_suppressed" as const, reviewIssueId: null };
     }
 
-    const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    const ownerAgentId = await resolveReviewOwnerAgentId(
+      evidence.sourceIssue,
+      evidence.sourceAgent,
+      evidence.classification,
+    );
+    const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
-        title: `Review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
+        title: evidence.classification === "unreported_completion"
+          ? `Report and close finished work on ${sourceLabel}`
+          : `Review productivity for ${sourceLabel}`,
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
-        priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
+        priority: evidence.classification === "unreported_completion" || evidence.trigger === "long_active_duration"
+          ? "medium"
+          : "high",
         parentId: evidence.sourceIssue.id,
         projectId: evidence.sourceIssue.projectId,
         goalId: evidence.sourceIssue.goalId,
@@ -806,14 +1287,50 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         source: "productivity_review.reconcile",
         sourceIssueId: evidence.sourceIssue.id,
         trigger: evidence.trigger,
+        classification: evidence.classification,
+        workTraceCommitCount: evidence.workTrace.commits.length,
+        workTraceArtifactCount: evidence.workTrace.artifacts.length,
+        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
         noCommentStreak: evidence.noCommentStreak,
         runCountLastHour: evidence.runCountLastHour,
         commentCountLastHour: evidence.commentCountLastHour,
       },
     });
 
+    // A review created straight as an unreported completion has the same exposure as a
+    // reclassified one: the review is committed, and if its wake then fails there is nothing to
+    // tell a later pass that the assignee was never notified. It gets the same marker, so the
+    // recovery path above picks it up and re-wakes.
+    //
+    // Scoped to `unreported_completion` on purpose. A stall review's wake behaviour is unchanged
+    // by this PR, and its decision menu is manager-owned rather than a specific action nobody else
+    // will take; extending recovery to it is a separate change.
+    const creationWakeCycleId = evidence.classification === "unreported_completion" ? randomUUID() : null;
+    if (creationWakeCycleId) {
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          classification: evidence.classification,
+          reclassifiedFrom: "created",
+          reclassificationId: creationWakeCycleId,
+          wakeDelivered: false,
+        },
+      });
+    }
+    let creationWakeDelivered = false;
     if (ownerAgentId && deps?.enqueueWakeup) {
-      await deps.enqueueWakeup(ownerAgentId, {
+      creationWakeDelivered = Boolean(await deps.enqueueWakeup(ownerAgentId, {
+        ...(creationWakeCycleId
+          ? { idempotencyKey: `productivity-review-reclassify:${creationWakeCycleId}` }
+          : {}),
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -821,6 +1338,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
+          classification: evidence.classification,
         }, "status_only"),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
@@ -831,7 +1349,27 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
           sourceIssueId: evidence.sourceIssue.id,
           productivityReviewTrigger: evidence.trigger,
+          productivityReviewClassification: evidence.classification,
         }, "status_only"),
+      }));
+    }
+    if (creationWakeCycleId && creationWakeDelivered) {
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          classification: evidence.classification,
+          reclassifiedFrom: "created",
+          reclassificationId: creationWakeCycleId,
+          wakeDelivered: true,
+        },
       });
     }
 
@@ -954,11 +1492,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     if (sourceAgent.companyId !== input.companyId) return { held: false as const };
     const evidence = await collectEvidence(sourceIssue, sourceAgent, thresholds, now);
     if (!evidence || !isSoftStopTrigger(evidence.trigger)) return { held: false as const };
+    // Never soft-stop an assignee whose work already exists — the only thing left to do is report
+    // and close it, and holding the continuation is what left AUR-1370 open for two days.
+    if (evidence.classification === "unreported_completion") return { held: false as const };
     return {
       held: true as const,
       reviewIssueId: openReview.id,
       reviewIdentifier: openReview.identifier,
       trigger: evidence.trigger,
+      classification: evidence.classification,
       reason: evidence.triggerReasons.join("; "),
     };
   }

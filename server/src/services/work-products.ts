@@ -80,12 +80,34 @@ export function workProductService(db: Db) {
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
-      const row = await db.transaction(async (tx) => {
+    update: async (
+      id: string,
+      patch: Partial<typeof issueWorkProducts.$inferInsert>,
+      opts?: {
+        /**
+         * Runs inside the update transaction, after the row is written and while it is still
+         * locked. The productivity work trace reads the completion transition out of the audit row,
+         * not out of the work product itself, so a caller that records that transition must commit
+         * it together with the status change. Writing it afterwards would let the status land while
+         * the audit row is lost, and a completion nobody can see reads as a stall — the exact
+         * failure the counter-check exists to prevent. Throwing here rolls back both.
+         */
+        recordTransition?: (
+          tx: Db,
+          args: { product: IssueWorkProductRow; previousStatus: string | null },
+        ) => Promise<void>;
+      },
+    ) => {
+      const result = await db.transaction(async (tx) => {
+        // `for update` locks the row for the rest of this transaction, so the state read here is
+        // exactly the state the write below overwrites. Callers that record the transition (the
+        // audit row read by the productivity work trace) would otherwise report a `previousStatus`
+        // that a concurrent update had already replaced — a transition that never happened.
         const existing = await tx
           .select()
           .from(issueWorkProducts)
           .where(eq(issueWorkProducts.id, id))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
@@ -102,14 +124,23 @@ export function workProductService(db: Db) {
             );
         }
 
-        return await tx
+        const updated = await tx
           .update(issueWorkProducts)
           .set({ ...patch, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        if (opts?.recordTransition) {
+          await opts.recordTransition(tx as unknown as Db, {
+            product: updated,
+            previousStatus: existing.status,
+          });
+        }
+        return { updated, previousStatus: existing.status };
       });
-      return row ? toIssueWorkProduct(row) : null;
+      if (!result) return null;
+      return { ...toIssueWorkProduct(result.updated), previousStatus: result.previousStatus };
     },
 
     /**
