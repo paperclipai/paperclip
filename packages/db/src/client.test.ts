@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  quoteLiteral,
   reconcilePendingMigrationHistory,
 } from "./client.js";
 import {
@@ -482,11 +483,14 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           "0054_add_instance_settings_sso_safety_guard.sql",
         );
 
-        // Simulate an environment whose migration-history row for 0054 was lost
-        // (e.g. a hash-only migrations table that predates a rename), which is
-        // exactly the situation reconcilePendingMigrationHistory() exists to repair.
+        // Simulate the upgrade path: an existing installation that already
+        // applied 0053 and is now picking up 0054 as a pending migration.
+        // Deleting 0054's history row here reproduces that state (0054's DDL
+        // already ran once via applyPendingMigrations() above, so the column
+        // exists, but its history row is what reconcilePendingMigrationHistory()
+        // must repair without re-running the ALTER TABLE).
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${ssoSafetyGuardHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = ${quoteLiteral(ssoSafetyGuardHash)}`,
         );
 
         const columns = await sql.unsafe<{ column_name: string }[]>(
@@ -547,7 +551,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           `
             SELECT count(*)::int AS count
             FROM "drizzle"."__drizzle_migrations"
-            WHERE hash = '${ssoSafetyGuardHash}'
+            WHERE hash = ${quoteLiteral(ssoSafetyGuardHash)}
           `,
         );
         expect(historyRows[0]?.count).toBe(1);

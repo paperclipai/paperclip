@@ -23,7 +23,7 @@ function quoteIdentifier(value: string): string {
   return `"${value.replaceAll("\"", "\"\"")}"`;
 }
 
-function quoteLiteral(value: string): string {
+export function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 

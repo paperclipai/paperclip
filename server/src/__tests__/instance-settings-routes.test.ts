@@ -60,6 +60,17 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+    mockInstanceSettingsService.getSso.mockResolvedValue({
+      enabled: false,
+      providers: [],
+    });
+    mockInstanceSettingsService.updateSso.mockResolvedValue({
+      id: "instance-settings-1",
+      sso: {
+        enabled: true,
+        providers: [],
+      },
+    });
   });
 
   it("allows local board users to read and update experimental settings", async () => {
@@ -185,5 +196,93 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  it("allows local board users to read and update SSO settings", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const getRes = await request(app).get("/api/instance/settings/sso");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body).toEqual({
+      enabled: false,
+      providers: [],
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings/sso")
+      .send({ enabled: true });
+
+    expect(patchRes.status).toBe(200);
+    expect(mockInstanceSettingsService.updateSso).toHaveBeenCalledWith({
+      enabled: true,
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin board users from reading SSO settings", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).get("/api/instance/settings/sso");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getSso).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-admin board users from updating SSO settings", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/sso")
+      .send({ enabled: true });
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.updateSso).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers from reading SSO settings", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/instance/settings/sso");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getSso).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers from updating SSO settings", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/sso")
+      .send({ enabled: true });
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.updateSso).not.toHaveBeenCalled();
   });
 });
