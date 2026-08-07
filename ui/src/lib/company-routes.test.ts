@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
+  isGlobalPath,
   isBoardPathWithoutPrefix,
   toCompanyRelativePath,
 } from "./company-routes";
@@ -141,5 +144,67 @@ describe("company routes", () => {
     );
     // Already-prefixed paths are returned untouched.
     expect(applyCompanyPrefix("/PAP/artifacts", "PAP")).toBe("/PAP/artifacts");
+  });
+});
+
+describe("board route roots stay in sync with the router", () => {
+  // extractCompanyPrefixFromPath treats an unrecognised first segment as a
+  // company prefix, so any company-scoped route missing from BOARD_ROUTE_ROOTS
+  // silently stops being prefixed and 404s as an unknown company. This sweep
+  // reads the routes actually registered in App.tsx, so adding a board route
+  // without allowlisting it fails here instead of in someone's browser.
+  const appSource = readFileSync(
+    fileURLToPath(new URL("../App.tsx", import.meta.url)),
+    "utf8",
+  );
+  // Match any `path="..."` attribute rather than only one that directly follows
+  // `<Route`, so the sweep still covers a route whose attributes are reordered
+  // or split across lines. A guard that silently stops covering a route is worse
+  // than no guard, because it keeps passing while the drift it exists to catch
+  // goes unnoticed.
+  //
+  // Nested paths ("company/settings", "agents/:id") contribute their first
+  // segment, which is what the prefix logic keys on. Global routes (auth,
+  // invite, instance, ...) are intentionally never prefixed and are excluded
+  // rather than asserted on.
+  const registeredRoots = Array.from(
+    new Set(
+      Array.from(appSource.matchAll(/path="([^"]+)"/g))
+        .map((m) => m[1]!.split("/").filter(Boolean)[0])
+        .filter((root): root is string => Boolean(root) && /^[a-z0-9-]+$/.test(root)),
+    ),
+  )
+    .filter((root) => !isGlobalPath(`/${root}`))
+    // Not company-scoped, so intentionally never prefixed:
+    //   ux-lab  — registered only in the global tree, beside invite/cli-auth
+    //   tests   — DEV-only, and also registered in the global tree
+    //   dev     — DEV-only scaffolding (dev/task-chat-lab)
+    // Listed explicitly rather than narrowing the regex, so an exclusion is
+    // visible in review instead of hidden in a pattern.
+    .filter((root) => !["ux-lab", "tests", "dev"].includes(root));
+
+  it("finds routes to check", () => {
+    expect(registeredRoots.length).toBeGreaterThan(20);
+  });
+
+  it.each(registeredRoots)("prefixes /%s", (root) => {
+    expect(applyCompanyPrefix(`/${root}`, "PAP")).toBe(`/PAP/${root}`);
+  });
+
+  it("does not mistake a board route root for a company prefix", () => {
+    for (const root of registeredRoots) {
+      expect(extractCompanyPrefixFromPath(`/${root}`)).toBeNull();
+    }
+  });
+
+  it("regression: audit and cases are prefixed (paperclipai/paperclip#10870)", () => {
+    expect(applyCompanyPrefix("/audit", "PAP")).toBe("/PAP/audit");
+    expect(applyCompanyPrefix("/cases", "PAP")).toBe("/PAP/cases");
+    expect(applyCompanyPrefix("/cases/PAP-C5", "PAP")).toBe("/PAP/cases/PAP-C5");
+  });
+
+  it("still leaves an already-prefixed path alone", () => {
+    expect(applyCompanyPrefix("/PAP/audit", "PAP")).toBe("/PAP/audit");
+    expect(applyCompanyPrefix("/VER/cases", "PAP")).toBe("/VER/cases");
   });
 });

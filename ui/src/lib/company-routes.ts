@@ -1,3 +1,8 @@
+// Every top-level route registered under the company-scoped tree must appear
+// here. `extractCompanyPrefixFromPath` treats an unrecognised first segment as a
+// company prefix, so a missing entry makes `applyCompanyPrefix` believe the path
+// is already prefixed and leave it bare — `/audit` then resolves as company
+// "AUDIT" and 404s. Add the root here when you add a board route.
 const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
@@ -29,6 +34,16 @@ const BOARD_ROUTE_ROOTS = new Set([
   "search",
   "settings",
   "timeline",
+  "audit",
+  "cases",
+  "learnings",
+  "onboarding",
+  "pipelines",
+  "review-queue",
+  "status",
+  "status-cards",
+  "training",
+  "plugins",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
