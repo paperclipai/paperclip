@@ -1,4 +1,9 @@
-import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  BoardApiKeyScopeConfig,
+  JoinRequest,
+  PermissionKey,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -81,6 +86,7 @@ type CliAuthChallengeStatus = {
   requestedAccess: "board" | "instance_admin_required";
   requestedCompanyId: string | null;
   requestedCompanyName: string | null;
+  requestedScopeConfig: BoardApiKeyScopeConfig | null;
   approvedAt: string | null;
   cancelledAt: string | null;
   expiresAt: string;

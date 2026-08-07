@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import type { BoardApiKeyScopeConfig } from "@paperclipai/shared";
 import { authUsers } from "./auth.js";
 import { companies } from "./companies.js";
 import { boardApiKeys } from "./board_api_keys.js";
@@ -12,7 +13,9 @@ export const cliAuthChallenges = pgTable(
     clientName: text("client_name"),
     requestedAccess: text("requested_access").notNull().default("board"),
     requestedCompanyId: uuid("requested_company_id").references(() => companies.id, { onDelete: "set null" }),
+    requestedScopeConfig: jsonb("requested_scope_config").$type<BoardApiKeyScopeConfig | null>(),
     pendingKeyHash: text("pending_key_hash").notNull(),
+    pendingKeyPrefix: text("pending_key_prefix"),
     pendingKeyName: text("pending_key_name").notNull(),
     approvedByUserId: text("approved_by_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     boardApiKeyId: uuid("board_api_key_id").references(() => boardApiKeys.id, { onDelete: "set null" }),
