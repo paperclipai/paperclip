@@ -23,6 +23,7 @@ const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
   "plugin-worker-invocation-scope.cjs",
 );
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
+const EXECUTE_LOG_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-execute-log.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -774,6 +775,180 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
       });
       expect(eventsSubscribe).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// execute.log worker→host notification route
+// ---------------------------------------------------------------------------
+
+function makeExecuteLogHandle() {
+  return createPluginWorkerHandle("test.plugin", {
+    entrypointPath: EXECUTE_LOG_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+  });
+}
+
+function executeParams(
+  overrides: Record<string, unknown>,
+): HostToWorkerMethods["environmentExecute"][0] {
+  return {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    config: {},
+    lease: { providerLeaseId: "lease-1" },
+    command: "echo",
+    ...overrides,
+  } as unknown as HostToWorkerMethods["environmentExecute"][0];
+}
+
+describe("plugin worker manager execute.log route", () => {
+  it("delivers ordered execute.log chunks to the execute log sink", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "one" },
+            { stream: "stderr", chunk: "two" },
+            { stream: "stdout", chunk: "three" },
+          ],
+          finalStdout: "onethree",
+          finalStderr: "two",
+        }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      expect(sink.mock.calls).toEqual([
+        ["stdout", "one"],
+        ["stderr", "two"],
+        ["stdout", "three"],
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an execute.log chunk with a forged or missing invocation id", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "valid", tag: "echo" },
+            { stream: "stdout", chunk: "forged", tag: "unknown" },
+            { stream: "stdout", chunk: "orphan", tag: "none" },
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      // Only the chunk that carries this call's own host-issued id is delivered.
+      expect(sink.mock.calls).toEqual([["stdout", "valid"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an execute.log chunk with an invalid stream name or an empty chunk", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "keep" },
+            { stream: "bogus", chunk: "dropped-stream" },
+            { stream: "stdout", chunk: "" },
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      expect(sink.mock.calls).toEqual([["stdout", "keep"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("routes two concurrent execute calls to their own sink only", async () => {
+    const handle = makeExecuteLogHandle();
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    try {
+      await handle.start();
+      const callA = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-a",
+          logs: [{ stream: "stdout", chunk: "a1" }],
+          delayMs: 40,
+        }),
+        undefined,
+        sinkA,
+      );
+      const callB = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-b",
+          logs: [{ stream: "stdout", chunk: "b1" }],
+          delayMs: 40,
+        }),
+        undefined,
+        sinkB,
+      );
+      await Promise.all([callA, callB]);
+      expect(sinkA.mock.calls).toEqual([["stdout", "a1"]]);
+      expect(sinkB.mock.calls).toEqual([["stdout", "b1"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("completes an execute call that sends no execute.log notification", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({ logs: [], finalStdout: "done" }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "done" });
+      expect(sink).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("does not throw when execute.log arrives but no sink is registered", async () => {
+    const handle = makeExecuteLogHandle();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({ logs: [{ stream: "stdout", chunk: "no-sink" }] }),
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
     } finally {
       await handle.stop().catch(() => undefined);
     }

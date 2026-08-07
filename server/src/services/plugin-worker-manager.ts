@@ -107,6 +107,16 @@ const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
+/** Maximum characters accepted for one `execute.log` chunk. A larger chunk is
+ * dropped, so a faulty or hostile worker cannot flood the host with one
+ * unbounded notification. */
+const MAX_EXECUTE_LOG_CHUNK_CHARS = 1_000_000;
+
+/** Minimum time between two dropped-`execute.log` debug records. The router
+ * rate-limits the record so a flood of dropped chunks writes at most one line
+ * per window with a running count. */
+const EXECUTE_LOG_DROP_LOG_INTERVAL_MS = 1_000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -268,6 +278,29 @@ interface ActiveInvocation {
   traceparent?: string;
 }
 
+/**
+ * Sink for one incremental output chunk of an active `environmentExecute` call.
+ * The host runner passes it to `call` for the execute method, and the manager
+ * delivers each `execute.log` chunk to it. The sink may return a promise; the
+ * caller owns the ordering.
+ */
+export type ExecuteLogSink = (
+  stream: "stdout" | "stderr",
+  chunk: string,
+) => void | Promise<void>;
+
+/**
+ * Host-owned route for one active execute call. The host mints the invocation
+ * id and stores the exact company id and log sink here. A worker never selects
+ * this record; the host looks it up by the host-issued invocation id on the
+ * message envelope. The company id is the single authority for the delivery
+ * target, so an `execute.log` notification never carries a company id.
+ */
+interface ExecuteLogRoute {
+  companyId: string;
+  onLog: ExecuteLogSink;
+}
+
 // ---------------------------------------------------------------------------
 // PluginWorkerHandle — manages a single worker process
 // ---------------------------------------------------------------------------
@@ -316,6 +349,7 @@ export interface PluginWorkerHandle {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -424,6 +458,7 @@ export interface PluginWorkerManager {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
 }
 
@@ -460,6 +495,16 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  // Host-owned execute routes, keyed by the host-issued invocation id. Only an
+  // `environmentExecute` call with a log sink registers a route here. The
+  // `execute.log` router delivers only through this map — never through the
+  // generic `activeInvocations` record — so a non-execute call can never become
+  // a log target.
+  const activeExecuteRoutes = new Map<string, ExecuteLogRoute>();
+  // Rate-limit state for dropped `execute.log` notifications. The debug record
+  // never carries chunk bytes.
+  let executeLogDropCount = 0;
+  let executeLogDropLoggedAtMs = 0;
 
   // ------------------------------------------------------------------
   // Proactive company scopes (LOOA-629)
@@ -658,6 +703,89 @@ export function createPluginWorkerHandle(
     activeInvocations.delete(invocation.id);
   }
 
+  // Store the host-owned execute route for one active execute call. The host
+  // holds the exact company id and log sink; the worker never supplies them.
+  function registerExecuteRoute(
+    invocationId: string,
+    companyId: string,
+    onLog: ExecuteLogSink,
+  ): void {
+    activeExecuteRoutes.set(invocationId, { companyId, onLog });
+  }
+
+  function clearExecuteRoute(invocationId: string | undefined): void {
+    if (invocationId) activeExecuteRoutes.delete(invocationId);
+  }
+
+  // Drop an `execute.log` notification. Write a rate-limited debug record with
+  // the reason and a running drop count. The record never carries the chunk
+  // bytes, the company id, or command data.
+  function dropExecuteLogNotification(reason: string): void {
+    executeLogDropCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - executeLogDropLoggedAtMs >= EXECUTE_LOG_DROP_LOG_INTERVAL_MS) {
+      log.debug(
+        { reason, droppedSinceLastLog: executeLogDropCount },
+        "dropping execute.log notification",
+      );
+      executeLogDropLoggedAtMs = nowMs;
+      executeLogDropCount = 0;
+    }
+  }
+
+  // Route one `execute.log` notification to its host-owned execute route. The
+  // route is the single authority for the delivery target and the company
+  // binding. This never reads a company id from the notification and never
+  // routes through the generic active-invocation record.
+  function routeExecuteLogNotification(notification: JsonRpcNotification): void {
+    const invocationId = readNonEmptyString(
+      (notification as { paperclipInvocationId?: unknown }).paperclipInvocationId,
+    );
+    const params = isRecord(notification.params) ? notification.params : {};
+    const stream = params.stream;
+    const chunk = params.chunk;
+    // Runtime-validate the payload. Drop invalid input without a throw.
+    if (stream !== "stdout" && stream !== "stderr") {
+      dropExecuteLogNotification("invalid-stream");
+      return;
+    }
+    if (
+      typeof chunk !== "string" ||
+      chunk.length === 0 ||
+      chunk.length > MAX_EXECUTE_LOG_CHUNK_CHARS
+    ) {
+      dropExecuteLogNotification("invalid-chunk");
+      return;
+    }
+    if (!invocationId) {
+      dropExecuteLogNotification("missing-invocation");
+      return;
+    }
+    const route = activeExecuteRoutes.get(invocationId);
+    if (!route) {
+      // No active execute route for this id: a late chunk after settlement or
+      // timeout, a non-execute invocation, or an unknown id. Drop it.
+      dropExecuteLogNotification("no-active-route");
+      return;
+    }
+    try {
+      const delivery = route.onLog(stream, chunk);
+      if (delivery && typeof (delivery as Promise<void>).then === "function") {
+        void (delivery as Promise<void>).catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "execute.log delivery failed",
+          );
+        });
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "execute.log delivery threw",
+      );
+    }
+  }
+
   /**
    * Extract the single company a worker→host call references, mirroring the SDK
    * governed-access gate's own derivation (host-client-factory.ts
@@ -808,6 +936,13 @@ export function createPluginWorkerHandle(
       } else {
         log.info(logFields, `[plugin] ${msg}`);
       }
+      return;
+    }
+
+    // Execute-log notifications: deliver one incremental output chunk to the
+    // host-owned execute route for the active execute call.
+    if (notification.method === "execute.log") {
+      routeExecuteLogNotification(notification);
       return;
     }
 
@@ -1273,6 +1408,7 @@ export function createPluginWorkerHandle(
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
@@ -1288,6 +1424,13 @@ export function createPluginWorkerHandle(
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      // Register the host-owned execute route only for an execute call that
+      // carries a log sink. The company id comes from the host-derived
+      // invocation scope, never from the worker. This binds the sink to the
+      // exact company for the life of the call.
+      if (invocation && invocationScope && executeLogSink && method === "environmentExecute") {
+        registerExecuteRoute(invocation.id, invocationScope.companyId, executeLogSink);
+      }
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1301,6 +1444,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         fn(value);
       };
 
@@ -1343,6 +1487,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         reject(
           new Error(
             `Failed to send "${method}" to worker: ${
@@ -1396,6 +1541,7 @@ export function createPluginWorkerHandle(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
@@ -1404,7 +1550,7 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return callInternal(method, params, timeoutMs);
+      return callInternal(method, params, timeoutMs, executeLogSink);
     },
 
     notify(method: string, params: unknown) {
@@ -1635,6 +1781,7 @@ export function createPluginWorkerManager(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
       if (!handle) {
@@ -1642,7 +1789,7 @@ export function createPluginWorkerManager(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.call(method, params, timeoutMs);
+      return handle.call(method, params, timeoutMs, executeLogSink);
     },
   };
 }
