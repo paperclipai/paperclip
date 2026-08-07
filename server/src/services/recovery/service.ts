@@ -1222,7 +1222,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           eq(issueRelations.type, "blocks"),
-          inArray(issues.status, ["todo", "blocked"]),
+          eq(issues.status, "blocked"),
           isNull(issues.assigneeAgentId),
           isNull(issues.assigneeUserId),
           sql`${issues.createdByAgentId} is not null`,
