@@ -4501,6 +4501,36 @@ describeEmbeddedPostgres("tool access service", () => {
     }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 404 });
   });
 
+  it("allows multiple same-named connections on one application", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://first.example.test/actions",
+      name: "Notion",
+    }, { actorType: "user", actorId: "board" });
+    const second = await service.connectGalleryApp(company.id, {
+      link: "https://second.example.test/actions",
+      name: "Notion",
+      applicationId: first.application.id,
+    }, { actorType: "user", actorId: "board" });
+
+    expect(second.application.id).toBe(first.application.id);
+    expect(second.connectionId).not.toBe(first.connectionId);
+    const rows = await db.select().from(toolConnections).where(eq(toolConnections.applicationId, first.application.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.name)).toEqual(["Notion", "Notion"]);
+    expect(new Set(rows.map((row) => row.uid))).toHaveProperty("size", 2);
+  });
+
   it("does not delete a reused application when the connect rolls back", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

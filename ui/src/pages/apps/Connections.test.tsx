@@ -196,14 +196,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("GitHub"),
     );
     row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
 
     mockNavigate.mockClear();
     const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Connect") && !button.textContent.includes("Connect an app"),
     );
     connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
   });
 
   it("rolls up multi-connection status, attention count, actions, and navigation by application", async () => {
@@ -274,13 +274,13 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(text).toContain("0 on");
     // 5. Last used renders a relative timestamp when present, dash when absent.
     expect(text).toContain("—");
-    // 6. Multi-connection app appears once and opens its first connection detail.
+    // 6. Multi-connection app appears once and opens its provider landing page.
     expect(Array.from(container.querySelectorAll("tbody tr")).filter((tr) => tr.textContent?.includes("Slack"))).toHaveLength(1);
     const slackRow = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
       tr.textContent?.includes("Slack"),
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-slack/setup");
     // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Open.
     const rowButtonLabel = (name: string) =>
       Array.from(container.querySelectorAll("tbody tr"))
@@ -328,7 +328,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     const button = row?.querySelector("td:last-child button");
     expect(button?.textContent).toBe("Open");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
   });
 
   it("deletes a connection only after trash-can confirmation", async () => {

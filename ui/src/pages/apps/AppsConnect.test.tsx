@@ -288,6 +288,58 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("creates a fresh Notion OAuth connection when the provider landing requests another", async () => {
+    mockSearch.value = "source=notion&applicationId=app-notion&new=1";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-notion",
+        status: "active",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: "conn-existing",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "active",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }, {
+        id: "conn-other-draft",
+        applicationId: "app-other",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-new",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-new" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://mcp.notion.com/authorize?state=new" },
+    });
+
+    await render();
+
+    expect(startOAuthMock).not.toHaveBeenCalledWith("conn-existing");
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "notion",
+      name: "Notion",
+      credentialValues: {},
+      configValues: undefined,
+      applicationId: "app-notion",
+    });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=new",
+    );
+  });
+
   it("waits for fresh connection data before creating a Notion OAuth draft", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
