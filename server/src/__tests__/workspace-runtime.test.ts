@@ -37,6 +37,7 @@ import {
   refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveRuntimeProvisionCommand,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
@@ -377,6 +378,41 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("resolveRuntimeProvisionCommand", () => {
+  it("backfills deferred seeding for legacy managed git worktrees", async () => {
+    const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provision-"));
+    const cwd = path.join(baseCwd, "worktree");
+    try {
+      await fs.mkdir(path.join(baseCwd, "scripts"), { recursive: true });
+      await fs.writeFile(
+        path.join(baseCwd, "scripts", "provision-worktree-runtime.sh"),
+        "#!/usr/bin/env bash\n",
+      );
+      await fs.mkdir(path.join(cwd, ".paperclip"), { recursive: true });
+      await fs.writeFile(path.join(cwd, ".paperclip", "seed-pending"), "{}\n");
+      const workspace = {
+        ...buildWorkspace(cwd),
+        baseCwd,
+        strategy: "git_worktree" as const,
+        worktreePath: cwd,
+      };
+
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
+        "bash ./scripts/provision-worktree-runtime.sh",
+      );
+      expect(resolveRuntimeProvisionCommand({
+        config: { runtimeProvisionCommand: "./custom-provision.sh" },
+        workspace,
+      })).toBe("./custom-provision.sh");
+
+      await fs.writeFile(path.join(cwd, ".paperclip", "seed-complete"), "{}\n");
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");
+    } finally {
+      await fs.rm(baseCwd, { recursive: true, force: true });
+    }
   });
 });
 

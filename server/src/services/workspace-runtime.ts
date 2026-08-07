@@ -4109,6 +4109,34 @@ function readRuntimeProvisionCommand(config: Record<string, unknown>) {
   ).trim();
 }
 
+export function resolveRuntimeProvisionCommand(input: {
+  config: Record<string, unknown>;
+  workspace: RealizedExecutionWorkspace;
+}) {
+  const configuredCommand = readRuntimeProvisionCommand(input.config);
+  if (configuredCommand) return configuredCommand;
+
+  if (input.workspace.strategy !== "git_worktree") return "";
+
+  const stateDir = path.join(input.workspace.cwd, ".paperclip");
+  const pendingMarker = path.join(stateDir, "seed-pending");
+  const completeMarker = path.join(stateDir, "seed-complete");
+  const provisionScript = path.join(
+    input.workspace.baseCwd,
+    "scripts",
+    "provision-worktree-runtime.sh",
+  );
+  if (
+    !existsSync(pendingMarker)
+    || existsSync(completeMarker)
+    || !existsSync(provisionScript)
+  ) {
+    return "";
+  }
+
+  return "bash ./scripts/provision-worktree-runtime.sh";
+}
+
 function runtimeProvisionWorkspaceKey(input: StartLocalRuntimeServiceInput) {
   return input.executionWorkspaceId
     ? `execution-workspace:${input.executionWorkspaceId}`
@@ -4794,7 +4822,7 @@ export async function ensureRuntimeServicesForRun(input: {
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
-  const runtimeProvisionCommand = readRuntimeProvisionCommand(input.config);
+  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
 
@@ -5007,7 +5035,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const invocationId = input.invocationId ?? randomUUID();
-  const runtimeProvisionCommand = readRuntimeProvisionCommand(input.config);
+  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
   const provisionCoordinator = createRuntimeProvisionCoordinator();
 
   if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
