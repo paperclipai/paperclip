@@ -1,54 +1,57 @@
-# test_luna_mail_render.py
-import unittest, tempfile
-from pathlib import Path
-import luna_mail_render as r
+from __future__ import annotations
+
+import pytest
+
+import luna_mail_render as lmr
 
 
-class RenderTest(unittest.TestCase):
-    def test_strip_self_signoff(self):
-        md = "Danke für Ihre Mail.\n\nMit freundlichen Grüßen\nLuna"
-        self.assertEqual(r.strip_self_signoff(md).strip(), "Danke für Ihre Mail.")
-
-    def test_md_to_html_paragraphs(self):
-        html = r.md_to_html("Absatz eins.\n\nAbsatz zwei.")
-        self.assertEqual(html.count("<p"), 2)
-        self.assertIn("Absatz eins.", html)
-
-    def test_render_customer_html_includes_signature(self):
-        # Signatur-Stub in temporärem SIGDIR
-        tmp = tempfile.TemporaryDirectory()
-        r.SIGDIR = Path(tmp.name)
-        (Path(tmp.name) / "signatur-ai.html").write_text("<div>SIG-AI</div>", encoding="utf-8")
-        out, atts = r.render_customer_html("AI", "Hallo Welt")
-        self.assertIn("Hallo Welt", out)
-        self.assertIn("SIG-AI", out)
-        self.assertNotIn("Entwurf-Vorschau", out)  # kein Banner
-        self.assertEqual(atts, [])  # keine Logos in diesem Stub
-        self.assertIn("text-align:left", out)  # linksbündig
-        tmp.cleanup()
-
-    def test_render_uses_cid_inline_logo(self):
-        # base64-Logo → Inline-CID (cid:attachment_0) + Anhang; kein base64 im HTML.
-        tmp = tempfile.TemporaryDirectory()
-        r.SIGDIR = Path(tmp.name)
-        sig = '<table><tr><td><img src="data:image/png;base64,QUJDREVG" alt="Logo"></td></tr></table>'
-        (Path(tmp.name) / "signatur-film.html").write_text(sig, encoding="utf-8")
-        out, atts = r.render_customer_html("FILM", "Text")
-        self.assertNotIn("base64,", out)
-        self.assertIn('src="cid:attachment_0"', out)
-        self.assertEqual(len(atts), 1)
-        self.assertEqual(atts[0]["cid"], "attachment_0")
-        self.assertEqual(atts[0]["content"], "QUJDREVG")
-        tmp.cleanup()
-
-    def test_sig_with_cid_indexes_by_position(self):
-        # Mehrere Logos → attachment_0, attachment_1 (Reihenfolge = Relay-Binärname).
-        html, atts = r._sig_with_cid(
-            '<img src="data:image/png;base64,QUJD"><img src="data:image/gif;base64,WFla">')
-        self.assertIn('src="cid:attachment_0"', html)
-        self.assertIn('src="cid:attachment_1"', html)
-        self.assertEqual([a["cid"] for a in atts], ["attachment_0", "attachment_1"])
+def test_nur_noch_ai_und_film():
+    assert set(lmr.AREAS) == {"AI", "FILM"}
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_sorbart_wird_abgewiesen():
+    with pytest.raises(KeyError):
+        lmr.load_sig("SORBART")
+
+
+def test_load_sig_liefert_lunas_absenderblock():
+    for area in ["AI", "FILM"]:
+        sig = lmr.load_sig(area)
+        assert "i.A. Luna" in sig, area
+        assert "KI-Assistentin" in sig, area
+        assert "{{ABSENDERBLOCK}}" not in sig, area
+
+
+def test_luna_hinweiszeile_nennt_walters_freigabe():
+    # Bei Luna trifft das zu — die Vier-Augen-Freigabe haengt davor.
+    assert "geprüft und freigegeben" in lmr.load_sig("AI")
+
+
+def test_bereichsdaten_passen_zum_area_key():
+    assert "ws@whitestag.ai" in lmr.load_sig("AI")
+    assert "ws@whitestag.film" in lmr.load_sig("FILM")
+
+
+def test_unbekannter_area_wirft():
+    with pytest.raises(KeyError):
+        lmr.load_sig("GIBTSNICHT")
+
+
+def test_render_customer_html_liefert_cid_und_anhang():
+    html, anhaenge = lmr.render_customer_html("AI", "Guten Tag\n\nDanke.")
+    assert "data:image/png;base64," not in html
+    assert 'src="cid:attachment_0"' in html
+    assert len(anhaenge) == 1
+    assert anhaenge[0]["cid"] == "attachment_0"
+
+
+def test_render_customer_html_schneidet_eigene_grussformel_ab():
+    html, _ = lmr.render_customer_html(
+        "AI", "Guten Tag\n\nDanke.\n\nViele Grüße\nLuna\nirgendein Disclaimer"
+    )
+    assert "irgendein Disclaimer" not in html
+
+
+def test_signatur_kommt_nach_dem_antworttext():
+    html, _ = lmr.render_customer_html("AI", "Antworttext hier.")
+    assert html.index("Antworttext hier.") < html.index("i.A. Luna")

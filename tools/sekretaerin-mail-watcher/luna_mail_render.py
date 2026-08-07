@@ -1,12 +1,33 @@
 # luna_mail_render.py
-"""Geteiltes Rendering: Antwort-Markdown -> Kunden-HTML inkl. Bereichs-Signatur."""
+"""Geteiltes Rendering: Antwort-Markdown -> Kunden-HTML inkl. Bereichs-Signatur.
+
+Die Signaturbausteine liegen seit 08/2026 im Geschwisterordner `signatur/`
+und werden mit den Agentenmails geteilt. Luna rendert weiterhin
+client-seitig, weil die fertige Fassung schon fuer die Telegram-Vorschau
+gebraucht wird — der Relay bekommt deshalb `signatur: "none"`.
+
+SORBART wurde am 04.08.2026 stillgelegt.
+"""
 from __future__ import annotations
 import html as htmllib
+import os
 import re
-from pathlib import Path
+import sys
 
-SIGDIR = Path.home() / "Obsidian" / "WHITESTAG-Vault" / "Paperclip" / "Luna" / "signaturen"
-AREAS = {"AI": "ai", "FILM": "film", "SORBART": "sorbart"}
+# Geschwisterordner — trifft Repo (tools/signatur) und Live
+# (~/.paperclip/scripts/signatur) gleichermassen, ohne Sonderfall.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "signatur"))
+import signatur  # noqa: E402
+
+AREAS = {"AI": "ai", "FILM": "film"}
+
+LUNA_NAME = "Luna"
+LUNA_ROLLE = "KI-Assistentin"
+LUNA_HINWEIS = (
+    "Diese Nachricht wurde von Luna, unserer KI-Assistentin, vorbereitet "
+    "und von Walter Schönenbröcher persönlich geprüft und freigegeben."
+)
 
 _GREETING_RE = re.compile(
     r"^\s*(mit freundlichen gr[üue]+ßen|mit besten gr[üue]+ßen|"
@@ -41,55 +62,22 @@ def md_to_html(md: str) -> str:
 
 
 def load_sig(area: str) -> str:
-    p = SIGDIR / f"signatur-{AREAS[area]}.html"
-    if not p.exists():
-        raise FileNotFoundError(f"Signatur fehlt: {p}")
-    return p.read_text(encoding="utf-8")
-
-
-# base64-eingebettete <img> in der Signatur. Outlook/Exchange entfernt data:-URIs,
-# darum ersetzen wir sie durch cid:-Referenzen + Inline-Anhänge (der Relay setzt
-# via contentId das passende Content-ID-Header, dann rendert auch Outlook das Logo).
-_IMG_DATA_RE = re.compile(
-    r'<img([^>]*?)src="data:(image/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>')
-
-
-def _sig_with_cid(sig_html: str) -> tuple[str, list[dict]]:
-    """Ersetzt base64-<img> durch Inline-CID-Referenzen; gibt (html, attachments).
-
-    WICHTIG: Der Relay-Node „Build Binary Attachments" legt die Anhänge unter dem
-    Binär-Property-Namen `attachment_<index>` ab, und n8n/nodemailer nutzt **diesen
-    Namen** als Content-ID. Die `<img>`-Referenz muss also `cid:attachment_<index>`
-    lauten (index = Position im attachments-Array). Ein davon abweichendes `cid`-Feld
-    im Anhang wird ignoriert → früher Platzhalter. So rendert das Logo inline überall
-    (Outlook, Apple Mail, Gmail) ohne „Bilder herunterladen"."""
-    attachments: list[dict] = []
-
-    def repl(m: re.Match) -> str:
-        idx = len(attachments)
-        mime = m.group(2)
-        ext = mime.split("/")[-1]
-        attachments.append({
-            "filename": f"logo-{idx}.{ext}",
-            "content": m.group(3),
-            "mimeType": mime,
-            "cid": f"attachment_{idx}",  # == Binär-Property-Name im Relay
-        })
-        return f'<img{m.group(1)}src="cid:attachment_{idx}"{m.group(4)}>'
-
-    return _IMG_DATA_RE.sub(repl, sig_html), attachments
+    """Bereichssignatur mit Lunas Absenderblock."""
+    bereich = AREAS[area]  # KeyError bei unbekanntem Area — gewollt
+    block = signatur.absenderblock(LUNA_NAME, LUNA_ROLLE, LUNA_HINWEIS)
+    return signatur.komponiere(bereich, block)
 
 
 def render_customer_html(area: str, body_md: str) -> tuple[str, list[dict]]:
     """Gibt (finales Kunden-HTML, Inline-Anhänge für Logos) zurück.
 
     Logo-Strategie: Inline-CID. Das base64-Logo der Signatur wird zu
-    `<img src="cid:attachment_N">` + Inline-Anhang (siehe `_sig_with_cid`).
+    `<img src="cid:attachment_N">` + Inline-Anhang (siehe `signatur.zu_cid`).
     Rendert überall inkl. Outlook/Exchange und bei Kunden, ohne „Bilder
     herunterladen" — anders als base64 (Outlook blockt) oder externe URLs
     (von vielen Clients standardmäßig blockiert)."""
     answer = md_to_html(strip_self_signoff(body_md))
-    sig, attachments = _sig_with_cid(load_sig(area))
+    sig, attachments = signatur.zu_cid(load_sig(area))
     html = (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0;padding:20px;text-align:left;">'
