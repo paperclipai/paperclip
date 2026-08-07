@@ -64,6 +64,7 @@ import {
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
+import { createDatabaseBackupInFlightGuard } from "./services/database-backup-guard.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -664,11 +665,23 @@ export async function startServer(): Promise<StartedServer> {
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
+  // Safety net: if a backup hangs (e.g. pg_dump stalls on a locked table), the
+  // in-flight flag would otherwise stay true forever and every scheduled backup
+  // would be skipped. This stale-guard resets the flag after the timeout so the
+  // next interval tick can try again instead of being blocked indefinitely.
+  // Each acquisition also gets a generation token so a late-settling hung
+  // backup cannot clobber the flag after a newer backup has already started.
+  // See services/database-backup-guard.ts (unit-tested).
+  const databaseBackupStaleTimeoutMs =
+    Math.max(2, Number(process.env.PAPERCLIP_DB_BACKUP_STALE_TIMEOUT_MINUTES) || 30) * 60 * 1000;
+  const databaseBackupGuard = createDatabaseBackupInFlightGuard({
+    staleTimeoutMs: databaseBackupStaleTimeoutMs,
+  });
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
+    const acquisition = databaseBackupGuard.tryAcquire();
+    if (!acquisition.acquired) {
       const message = "Database backup already in progress";
       if (trigger === "scheduled") {
         logger.warn("Skipping scheduled database backup because a previous backup is still running");
@@ -676,8 +689,12 @@ export async function startServer(): Promise<StartedServer> {
       }
       throw conflict(message);
     }
-
-    databaseBackupInFlight = true;
+    if (acquisition.staleReset) {
+      logger.warn(
+        { staleMs: acquisition.staleMs, staleTimeoutMs: databaseBackupStaleTimeoutMs, trigger },
+        "Database backup in-flight flag has been held longer than the stale timeout — force-resetting to allow the next backup",
+      );
+    }
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
@@ -720,7 +737,7 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
-      databaseBackupInFlight = false;
+      databaseBackupGuard.release(acquisition.generation);
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
