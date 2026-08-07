@@ -638,6 +638,163 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("refreshes the companies list until the joined company appears before redirecting an authenticated invitee", async () => {
+    // An already-authenticated user opens /invite/:token as their FIRST page load
+    // (no selected/last company yet). The accept auto-fires, but the new
+    // membership is not yet readable by the companies endpoint. If the page
+    // navigates to "/" on that first stale list, the company root redirect cannot
+    // find the just-joined company and falls back to companies[0] (e.g. a
+    // pre-existing default company), stranding the invitee on the wrong board. The
+    // accept must refetch the list until the joined company appears before it
+    // hands off navigation.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // The membership write lags: the list returns ONLY the user's pre-existing
+    // company for the first few post-accept refetches, then becomes readable and
+    // includes the joined inviter company.
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Existing Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Existing Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Existing Co" }]);
+    listCompaniesMock.mockResolvedValue([
+      { id: "own-company", name: "Existing Co" },
+      { id: "company-1", name: "Acme Robotics" },
+    ]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+              <Route path="/" element={<div data-testid="company-root-redirect" />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    // Drain the bounded backoff between membership refetches. While the cache
+    // still holds only the stale list, the page must NOT have navigated to "/"
+    // yet — navigating on a stale list is exactly the bug under test.
+    for (let i = 0; i < 30; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      });
+      const cached = queryClient.getQueryData(queryKeys.companies.all) as
+        | { companies: Array<{ id: string }> }
+        | undefined;
+      if (cached?.companies.some((company) => company.id === "company-1")) break;
+      expect(container.querySelector('[data-testid="company-root-redirect"]')).toBeNull();
+    }
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // Navigation to "/" actually fired once the joined company became readable:
+    // the MemoryRouter now renders the company root route.
+    expect(container.querySelector('[data-testid="company-root-redirect"]')).not.toBeNull();
+
+    // The accept refetched the companies list more than once, waiting out the
+    // lagging membership write rather than navigating on the first stale list.
+    expect(listCompaniesMock.mock.calls.length).toBeGreaterThan(2);
+
+    // The joined company must be present in the shared companies cache by the time
+    // navigation happens, so the company root redirect can resolve the inviter
+    // company rather than falling back to companies[0].
+    const cached = queryClient.getQueryData(queryKeys.companies.all) as
+      | { companies: Array<{ id: string }> }
+      | undefined;
+    expect(cached?.companies.map((company) => company.id)).toContain("company-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("still redirects into the company when the post-accept companies refetch fails", async () => {
+    // The invite accept succeeded on the server, but the post-accept companies
+    // refetch hits a transient network error. Throwing out of the accept
+    // mutation's onSuccess would trip onError and pin the invitee on the invite
+    // page behind a false "Failed to accept invite" error. The handoff must
+    // swallow the refetch failure and navigate anyway: the selection is already
+    // persisted, so the root redirect recovers once the list is readable.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // First call serves the pre-accept membership check; every post-accept
+    // refetch in the bounded retry loop fails.
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Existing Co" }]);
+    listCompaniesMock.mockRejectedValue(new Error("network error"));
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+              <Route path="/" element={<div data-testid="company-root-redirect" />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    for (let i = 0; i < 30; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      });
+      if (container.querySelector('[data-testid="company-root-redirect"]')) break;
+    }
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // Navigation fired despite the failing refetch, and no false accept error
+    // was shown for an invite that succeeded server-side.
+    expect(container.querySelector('[data-testid="company-root-redirect"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Failed to accept invite");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("asks unauthenticated users to sign in before completing an accepted human invite", async () => {
     getInviteMock.mockResolvedValue({
       id: "invite-1",
