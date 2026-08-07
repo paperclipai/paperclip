@@ -86,6 +86,10 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  /** Whether the periodic stale-agent reconciliation sweep (LEG-1927) runs. */
+  staleAgentReconciliationEnabled: boolean;
+  /** ~24h threshold before a stuck non-live agent is flagged by the sweep. */
+  staleAgentReconciliationThresholdMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -348,6 +352,11 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    staleAgentReconciliationEnabled: process.env.STALE_AGENT_RECONCILIATION_ENABLED !== "false",
+    staleAgentReconciliationThresholdMs: Math.max(
+      60 * 60 * 1000,
+      Number(process.env.STALE_AGENT_RECONCILIATION_THRESHOLD_MS) || 24 * 60 * 60 * 1000,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

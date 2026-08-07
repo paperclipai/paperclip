@@ -50,6 +50,23 @@ describe("registered run secret redaction", () => {
     });
   });
 
+  it("preserves non-plain objects such as Date columns instead of collapsing them", () => {
+    const createdAt = new Date("2026-08-01T10:00:00.000Z");
+    const result = redactRegisteredSecretValues({
+      createdAt,
+      startedAt: null,
+      nested: { finishedAt: createdAt, note: `ran with ${secret}` },
+      history: [{ at: createdAt }],
+    }, [secret]);
+
+    expect(result.createdAt).toBeInstanceOf(Date);
+    expect(result.createdAt.toISOString()).toBe("2026-08-01T10:00:00.000Z");
+    expect(result.nested.finishedAt).toBeInstanceOf(Date);
+    expect(result.history[0]!.at).toBeInstanceOf(Date);
+    expect(result.nested.note).toBe(`ran with ${REDACTED_EVENT_VALUE}`);
+    expect(JSON.parse(JSON.stringify(result)).createdAt).toBe("2026-08-01T10:00:00.000Z");
+  });
+
   it("replaces longer registered values before overlapping shorter values", () => {
     expect(redactRegisteredSecretValues("token-extended token", ["token-extended", "token"]))
       .toBe(`${REDACTED_EVENT_VALUE} ${REDACTED_EVENT_VALUE}`);

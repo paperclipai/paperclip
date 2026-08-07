@@ -10,8 +10,18 @@ export function getLast14Days(): string[] {
   });
 }
 
+// Timestamps arrive over JSON, so a missing or malformed value can reach a
+// chart as anything. Date#toISOString() throws on an invalid date, which would
+// take the entire page down for one unusable row — bucket it as null and let
+// callers drop it instead.
+function toDayKey(value: unknown): string | null {
+  const d = new Date(value as string | number | Date);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
 function formatDayLabel(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return "";
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
@@ -92,8 +102,8 @@ function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivity
   const grouped = new Map<string, DashboardRunActivityDay>();
   for (const day of days) grouped.set(day, emptyRunDay(day));
   for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
+    const day = toDayKey(run.createdAt);
+    const entry = day ? grouped.get(day) : undefined;
     if (!entry) continue;
     if (run.status === "succeeded") {
       entry.succeeded++;
@@ -179,8 +189,8 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
+    const day = toDayKey(issue.createdAt);
+    const entry = day ? grouped.get(day) : undefined;
     if (!entry) continue;
     if (issue.priority in entry) entry[issue.priority]++;
   }
@@ -251,8 +261,8 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
+    const day = toDayKey(issue.createdAt);
+    const entry = day ? grouped.get(day) : undefined;
     if (!entry) continue;
     entry[issue.status] = (entry[issue.status] ?? 0) + 1;
     allStatuses.add(issue.status);

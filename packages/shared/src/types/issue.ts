@@ -34,6 +34,7 @@ import type {
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
+import type { AssigneeLiveness } from "../agent-eligibility.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -801,6 +802,10 @@ export interface Issue {
   reviewPolicy: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  /** Derived liveness of the assignee agent (LEG-1928). Computed at read time
+   *  from the agent's current state; `null` when the issue has no agent
+   *  assignee, `{ state: "live" }` when the assignee looks healthy. */
+  assigneeLiveness?: AssigneeLiveness | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
   executionAgentNameKey: string | null;
@@ -925,6 +930,7 @@ export type CompactIssue = Pick<
   archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
+  assigneeLiveness?: AssigneeLiveness | null;
 };
 
 /**

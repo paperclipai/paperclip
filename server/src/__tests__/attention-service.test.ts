@@ -702,6 +702,63 @@ describeEmbeddedPostgres("attention service", () => {
     });
   });
 
+  it("surfaces the LEG-1924 stale-heartbeat shape as an agent_error_alert (not only status='error')", async () => {
+    const { companyId } = await seedCompany("ALE");
+    // LEG-1924 live shape: status flipped back to 'running', but a lingering
+    // errorReason + a heartbeat stale past the shared classifier's 6h floor.
+    const staleReviewerId = randomUUID();
+    await db.insert(agents).values({
+      id: staleReviewerId,
+      companyId,
+      name: "Senior Reviewer",
+      role: "qa",
+      status: "running",
+      errorReason: "Process lost -- child pid 93238 is no longer running",
+      lastHeartbeatAt: new Date(Date.now() - 30 * 60 * 60 * 1000),
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 3600 } },
+      permissions: {},
+    });
+    // An on-demand agent with the same errorReason + stale heartbeat must NOT surface.
+    const onDemandId = randomUUID();
+    await db.insert(agents).values({
+      id: onDemandId,
+      companyId,
+      name: "On-Demand Worker",
+      role: "engineer",
+      status: "running",
+      errorReason: "stale-but-not-cleared",
+      lastHeartbeatAt: new Date(Date.now() - 30 * 60 * 60 * 1000),
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: false } },
+      permissions: {},
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    const agentErrorItems = feed.items.filter((item) => item.sourceKind === "agent_error_alert");
+    // The seed's "Broken Agent" (status='error') plus the stale reviewer.
+    expect(agentErrorItems).toHaveLength(2);
+    expect(agentErrorItems.map((item) => item.subject.id)).toEqual(
+      expect.arrayContaining([staleReviewerId]),
+    );
+
+    const staleItem = agentErrorItems.find((item) => item.subject.id === staleReviewerId)!;
+    expect(staleItem.detail).toMatchObject({
+      kind: "agent_error",
+      agentName: "Senior Reviewer",
+    });
+    // The stale branch carries a distinct entry rule + liveness reason so the
+    // board copy reflects the LEG-1924 shape, not a plain error status.
+    expect(staleItem.entryRule).toContain("LEG-1924");
+    expect(staleItem.whyNow).toContain("stale heartbeat");
+    expect(staleItem.subject.metadata).toMatchObject({ livenessReason: "stale_error_heartbeat" });
+
+    expect(agentErrorItems.some((item) => item.subject.id === onDemandId)).toBe(false);
+  });
+
   it("returns addressed interactions to board attention after addressee pause or termination", async () => {
     const { companyId, reviewerId } = await seedCompany("ATF");
     const pausedReviewerId = randomUUID();

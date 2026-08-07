@@ -181,6 +181,7 @@ import {
   buildOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
 } from "../services/onboarding-greeting.js";
+import { getAssignmentLivenessWarnings, getAssignmentLivenessState, listAssignmentLivenessByAgentIds } from "../services/agent-assignability.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
@@ -2397,6 +2398,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.lastExternalCommentAt !== undefined ? { lastExternalCommentAt: issue.lastExternalCommentAt } : {}),
     ...(issue.lastActivityAt !== undefined ? { lastActivityAt: issue.lastActivityAt } : {}),
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
+    ...(issue.assigneeLiveness !== undefined ? { assigneeLiveness: issue.assigneeLiveness } : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
   };
@@ -6100,9 +6102,10 @@ export function issueRoutes(
           : await filterIssuesForActor(req, rawResult);
         const issueIds = result.map((issue) => issue.id);
         if (compactView) {
-          const [handoffStates, recoveryActionByIssue] = await Promise.all([
+          const [handoffStates, recoveryActionByIssue, assigneeLivenessByAgent] = await Promise.all([
             listSuccessfulRunHandoffStates(db, companyId, issueIds),
             recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+            listAssignmentLivenessByAgentIds(db, companyId, result.map((issue) => issue.assigneeAgentId)),
           ]);
           const actor = getActorInfo(req);
           await Promise.all(result.map(async (issue) => {
@@ -6122,6 +6125,9 @@ export function issueRoutes(
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+              assigneeLiveness: issue.assigneeAgentId
+                ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
+                : null,
             }));
           return {
             kind: "compact",
@@ -6130,9 +6136,10 @@ export function issueRoutes(
             cacheControl: "private, must-revalidate",
           };
         }
-        const [handoffStates, recoveryActionByIssue] = await Promise.all([
+        const [handoffStates, recoveryActionByIssue, assigneeLivenessByAgent] = await Promise.all([
           listSuccessfulRunHandoffStates(db, companyId, issueIds),
           recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+          listAssignmentLivenessByAgentIds(db, companyId, result.map((issue) => issue.assigneeAgentId)),
         ]);
         const actor = getActorInfo(req);
         await Promise.all(result.map(async (issue) => {
@@ -6153,6 +6160,9 @@ export function issueRoutes(
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            assigneeLiveness: issue.assigneeAgentId
+              ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
+              : null,
           })),
         };
       },
@@ -6440,6 +6450,7 @@ export function issueRoutes(
       issueId: issue.id,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const assigneeLiveness = await getAssignmentLivenessState(db, issue.companyId, issue.assigneeAgentId);
 
     const response = {
       issue: {
@@ -6462,6 +6473,7 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        assigneeLiveness,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -6668,6 +6680,7 @@ export function issueRoutes(
       activeRecoveryAction,
       linkedCases,
       inboxArchiveFields,
+      assigneeLiveness,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -6683,6 +6696,7 @@ export function issueRoutes(
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       listIssueLinkedCases(db, issue.companyId, issue.id),
       inboxArchiveFieldsPromise,
+      getAssignmentLivenessState(db, issue.companyId, issue.assigneeAgentId),
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -6712,6 +6726,7 @@ export function issueRoutes(
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
+      assigneeLiveness,
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       productivityReview,
@@ -10016,6 +10031,16 @@ export function issueRoutes(
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
 
+    // LEG-1924: an agent in `error` (or flipped back to `running` with a lingering
+    // errorReason + stale heartbeat) is still assignable, so the PATCH above
+    // succeeded. Surface that the assignee is not live right now instead of
+    // letting the assignment stall silently. Advisory only — the assignment is
+    // already recorded so queued work runs on recovery.
+    const assignmentLivenessWarnings =
+      normalizedAssigneeAgentId !== undefined && issue.assigneeAgentId
+        ? await getAssignmentLivenessWarnings(db, issue.companyId, issue.assigneeAgentId)
+        : [];
+
     if (enteringBlocked) {
       const blockedIssue = issue;
       let ownerNotifiedAt: Date | null = null;
@@ -10197,6 +10222,7 @@ export function issueRoutes(
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
+        ...(assignmentLivenessWarnings.length > 0 ? { assignmentLivenessWarnings } : {}),
         _previous: hasFieldChanges ? previous : undefined,
         ...summarizeIssueReferenceActivityDetails(
           updateReferenceDiff
@@ -10916,6 +10942,7 @@ export function issueRoutes(
 
     await queueTaskWatchdogEvaluation(issue, actor.runId);
     const changes = issueResponse.changes ?? {};
+    const warnings = assignmentLivenessWarnings;
     if (prefersMinimalIssueUpdateResponse(req)) {
       res.setHeader("Preference-Applied", "return=minimal");
       res.json({
@@ -10923,11 +10950,12 @@ export function issueRoutes(
         identifier: issueResponse.identifier,
         updatedAt: issueResponse.updatedAt,
         changes,
+        ...(warnings.length > 0 ? { warnings } : {}),
         comment,
       });
       return;
     }
-    res.json({ ...issueResponse, changes, comment });
+    res.json({ ...issueResponse, changes, ...(warnings.length > 0 ? { warnings } : {}), comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {

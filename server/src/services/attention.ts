@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -27,7 +27,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveProjectUrlKey, isAgentInNonLiveErrorShape } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -61,6 +61,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
+import { readHeartbeatLivenessConfig } from "./agent-assignability.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -1900,7 +1901,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const erroredAgents = await db
+      // LEG-1927: surface the full non-live shape, not only status='error'.
+      // A seat that crashed and got flipped back to 'running' with a lingering
+      // errorReason + stale heartbeat (the live LEG-1924 defect) was invisible
+      // here. We pull every candidate (status='error' OR errorReason set) and
+      // classify each with the shared predicate so on-demand agents and fresh
+      // heartbeats are not false-flagged.
+      const nonLiveAgentCandidates = await db
         .select({
           id: agents.id,
           companyId: agents.companyId,
@@ -1908,15 +1915,40 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           role: agents.role,
           status: agents.status,
           errorReason: agents.errorReason,
+          lastHeartbeatAt: agents.lastHeartbeatAt,
           createdAt: agents.createdAt,
           updatedAt: agents.updatedAt,
+          runtimeConfig: agents.runtimeConfig,
         })
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), eq(agents.status, "error")))
+        .where(and(
+          eq(agents.companyId, companyId),
+          or(eq(agents.status, "error"), isNotNull(agents.errorReason)),
+        ))
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
-      for (const agent of erroredAgents) {
+      for (const agent of nonLiveAgentCandidates) {
+        const heartbeat = readHeartbeatLivenessConfig(agent.runtimeConfig);
+        const isNonLive = isAgentInNonLiveErrorShape({
+          name: agent.name,
+          status: agent.status,
+          errorReason: agent.errorReason,
+          lastHeartbeatAt: agent.lastHeartbeatAt,
+          createdAt: agent.createdAt,
+          heartbeatEnabled: heartbeat.enabled,
+          heartbeatIntervalSec: heartbeat.intervalSec,
+          now: new Date(now),
+        });
+        if (!isNonLive) continue;
+
+        const isExplicitErrorStatus = agent.status === "error";
         const dedupKey = `agent_error:${agent.id}`;
+        const whyNow = isExplicitErrorStatus
+          ? "Agent is in error status and needs operator action or dismissal."
+          : "Agent looks dead: a lingering error reason and a stale heartbeat mean work routed to it stalls silently. Needs operator action or dismissal.";
+        const entryRule = isExplicitErrorStatus
+          ? "agents.status = 'error'"
+          : "agents.error_reason is set AND heartbeat is stale (LEG-1924 non-live shape)";
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
@@ -1928,16 +1960,21 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             identifier: null,
             status: agent.status,
             href: `/${prefix}/agents/${agent.id}`,
-            metadata: { role: agent.role, errorReason: agent.errorReason },
+            metadata: {
+              role: agent.role,
+              errorReason: agent.errorReason,
+              lastHeartbeatAt: agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).toISOString() : null,
+              livenessReason: isExplicitErrorStatus ? "error_status" : "stale_error_heartbeat",
+            },
           },
-          whyNow: "Agent is in error status and needs operator action or dismissal.",
+          whyNow,
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the agent error." },
             { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
           inlineResolvable: true,
-          entryRule: "agents.status = 'error'",
-          exitRule: "Agent leaves error status or the row is dismissed.",
+          entryRule,
+          exitRule: "Agent recovers (clears error and heartbeats again) or the row is dismissed.",
           dedupKey,
           severity: "high",
           activityAt: toIso(agent.updatedAt),

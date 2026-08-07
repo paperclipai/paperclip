@@ -147,6 +147,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
+import { AssigneeLivenessBadge } from "../components/AssigneeLivenessBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -4565,6 +4566,8 @@ export function IssueDetail() {
               Live
             </Badge>
           )}
+
+          <AssigneeLivenessBadge liveness={issue.assigneeLiveness} />
 
           {issue.originKind === "routine_execution" && issue.originId && (
             <Link

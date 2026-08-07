@@ -19,6 +19,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+// A Date has typeof "object" but no own enumerable properties, so rebuilding it
+// with Object.entries() collapses it to `{}` and destroys the timestamp. That is
+// how every Date column on a redacted run row reached the client as an empty
+// object and blew up the activity charts with "Invalid time value".
+//
+// Dates are the only value exempted from the walk, and only because they carry
+// no string content to scan. Every other object shape — including class
+// instances and cross-realm objects — keeps getting walked: this is a response
+// boundary, so an unrecognized shape must stay fail-closed rather than pass
+// through unscanned.
+
 function registryEntries(contextSnapshot: unknown): RegistryEntry[] {
   const context = asRecord(contextSnapshot);
   const raw = context?.[REGISTRY_KEY];
