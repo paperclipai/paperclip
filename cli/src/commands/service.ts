@@ -5,7 +5,7 @@ import type { Command } from "commander";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
-import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { buildLocalHealthUrl, HEALTH_PROBE_TIMEOUT_MS, HEALTH_READY_TIMEOUT_MS } from "../utils/health-url.js";
 
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
@@ -31,7 +31,7 @@ function healthUrl(instanceId: string): string {
 
 async function probeHealth(instanceId: string): Promise<HealthResult> {
   try {
-    const response = await fetch(healthUrl(instanceId), { signal: AbortSignal.timeout(2_000) });
+    const response = await fetch(healthUrl(instanceId), { signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
     const body = await response.json() as { status?: unknown; serverVersion?: unknown; version?: unknown };
     return { ok: response.ok && body.status === "ok", serverVersion: typeof body.serverVersion === "string" ? body.serverVersion : typeof body.version === "string" ? body.version : null };
   } catch (error) {
@@ -39,7 +39,7 @@ async function probeHealth(instanceId: string): Promise<HealthResult> {
   }
 }
 
-async function waitForHealth(instanceId: string, expectedVersion: string | null, timeoutMs = 60_000): Promise<HealthResult> {
+async function waitForHealth(instanceId: string, expectedVersion: string | null, timeoutMs = HEALTH_READY_TIMEOUT_MS): Promise<HealthResult> {
   const deadline = Date.now() + timeoutMs;
   let last: HealthResult = { ok: false, serverVersion: null };
   while (Date.now() < deadline) {
