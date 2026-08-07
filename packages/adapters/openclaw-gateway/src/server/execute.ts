@@ -335,6 +335,89 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
+function paperclipApiOriginMatches(url: URL, paperclipApiUrl: string | null): boolean {
+  if (!paperclipApiUrl) return false;
+  let target: URL;
+  try {
+    target = new URL(paperclipApiUrl);
+  } catch {
+    return false;
+  }
+  return url.origin === target.origin;
+}
+
+const PAPERCLIP_RUN_ID_HEADER = "x-paperclip-run-id";
+
+function initHasHeader(init: RequestInit | undefined, header: string): boolean {
+  if (!init) return false;
+  const headers = init.headers;
+  if (!headers) return false;
+  if (headers instanceof Headers) {
+    return headers.has(header);
+  }
+  if (Array.isArray(headers)) {
+    return headers.some(([key]) => key.toLowerCase() === header.toLowerCase());
+  }
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === header.toLowerCase()) return true;
+  }
+  return false;
+}
+
+function withInjectedRunIdHeader(
+  init: RequestInit | undefined,
+  runId: string,
+): RequestInit {
+  const existingHeaders = init?.headers;
+  let nextHeaders: Headers;
+  if (existingHeaders instanceof Headers) {
+    nextHeaders = new Headers(existingHeaders);
+  } else if (Array.isArray(existingHeaders)) {
+    nextHeaders = new Headers();
+    for (const [key, value] of existingHeaders) {
+      nextHeaders.append(key, value);
+    }
+  } else if (existingHeaders && typeof existingHeaders === "object") {
+    nextHeaders = new Headers();
+    for (const [key, value] of Object.entries(existingHeaders)) {
+      if (Array.isArray(value)) {
+        for (const v of value) nextHeaders.append(key, v);
+      } else if (value !== undefined && value !== null) {
+        nextHeaders.set(key, String(value));
+      }
+    }
+  } else {
+    nextHeaders = new Headers();
+  }
+  nextHeaders.set(PAPERCLIP_RUN_ID_HEADER, runId);
+  return { ...(init ?? {}), headers: nextHeaders };
+}
+
+/**
+ * Returns a `fetch`-shaped function that auto-injects `X-Paperclip-Run-Id` on
+ * outbound HTTP calls to the configured Paperclip API origin. Third-party URLs
+ * are passed through untouched so the run id never leaks off-host. An explicit
+ * caller-supplied `X-Paperclip-Run-Id` is preserved (case-insensitive per HTTP
+ * spec) — the wrapper only fills it in when the caller omitted it.
+ *
+ * Mirrors the pattern used by `packages/adapters/hermes/skills/paperclip-task-bridge/paperclip-task.mjs`
+ * and `packages/adapter-utils/src/execution-target.ts` (sandbox-callback bridge).
+ */
+export function buildPaperclipApiFetch(ctx: AdapterExecutionContext): typeof fetch {
+  const paperclipApiUrl = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const runId = ctx.runId;
+  return (input, init) => {
+    const targetUrl = input instanceof URL ? input : new URL(typeof input === "string" ? input : (input as Request).url);
+    if (!paperclipApiOriginMatches(targetUrl, paperclipApiUrl)) {
+      return fetch(input, init);
+    }
+    if (initHasHeader(init, PAPERCLIP_RUN_ID_HEADER)) {
+      return fetch(input, init);
+    }
+    return fetch(input, withInjectedRunIdHeader(init, runId));
+  };
+}
+
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
 export function resolveClaimedApiKeyPath(value: unknown): string {
@@ -416,7 +499,10 @@ function buildWakeText(
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
-    "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
+    "- (Advisory) Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call. " +
+      "The openclaw-gateway adapter auto-injects this header on outbound calls to the " +
+      "Paperclip API origin via `buildPaperclipApiFetch(ctx)`, so omitting it is safe — but " +
+      "explicit values are still recommended for clarity and audit consistency.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
     "",

@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import {
+  buildAgentParams,
+  buildPaperclipApiFetch,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+} from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -121,5 +127,79 @@ describe("resolveClaimedApiKeyPath", () => {
   it("falls back to the shared default when value is not a string", () => {
     expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
     expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
+  });
+});
+
+describe("buildPaperclipApiFetch", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function makeCtx(paperclipApiUrl: string | null): AdapterExecutionContext {
+    return {
+      runId: "run-abc-123",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Van Dam",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      },
+      runtime: {} as AdapterExecutionContext["runtime"],
+      config: paperclipApiUrl === null ? {} : { paperclipApiUrl },
+      context: {},
+      onLog: async () => {},
+    };
+  }
+
+  function recordedHeaders(): Array<Headers> {
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    return calls.map(([input, init]) => {
+      const req = input instanceof Request ? input : new Request(input as string, init);
+      return req.headers;
+    });
+  }
+
+  it("injects X-Paperclip-Run-Id on Paperclip-API calls and omits it on third-party URLs", async () => {
+    const fetchFn = buildPaperclipApiFetch(makeCtx("http://10.0.0.100:3100/"));
+
+    await fetchFn("http://10.0.0.100:3100/api/agents/me");
+    await fetchFn("https://example.com/api/webhook");
+
+    const headers = recordedHeaders();
+    expect(headers[0].get("x-paperclip-run-id")).toBe("run-abc-123");
+    expect(headers[1].get("x-paperclip-run-id")).toBeNull();
+  });
+
+  it("preserves an explicit caller-supplied X-Paperclip-Run-Id (case-insensitive)", async () => {
+    const fetchFn = buildPaperclipApiFetch(makeCtx("http://10.0.0.100:3100/"));
+
+    await fetchFn("http://10.0.0.100:3100/api/issues/PHA-1673", {
+      method: "PATCH",
+      headers: { "X-PAPERCLIP-RUN-ID": "caller-run-xyz" },
+    });
+    await fetchFn("http://10.0.0.100:3100/api/issues/PHA-1673", {
+      method: "PATCH",
+      headers: [["x-paperclip-run-id", "caller-run-abc"]],
+    });
+
+    const headers = recordedHeaders();
+    expect(headers[0].get("x-paperclip-run-id")).toBe("caller-run-xyz");
+    expect(headers[1].get("x-paperclip-run-id")).toBe("caller-run-abc");
+  });
+
+  it("does not inject when no paperclipApiUrl is configured", async () => {
+    const fetchFn = buildPaperclipApiFetch(makeCtx(null));
+
+    await fetchFn("http://10.0.0.100:3100/api/agents/me");
+
+    const headers = recordedHeaders();
+    expect(headers[0].get("x-paperclip-run-id")).toBeNull();
   });
 });
