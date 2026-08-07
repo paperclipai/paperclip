@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -121,6 +121,15 @@ describeEmbeddedPostgres("built-in agents", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-built-in-agents-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
+
+  // Keep the suite independent of the developer's AWS environment. These vars decide which model
+  // catalogue claude_local offers, and therefore how a bundled default model resolves.
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
+  });
 
   afterEach(async () => {
     await db.delete(routineTriggers);
@@ -444,6 +453,138 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("accepts a region-qualified Bedrock model that the static catalogue cannot enumerate", async () => {
+    const companyId = await seedCompany();
+
+    // Bedrock inference-profile ids are region-scoped, so no static list can contain them all.
+    // The execution path accepts any region-qualified id, and setup must not be stricter. This
+    // server runs no Bedrock env, so it cannot know the region the agent will run in.
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "eu.anthropic.claude-sonnet-5" },
+    });
+
+    expect(state.agentId).toBeTruthy();
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+  });
+
+  it("rejects a Bedrock profile from a region family the configured region does not publish", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const companyId = await seedCompany();
+
+    // Bedrock cannot resolve an `eu.` profile from a US region. Rejecting it here gives the
+    // operator the error while they are still in setup, instead of at the agent's first run.
+    await expect(builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "eu.anthropic.claude-sonnet-5" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "built_in_agent_model_region_mismatch",
+        adapterType: "claude_local",
+        model: "eu.anthropic.claude-sonnet-5",
+        region: "us-east-1",
+      },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("judges the region from the agent's own env, not the server's", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const service = builtInAgentService(db);
+
+    // The claude_local execution path spreads adapterConfig.env over process.env, so this agent runs
+    // in eu-west-1 whatever the server is set to. Its eu. profile must be accepted, even though the
+    // server's own region would reject it, and even though the offered catalogue lists us. ids.
+    const euCompanyId = await seedCompany();
+    const state = await service.ensure(euCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "eu.anthropic.claude-sonnet-5",
+        env: { AWS_REGION: "eu-west-1" },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+
+    // The same override rejects a us. profile that the server's region would have accepted.
+    const usCompanyId = await seedCompany();
+    await expect(service.ensure(usCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        env: { AWS_REGION: "eu-west-1" },
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "built_in_agent_model_region_mismatch", region: "eu-west-1" },
+    });
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, usCompanyId))).toHaveLength(0);
+  });
+
+  it("accepts Bedrock ids that the configured region cannot rule out", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+
+    // A matching family, a `global.` profile published everywhere, and a full ARN naming its own
+    // region are all usable from us-east-1. Only a provable mismatch is rejected.
+    const accepted = [
+      "us.anthropic.claude-sonnet-4-5-20250929-v2:0",
+      "global.anthropic.claude-sonnet-5",
+      "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+    ];
+
+    for (const model of accepted) {
+      const companyId = await seedCompany();
+      const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+        adapterType: "claude_local",
+        adapterConfig: { model },
+      });
+      expect(state.agent?.adapterConfig, model).toMatchObject({ model });
+    }
+  });
+
+  it("maps a bundled default alias onto a region-qualified Bedrock profile", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    const companyId = await seedCompany();
+
+    // The Summarizer definition hardcodes the plain alias "claude-haiku-4-5", which does not exist
+    // as a Bedrock inference profile. Provisioning must resolve it, not reject it.
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
+
+    expect(state.agent?.adapterType).toBe("claude_local");
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    });
+  });
+
+  it("stores the resolved Bedrock profile on a board-approval pending row", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    const companyId = await seedCompany({ requireApproval: true });
+
+    // A pending row must carry the profile that will run once the board approves the hire.
+    // Storing the unresolved "claude-haiku-4-5" alias would leave the approved agent without a
+    // usable model, and the failure would only appear at run time.
+    const result = await builtInAgentService(db).provision(companyId, "summarizer");
+
+    expect(result.state.status).toBe("pending_approval");
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending_approval");
+    expect(rows[0]?.adapterConfig).toMatchObject({
+      model: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    });
+  });
+
   it("recovers an orphaned marked row instead of creating a duplicate", async () => {
     const companyId = await seedCompany();
     const orphanId = randomUUID();
@@ -636,7 +777,12 @@ describeEmbeddedPostgres("built-in agents", () => {
       "paperclipai/bundled/paperclip-operations/reflection-coach",
     );
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // The company can auto-provision more than one built-in with a routine, so scope the lookup
+    // to this agent. Selecting by company alone relies on unspecified row order.
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
     expect(routine).toMatchObject({
       title: "Review recent agent trajectories for coaching proposals",
       status: "paused",
@@ -1134,7 +1280,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     expect(readPaperclipSkillSyncPreference(state.agent!.adapterConfig).desiredSkills).toContain(skill!.key);
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // The company can auto-provision more than one built-in with a routine, so scope the lookup
+    // to this agent. Selecting by company alone relies on unspecified row order.
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
     expect(routine).toMatchObject({
       title: "Review recent agent trajectories for coaching proposals",
       status: "paused",
