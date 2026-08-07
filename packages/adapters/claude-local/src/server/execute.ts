@@ -525,7 +525,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
-  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(
+    hasExplicitClaudeConfigDir
+      ? { ...process.env, CLAUDE_CONFIG_DIR: String(configEnv.CLAUDE_CONFIG_DIR) }
+      : process.env,
+  );
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
