@@ -52,3 +52,12 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Code adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex adapter) |
+
+## UI Branding (optional)
+
+White-label hooks for deployers. Both are opt-in: when unset, the served UI is byte-for-byte identical to the default build.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_BRAND_DIR` | (unset) | Directory of deployer-supplied brand assets (e.g. a mounted ConfigMap). Served read-only under `/branding`; when set, the server injects `<link rel="stylesheet" href="/branding/brand.css">` after the bundled stylesheet so your CSS variable overrides win the cascade |
+| `PAPERCLIP_DEFAULT_THEME` | (unset) | `light` or `dark`: the theme first-time visitors (no stored preference) see. Unset keeps the built-in behavior of following the OS `prefers-color-scheme` |

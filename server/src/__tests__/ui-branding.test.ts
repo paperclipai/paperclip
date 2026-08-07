@@ -1,10 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyUiBranding,
+  getBrandDir,
   getWorktreeUiBranding,
   isWorktreeUiBrandingEnabled,
+  renderBrandStylesheetLink,
   renderFaviconLinks,
   renderRuntimeBrandingMeta,
+  resolveDefaultTheme,
 } from "../ui-branding.js";
 
 const TEMPLATE = `<!doctype html>
@@ -102,5 +108,95 @@ describe("ui branding", () => {
     const defaultHtml = applyUiBranding(TEMPLATE, {});
     expect(defaultHtml).toContain('href="/favicon.svg"');
     expect(defaultHtml).not.toContain('name="paperclip-worktree-name"');
+  });
+
+  it("resolves the brand directory only when PAPERCLIP_BRAND_DIR is set", () => {
+    expect(getBrandDir({})).toBeNull();
+    expect(getBrandDir({ PAPERCLIP_BRAND_DIR: "  " })).toBeNull();
+    expect(getBrandDir({ PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" })).toBe(
+      "/etc/paperclip/branding",
+    );
+  });
+
+  it("emits the brand stylesheet link only when a brand dir is configured", () => {
+    expect(renderBrandStylesheetLink({})).toBe("");
+    const link = renderBrandStylesheetLink({ PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" });
+    expect(link).toBe('<link rel="stylesheet" href="/branding/brand.css" />');
+  });
+
+  it("injects the brand stylesheet just before </head> so it wins the cascade", () => {
+    const template = `<!doctype html>
+<head>
+    <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
+    <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
+    <!-- PAPERCLIP_FAVICON_START -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- PAPERCLIP_FAVICON_END -->
+    <link rel="stylesheet" crossorigin href="/assets/index-abc.css">
+  </head>`;
+    const branded = applyUiBranding(template, { PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" });
+    expect(branded).toContain('<link rel="stylesheet" href="/branding/brand.css" />');
+    // Brand link must come AFTER the bundled stylesheet so its var overrides win.
+    expect(branded.indexOf("/branding/brand.css")).toBeGreaterThan(
+      branded.indexOf("/assets/index-abc.css"),
+    );
+    // And it must sit inside <head>.
+    expect(branded.indexOf("/branding/brand.css")).toBeLessThan(branded.indexOf("</head>"));
+  });
+
+  it("does not inject a brand stylesheet when the brand dir is unset", () => {
+    const branded = applyUiBranding(TEMPLATE, {});
+    expect(branded).not.toContain("/branding/brand.css");
+  });
+
+  it("resolveDefaultTheme reads PAPERCLIP_DEFAULT_THEME, null (OS preference) when unset", () => {
+    expect(resolveDefaultTheme({})).toBeNull();
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "light" })).toBe("light");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "LIGHT" })).toBe("light");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "dark" })).toBe("dark");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "  " })).toBeNull();
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "solarized" })).toBeNull();
+  });
+
+  it("injects a paperclip-default-theme meta only when configured, before the inline theme script", () => {
+    // The meta lives in the runtime-branding block, which precedes the inline
+    // theme script, so the pre-React script reads it without a flash.
+    const tpl = `<!doctype html><head>
+    <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
+    <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
+    <!-- PAPERCLIP_FAVICON_START -->
+    <!-- PAPERCLIP_FAVICON_END -->
+    <script>var k="paperclip.theme";</script>
+  </head>`;
+    const light = applyUiBranding(tpl, { PAPERCLIP_DEFAULT_THEME: "light" });
+    expect(light).toContain('<meta name="paperclip-default-theme" content="light" />');
+    expect(light.indexOf("paperclip-default-theme")).toBeLessThan(light.indexOf("paperclip.theme"));
+    const dark = applyUiBranding(tpl, { PAPERCLIP_DEFAULT_THEME: "dark" });
+    expect(dark).toContain('<meta name="paperclip-default-theme" content="dark" />');
+    // Unconfigured build stays free of the meta (OS preference remains the default).
+    expect(applyUiBranding(tpl, {})).not.toContain("paperclip-default-theme");
+  });
+
+  // Regression guard for the brand-hook outage: a head comment in ui/index.html
+  // that contained a LITERAL "</head>" made Vite inject the bundled entry script
+  // before that (commented) close-head, burying <script src=index.js> inside the
+  // comment so the SPA never booted (blank page). Keep head comments free of
+  // literal close-head / asset tags.
+  it("ui/index.html has a single </head> and no asset/close-head tags inside comments", () => {
+    const candidates = [
+      path.resolve(fileURLToPath(import.meta.url), "../../../../ui/index.html"),
+      path.resolve(process.cwd(), "../ui/index.html"),
+      path.resolve(process.cwd(), "ui/index.html"),
+    ];
+    const file = candidates.find((p) => fs.existsSync(p));
+    expect(file, `ui/index.html not found in: ${candidates.join(", ")}`).toBeTruthy();
+    const html = fs.readFileSync(file as string, "utf-8");
+    expect(html.match(/<\/head>/gi)?.length ?? 0).toBe(1);
+    const comments = html.match(/<!--[\s\S]*?-->/g) ?? [];
+    for (const c of comments) {
+      expect(/<\/head>/i.test(c)).toBe(false);
+      expect(/<script[^>]*\bsrc=/i.test(c)).toBe(false);
+      expect(/<link[^>]*\bhref=/i.test(c)).toBe(false);
+    }
   });
 });
