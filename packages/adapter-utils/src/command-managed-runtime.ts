@@ -42,6 +42,19 @@ export interface CommandManagedRuntimeRunner {
      * stream. The default keeps the context-based session selection.
      */
     useSession?: boolean;
+    /**
+     * Run this command outside the lease's persistent session even when a run
+     * step is active. The persistent session is a single serialized shell. In
+     * streamed mode the agent runs as one long-lived foreground command that
+     * holds the session for the whole run. The bridge control-plane execs
+     * (input delivery, output read, callback relay, and the queue/setup
+     * bookkeeping) must run concurrently with the agent, so they run as
+     * independent one-shot commands. On the session they queue behind the agent
+     * command that never returns — a permanent deadlock. An explicit bypass
+     * always wins over the context-based session selection and over
+     * `useSession`. The default keeps the context-based session selection.
+     */
+    bypassSession?: boolean;
   }): Promise<RunProcessResult>;
   /**
    * Optional native inbound file transfer. Present only when the sandbox

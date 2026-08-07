@@ -1497,6 +1497,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
       timeoutMs,
+      // The wrapper launch is bridge plumbing. Keep it off the persistent
+      // session so it never queues behind an in-run session command.
+      bypassSession: true,
     });
     if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
       throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);

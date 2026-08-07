@@ -1146,6 +1146,97 @@ describe("sandbox adapter execution targets", () => {
         await bridge?.stop();
       }
     });
+
+    it("keeps the agent command on the persistent session and forces bridge control execs off it", async () => {
+      // Regression guard for the streamed-mode startup deadlock. The persistent
+      // session is one serialized shell. In streamed mode the agent runs as a
+      // long-lived foreground session command that holds the session for the
+      // whole run. The bridge control-plane execs (script sync, stdin delivery,
+      // teardown) must run concurrently with the agent, so each must force
+      // itself off the session. On the session they queue behind the agent
+      // command that never returns, and the first handshake write never drains.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-isolation-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const delegate = createLocalSandboxRunner();
+      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; script: string }> = [];
+      const runner = {
+        execute: vi.fn(
+          async (
+            input: Parameters<typeof delegate.execute>[0] & {
+              useSession?: boolean;
+              bypassSession?: boolean;
+            },
+          ) => {
+            execs.push({
+              useSession: input.useSession,
+              bypassSession: input.bypassSession,
+              script: input.args?.[1] ?? "",
+            });
+            return delegate.execute(input);
+          },
+        ),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-isolation",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        // Round-trip one input so a stdin-delivery control exec runs and gets
+        // recorded before the assertions below.
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        expect(result.stdout).toBe("out:hello\n");
+
+        // Exactly one exec runs on the persistent session: the long-lived agent
+        // command. It streams its output through the session log stream, so it
+        // must not also bypass the session.
+        const sessionExecs = execs.filter((exec) => exec.useSession === true);
+        expect(sessionExecs).toHaveLength(1);
+        expect(sessionExecs[0]!.bypassSession).not.toBe(true);
+        expect(sessionExecs[0]!.script).toContain("node ");
+
+        // Every other exec is bridge control-plane plumbing. Each must force
+        // itself off the persistent session so it never queues behind the agent
+        // command that holds it.
+        const controlExecs = execs.filter((exec) => exec.useSession !== true);
+        expect(controlExecs.length).toBeGreaterThan(0);
+        for (const exec of controlExecs) {
+          expect(exec.bypassSession).toBe(true);
+        }
+      } finally {
+        await bridge?.stop();
+      }
+    });
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {

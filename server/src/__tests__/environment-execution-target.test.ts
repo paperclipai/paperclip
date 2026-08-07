@@ -453,6 +453,70 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(environmentRuntime.execute).toHaveBeenCalledTimes(2);
   });
 
+  it("forwards the session flags to the environment runtime execute", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const environmentRuntime = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok",
+        stderr: "",
+        metadata: { durationMs: 600, getDurationMs: 15 },
+      }),
+      supportsSync: vi.fn().mockReturnValue(false),
+    };
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: { remoteCwd: "/workspace" },
+      lease: { id: "lease-1" } as never,
+      environmentRuntime: environmentRuntime as never,
+    });
+
+    const runner = (target as { runner?: {
+      execute(input: {
+        command: string;
+        args?: string[];
+        useSession?: boolean;
+        bypassSession?: boolean;
+      }): Promise<unknown>;
+    } }).runner!;
+
+    // The agent command opts onto the persistent session with `useSession`,
+    // which the seam maps to `forceSession`. It never bypasses the session.
+    await runner.execute({ command: "node", args: ["script.js"], useSession: true });
+    // A bridge control-plane exec opts off the persistent session with
+    // `bypassSession`, which the seam forwards unchanged.
+    await runner.execute({ command: "sh", args: ["-c", "cat"], bypassSession: true });
+
+    const first = environmentRuntime.execute.mock.calls[0]![0] as {
+      forceSession?: boolean;
+      bypassSession?: boolean;
+    };
+    expect(first.forceSession).toBe(true);
+    expect(first.bypassSession).toBeUndefined();
+
+    const second = environmentRuntime.execute.mock.calls[1]![0] as {
+      forceSession?: boolean;
+      bypassSession?: boolean;
+    };
+    expect(second.forceSession).toBeUndefined();
+    expect(second.bypassSession).toBe(true);
+  });
+
   // A recording tracer that captures each provider-exec span's name, attribute
   // map, and end. It satisfies the structural tracer the seam calls.
   function createRecordingExecTracer() {

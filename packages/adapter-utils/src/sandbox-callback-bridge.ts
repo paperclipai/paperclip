@@ -236,6 +236,13 @@ async function runShell(
     },
     timeoutMs,
     stdin,
+    // Every command that rides this helper is bridge control-plane plumbing:
+    // input delivery, output read, callback relay, and queue/setup bookkeeping.
+    // It must run concurrently with the agent, so force it off the persistent
+    // session. In streamed mode the agent holds that single serialized session
+    // for the whole run; a control write on the same session queues behind the
+    // agent command that never returns — a permanent deadlock.
+    bypassSession: true,
   });
 }
 

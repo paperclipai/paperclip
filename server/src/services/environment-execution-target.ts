@@ -329,6 +329,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // long-lived agent command opens the persistent session and
                     // streams output, even though it runs with no active step.
                     forceSession: commandInput.useSession,
+                    // The bridge control-plane execs set `bypassSession` so they
+                    // run one-shot and never queue behind the long-lived agent
+                    // command on the persistent session. An explicit bypass wins
+                    // over `forceSession` and over the active-step selection.
+                    bypassSession: commandInput.bypassSession,
                   });
                 } catch (error) {
                   // The provider execution threw. Mark the span failed with the
