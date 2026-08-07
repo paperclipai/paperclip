@@ -1,0 +1,8 @@
+{
+  "policy": "TSKB0404",
+  "updatedFromWeek": "2026-07-27",
+  "baselineTier1PerProductClass": 0,
+  "forceStrongProductQaClasses": [],
+  "note": "Sticky list of product QA classes with tier-1 disabled after escape hatch trip. Clear a class only after CTO remeasure shows tier-1 safe again.",
+  "updatedAt": "2026-08-07T14:51:20Z"
+}

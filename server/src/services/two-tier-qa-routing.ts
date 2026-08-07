@@ -5,6 +5,11 @@
  * Tier-2: escalate to `strong` on tier-1 fail, ambiguity, or hard floors
  * (visual-truth frame inspect, G-class money/publish/identity/delivery binding).
  *
+ * Escape hatch (TSMC-20346): product classes listed in
+ * `two-tier-qa-escape-force-strong.json` (or process override) skip tier-1 and
+ * force strong until cleared after remeasure. Weekly metric:
+ * company `scripts/qa_defect_escape_weekly.py` + work-products/TSMC-20243/escape-ledger/.
+ *
  * K25/K26 artifact-binding and identity stay deterministic outside this module
  * (issue-close-evidence / never-again gates) — do not model-judge them here.
  *
@@ -12,6 +17,10 @@
  * work-products/TSMC-20243/baseline-queries.sql, narrowed so engineering cards
  * that merely mention "QA" are not forced onto the cheap lane.
  */
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const TWO_TIER_QA_POLICY = "TSKB0404" as const;
 export const TWO_TIER_QA_SOURCE = "two_tier_qa_routing" as const;
@@ -31,7 +40,8 @@ export type TwoTierQaFloorReason =
   | "explicit_strong"
   | "engineering_not_qa_pass"
   | "close_evidence_deterministic_only"
-  | "strong_title_denylist";
+  | "strong_title_denylist"
+  | "escape_hatch_force_strong";
 
 export type TwoTierQaClassification = {
   qaClass: ProductQaClass | null;
@@ -46,8 +56,61 @@ export type TwoTierEscalateReason =
   | "ambiguity"
   | "visual_truth"
   | "g_class_binding"
-  | "manual";
+  | "manual"
+  | "escape_hatch";
 
+const PRODUCT_QA_CLASS_SET = new Set<string>([
+  "deck_video_assembly_qa",
+  "pack_lint_review",
+  "close_evidence_checks",
+  "guard_card_triage",
+  "other_qa_review_verify",
+]);
+
+/** Test/process override; null = load from JSON file beside this module. */
+let escapeForceStrongOverride: ReadonlySet<ProductQaClass> | null = null;
+
+function defaultEscapeForceStrongPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "two-tier-qa-escape-force-strong.json");
+}
+
+export function setEscapeHatchForceStrongClassesForTests(
+  classes: Iterable<ProductQaClass> | null,
+): void {
+  escapeForceStrongOverride = classes == null ? null : new Set(classes);
+}
+
+export function loadEscapeHatchForceStrongClasses(
+  jsonPath: string = process.env.TWO_TIER_QA_FORCE_STRONG_JSON ?? defaultEscapeForceStrongPath(),
+): Set<ProductQaClass> {
+  if (escapeForceStrongOverride) {
+    return new Set(escapeForceStrongOverride);
+  }
+  try {
+    if (!existsSync(jsonPath)) return new Set();
+    const raw = JSON.parse(readFileSync(jsonPath, "utf8")) as {
+      forceStrongProductQaClasses?: unknown;
+    };
+    const list = Array.isArray(raw.forceStrongProductQaClasses)
+      ? raw.forceStrongProductQaClasses
+      : [];
+    const out = new Set<ProductQaClass>();
+    for (const item of list) {
+      if (typeof item === "string" && PRODUCT_QA_CLASS_SET.has(item)) {
+        out.add(item as ProductQaClass);
+      }
+    }
+    return out;
+  } catch {
+    return new Set();
+  }
+}
+
+export function isEscapeHatchForceStrongClass(qaClass: ProductQaClass | null | undefined): boolean {
+  if (!qaClass) return false;
+  return loadEscapeHatchForceStrongClasses().has(qaClass);
+}
 const VISUAL_TRUTH_RE =
   /\b(visual[-\s]?truth|look[-\s]?at[-\s]?a[-\s]?frame|frame[-\s]?inspect|beat[-\s]?level proof|real[-\s]?motion visual|Ken Burns|visual QA)\b/i;
 
@@ -155,6 +218,18 @@ export function classifyTwoTierQa(input: {
 
   if (explicit === "cheap") {
     const qaClass = classifyProductQaClass(input);
+    if (isEscapeHatchForceStrongClass(qaClass)) {
+      return {
+        qaClass,
+        tier1Eligible: false,
+        floorReason: "escape_hatch_force_strong",
+        requestedModelProfile: "strong",
+        notes: [
+          "escape hatch overrides explicit cheap",
+          `escape hatch force-strong for ${qaClass} (TSKB0404 / TSKB0055; clear after remeasure)`,
+        ],
+      };
+    }
     return {
       qaClass,
       tier1Eligible: true,
@@ -182,6 +257,19 @@ export function classifyTwoTierQa(input: {
       floorReason: null,
       requestedModelProfile: null,
       notes: ["not a product QA class"],
+    };
+  }
+
+  // Escape hatch: weekly metric tripped this product class → force strong (TSKB0055 path).
+  if (isEscapeHatchForceStrongClass(qaClass)) {
+    return {
+      qaClass,
+      tier1Eligible: false,
+      floorReason: "escape_hatch_force_strong",
+      requestedModelProfile: "strong",
+      notes: [
+        `escape hatch force-strong for ${qaClass} (TSKB0404 / TSKB0055; clear after remeasure)`,
+      ],
     };
   }
 
@@ -317,6 +405,19 @@ export function resolveTwoTierQaIssueModelProfile(input: {
 } {
   const explicit = readIssueModelProfileOverride(input.assigneeAdapterOverrides);
   const classification = classifyTwoTierQa(input);
+
+  // Escape hatch / floors that request strong beat a stale explicit cheap pin.
+  if (
+    classification.requestedModelProfile === "strong" &&
+    classification.floorReason === "escape_hatch_force_strong"
+  ) {
+    return {
+      modelProfile: "strong",
+      classification,
+      source: "two_tier_qa_routing",
+    };
+  }
+
   if (explicit) {
     return { modelProfile: explicit, classification, source: "issue_override" };
   }

@@ -5,6 +5,7 @@ import {
   classifyProductQaClass,
   classifyTwoTierQa,
   resolveTwoTierQaIssueModelProfile,
+  setEscapeHatchForceStrongClassesForTests,
   shouldEscalateTwoTierQaAfterFailedRun,
 } from "./two-tier-qa-routing.js";
 
@@ -158,5 +159,32 @@ describe("two-tier QA routing (TSMC-20345 / TSKB0404)", () => {
     expect(c.tier1Eligible).toBe(false);
     expect(c.floorReason).toBe("g_class_binding");
     expect(c.requestedModelProfile).toBe("strong");
+  });
+
+  it("escape hatch force-strong disables tier-1 for tripped product class", () => {
+    setEscapeHatchForceStrongClassesForTests(["pack_lint_review"]);
+    try {
+      const c = classifyTwoTierQa({
+        title: "packDraft QA for served packet TSR-4809",
+      });
+      expect(c.tier1Eligible).toBe(false);
+      expect(c.floorReason).toBe("escape_hatch_force_strong");
+      expect(c.requestedModelProfile).toBe("strong");
+
+      const mint = applyTwoTierQaMintOverrides({
+        title: "packDraft QA for served packet TSR-4809",
+      });
+      expect(mint.applied).toBe(false);
+
+      // Escape hatch wins over stale explicit cheap.
+      const overCheap = classifyTwoTierQa({
+        title: "packDraft QA for served packet TSR-4809",
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
+      });
+      expect(overCheap.requestedModelProfile).toBe("strong");
+      expect(overCheap.floorReason).toBe("escape_hatch_force_strong");
+    } finally {
+      setEscapeHatchForceStrongClassesForTests(null);
+    }
   });
 });
