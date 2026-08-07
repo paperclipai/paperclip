@@ -266,6 +266,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const companyId = await seedCompany();
     const literalAuthToken = `openclaw-token-${randomUUID()}`;
     const literalPassword = `openclaw-password-${randomUUID()}`;
+    const literalDeviceToken = `openclaw-device-token-${randomUUID()}`;
     const literalPrivateKeyPem = [
       "-----BEGIN PRIVATE KEY-----",
       `openclaw-device-key-${randomUUID()}`,
@@ -281,6 +282,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
         url: "ws://127.0.0.1:18789",
         authToken: literalAuthToken,
         password: literalPassword,
+        deviceToken: literalDeviceToken,
         devicePrivateKeyPem: literalPrivateKeyPem,
       },
       runtimeConfig: {},
@@ -296,8 +298,9 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const serializedConfig = JSON.stringify(persistedConfig);
     expect(serializedConfig).not.toContain(literalAuthToken);
     expect(serializedConfig).not.toContain(literalPassword);
+    expect(serializedConfig).not.toContain(literalDeviceToken);
     expect(serializedConfig).not.toContain(literalPrivateKeyPem);
-    for (const key of ["authToken", "password", "devicePrivateKeyPem"]) {
+    for (const key of ["authToken", "password", "deviceToken", "devicePrivateKeyPem"]) {
       expect(persistedConfig[key]).toMatchObject({
         type: "secret_ref",
         version: "latest",
@@ -316,6 +319,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
       "authToken",
       "devicePrivateKeyPem",
+      "deviceToken",
       "password",
     ]);
 
@@ -330,6 +334,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     );
     expect(resolved.config.authToken).toBe(literalAuthToken);
     expect(resolved.config.password).toBe(literalPassword);
+    expect(resolved.config.deviceToken).toBe(literalDeviceToken);
     expect(resolved.config.devicePrivateKeyPem).toBe(literalPrivateKeyPem);
   });
 
