@@ -583,4 +583,113 @@ describe("pi remote execution", () => {
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
     expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
   });
+
+  it("compacts streamed chunks while parsing the untouched raw stdout result", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-log-boundary-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const sessionLine = JSON.stringify({ type: "session", id: "session-boundary", cwd: "/remote/workspace" });
+    const messageLine = JSON.stringify({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello 😀" }],
+      },
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "Hello 😀",
+        partial: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello 😀" }],
+        },
+      },
+    });
+    const toolUpdateLine = JSON.stringify({
+      type: "tool_execution_update",
+      toolCallId: "tc-boundary",
+      toolName: "bash",
+      args: { command: "printf progress" },
+      partialResult: {
+        content: [{ type: "text", text: "large cumulative output".repeat(1_000) }],
+        details: {},
+      },
+    });
+    // CRLF on the passthrough session line, LF on the transformed message,
+    // and no newline on the final line exercise every buffering exit path.
+    const rawStdout = `${sessionLine}\r\n${messageLine}\n${toolUpdateLine}`;
+
+    runChildProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[3] as {
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      const emojiSplit = rawStdout.indexOf("😀") + 1;
+      await options.onLog?.("stdout", rawStdout.slice(0, emojiSplit));
+      await options.onLog?.("stderr", "diagnostic stderr\n");
+      await options.onLog?.("stdout", rawStdout.slice(emojiSplit));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: rawStdout,
+        stderr: "diagnostic stderr\n",
+        pid: 456,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    const result = await execute({
+      runId: "run-log-boundary",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Pi Builder",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "pi",
+        model: "openai/gpt-5.4-mini",
+        stdoutLogMode: "compact",
+      },
+      context: {
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+
+    const stdoutLog = logs.filter((entry) => entry.stream === "stdout").map((entry) => entry.chunk).join("");
+    expect(stdoutLog).toContain(`${sessionLine}\r\n`);
+    expect(stdoutLog).toContain('"type":"message_update"');
+    expect(stdoutLog).toContain('"delta":"Hello 😀"');
+    expect(stdoutLog).toContain('"sourceEventType":"tool_execution_update"');
+    expect(stdoutLog).not.toContain("large cumulative output");
+    expect(logs).toContainEqual({ stream: "stderr", chunk: "diagnostic stderr\n" });
+
+    expect(result.summary).toBe("Hello 😀");
+    expect(result.resultJson).toEqual({ stdout: rawStdout, stderr: "diagnostic stderr\n" });
+  });
 });
