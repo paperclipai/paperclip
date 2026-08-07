@@ -143,16 +143,16 @@ test.describe.serial("not-connected app page", () => {
     expect(appConns[0].status).not.toBe("archived");
   });
 
-  test("connected app page shows provider setup and its row says Open", async ({ page }) => {
+  test("draft app connection stays on provider setup until setup finishes", async ({ page }) => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
-    await expect(page.getByText("1 connected", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Already connected to Bla" })).toBeVisible();
+    await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connect this app" })).toBeVisible();
 
     await page.goto(`/${seed.prefix}/apps/connections`);
     const row = page.locator("tbody tr", { hasText: "Bla" });
     await expect(row).toBeVisible({ timeout: 30_000 });
-    await expect(row.getByRole("button", { name: /Open|Review/ })).toBeVisible();
+    await expect(row.getByRole("button", { name: "Connect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
   });
 
