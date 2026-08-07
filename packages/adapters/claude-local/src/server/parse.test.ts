@@ -129,6 +129,31 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the Fable usage-credits limit wording as provider quota", () => {
+    const errorMessage =
+      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+  });
+
+  it("classifies mid-response connection failures as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "API Error: Connection closed mid-response. The response above may be incomplete.",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        stderr: "fetch failed: ECONNRESET",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        stderr: "request to https://api.anthropic.com failed: socket hang up",
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
