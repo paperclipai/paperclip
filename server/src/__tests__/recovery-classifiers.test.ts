@@ -4,12 +4,14 @@ import { decideRunLivenessContinuation as decideRunLivenessContinuationCompat } 
 import {
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
+  RECOVERY_ORIGIN_KIND_VALUES,
   RECOVERY_REASON_KINDS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  isRecoveryOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -244,5 +246,22 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("flags every recovery origin so the cascade guard catches all watchdog kinds", () => {
+    // Cascade guard for incident 2026-04-25: any origin kind that marks an
+    // issue as a recovery artifact must never itself spawn another recovery
+    // issue. Keep this set in sync with RECOVERY_ORIGIN_KINDS — adding a new
+    // recovery origin without flipping this assertion will break the guard.
+    expect([...RECOVERY_ORIGIN_KIND_VALUES].sort()).toEqual(
+      Object.values(RECOVERY_ORIGIN_KINDS).sort(),
+    );
+    for (const kind of RECOVERY_ORIGIN_KIND_VALUES) {
+      expect(isRecoveryOriginKind(kind)).toBe(true);
+    }
+    expect(isRecoveryOriginKind("manual")).toBe(false);
+    expect(isRecoveryOriginKind(null)).toBe(false);
+    expect(isRecoveryOriginKind(undefined)).toBe(false);
+    expect(isRecoveryOriginKind("")).toBe(false);
   });
 });
