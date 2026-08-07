@@ -84,5 +84,11 @@ describe("company skill routes", () => {
     expect(skillStudioNewRoute("skill/with spaces")).toBe(
       "/skills/studio/new?forkFrom=skill%2Fwith%20spaces",
     );
+    expect(skillStudioNewRoute(null, "folder/with spaces")).toBe(
+      "/skills/studio/new?folderId=folder%2Fwith%20spaces",
+    );
+    expect(skillStudioNewRoute("skill 1", "folder 1")).toBe(
+      "/skills/studio/new?forkFrom=skill%201&folderId=folder%201",
+    );
   });
 });

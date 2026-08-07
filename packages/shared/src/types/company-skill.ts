@@ -34,6 +34,8 @@ export interface CompanySkillVersionFileInventoryEntry extends CompanySkillFileI
 export interface CompanySkill {
   id: string;
   companyId: string;
+  folderId?: string | null;
+  folderPath?: string | null;
   key: string;
   slug: string;
   name: string;
@@ -67,6 +69,8 @@ export interface CompanySkill {
 export interface CompanySkillListItem {
   id: string;
   companyId: string;
+  folderId?: string | null;
+  folderPath?: string | null;
   key: string;
   slug: string;
   name: string;
@@ -140,6 +144,8 @@ export interface CompanySkillListQuery {
   categories?: string[];
   scope?: CompanySkillSharingScope;
   include?: CompanySkillListInclude[];
+  folderId?: string;
+  includeSubtree?: boolean;
 }
 
 export interface CompanySkillCategoryCount {
@@ -153,6 +159,9 @@ export interface CompanySkillVersion {
   companySkillId: string;
   revisionNumber: number;
   label: string | null;
+  releaseId: string | null;
+  releaseName: string | null;
+  releasedAt: Date | null;
   fileInventory: CompanySkillVersionFileInventoryEntry[];
   authorAgentId: string | null;
   authorUserId: string | null;
@@ -238,6 +247,19 @@ export interface CompanySkillForkPrecheckResult {
   existingForks: CompanySkillForkSummary[];
 }
 
+export interface CompanySkillRenameRequest {
+  name: string;
+  slug?: string | null;
+}
+
+export interface CompanySkillRenameResult {
+  skill: CompanySkill;
+  previousName: string;
+  previousSlug: string;
+  previousKey: string;
+  reassignments: CompanySkillForkReassignment[];
+}
+
 export interface CompanySkillUpdateRequest {
   description?: string | null;
   iconUrl?: string | null;
@@ -313,11 +335,57 @@ export interface CompanySkillImportResult {
 export interface CompanySkillProjectScanRequest {
   projectIds?: string[];
   workspaceIds?: string[];
+  mode?: "import" | "preview";
+  selection?: Array<{
+    workspaceId: string;
+    path: string;
+    slug?: string;
+  }>;
+}
+
+export interface CompanySkillProjectBrowseRequest {
+  projectId: string;
+  workspaceId: string;
+  path?: string | null;
+}
+
+export interface CompanySkillProjectBrowseEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  isSkill: boolean;
+}
+
+export interface CompanySkillProjectBrowseResult {
+  projectId: string;
+  workspaceId: string;
+  workspaceName: string;
+  path: string;
+  parentPath: string | null;
+  entries: CompanySkillProjectBrowseEntry[];
+  truncated: boolean;
+}
+
+export type CompanySkillProjectScanCandidateStatus = "new" | "already_imported" | "conflict" | "skipped";
+
+export interface CompanySkillProjectScanCandidate {
+  slug: string;
+  name: string;
+  description: string | null;
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectName: string;
+  directoryRoot: string;
+  relativePath: string;
+  status: CompanySkillProjectScanCandidateStatus;
+  existingSkillId?: string;
+  reason?: string;
 }
 
 export interface CompanySkillProjectScanSkipped {
-  projectId: string;
-  projectName: string;
+  projectId: string | null;
+  projectName: string | null;
   workspaceId: string | null;
   workspaceName: string | null;
   path: string | null;
@@ -346,10 +414,12 @@ export interface CompanySkillProjectScanResult {
   updated: CompanySkill[];
   skipped: CompanySkillProjectScanSkipped[];
   conflicts: CompanySkillProjectScanConflict[];
+  candidates: CompanySkillProjectScanCandidate[];
   warnings: string[];
 }
 
 export interface CompanySkillCreateRequest {
+  folderId?: string | null;
   name: string;
   slug?: string | null;
   description?: string | null;

@@ -194,7 +194,9 @@ describe("external object routes", () => {
 
     const res = await request(app).get(`/api/issues/${issueId}/external-object-summary`);
 
-    expect(res.status).toBe(403);
+    // Uniform 404 so cross-tenant ids are indistinguishable from missing ones.
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockExternalObjectsService.getIssueSummary).not.toHaveBeenCalled();
   });
 
@@ -271,7 +273,7 @@ describe("external object routes", () => {
       .send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
 

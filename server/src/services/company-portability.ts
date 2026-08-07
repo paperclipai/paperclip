@@ -4,9 +4,16 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
-import { builtInManagedResources, principalPermissionGrants, type Db } from "@paperclipai/db";
+import {
+  builtInManagedResources,
+  issueRelations,
+  principalPermissionGrants,
+  type Db,
+} from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
+  CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityEnvInput,
   CompanyPortabilityExport,
@@ -25,6 +32,10 @@ import type {
   CompanyPortabilityProjectWorkspaceManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
+  CompanyPortabilityIssueDocumentManifestEntry,
+  CompanyPortabilityIssueWorkProductManifestEntry,
+  CompanyPortabilityIssueMonitorManifestEntry,
+  CompanyPortabilityIssueAttachmentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
@@ -52,12 +63,14 @@ import {
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
+import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
+import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
@@ -70,8 +83,10 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
+import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -82,6 +97,13 @@ import {
 } from "./catalog-provenance.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { normalizePortablePath } from "./portable-path.js";
+import type {
+  ImportIssueRow,
+  ImportIssueCommentRow,
+  ImportIssueDocumentRow,
+  ImportIssueWorkProductRow,
+  ImportIssueAttachmentRow,
+} from "./import-write-types.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -137,6 +159,16 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+// The bundle shape this build reads and writes. Bundles began declaring
+// their schemaVersion in the .paperclip.yaml extension at 6; undeclared
+// bundles are read as 5, the last unstamped shape.
+const BUNDLE_SCHEMA_VERSION = 6;
+const UNSTAMPED_BUNDLE_SCHEMA_VERSION = 5;
+const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
+// Blob entries are content-addressed by sha256; the store itself is
+// type-agnostic, so blob files always travel as opaque octet streams while
+// each attachment entry carries the real content type.
+const PORTABLE_BLOB_CONTENT_TYPE = "application/octet-stream";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
@@ -145,8 +177,33 @@ function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
   return options?.mode ?? "board_full";
 }
 
+/**
+ * Reject an inline import whose received file set is smaller than the count the
+ * client declared. The bundle manifest and per-entry blob hashes seal each
+ * file's contents, but nothing else proves the *set* of files is whole: a
+ * truncated or proxy-re-framed body can parse into valid JSON with entries
+ * silently dropped. `expectedFileCount` is the client's assertion of how many
+ * files it sent, so a shortfall means the payload is incomplete and must fail
+ * closed instead of importing a fragment. A larger-than-declared set is not a
+ * truncation symptom and is left alone; the count is optional, so older callers
+ * that omit it are unaffected.
+ */
+function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) {
+  if (source.type !== "inline") return;
+  const expected = source.expectedFileCount;
+  if (expected == null) return;
+  const received = Object.keys(source.files).length;
+  if (received < expected) {
+    throw unprocessable(
+      `Import payload is incomplete: the request declared ${expected} file(s) but only ${received} arrived. `
+        + "The upload was likely truncated; retry the import.",
+      { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
+    );
+  }
+}
+
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
-  if (mode === "board_full") return "replace" as const;
+  if (mode === "board_full") return collisionStrategy;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
 }
 
@@ -640,6 +697,7 @@ type ImportMode = "board_full" | "agent_safe";
 type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
+  pauseAutomations?: boolean;
 };
 
 type AgentLike = {
@@ -803,6 +861,231 @@ function readPortableIssueComments(
     });
   }
   return comments;
+}
+
+function normalizePortableLabelDefinitions(value: unknown): Array<{ name: string; color: string }> {
+  const entries: Array<{ name: string; color: string }> = [];
+  const seen = new Set<string>();
+  const append = (nameValue: unknown, colorValue: unknown) => {
+    const name = asString(nameValue);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    entries.push({ name, color: asString(colorValue) ?? DEFAULT_IMPORTED_LABEL_COLOR });
+  };
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!isPlainRecord(entry)) continue;
+      append(entry.name, entry.color);
+    }
+  } else if (isPlainRecord(value)) {
+    // Tolerate a name -> { color } (or name -> color) map from hand-edited bundles.
+    for (const [name, entry] of Object.entries(value)) {
+      append(name, isPlainRecord(entry) ? entry.color : entry);
+    }
+  }
+  return entries.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function readPortableIssueLabelNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const name = asString(entry);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+function readPortableIssueBlockedBy(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const slugs: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const slug = asString(entry);
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    slugs.push(slug);
+  }
+  return slugs;
+}
+
+function normalizePortableIssueDocuments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueDocumentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} documents were ignored because they are not an array.`);
+    return [];
+  }
+  const documents: CompanyPortabilityIssueDocumentManifestEntry[] = [];
+  const seenKeys = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} document ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const key = asString(entry.key);
+    const documentPath = asString(entry.path);
+    if (!key || !documentPath) {
+      warnings.push(`${sourceLabel} document ${index + 1} was ignored because it is missing a key or path.`);
+      continue;
+    }
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    documents.push({
+      key,
+      title: asString(entry.title),
+      format: asString(entry.format) ?? "markdown",
+      path: normalizePortablePath(documentPath),
+    });
+  }
+  return documents;
+}
+
+function normalizePortableIssueWorkProducts(value: unknown): CompanyPortabilityIssueWorkProductManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const workProducts: CompanyPortabilityIssueWorkProductManifestEntry[] = [];
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const type = asString(entry.type);
+    const provider = asString(entry.provider);
+    const title = asString(entry.title);
+    if (!type || !provider || !title) continue;
+    workProducts.push({
+      type,
+      provider,
+      externalId: asString(entry.externalId),
+      title,
+      url: asString(entry.url),
+      status: asString(entry.status) ?? "active",
+      reviewState: asString(entry.reviewState) ?? "none",
+      isPrimary: asBoolean(entry.isPrimary) ?? false,
+      healthStatus: asString(entry.healthStatus) ?? "unknown",
+      summary: asString(entry.summary),
+      metadata: isPlainRecord(entry.metadata) ? entry.metadata : null,
+    });
+  }
+  return workProducts;
+}
+
+function normalizePortableIssueMonitor(value: unknown): CompanyPortabilityIssueMonitorManifestEntry | null {
+  if (!isPlainRecord(value)) return null;
+  const monitor = {
+    notes: asString(value.notes),
+    scheduledBy: asString(value.scheduledBy),
+    hadSchedule: asBoolean(value.hadSchedule) ?? false,
+  };
+  return monitor.notes !== null || monitor.scheduledBy !== null || monitor.hadSchedule ? monitor : null;
+}
+
+function portableBlobPath(sha256: string) {
+  return `blobs/${sha256}`;
+}
+
+// Markdown can embed company asset images by their serving URL. The uuid is
+// the asset row id; export ships the referenced bytes as blobs and import
+// rewrites each reference to the asset id it minted.
+const EMBEDDED_ASSET_URL_PATTERN = /\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/content/gi;
+
+function collectEmbeddedAssetIds(text: string): string[] {
+  const ids: string[] = [];
+  for (const match of text.matchAll(EMBEDDED_ASSET_URL_PATTERN)) {
+    ids.push(match[1]!.toLowerCase());
+  }
+  return ids;
+}
+
+export function rewriteEmbeddedAssetUrls(text: string, assetIdMap: Map<string, string>): string {
+  if (assetIdMap.size === 0) return text;
+  return text.replace(EMBEDDED_ASSET_URL_PATTERN, (match, assetId: string) => {
+    const mapped = assetIdMap.get(assetId.toLowerCase());
+    return mapped ? `/api/assets/${mapped}/content` : match;
+  });
+}
+
+function normalizePortableEmbeddedAssets(value: unknown): CompanyPortabilityEmbeddedAssetManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: CompanyPortabilityEmbeddedAssetManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const assetId = asString(entry.assetId)?.toLowerCase() ?? null;
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    if (!assetId || !sha256 || seen.has(assetId)) continue;
+    seen.add(assetId);
+    const ownedBy = Array.isArray(entry.ownedBy)
+      ? Array.from(new Set(entry.ownedBy.flatMap((owner) => {
+          const normalized = asString(owner);
+          return normalized ? [normalized] : [];
+        })))
+      : [];
+    entries.push({
+      assetId,
+      sha256,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+      originalFilename: asString(entry.originalFilename),
+      ownedBy: ownedBy.length > 0 ? ownedBy : undefined,
+    });
+  }
+  return entries;
+}
+
+function normalizePortableBlobIndex(value: unknown): CompanyPortabilityBlobManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const blobs: CompanyPortabilityBlobManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    const byteSize = asInteger(entry.byteSize);
+    if (!sha256 || seen.has(sha256) || byteSize === null || byteSize < 0) continue;
+    seen.add(sha256);
+    blobs.push({
+      sha256,
+      byteSize,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+    });
+  }
+  return blobs;
+}
+
+function normalizePortableIssueAttachments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueAttachmentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} attachments were ignored because they are not an array.`);
+    return [];
+  }
+  const attachments: CompanyPortabilityIssueAttachmentManifestEntry[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} attachment ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    if (!sha256) {
+      warnings.push(`${sourceLabel} attachment ${index + 1} was ignored because it has no sha256.`);
+      continue;
+    }
+    const byteSize = asInteger(entry.byteSize);
+    const commentIndex = asInteger(entry.commentIndex);
+    attachments.push({
+      sha256,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+      originalFilename: asString(entry.originalFilename),
+      byteSize: byteSize !== null && byteSize >= 0 ? byteSize : 0,
+      commentIndex: commentIndex !== null && commentIndex >= 0 ? commentIndex : null,
+    });
+  }
+  return attachments;
 }
 
 function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
@@ -1683,7 +1966,12 @@ function sortAgentsBySidebarOrder<T extends { id: string; name: string; reportsT
   return sorted;
 }
 
-function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
+function filterPortableExtensionYaml(
+  yaml: string,
+  selectedFiles: Set<string>,
+  remainingFiles: Record<string, CompanyPortabilityFileEntry>,
+  extensionPath: string,
+) {
   const selected = collectSelectedExportSlugs(selectedFiles);
   const parsed = parseYamlFile(yaml);
   for (const section of ["agents", "projects", "tasks", "routines"] as const) {
@@ -1706,6 +1994,84 @@ function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
     if (logoPath && !selectedFiles.has(logoPath)) {
       delete companySection.logoPath;
       delete companySection.logo;
+    }
+  }
+
+  if (Array.isArray(parsed.labels)) {
+    const referencedLabelNames = new Set<string>();
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const name of readPortableIssueLabelNames(entry.labels)) {
+          referencedLabelNames.add(name);
+        }
+      }
+    }
+    const filteredLabels = parsed.labels.filter(
+      (entry) => isPlainRecord(entry) && typeof entry.name === "string" && referencedLabelNames.has(entry.name.trim()),
+    );
+    if (filteredLabels.length > 0) {
+      parsed.labels = filteredLabels;
+    } else {
+      delete parsed.labels;
+    }
+  }
+
+  // Embedded-asset entries stay only while some remaining text file (or a
+  // remaining task's comments, which live in this yaml) still references
+  // their assetId; blobs owned solely by pruned entries drop below.
+  const keptEmbeddedAssetShas = new Set<string>();
+  if (Array.isArray(parsed.embeddedAssets)) {
+    const referencedAssetIds = new Set<string>();
+    for (const [filePath, content] of Object.entries(remainingFiles)) {
+      if (filePath === extensionPath || typeof content !== "string") continue;
+      for (const assetId of collectEmbeddedAssetIds(content)) {
+        referencedAssetIds.add(assetId);
+      }
+    }
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const assetId of collectEmbeddedAssetIds(JSON.stringify(entry.comments ?? []))) {
+          referencedAssetIds.add(assetId);
+        }
+      }
+    }
+    const filteredEmbeddedAssets = parsed.embeddedAssets.filter((entry) => {
+      if (!isPlainRecord(entry)) return false;
+      const assetId = asString(entry.assetId)?.toLowerCase();
+      if (!assetId || !referencedAssetIds.has(assetId)) return false;
+      const sha256 = asString(entry.sha256)?.toLowerCase();
+      if (sha256) keptEmbeddedAssetShas.add(sha256);
+      return true;
+    });
+    if (filteredEmbeddedAssets.length > 0) {
+      parsed.embeddedAssets = filteredEmbeddedAssets;
+    } else {
+      delete parsed.embeddedAssets;
+    }
+  }
+
+  if (Array.isArray(parsed.blobs)) {
+    const referencedBlobShas = new Set<string>(keptEmbeddedAssetShas);
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const attachment of normalizePortableIssueAttachments(entry.attachments, [], "")) {
+          referencedBlobShas.add(attachment.sha256);
+        }
+      }
+    }
+    const filteredBlobs = parsed.blobs.filter(
+      (entry) => isPlainRecord(entry) && typeof entry.sha256 === "string" && referencedBlobShas.has(entry.sha256.trim().toLowerCase()),
+    );
+    if (filteredBlobs.length > 0) {
+      parsed.blobs = filteredBlobs;
+    } else {
+      delete parsed.blobs;
     }
   }
 
@@ -1749,7 +2115,12 @@ function filterExportFiles(
 
   const extensionEntry = filtered[paperclipExtensionPath];
   if (selectedFiles.has(paperclipExtensionPath) && typeof extensionEntry === "string") {
-    filtered[paperclipExtensionPath] = filterPortableExtensionYaml(extensionEntry, selectedFiles);
+    filtered[paperclipExtensionPath] = filterPortableExtensionYaml(
+      extensionEntry,
+      selectedFiles,
+      filtered,
+      paperclipExtensionPath,
+    );
   }
 
   return filtered;
@@ -1969,72 +2340,91 @@ function orderedYamlEntries(value: Record<string, unknown>) {
   return Object.entries(value).sort(([leftKey], [rightKey]) => compareYamlKeys(leftKey, rightKey));
 }
 
-function renderYamlBlock(value: unknown, indentLevel: number): string[] {
-  const indent = "  ".repeat(indentLevel);
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) return [`${indent}[]`];
-    const lines: string[] = [];
-    for (const entry of value) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}- ${renderYamlScalar(entry)}`);
-        continue;
-      }
-      lines.push(`${indent}-`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
-    }
-    return lines;
-  }
-
-  if (isPlainRecord(value)) {
-    const entries = orderedYamlEntries(value);
-    if (entries.length === 0) return [`${indent}{}`];
-    const lines: string[] = [];
-    for (const [key, entry] of entries) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}${key}: ${renderYamlScalar(entry)}`);
-        continue;
-      }
-      lines.push(`${indent}${key}:`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
-    }
-    return lines;
-  }
-
-  return [`${indent}${renderYamlScalar(value)}`];
+function isYamlScalarValue(value: unknown) {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    (Array.isArray(value) && value.length === 0) ||
+    isEmptyObject(value)
+  );
 }
 
-function renderFrontmatter(frontmatter: Record<string, unknown>) {
+type YamlRenderFrame =
+  | { kind: "line"; text: string }
+  | { kind: "value"; value: unknown; indentLevel: number };
+
+export function renderYamlBlock(value: unknown, indentLevel: number): string[] {
+  const lines: string[] = [];
+  const stack: YamlRenderFrame[] = [{ kind: "value", value, indentLevel }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "line") {
+      lines.push(frame.text);
+      continue;
+    }
+
+    const indent = "  ".repeat(frame.indentLevel);
+    const current = frame.value;
+
+    if (Array.isArray(current)) {
+      if (current.length === 0) {
+        lines.push(`${indent}[]`);
+        continue;
+      }
+
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const entry = current[index];
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}- ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}-` });
+      }
+      continue;
+    }
+
+    if (isPlainRecord(current)) {
+      const entries = orderedYamlEntries(current);
+      if (entries.length === 0) {
+        lines.push(`${indent}{}`);
+        continue;
+      }
+
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, entry] = entries[index]!;
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}${key}: ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}${key}:` });
+      }
+      continue;
+    }
+
+    lines.push(`${indent}${renderYamlScalar(current)}`);
+  }
+
+  return lines;
+}
+
+export function renderFrontmatter(frontmatter: Record<string, unknown>) {
   const lines: string[] = ["---"];
   for (const [key, value] of orderedYamlEntries(frontmatter)) {
     // Skip null/undefined values — don't export empty fields
     if (value === null || value === undefined) continue;
-    const scalar =
-      typeof value === "string" ||
-      typeof value === "boolean" ||
-      typeof value === "number" ||
-      Array.isArray(value) && value.length === 0 ||
-      isEmptyObject(value);
-    if (scalar) {
+    if (isYamlScalarValue(value)) {
       lines.push(`${key}: ${renderYamlScalar(value)}`);
       continue;
     }
     lines.push(`${key}:`);
-    lines.push(...renderYamlBlock(value, 1));
+    // Append each rendered line without a spread. A spread of a large array as
+    // function arguments overflows the argument limit and throws RangeError.
+    for (const line of renderYamlBlock(value, 1)) lines.push(line);
   }
   lines.push("---");
   return `${lines.join("\n")}\n`;
@@ -2176,9 +2566,12 @@ async function buildSkillSourceEntry(skill: CompanySkill) {
 }
 
 function shouldReferenceSkillOnExport(skill: CompanySkill, expandReferencedSkills: boolean) {
-  if (expandReferencedSkills) return false;
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  // Bundled Paperclip skills ship with every build and may contain executable
+  // scripts that import policy rejects when expanded; the target re-resolves
+  // them from its own catalog via the pinned reference stub instead.
   if (asString(metadata?.sourceKind) === "paperclip_bundled") return true;
+  if (expandReferencedSkills) return false;
   return skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url";
 }
 
@@ -2603,8 +2996,18 @@ function buildManifestFromPackageFiles(
   const paperclipExtension = paperclipExtensionPath
     ? parseYamlFile(readPortableTextFile(normalizedFiles, paperclipExtensionPath) ?? "")
     : {};
+  const declaredSchemaVersion = asInteger(paperclipExtension.schemaVersion);
+  const bundleSchemaVersion = declaredSchemaVersion !== null && declaredSchemaVersion > 0
+    ? declaredSchemaVersion
+    : UNSTAMPED_BUNDLE_SCHEMA_VERSION;
+  if (bundleSchemaVersion > BUNDLE_SCHEMA_VERSION) {
+    throw unprocessable(`Company package declares schemaVersion ${bundleSchemaVersion}, which was produced by a newer Paperclip; this board reads up to schemaVersion ${BUNDLE_SCHEMA_VERSION}.`);
+  }
   const paperclipCompany = isPlainRecord(paperclipExtension.company) ? paperclipExtension.company : {};
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
+  const paperclipLabels = normalizePortableLabelDefinitions(paperclipExtension.labels);
+  const paperclipBlobs = normalizePortableBlobIndex(paperclipExtension.blobs);
+  const paperclipEmbeddedAssets = normalizePortableEmbeddedAssets(paperclipExtension.embeddedAssets);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
@@ -2649,7 +3052,7 @@ function buildManifestFromPackageFiles(
   const skillPaths = Array.from(new Set([...referencedSkillPaths, ...discoveredSkillPaths])).sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 5,
+    schemaVersion: bundleSchemaVersion,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -2687,6 +3090,9 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
     },
     sidebar: paperclipSidebar,
+    labels: paperclipLabels,
+    blobs: paperclipBlobs,
+    embeddedAssets: paperclipEmbeddedAssets,
     agents: [],
     skills: [],
     projects: [],
@@ -2933,6 +3339,7 @@ function buildManifestFromPackageFiles(
       labelIds: Array.isArray(extension.labelIds)
         ? extension.labelIds.filter((entry): entry is string => typeof entry === "string")
         : [],
+      labelNames: readPortableIssueLabelNames(extension.labels),
       billingCode: asString(extension.billingCode),
       executionWorkspaceSettings: isPlainRecord(extension.executionWorkspaceSettings)
         ? extension.executionWorkspaceSettings
@@ -2941,11 +3348,20 @@ function buildManifestFromPackageFiles(
         ? extension.assigneeAdapterOverrides
         : null,
       comments: readPortableIssueComments(extension.comments, warnings, `Task ${slug}`),
+      blockedBy: readPortableIssueBlockedBy(extension.blockedBy),
+      documents: normalizePortableIssueDocuments(extension.documents, warnings, `Task ${slug}`),
+      workProducts: normalizePortableIssueWorkProducts(extension.workProducts),
+      monitor: normalizePortableIssueMonitor(extension.monitor),
+      attachments: normalizePortableIssueAttachments(extension.attachments, warnings, `Task ${slug}`),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
       warnings.push(`Task markdown ${taskPath} does not declare kind: task in frontmatter.`);
     }
+  }
+
+  if (bundleSchemaVersion < BUNDLE_SCHEMA_VERSION && manifest.issues.length > 0) {
+    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, attachment, and embedded image transfer; that task data imports only if the bundle carries it.`);
   }
 
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
@@ -3023,6 +3439,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const issues = issueService(db);
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
+  const documentsSvc = documentService(db);
+  const workProductsSvc = workProductService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
 
@@ -3778,6 +4196,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
+    const referencedLabelIds = new Set<string>();
+    for (const issue of selectedIssueRows) {
+      for (const labelId of issue.labelIds ?? []) referencedLabelIds.add(labelId);
+    }
+    const labelNameById = new Map<string, string>();
+    const exportedLabels: Array<{ name: string; color: string }> = [];
+    if (referencedLabelIds.size > 0) {
+      for (const label of await issuesSvc.listLabels(companyId)) {
+        if (!referencedLabelIds.has(label.id)) continue;
+        labelNameById.set(label.id, label.name);
+        exportedLabels.push({ name: label.name, color: label.color });
+      }
+      exportedLabels.sort((left, right) => left.name.localeCompare(right.name));
+      const missingLabelIds = Array.from(referencedLabelIds).filter((labelId) => !labelNameById.has(labelId));
+      if (missingLabelIds.length > 0) {
+        warnings.push(`Skipped ${missingLabelIds.length} task label reference${missingLabelIds.length === 1 ? "" : "s"} whose label definitions no longer exist.`);
+      }
+    }
+
+    let unexportedBlockerEdgeCount = 0;
+    let unportableWorkProductRefCount = 0;
+    const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
@@ -3800,6 +4240,93 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
       const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      // Blocker edges travel by task slug; only edges with both endpoints in
+      // the export can be carried.
+      const relationSummaries = await issuesSvc.getRelationSummaries(issue.id);
+      const blockedBySlugs: string[] = [];
+      for (const blocker of relationSummaries.blockedBy) {
+        const blockerSlug = taskSlugByIssueId.get(blocker.id);
+        if (blockerSlug) {
+          blockedBySlugs.push(blockerSlug);
+        } else {
+          unexportedBlockerEdgeCount += 1;
+        }
+      }
+      blockedBySlugs.sort((left, right) => left.localeCompare(right));
+      unexportedBlockerEdgeCount += relationSummaries.blocks
+        .filter((blocked) => !taskSlugByIssueId.has(blocked.id))
+        .length;
+      const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
+      const documentEntries = issueDocumentRows.map((document) => {
+        const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
+        files[documentPath] = document.body ?? "";
+        return {
+          key: document.key,
+          title: document.title ?? null,
+          format: document.format,
+          path: documentPath,
+        };
+      });
+      const workProductRows = await workProductsSvc.listForIssue(issue.id);
+      const workProductEntries = workProductRows.map((workProduct) => {
+        if (workProduct.executionWorkspaceId || workProduct.runtimeServiceId || workProduct.createdByRunId) {
+          unportableWorkProductRefCount += 1;
+        }
+        return stripEmptyValues({
+          type: workProduct.type,
+          provider: workProduct.provider,
+          externalId: workProduct.externalId ?? null,
+          title: workProduct.title,
+          url: workProduct.url ?? null,
+          status: workProduct.status,
+          reviewState: workProduct.reviewState !== "none" ? workProduct.reviewState : undefined,
+          isPrimary: workProduct.isPrimary ? true : undefined,
+          healthStatus: workProduct.healthStatus !== "unknown" ? workProduct.healthStatus : undefined,
+          summary: workProduct.summary ?? null,
+          metadata: workProduct.metadata ?? null,
+        });
+      });
+      // Attachment bytes travel as content-addressed blobs/<sha256> entries,
+      // deduped across the bundle; each per-task entry references its blob by
+      // hash and its comment by index into the exported comments array.
+      const attachmentRows = (await issuesSvc.listAttachments(issue.id))
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const commentIndexById = new Map(comments.map((comment, index) => [comment.id, index] as const));
+      const attachmentEntries: Array<Record<string, unknown>> = [];
+      if (attachmentRows.length > 0 && !storage) {
+        warnings.push(`Skipped ${attachmentRows.length} attachment${attachmentRows.length === 1 ? "" : "s"} on task ${taskSlug} because storage is unavailable.`);
+      } else if (storage) {
+        for (const attachment of attachmentRows) {
+          let body: Buffer;
+          try {
+            const object = await storage.getObject(companyId, attachment.objectKey);
+            body = await streamToBuffer(object.stream);
+          } catch (err) {
+            warnings.push(`Skipped attachment ${attachment.originalFilename ?? attachment.sha256} on task ${taskSlug} because its stored object could not be read: ${err instanceof Error ? err.message : String(err)}`);
+            continue;
+          }
+          // Blobs are addressed by the hash of the bytes actually read; a
+          // stale asset-row hash loses to the recomputed one.
+          const sha256 = sha256HexOfBytes(body);
+          if (attachment.sha256 && attachment.sha256.toLowerCase() !== sha256) {
+            warnings.push(`Attachment ${attachment.originalFilename ?? attachment.sha256} on task ${taskSlug} was exported under its recomputed content hash because the stored hash did not match.`);
+          }
+          if (!exportedBlobs.has(sha256)) {
+            files[portableBlobPath(sha256)] = bufferToPortableBinaryFile(body, PORTABLE_BLOB_CONTENT_TYPE);
+            exportedBlobs.set(sha256, { sha256, byteSize: body.length, contentType: PORTABLE_BLOB_CONTENT_TYPE });
+          }
+          attachmentEntries.push({
+            sha256,
+            contentType: attachment.contentType ?? PORTABLE_BLOB_CONTENT_TYPE,
+            originalFilename: attachment.originalFilename ?? null,
+            byteSize: body.length,
+            commentIndex: attachment.issueCommentId != null
+              ? commentIndexById.get(attachment.issueCommentId) ?? null
+              : null,
+          });
+        }
+      }
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
@@ -3812,7 +4339,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
-        labelIds: issue.labelIds ?? undefined,
+        // Labels travel by name (their natural key); the bundle-level labels
+        // section carries the matching color definitions.
+        labels: (issue.labelIds ?? [])
+          .map((labelId) => labelNameById.get(labelId))
+          .filter((name): name is string => Boolean(name)),
         billingCode: issue.billingCode ?? null,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
@@ -3831,8 +4362,26 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 : new Date(comment.createdAt).toISOString(),
             }))
           : undefined,
+        blockedBy: blockedBySlugs,
+        documents: documentEntries,
+        workProducts: workProductEntries,
+        attachments: attachmentEntries,
+        monitor: {
+          notes: issue.monitorNotes ?? null,
+          scheduledBy: issue.monitorScheduledBy ?? null,
+          // Timestamps are not portable; the importer restores monitors
+          // un-armed, so only the fact that a check was scheduled travels.
+          hadSchedule: issue.monitorNextCheckAt != null ? true : undefined,
+        },
       });
       paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
+    }
+
+    if (unexportedBlockerEdgeCount > 0) {
+      warnings.push(`${unexportedBlockerEdgeCount} blocker relation${unexportedBlockerEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedBlockerEdgeCount === 1 ? "was" : "were"} not included.`);
+    }
+    if (unportableWorkProductRefCount > 0) {
+      warnings.push(`${unportableWorkProductRefCount} work product${unportableWorkProductRefCount === 1 ? " references" : "s reference"} execution workspaces or runs that are not portable; those references were omitted from the export.`);
     }
 
     for (const { workspaceId, taskSlugs } of unportableTaskWorkspaceRefs.values()) {
@@ -3876,7 +4425,92 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipRoutinesOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
+    // Exported markdown can embed company asset images as
+    // /api/assets/<id>/content references (issue descriptions and documents,
+    // agent instructions, comment bodies). Ship the referenced bytes as
+    // content-addressed blobs plus an embeddedAssets index so imports can
+    // recreate the assets and rewrite every reference. Each entry records
+    // which export categories reference it, so selection can follow the
+    // toggles of the referencing files.
+    const embeddedAssetOwners = new Map<string, Set<string>>();
+    const routineTaskSlugs = new Set(taskSlugByRoutineId.values());
+    const categorizeEmbeddedAssetOwner = (filePath: string) => {
+      if (filePath.startsWith("agents/")) return "agents";
+      if (filePath.startsWith("projects/")) return "projects";
+      if (filePath.startsWith("skills/")) return "skills";
+      const taskMatch = filePath.match(/^tasks\/([^/]+)\//);
+      if (taskMatch) return routineTaskSlugs.has(taskMatch[1]!) ? "routines" : "tasks";
+      return "always";
+    };
+    const noteEmbeddedAssetReference = (assetId: string, owner: string) => {
+      const owners = embeddedAssetOwners.get(assetId) ?? new Set<string>();
+      owners.add(owner);
+      embeddedAssetOwners.set(assetId, owners);
+    };
+    for (const [filePath, content] of Object.entries(files)) {
+      if (typeof content !== "string") continue;
+      for (const assetId of collectEmbeddedAssetIds(content)) {
+        noteEmbeddedAssetReference(assetId, categorizeEmbeddedAssetOwner(filePath));
+      }
+    }
+    // Comment bodies travel in the extension yaml rather than TASK.md, so
+    // scan the assembled task extension entries for their references too.
+    for (const extension of Object.values(paperclipTasksOut)) {
+      for (const assetId of collectEmbeddedAssetIds(JSON.stringify(extension.comments ?? []))) {
+        noteEmbeddedAssetReference(assetId, "tasks");
+      }
+    }
+
+    const embeddedAssetIndex: CompanyPortabilityEmbeddedAssetManifestEntry[] = [];
+    let unownedEmbeddedAssetRefCount = 0;
+    const referencedEmbeddedAssetIds = Array.from(embeddedAssetOwners.keys())
+      .sort((left, right) => left.localeCompare(right));
+    if (referencedEmbeddedAssetIds.length > 0 && !storage) {
+      warnings.push(`Skipped ${referencedEmbeddedAssetIds.length} embedded image asset${referencedEmbeddedAssetIds.length === 1 ? "" : "s"} because storage is unavailable.`);
+    } else if (storage) {
+      for (const assetId of referencedEmbeddedAssetIds) {
+        const asset = await assetRecords.getById(assetId);
+        // Embedded references only pull bytes for assets owned by the
+        // exporting company: a crafted URL naming another company's asset id
+        // must not leak that asset's bytes into the bundle.
+        if (!asset || asset.companyId !== companyId) {
+          unownedEmbeddedAssetRefCount += 1;
+          continue;
+        }
+        let body: Buffer;
+        try {
+          const object = await storage.getObject(companyId, asset.objectKey);
+          body = await streamToBuffer(object.stream);
+        } catch (err) {
+          warnings.push(`Skipped embedded image asset ${asset.originalFilename ?? assetId} because its stored object could not be read: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        // Blobs are addressed by the hash of the bytes actually read; a
+        // stale asset-row hash loses to the recomputed one.
+        const sha256 = sha256HexOfBytes(body);
+        if (!exportedBlobs.has(sha256)) {
+          files[portableBlobPath(sha256)] = bufferToPortableBinaryFile(body, PORTABLE_BLOB_CONTENT_TYPE);
+          exportedBlobs.set(sha256, { sha256, byteSize: body.length, contentType: PORTABLE_BLOB_CONTENT_TYPE });
+        }
+        const owners = embeddedAssetOwners.get(assetId) ?? new Set<string>();
+        embeddedAssetIndex.push({
+          assetId,
+          sha256,
+          contentType: asset.contentType ?? PORTABLE_BLOB_CONTENT_TYPE,
+          originalFilename: asset.originalFilename ?? null,
+          ownedBy: Array.from(owners).sort((left, right) => left.localeCompare(right)),
+        });
+      }
+    }
+    if (unownedEmbeddedAssetRefCount > 0) {
+      warnings.push(unownedEmbeddedAssetRefCount === 1
+        ? "1 embedded image reference points at an asset that does not belong to this company or no longer exists; its image was not exported."
+        : `${unownedEmbeddedAssetRefCount} embedded image references point at assets that do not belong to this company or no longer exist; their images were not exported.`);
+    }
+
     const paperclipExtensionPath = ".paperclip.yaml";
+    const exportedBlobIndex = Array.from(exportedBlobs.values())
+      .sort((left, right) => left.sha256.localeCompare(right.sha256));
     const paperclipAgents = Object.fromEntries(
       Object.entries(paperclipAgentsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
@@ -3892,6 +4526,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     files[paperclipExtensionPath] = buildYamlFile(
       {
         schema: "paperclip/v1",
+        schemaVersion: BUNDLE_SCHEMA_VERSION,
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
@@ -3903,6 +4538,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
         }),
         sidebar: stripEmptyValues(sidebarOrder),
+        labels: exportedLabels.length > 0 ? exportedLabels : undefined,
+        blobs: exportedBlobIndex.length > 0 ? exportedBlobIndex : undefined,
+        embeddedAssets: embeddedAssetIndex.length > 0 ? embeddedAssetIndex : undefined,
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
@@ -4118,11 +4756,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
         }
         if (issue.recurring) {
-          if (!issue.projectSlug) {
-            errors.push(`Recurring task ${issue.slug} must declare a project to import as a routine.`);
-          }
           if (!issue.assigneeAgentSlug) {
-            errors.push(`Recurring task ${issue.slug} must declare an assignee to import as a routine.`);
+            warnings.push(`Recurring task ${issue.slug} has no assignee; the routine will stay paused until one is set.`);
           }
           const resolvedRoutine = resolvePortableRoutineDefinition(issue, parsed.frontmatter.schedule);
           warnings.push(...resolvedRoutine.warnings);
@@ -4408,6 +5043,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     actorUserId: string | null | undefined,
     options?: ImportBehaviorOptions,
   ): Promise<CompanyPortabilityImportResult> {
+    // Fail closed before any preview or write work when an inline body arrived
+    // incomplete. A truncated or re-framed request can hand the parser a
+    // structurally valid JSON object with fewer files than the client sent;
+    // the declared count is the only signal that distinguishes it from a
+    // deliberately small bundle. Reject the fragment rather than importing it.
+    assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
@@ -4425,8 +5066,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const sourceManifest = plan.source.manifest;
+    const pauseAutomations = options?.pauseAutomations === true;
+    const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
+
+    // Content-addressed blobs double as the bundle's tamper seal. Verify every
+    // blob before any row is written so a corrupted package cannot leave a
+    // partially imported company behind.
+    for (const [filePath, fileEntry] of Object.entries(plan.source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const declaredSha = filePath.slice("blobs/".length);
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== declaredSha) {
+        throw unprocessable(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
 
     let targetCompany: {
       id: string;
@@ -4591,8 +5246,57 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
+      // Recreate embedded markdown image assets before any markdown is
+      // written, so issue descriptions, comments, documents, and agent
+      // instructions can be rewritten to the asset ids this board minted.
+      // References whose entry or blob cannot be imported keep their source
+      // ids and stay broken rather than pointing at the wrong asset.
+      const embeddedAssetIdMap = new Map<string, string>();
+      const manifestEmbeddedAssets = sourceManifest.embeddedAssets ?? [];
+      if (manifestEmbeddedAssets.length > 0) {
+        if (!storage) {
+          warnings.push(`Skipped ${manifestEmbeddedAssets.length} embedded image asset${manifestEmbeddedAssets.length === 1 ? "" : "s"} because storage is unavailable; their references were left unchanged.`);
+        } else {
+          for (const embeddedAsset of manifestEmbeddedAssets) {
+            const embeddedAssetLabel = embeddedAsset.originalFilename ?? embeddedAsset.assetId;
+            const blobPath = portableBlobPath(embeddedAsset.sha256);
+            const blobFile = plan.source.files[blobPath];
+            if (blobFile === undefined) {
+              warnings.push(`Embedded image asset ${embeddedAssetLabel} was skipped because its blob is missing from the package: ${blobPath}; its references were left unchanged.`);
+              continue;
+            }
+            // The pre-apply loop above already verified that every blobs/*
+            // entry hashes to its path, which this entry's sha256 derives.
+            const body = portableFileToBuffer(blobFile, blobPath);
+            try {
+              const stored = await storage.putFile({
+                companyId: targetCompany.id,
+                namespace: "assets/general",
+                originalFilename: embeddedAsset.originalFilename,
+                contentType: embeddedAsset.contentType,
+                body,
+              });
+              const createdAsset = await assetRecords.create(targetCompany.id, {
+                provider: stored.provider,
+                objectKey: stored.objectKey,
+                contentType: stored.contentType,
+                byteSize: stored.byteSize,
+                sha256: stored.sha256,
+                originalFilename: stored.originalFilename,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              });
+              embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
+            } catch (error) {
+              warnings.push(`Embedded image asset ${embeddedAssetLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}; its references were left unchanged.`);
+            }
+          }
+        }
+      }
+
       const resultAgents: CompanyPortabilityImportResult["agents"] = [];
       const resultProjects: CompanyPortabilityImportResult["projects"] = [];
+      const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
       const importedSlugToAgentId = new Map<string, string>();
       const existingSlugToAgentId = new Map<string, string>();
       const preImportExistingSlugToAgentId = new Map<string, string>();
@@ -4625,7 +5329,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);
         if (importedSkill.action === "skipped") {
           warnings.push(`Skipped skill ${importedSkill.originalSlug}; existing skill ${importedSkill.skill.slug} was kept.`);
-        } else if (importedSkill.originalKey !== importedSkill.skill.key) {
+        } else if (importedSkill.action === "renamed") {
           warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
         }
       }
@@ -4671,6 +5375,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if (!markdownRaw && !fallbackPromptTemplate) {
             warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported with an empty managed bundle.`);
           }
+          if (embeddedAssetIdMap.size > 0) {
+            for (const [relativePath, content] of Object.entries(bundleFiles)) {
+              bundleFiles[relativePath] = rewriteEmbeddedAssetUrls(content, embeddedAssetIdMap);
+            }
+          }
 
           // Apply adapter overrides from request if present
           const adapterOverride = input.adapterOverrides?.[planAgent.slug];
@@ -4700,9 +5409,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
           };
+          const automationPausePatch = pauseAutomations
+            ? {
+                status: "paused",
+                pauseReason: "system",
+                pausedAt: importedAutomationPausedAt,
+              }
+            : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
-            let updated = await agents.update(planAgent.existingAgentId, patch);
+            let updated = await agents.update(planAgent.existingAgentId, {
+              ...patch,
+              ...automationPausePatch,
+            });
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
               resultAgents.push({
@@ -4747,10 +5466,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          const createdStatus = "idle";
           let created = await agents.create(targetCompany.id, {
             ...patch,
-            status: createdStatus,
+            ...automationPausePatch,
+            status: pauseAutomations ? "paused" : "idle",
           });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
@@ -4776,7 +5495,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             manifestAgent.permissionGrants ?? [],
             actorUserId ?? null,
           );
-          agentStatusById.set(created.id, created.status ?? createdStatus);
+          agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,
             { targetType: "agent", targetId: created.id },
@@ -4955,10 +5674,75 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
       if (include.issues) {
         const routines = routineService(db);
+
+        // Resolve label names against the target company before creating
+        // issues: reuse existing labels (the target's color wins) and create
+        // the rest from the bundle's definitions. Old bundles carry raw
+        // labelIds instead; those only survive when the id happens to exist
+        // in the target company.
+        const labelColorByName = new Map<string, string>();
+        for (const label of sourceManifest.labels ?? []) {
+          if (!labelColorByName.has(label.name)) labelColorByName.set(label.name, label.color);
+        }
+        const referencedLabelNames = new Set<string>();
+        let hasLegacyLabelIds = false;
+        for (const manifestIssue of sourceManifest.issues) {
+          if (manifestIssue.recurring) continue;
+          for (const name of manifestIssue.labelNames ?? []) referencedLabelNames.add(name);
+          if ((manifestIssue.labelIds ?? []).length > 0) hasLegacyLabelIds = true;
+        }
+        const labelIdByName = new Map<string, string>();
+        const existingTargetLabelIds = new Set<string>();
+        if (referencedLabelNames.size > 0 || hasLegacyLabelIds) {
+          const targetLabels = await issues.listLabels(targetCompany.id);
+          const targetLabelByName = new Map(targetLabels.map((label) => [label.name, label]));
+          for (const label of targetLabels) existingTargetLabelIds.add(label.id);
+          const keptColorNames: string[] = [];
+          for (const name of Array.from(referencedLabelNames).sort((left, right) => left.localeCompare(right))) {
+            const existing = targetLabelByName.get(name);
+            if (existing) {
+              labelIdByName.set(name, existing.id);
+              const exportedColor = labelColorByName.get(name);
+              if (exportedColor && exportedColor.toLowerCase() !== existing.color.toLowerCase()) {
+                keptColorNames.push(name);
+              }
+              continue;
+            }
+            const created = await issues.createLabel(targetCompany.id, {
+              name,
+              color: labelColorByName.get(name) ?? DEFAULT_IMPORTED_LABEL_COLOR,
+            });
+            labelIdByName.set(name, created.id);
+          }
+          if (keptColorNames.length > 0) {
+            warnings.push(`Existing label color${keptColorNames.length === 1 ? " was" : "s were"} kept for ${keptColorNames.join(", ")}; the imported bundle used different colors.`);
+          }
+        }
+
+        const importedIssueIdBySlug = new Map<string, string>();
+        const blockedByBySlug = new Map<string, string[]>();
+        let unarmedMonitorCount = 0;
+        let attachmentsSkippedNoStorage = 0;
+        const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
+
+        // Import writes every issue and its children as a single batch instead
+        // of one network round-trip per row. The loop below resolves each
+        // manifest issue (ids pre-generated so children reference parents
+        // without waiting) and buffers the resulting rows; the buffers are
+        // flushed through the batched writers once resolution is complete.
+        const issueRows: ImportIssueRow[] = [];
+        const commentRows: ImportIssueCommentRow[] = [];
+        const documentRows: ImportIssueDocumentRow[] = [];
+        const workProductRows: ImportIssueWorkProductRow[] = [];
+        const attachmentRows: ImportIssueAttachmentRow[] = [];
+
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
-          const description = parsed?.body || manifestIssue.description || null;
+          const rawDescription = parsed?.body || manifestIssue.description || null;
+          const description = rawDescription === null
+            ? null
+            : rewriteEmbeddedAssetUrls(rawDescription, embeddedAssetIdMap);
           const assigneeAgentId = resolveImportedAssigneeAgentId(
             manifestIssue.assigneeAgentSlug,
             importedSlugToAgentId,
@@ -4979,8 +5763,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} references workspace key ${manifestIssue.projectWorkspaceKey}, but that workspace was not imported.`);
           }
           if (manifestIssue.recurring) {
-            if (!projectId) {
-              throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project required to create a routine.`);
+            // Routines can legitimately exist without a project or assignee;
+            // routines.create accepts a null project and pauses an active
+            // routine that has no assignee to run it.
+            if (manifestIssue.projectSlug && !projectId) {
+              warnings.push(`Recurring task ${manifestIssue.slug} references project ${manifestIssue.projectSlug}, which was not imported; the routine was created without a project.`);
             }
             const resolvedRoutine = resolvePortableRoutineDefinition(manifestIssue, parsed?.frontmatter.schedule);
             if (resolvedRoutine.errors.length > 0) {
@@ -5003,7 +5790,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
                 ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
                 : "medium",
-              status: manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
+              status: pauseAutomations
+                ? "paused"
+                : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
                 ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
                 : "active",
               concurrencyPolicy:
@@ -5019,6 +5808,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               agentId: null,
               userId: actorUserId ?? null,
             });
+            resultRoutines.push({
+              slug: manifestIssue.slug,
+              id: createdRoutine.id,
+              action: "created",
+              title: createdRoutine.title,
+              status: createdRoutine.status,
+            });
+            if (!assigneeAgentId) {
+              warnings.push(`Routine ${manifestIssue.slug} was imported without an assignee and will stay paused until one is set.`);
+            }
             for (const trigger of routineDefinition.triggers) {
               if (trigger.kind === "schedule") {
                 await routines.createTrigger(createdRoutine.id, {
@@ -5067,21 +5866,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
             issueStatus = "todo";
           }
-          const createdIssue = await issues.create(targetCompany.id, {
-            projectId,
-            projectWorkspaceId,
-            title: manifestIssue.title,
-            description,
-            assigneeAgentId,
-            status: issueStatus,
-            priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-              ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-              : "medium",
-            billingCode: manifestIssue.billingCode,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
-            executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-            labelIds: manifestIssue.labelIds ?? [],
-          });
+          const resolvedLabelIds: string[] = [];
+          for (const name of manifestIssue.labelNames ?? []) {
+            const labelId = labelIdByName.get(name);
+            if (labelId && !resolvedLabelIds.includes(labelId)) resolvedLabelIds.push(labelId);
+          }
+          const legacyLabelIds = manifestIssue.labelIds ?? [];
+          const unresolvedLegacyCount = legacyLabelIds.filter((labelId) => !existingTargetLabelIds.has(labelId)).length;
+          if (unresolvedLegacyCount > 0) {
+            warnings.push(`Task ${manifestIssue.slug} dropped ${unresolvedLegacyCount} label reference${unresolvedLegacyCount === 1 ? "" : "s"} because the bundle carries raw label ids that do not exist in the target company.`);
+          }
+          for (const labelId of legacyLabelIds) {
+            if (existingTargetLabelIds.has(labelId) && !resolvedLabelIds.includes(labelId)) {
+              resolvedLabelIds.push(labelId);
+            }
+          }
+          // Pre-generate the issue id so this issue's comments, documents, and
+          // attachments can reference it without waiting on a per-issue insert
+          // round-trip. The row itself is buffered and flushed after the loop.
+          const issueId = randomUUID();
+          // Created comment ids are captured positionally so attachment
+          // entries can resolve their commentIndex against them.
+          const createdCommentIds: Array<string | null> = [];
           for (const comment of manifestIssue.comments ?? []) {
             const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug
               ? importedSlugToAgentId.get(comment.authorAgentSlug)
@@ -5099,16 +5905,239 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : comment.authorType === "user" && actorUserId
                 ? "user"
                 : "system";
-            await issues.addComment(createdIssue.id, comment.body, {
-              agentId: authorAgentId ?? undefined,
-              userId: authorType === "user" ? actorUserId ?? undefined : undefined,
-            }, {
+            const commentId = randomUUID();
+            commentRows.push({
+              id: commentId,
+              companyId: targetCompany.id,
+              issueId,
+              body: rewriteEmbeddedAssetUrls(comment.body, embeddedAssetIdMap),
               authorType,
-              presentation: comment.presentation,
-              metadata: comment.metadata,
-              createdAt: comment.createdAt,
+              authorAgentId: authorAgentId ?? null,
+              authorUserId: authorType === "user" ? actorUserId ?? null : null,
+              presentation: comment.presentation ?? null,
+              metadata: comment.metadata ?? null,
+              createdAt: comment.createdAt ?? null,
+            });
+            createdCommentIds.push(commentId);
+          }
+          importedIssueIdBySlug.set(manifestIssue.slug, issueId);
+          if ((manifestIssue.blockedBy ?? []).length > 0) {
+            blockedByBySlug.set(manifestIssue.slug, manifestIssue.blockedBy ?? []);
+          }
+          for (const documentEntry of manifestIssue.documents ?? []) {
+            const documentBody = readPortableTextFile(plan.source.files, documentEntry.path);
+            if (documentBody === null) {
+              warnings.push(`Task ${manifestIssue.slug} document ${documentEntry.key} was skipped because its file is missing from the package: ${documentEntry.path}`);
+              continue;
+            }
+            documentRows.push({
+              companyId: targetCompany.id,
+              issueId,
+              key: documentEntry.key,
+              title: documentEntry.title,
+              format: documentEntry.format,
+              body: rewriteEmbeddedAssetUrls(documentBody, embeddedAssetIdMap),
+              createdByAgentId: null,
+              createdByUserId: actorUserId ?? null,
+              createdByRunId: null,
+              sourceTrust: null,
             });
           }
+          for (const workProductEntry of manifestIssue.workProducts ?? []) {
+            workProductRows.push({
+              companyId: targetCompany.id,
+              issueId,
+              projectId: projectId ?? null,
+              type: workProductEntry.type,
+              provider: workProductEntry.provider,
+              externalId: workProductEntry.externalId ?? null,
+              title: workProductEntry.title,
+              url: workProductEntry.url ?? null,
+              status: workProductEntry.status,
+              reviewState: workProductEntry.reviewState ?? "none",
+              isPrimary: workProductEntry.isPrimary ?? false,
+              healthStatus: workProductEntry.healthStatus ?? "unknown",
+              summary: workProductEntry.summary ?? null,
+              metadata: workProductEntry.metadata ?? null,
+              // Workspace/run references never travel across boards.
+              executionWorkspaceId: null,
+              runtimeServiceId: null,
+              createdByRunId: null,
+              sourceTrust: null,
+            });
+          }
+          // Monitors land un-armed: notes and provenance are restored on the
+          // issue row itself but monitorNextCheckAt stays NULL until an operator
+          // re-arms them.
+          let monitorNotes: string | null = null;
+          let monitorScheduledBy: string | null = null;
+          if (manifestIssue.monitor) {
+            if (manifestIssue.monitor.notes !== null || manifestIssue.monitor.scheduledBy !== null) {
+              monitorNotes = manifestIssue.monitor.notes;
+              monitorScheduledBy = manifestIssue.monitor.scheduledBy;
+            }
+            unarmedMonitorCount += 1;
+          }
+          for (const attachmentEntry of manifestIssue.attachments ?? []) {
+            const attachmentLabel = attachmentEntry.originalFilename ?? attachmentEntry.sha256;
+            if (!storage) {
+              attachmentsSkippedNoStorage += 1;
+              continue;
+            }
+            const blobPath = portableBlobPath(attachmentEntry.sha256);
+            const blobFile = plan.source.files[blobPath];
+            if (blobFile === undefined) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because its blob is missing from the package: ${blobPath}`);
+              continue;
+            }
+            const body = portableFileToBuffer(blobFile, blobPath);
+            // Content-addressed blobs double as the bundle's tamper seal:
+            // bytes that do not hash to their declared sha256 fail closed.
+            if (sha256HexOfBytes(body) !== attachmentEntry.sha256) {
+              throw unprocessable(`Attachment blob ${blobPath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+            }
+            if (body.length > attachmentMaxBytes) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this board's attachment size limit of ${attachmentMaxBytes} bytes.`);
+              continue;
+            }
+            let issueCommentId: string | null = null;
+            if (attachmentEntry.commentIndex !== null) {
+              issueCommentId = createdCommentIds[attachmentEntry.commentIndex] ?? null;
+              if (!issueCommentId) {
+                warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was imported at task scope because its comment reference could not be resolved.`);
+              }
+            }
+            try {
+              const stored = await storage.putFile({
+                companyId: targetCompany.id,
+                namespace: `issues/${issueId}`,
+                originalFilename: attachmentEntry.originalFilename,
+                contentType: attachmentEntry.contentType,
+                body,
+              });
+              attachmentRows.push({
+                companyId: targetCompany.id,
+                issueId,
+                issueCommentId,
+                provider: stored.provider,
+                objectKey: stored.objectKey,
+                contentType: stored.contentType,
+                byteSize: stored.byteSize,
+                sha256: stored.sha256,
+                originalFilename: stored.originalFilename,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              });
+            } catch (error) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          issueRows.push({
+            id: issueId,
+            ref: manifestIssue.slug,
+            projectId: projectId ?? null,
+            projectWorkspaceId: projectWorkspaceId ?? null,
+            title: manifestIssue.title,
+            description,
+            assigneeAgentId,
+            status: issueStatus,
+            priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
+              ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
+              : "medium",
+            billingCode: manifestIssue.billingCode ?? null,
+            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
+            labelIds: resolvedLabelIds,
+            monitorNotes,
+            monitorScheduledBy,
+          });
+        }
+
+        // Flush the buffered rows in dependency order: issues first (parents of
+        // every other row), then comments (attachments may reference them), then
+        // the remaining children. Each writer inserts in chunked multi-row
+        // statements, turning what used to be one round-trip per row into a
+        // handful per table. Empty buffers are skipped so an issues-free import
+        // (e.g. routines only) issues no writes at all.
+        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        // Imported issues are historical work, not new inbox items. Seed a
+        // per-user inbox archive for the importing board user so a large import
+        // (a real 1,418-task company shipped every task to the inbox) does not
+        // flood it: the inbox "mine" query hides archived issues, and genuine
+        // new activity still resurfaces them. Agent/system imports (no board
+        // user) have no inbox to protect, so the seeding is skipped.
+        if (actorUserId && issueRows.length > 0) {
+          await issues.archiveImportedInbox(
+            targetCompany.id,
+            issueRows.map((row) => row.id),
+            actorUserId,
+          );
+        }
+        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+        if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
+        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+        if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
+
+        if (blockedByBySlug.size > 0) {
+          const acceptedAdjacency = new Map<string, string[]>();
+          const wouldCreateBlockingCycle = (blockedIssueId: string, blockerIssueId: string) => {
+            // Mirrors assertNoBlockingCycles in the issues service: a cycle
+            // exists when the blocked issue already (transitively) blocks the
+            // prospective blocker.
+            const queue = [...(acceptedAdjacency.get(blockedIssueId) ?? [])];
+            const visited = new Set<string>([blockedIssueId]);
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (current === blockerIssueId) return true;
+              if (visited.has(current)) continue;
+              visited.add(current);
+              queue.push(...(acceptedAdjacency.get(current) ?? []));
+            }
+            return false;
+          };
+          const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
+          for (const [slug, blockerSlugs] of blockedByBySlug) {
+            const blockedIssueId = importedIssueIdBySlug.get(slug);
+            if (!blockedIssueId) continue;
+            for (const blockerSlug of blockerSlugs) {
+              const blockerIssueId = importedIssueIdBySlug.get(blockerSlug);
+              if (!blockerIssueId) {
+                warnings.push(`Task ${slug} blocker ${blockerSlug} was skipped because that task was not imported.`);
+                continue;
+              }
+              if (blockerIssueId === blockedIssueId) continue;
+              if (wouldCreateBlockingCycle(blockedIssueId, blockerIssueId)) {
+                warnings.push(`Task ${slug} blocker ${blockerSlug} was skipped because it would create a blocking cycle.`);
+                continue;
+              }
+              const adjacency = acceptedAdjacency.get(blockerIssueId) ?? [];
+              adjacency.push(blockedIssueId);
+              acceptedAdjacency.set(blockerIssueId, adjacency);
+              relationRows.push({ issueId: blockerIssueId, relatedIssueId: blockedIssueId });
+            }
+          }
+          if (relationRows.length > 0) {
+            const relationCompanyId = targetCompany.id;
+            await db
+              .insert(issueRelations)
+              .values(relationRows.map((row) => ({
+                companyId: relationCompanyId,
+                issueId: row.issueId,
+                relatedIssueId: row.relatedIssueId,
+                type: "blocks" as const,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              })))
+              .onConflictDoNothing();
+          }
+        }
+
+        if (unarmedMonitorCount > 0) {
+          warnings.push(`${unarmedMonitorCount} monitor${unarmedMonitorCount === 1 ? " was" : "s were"} imported un-armed; re-arm ${unarmedMonitorCount === 1 ? "it" : "them"} from the task page to resume checks.`);
+        }
+
+        if (attachmentsSkippedNoStorage > 0) {
+          warnings.push(`Skipped ${attachmentsSkippedNoStorage} attachment${attachmentsSkippedNoStorage === 1 ? "" : "s"} because storage is unavailable.`);
         }
       }
 
@@ -5119,7 +6148,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           action: companyAction,
         },
         agents: resultAgents,
+        skills: importedSkills.map((result) => ({
+          originalKey: result.originalKey,
+          originalSlug: result.originalSlug,
+          key: result.skill.key,
+          slug: result.skill.slug,
+          id: result.skill.id,
+          action: result.action,
+          reason: result.reason,
+        })),
         projects: resultProjects,
+        routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],
         warnings,
       };

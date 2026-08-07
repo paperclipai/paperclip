@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  activityLog,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -11,10 +12,10 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   goals,
   heartbeatRuns,
   issueInboxArchives,
-  issueReadStates,
   issues,
   pluginManagedResources,
   plugins,
@@ -50,6 +51,7 @@ import {
   interpolateRoutineTemplate,
   isValidRoutineDateString,
   pluginOperationIssueOriginKind,
+  routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
@@ -80,6 +82,13 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const ACTIVITY_GATE_IGNORED_ACTIONS = [
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+  "issue.inbox_touched",
+];
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -230,6 +239,22 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
     cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
   }
   return null;
+}
+
+function isSubHourlyCronExpression(expression: string, timeZone: string, after: Date) {
+  const firstTick = nextCronTickInTimeZone(expression, timeZone, after);
+  if (!firstTick) return false;
+
+  const windowEnd = firstTick.getTime() + 24 * 60 * 60 * 1000;
+  let occurrenceCount = 1;
+  let cursor = firstTick;
+  while (occurrenceCount <= 24) {
+    const nextTick = nextCronTickInTimeZone(expression, timeZone, cursor);
+    if (!nextTick || nextTick.getTime() >= windowEnd) return false;
+    occurrenceCount += 1;
+    cursor = nextTick;
+  }
+  return true;
 }
 
 function nextResultText(status: string, issueId?: string | null) {
@@ -498,6 +523,8 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    activityGatePolicy: routine.activityGatePolicy as RoutineRevisionSnapshotV1["routine"]["activityGatePolicy"],
+    activityGateScope: routine.activityGateScope as RoutineRevisionSnapshotV1["routine"]["activityGateScope"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
     responsibleUserId: routine.responsibleUserId ?? null,
@@ -951,6 +978,17 @@ export function routineService(
     if (parentIssue.companyId !== companyId) throw unprocessable("Parent issue must belong to same company");
   }
 
+  async function assertRoutineFolder(companyId: string, folderId: string | null | undefined) {
+    if (!folderId) return;
+    const folder = await db
+      .select({ id: folders.id, kind: folders.kind })
+      .from(folders)
+      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)))
+      .then((rows) => rows[0] ?? null);
+    if (!folder) throw notFound("Folder not found");
+    if (folder.kind !== "routine") throw unprocessable("Folder kind must match routine");
+  }
+
   async function listTriggersForRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineTrigger[]>();
     const rows = await db
@@ -1181,6 +1219,116 @@ export function routineService(
     return { eligible: true };
   }
 
+  async function evaluateActivityGate(routine: typeof routines.$inferSelect, now: Date) {
+    const lastDispatchedRun = await db
+      .select({ triggeredAt: routineRuns.triggeredAt })
+      .from(routineRuns)
+      .where(
+        and(
+          eq(routineRuns.companyId, routine.companyId),
+          eq(routineRuns.routineId, routine.id),
+          sql`${routineRuns.status} not in ('skipped', 'coalesced')`,
+        ),
+      )
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!lastDispatchedRun) {
+      return { fire: true, windowStart: null, matchedActivity: null };
+    }
+
+    const projectScopeCondition = routine.activityGateScope === "project"
+      ? routine.projectId
+        ? sql`(
+          (${activityLog.entityType} = 'project' and ${activityLog.entityId} = ${routine.projectId})
+          or (${activityLog.details} ->> 'projectId') = ${routine.projectId}
+          or exists (
+            select 1
+            from ${issues} activity_issue
+            where activity_issue.company_id = ${routine.companyId}
+              and activity_issue.project_id = ${routine.projectId}
+              and activity_issue.id::text = ${activityLog.entityId}
+              and ${activityLog.entityType} = 'issue'
+          )
+          or exists (
+            select 1
+            from ${heartbeatRuns} activity_run
+            inner join ${issues} run_issue
+              on run_issue.company_id = ${routine.companyId}
+              and run_issue.id::text = activity_run.context_snapshot ->> 'issueId'
+            where activity_run.company_id = ${routine.companyId}
+              and activity_run.id = ${activityLog.runId}
+              and run_issue.project_id = ${routine.projectId}
+          )
+          or exists (
+            select 1
+            from ${routines} activity_routine
+            where activity_routine.company_id = ${routine.companyId}
+              and activity_routine.project_id = ${routine.projectId}
+              and activity_routine.id::text = ${activityLog.entityId}
+              and ${activityLog.entityType} = 'routine'
+          )
+          or exists (
+            select 1
+            from ${routineRuns} activity_routine_run
+            inner join ${routines} activity_routine
+              on activity_routine.company_id = ${routine.companyId}
+              and activity_routine.id = activity_routine_run.routine_id
+            where activity_routine_run.company_id = ${routine.companyId}
+              and activity_routine_run.id::text = ${activityLog.entityId}
+              and activity_routine.project_id = ${routine.projectId}
+              and ${activityLog.entityType} = 'routine_run'
+          )
+          )`
+        : sql`false`
+      : undefined;
+
+    const matchedActivity = await db
+      .select({
+        id: activityLog.id,
+        action: activityLog.action,
+        createdAt: activityLog.createdAt,
+      })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, routine.companyId),
+          gt(activityLog.createdAt, lastDispatchedRun.triggeredAt),
+          lte(activityLog.createdAt, now),
+          sql`${activityLog.action} not in (${sql.join(ACTIVITY_GATE_IGNORED_ACTIONS.map((action) => sql`${action}`), sql`, `)})`,
+          sql`not (
+            ${activityLog.actorId} = 'routine-scheduler'
+            and (
+              (${activityLog.details} ->> 'routineId') = ${routine.id}
+              or (${activityLog.entityType} = 'routine' and ${activityLog.entityId} = ${routine.id})
+            )
+          )`,
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns} own_run
+            inner join ${issues} own_issue
+              on own_issue.company_id = ${routine.companyId}
+              and own_issue.id::text = own_run.context_snapshot ->> 'issueId'
+            where own_run.company_id = ${routine.companyId}
+              and own_run.id = ${activityLog.runId}
+              and own_issue.origin_kind = 'routine_execution'
+              and own_issue.origin_id = ${routine.id}
+          )`,
+          projectScopeCondition,
+        ),
+      )
+      .orderBy(asc(activityLog.createdAt), asc(activityLog.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return {
+      fire: matchedActivity !== null,
+      windowStart: lastDispatchedRun.triggeredAt,
+      matchedActivity,
+    };
+  }
+
   // Records an automatic firing that was claimed but intentionally not dispatched. The
   // scheduler advances its tick before calling this helper, so suppressed work is never
   // replayed after a setting or project state changes.
@@ -1190,6 +1338,7 @@ export function routineService(
     source: "schedule" | "webhook";
     reason: string;
     nextRunAt?: Date | null;
+    details?: Record<string, unknown> | null;
   }) {
     const triggeredAt = new Date();
     const run = await db.transaction(async (tx) => {
@@ -1208,13 +1357,18 @@ export function routineService(
           linkedIssueId: null,
           routineRevisionId: input.routine.latestRevisionId,
           responsibleUserId: input.routine.responsibleUserId ?? null,
+          triggerPayload: input.details ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
         routineId: input.routine.id,
         triggerId: input.trigger.id,
         triggeredAt,
-        status: input.reason === "paused" ? "skipped_paused" : "skipped_worktree_execution_cutoff",
+        status: input.reason === "paused"
+          ? "skipped_paused"
+          : input.reason === "no_external_activity"
+            ? "skipped_no_activity"
+            : "skipped_worktree_execution_cutoff",
         nextRunAt: input.nextRunAt,
       }, txDb);
       return createdRun;
@@ -1234,6 +1388,7 @@ export function routineService(
           source: input.source,
           status: "skipped",
           reason: input.reason,
+          ...(input.details ?? {}),
         },
       });
     } catch (err) {
@@ -1428,22 +1583,17 @@ export function routineService(
       touchedAt: Date;
     },
   ) {
-    await executor
-      .insert(issueReadStates)
-      .values({
-        companyId: input.companyId,
-        issueId: input.issueId,
-        userId: input.userId,
-        lastReadAt: input.touchedAt,
-        updatedAt: input.touchedAt,
-      })
-      .onConflictDoUpdate({
-        target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
-        set: {
-          lastReadAt: input.touchedAt,
-          updatedAt: input.touchedAt,
-        },
-      });
+    await executor.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.userId,
+      action: "issue.inbox_touched",
+      entityType: "issue",
+      entityId: input.issueId,
+      responsibleUserId: input.userId,
+      details: { source: "manual_routine_run" },
+      createdAt: input.touchedAt,
+    });
 
     await executor
       .delete(issueInboxArchives)
@@ -1470,6 +1620,7 @@ export function routineService(
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
+    nextRunAtOverride?: Date | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
@@ -1594,9 +1745,11 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      const nextRunAt = input.nextRunAtOverride !== undefined
+        ? input.nextRunAtOverride
+        : input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
+          ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+          : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
@@ -1776,6 +1929,7 @@ export function routineService(
   }
 
   return {
+    evaluateActivityGate,
     get: getRoutineById,
     getTrigger: getTriggerById,
 
@@ -1922,6 +2076,7 @@ export function routineService(
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
+      await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
@@ -1948,6 +2103,7 @@ export function routineService(
           .values({
             companyId,
             projectId: input.projectId ?? null,
+            folderId: input.folderId ?? null,
             goalId: input.goalId ?? null,
             parentIssueId: input.parentIssueId ?? null,
             title: input.title,
@@ -1957,6 +2113,8 @@ export function routineService(
             status,
             concurrencyPolicy: input.concurrencyPolicy,
             catchUpPolicy: input.catchUpPolicy,
+            activityGatePolicy: input.activityGatePolicy ?? "always",
+            activityGateScope: input.activityGateScope ?? "company",
             variables,
             env,
             responsibleUserId,
@@ -1986,6 +2144,7 @@ export function routineService(
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
+      const nextFolderId = patch.folderId === undefined ? existing.folderId : patch.folderId;
       const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
       const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
@@ -2009,6 +2168,7 @@ export function routineService(
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
+      if (patch.folderId !== undefined) await assertRoutineFolder(existing.companyId, nextFolderId);
       if (patch.assigneeAgentId !== undefined || patch.status === "active") {
         await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
       }
@@ -2058,6 +2218,7 @@ export function routineService(
         const candidate: RoutineRow = {
           ...locked,
           projectId: nextProjectId,
+          folderId: nextFolderId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
           title: nextTitle,
@@ -2067,6 +2228,8 @@ export function routineService(
           status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
+          activityGatePolicy: patch.activityGatePolicy ?? locked.activityGatePolicy,
+          activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
           responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
@@ -2074,8 +2237,20 @@ export function routineService(
           updatedByUserId: actor.userId ?? null,
         };
 
+        const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
-          return locked;
+          if (!folderChanged) return locked;
+          const [updated] = await txDb
+            .update(routines)
+            .set({
+              folderId: candidate.folderId,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(routines.id, id))
+            .returning();
+          return updated ?? locked;
         }
 
         const nextSnapshot = await buildRoutineRevisionSnapshot(txDb, candidate);
@@ -2108,6 +2283,7 @@ export function routineService(
           .update(routines)
           .set({
             projectId: candidate.projectId,
+            folderId: candidate.folderId,
             goalId: candidate.goalId,
             parentIssueId: candidate.parentIssueId,
             title: candidate.title,
@@ -2117,6 +2293,8 @@ export function routineService(
             status: candidate.status,
             concurrencyPolicy: candidate.concurrencyPolicy,
             catchUpPolicy: candidate.catchUpPolicy,
+            activityGatePolicy: candidate.activityGatePolicy,
+            activityGateScope: candidate.activityGateScope,
             variables: candidate.variables,
             env: candidate.env,
             responsibleUserId: candidate.responsibleUserId,
@@ -2398,7 +2576,7 @@ export function routineService(
         .then((rows) => rows[0] ?? null);
       if (!targetRevision) throw notFound("Routine revision not found");
 
-      const snapshot = targetRevision.snapshot as RoutineRevisionSnapshotV1;
+      const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
 
@@ -2453,6 +2631,8 @@ export function routineService(
             status: routineSnapshot.status,
             concurrencyPolicy: routineSnapshot.concurrencyPolicy,
             catchUpPolicy: routineSnapshot.catchUpPolicy,
+            activityGatePolicy: routineSnapshot.activityGatePolicy,
+            activityGateScope: routineSnapshot.activityGateScope,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
             updatedByAgentId: actor.agentId ?? null,
@@ -2811,12 +2991,16 @@ export function routineService(
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
+            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+          } else {
+            let cursor: Date | null = row.trigger.nextRunAt;
+            runCount = 0;
+            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              runCount += 1;
+              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
+              cursor = claimedNextRunAt;
+            }
           }
         }
 
@@ -2848,11 +3032,33 @@ export function routineService(
           continue;
         }
 
+        const activityGate = row.routine.activityGatePolicy === "require_external_activity"
+          ? await evaluateActivityGate(row.routine, now)
+          : null;
+        if (activityGate && !activityGate.fire) {
+          await recordSuppressedAutomaticRun({
+            routine: row.routine,
+            trigger: row.trigger,
+            source: "schedule",
+            reason: "no_external_activity",
+            nextRunAt: claimedNextRunAt,
+            details: {
+              activityGate: {
+                verdict: "quiet",
+                windowStart: activityGate.windowStart?.toISOString() ?? null,
+                matchedActivityId: null,
+              },
+            },
+          });
+          continue;
+        }
+
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
+            nextRunAtOverride: claimedNextRunAt,
           });
           triggered += 1;
         }

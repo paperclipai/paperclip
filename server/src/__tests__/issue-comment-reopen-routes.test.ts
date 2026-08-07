@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -70,8 +71,10 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
@@ -83,6 +86,9 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncCommentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
+const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn());
+const mockCrossIssueInfluenceLimitError = vi.hoisted(() => vi.fn());
+const mockCrossIssueInfluenceRunContextError = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -169,6 +175,12 @@ vi.mock("../services/external-objects.js", () => ({
   externalObjectService: () => mockExternalObjectService,
 }));
 
+vi.mock("../services/cross-issue-influence-limit.js", () => ({
+  observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+  crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
+  crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
+}));
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -206,7 +218,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress") {
+function makeIssue(status: "backlog" | "todo" | "done" | "blocked" | "cancelled" | "in_progress" | "in_review") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -217,6 +229,21 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     identifier: "PAP-580",
     title: "Comment reopen default",
   };
+}
+
+function makeIssueUpdateReceipt(
+  existing: ReturnType<typeof makeIssue>,
+  patch: Record<string, unknown>,
+) {
+  const fields = Object.fromEntries(
+    Object.entries(patch).filter(([key]) => key !== "actorAgentId" && key !== "actorUserId"),
+  );
+  const changes = Object.fromEntries(
+    Object.entries(fields)
+      .filter(([key, value]) => !Object.is(existing[key as keyof typeof existing], value))
+      .map(([key, value]) => [key, { from: existing[key as keyof typeof existing], to: value }]),
+  );
+  return { ...existing, ...fields, changes };
 }
 
 function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
@@ -262,10 +289,14 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockExternalObjectService.syncCommentSafely.mockReset();
     mockExternalObjectService.syncIssueSafely.mockReset();
+    mockObserveCrossIssueInfluence.mockReset();
+    mockCrossIssueInfluenceLimitError.mockReset();
+    mockCrossIssueInfluenceRunContextError.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDbSelect.mockReset();
@@ -291,6 +322,22 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
     mockExternalObjectService.syncIssueSafely.mockResolvedValue(undefined);
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      mode: "log_only",
+      count: 1,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+    mockCrossIssueInfluenceLimitError.mockImplementation((decision: { count: number; cap: number }) => ({
+      error: `Cross-issue influence cap exceeded: this run is limited to ${decision.cap} cross-issue comments or updates`,
+      details: { code: "cross_issue_influence_cap_exceeded", count: decision.count, cap: decision.cap },
+    }));
+    mockCrossIssueInfluenceRunContextError.mockImplementation(() => new HttpError(
+      403,
+      "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+      { code: "cross_issue_influence_run_context_required" },
+    ));
     mockLogActivity.mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
@@ -307,6 +354,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
@@ -399,11 +447,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -477,11 +524,10 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
   it("reopens closed issues via the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -511,11 +557,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -537,7 +582,7 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  it("allows default-open non-assignee POST comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -549,6 +594,12 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
+      explanation: "Allowed by the shared visible-issue write rule.",
+    }));
 
     const res = await request(await installActor(createApp(), {
       type: "agent",
@@ -560,10 +611,9 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -635,7 +685,11 @@ describe.sequential("issue comment reopen routes", () => {
         .send({ body: "Please continue this closed issue.", ...intent });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
-      expect(res.body).toEqual({ error: "Issue is outside this actor's authorization boundary" });
+      expect(res.body.details.code).toBe("issue_write_not_visible");
+      // Plan §6: name the boundary, who can act, and the sanctioned path.
+      expect(res.body.error).toContain("Issue visibility");
+      expect(res.body.error).toContain("Who can act:");
+      expect(res.body.details.sanctionedPath).toContain("child issue");
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
       expect(mockIssueService.update).not.toHaveBeenCalled();
@@ -648,11 +702,10 @@ describe.sequential("issue comment reopen routes", () => {
   // reopen=true is the same log-class signal — the guard must suppress reopen.
   it("does not reopen via POST comment+reopen when the assignee agent is the actor on a done issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -780,11 +833,10 @@ describe.sequential("issue comment reopen routes", () => {
       reason: "allow_explicit_grant",
       explanation: "Allowed by test grant.",
     }));
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(
       await installActor(createApp(), {
@@ -1013,9 +1065,10 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "Paperclip needs a disposition before this issue can continue.",
-      { agentId: undefined, userId: "local-board", runId: null },
+      { agentId: undefined, userId: "local-board", runId: null, onBehalfOfUserId: undefined },
       {
         authorType: "user",
+        authorizationReason: "allow_board_actor",
         presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata,
         sourceTrust: null,
@@ -1040,6 +1093,102 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("derives compact presentation for comments from source-scoped recovery runs", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([{
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          contextSnapshot: {
+            wakeReason: "source_scoped_recovery_action",
+            recoveryCause: "process_lost",
+          },
+        }]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Recovered the execution path.\nHanded back to the original owner." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Recovered the execution path.\nHanded back to the original owner.",
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
+      expect.objectContaining({
+        authorType: "agent",
+        presentation: {
+          kind: "system_notice",
+          tone: "info",
+          title: "Recovered the execution path.",
+          detailsDefaultOpen: false,
+          density: "compact",
+        },
+      }),
+    );
+  });
+
+  it("leaves normal agent comments without derived presentation", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Normal work update." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Normal work update.",
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
+      expect.objectContaining({ presentation: null }),
+    );
+  });
+
+  it("keeps successful-run missing-state recovery comments fully visible", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([{
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          contextSnapshot: {
+            wakeReason: "source_scoped_recovery_action",
+            recoveryCause: "successful_run_missing_state",
+          },
+        }]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "The run completed; here is the required summary." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "The run completed; here is the required summary.",
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
+      expect.objectContaining({ presentation: null }),
+    );
   });
 
   it("rejects invalid comment metadata before writing a comment", async () => {
@@ -1216,11 +1365,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1338,7 +1486,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("rejects non-assignee agent PATCH comments on closed issues", async () => {
+  it("allows default-open non-assignee PATCH comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -1365,10 +1513,9 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -1443,6 +1590,96 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("wakes the assignee when a board user moves an assigned review back to todo", async () => {
+    const issue = makeIssue("in_review");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          mutation: "update",
+        }),
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+        contextSnapshot: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          source: "issue.status_change",
+        }),
+      }),
+    );
+  });
+
+  it("does not wake the assignee when the assignee agent moves its own review back to todo", async () => {
+    const issue = makeIssue("in_review");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue a resume wake when an unassigned review moves back to todo", async () => {
+    const issue = { ...makeIssue("in_review"), assigneeAgentId: null };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing backlog to todo assignee wake", async () => {
+    const issue = makeIssue("backlog");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_status_changed" }),
+    );
+  });
+
   it("wakes the assignee when an assigned done issue moves back to todo", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
@@ -1476,11 +1713,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("explicit same-agent resume works through the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp(), agentActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1510,6 +1746,8 @@ describe.sequential("issue comment reopen routes", () => {
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
         reason: "issue_reopened_via_comment",
+        requestedByActorType: "agent",
+        requestedByActorId: "22222222-2222-4222-8222-222222222222",
         payload: expect.objectContaining({
           commentId: "comment-1",
           reopenedFrom: "done",
@@ -1578,19 +1816,265 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("rejects explicit agent resume intent from a non-assignee", async () => {
+  it("honors explicit agent resume intent from a default-open peer as an agent-class wake", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "issue:comment" || input.action === "issue:mutate"
+        ? "allow_visible_issue_write"
+        : "deny_missing_grant",
+      explanation: "Allowed by the shared visible-issue write rule.",
+    }));
 
     const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "restart someone else's work", resume: true });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        requestedByActorType: "agent",
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({ resumeIntent: true }),
+      }),
+    );
+  });
+
+  it("bounds a cross-agent reply loop: peer comments wake and assignee self-replies do not", async () => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    const agentB = "22222222-2222-4222-8222-222222222222";
+
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: agentB });
+    let res = await request(await installActor(createApp(), agentActor(agentA)))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "A asks B for input" });
+    expect(res.status).toBe(201);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentB,
+      expect.objectContaining({
+        reason: "issue_commented",
+        requestedByActorType: "agent",
+        requestedByActorId: agentA,
+      }),
+    ));
+
+    mockHeartbeatService.wakeup.mockClear();
+    mockIssueService.findMentionedAgents.mockClear();
+    res = await request(await installActor(createApp(), agentActor(agentB)))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "B replies on B's own issue" });
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: agentA });
+    res = await request(await installActor(createApp(), agentActor(agentB)))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "B explicitly comments back on A's issue" });
+    expect(res.status).toBe(201);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentA,
+      expect.objectContaining({
+        reason: "issue_commented",
+        requestedByActorType: "agent",
+        requestedByActorId: agentB,
+      }),
+    ));
+  });
+
+  it.each([
+    ["comment", (app: express.Express) => request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "cross-issue attempt 21" })],
+    ["update", (app: express.Express) => request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "cross-issue attempt 21" })],
+  ] as const)("fails closed when a run exceeds the cross-issue %s cap", async (kind, sendRequest) => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: "22222222-2222-4222-8222-222222222222" });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: agentA,
+      responsibleUserId: null,
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    });
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 21,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await sendRequest(await installActor(createApp(), agentActor(agentA)));
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toContain("limited to 20 cross-issue comments or updates");
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        runId: "run-1",
+        agentId: agentA,
+        targetIssueId: "11111111-1111-4111-8111-111111111111",
+        kind,
+      }),
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["hide", "2026-08-04T18:00:00.000Z"],
+    ["unhide", null],
+  ] as const)("counts a cross-issue %s PATCH before mutation", async (_label, hiddenAt) => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      hiddenAt: hiddenAt === null ? new Date("2026-08-04T17:00:00.000Z") : null,
+    });
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 21,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(await installActor(createApp(), agentActor(agentA)))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ hiddenAt });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toContain("limited to 20 cross-issue comments or updates");
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "update" }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("counts bundled cross-issue PATCH updates and comments separately before mutation", async () => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    });
+    const app = await installActor(createApp(), agentActor(agentA));
+    mockObserveCrossIssueInfluence
+      .mockResolvedValueOnce({
+        allowed: true,
+        mode: "enforce",
+        count: 20,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        mode: "enforce",
+        count: 21,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      });
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "Bundled update", comment: "Bundled comment" });
+
+    expect(res.status).toBe(429);
+    expect(mockObserveCrossIssueInfluence.mock.calls.map(([, input]) => input.kind)).toEqual([
+      "update",
+      "comment",
+    ]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("counts a comment-only cross-issue PATCH once", async () => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    const existing = {
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor(agentA)))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Comment without an issue update" });
+
+    expect(res.status).toBe(200);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment" }),
+    );
+  });
+
+  it.each([
+    ["comment", (app: express.Express) => request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "cross-issue write" })],
+    ["update", (app: express.Express) => request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "cross-issue write" })],
+  ] as const)("rejects cross-issue %s writes without a run header", async (_kind, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const actor = { ...agentActor("44444444-4444-4444-8444-444444444444"), runId: undefined };
+    const res = await sendRequest(await installActor(createApp(), actor));
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it.each(["invalid", "wrong agent", "wrong company"])(
+    "rejects comment and PATCH writes with a %s run",
+    async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockObserveCrossIssueInfluence.mockRejectedValue(new HttpError(
+        403,
+        "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+        { code: "cross_issue_influence_run_context_required" },
+      ));
+      const actor = agentActor("44444444-4444-4444-8444-444444444444");
+
+      const commentRes = await request(await installActor(createApp(), actor))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "cross-issue write" });
+      const updateRes = await request(await installActor(createApp(), actor))
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ title: "cross-issue write" });
+
+      for (const res of [commentRes, updateRes]) {
+        expect(res.status).toBe(403);
+        expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
+      }
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects explicit resume intent under an active pause hold", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
@@ -1614,17 +2098,31 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("rejects explicit resume intent on cancelled issues", async () => {
+  it("honors explicit resume intent on cancelled issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("cancelled"),
+      ...patch,
+    }));
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please resume", resume: true });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        requestedByActorType: "agent",
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({ reopenedFrom: "cancelled", resumeIntent: true }),
+      }),
+    );
   });
 
   it("interrupts an active run before a combined comment update", async () => {
@@ -1809,6 +2307,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
       mockTx,
+      expect.any(Array),
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
     const decisionId = updatePatch.executionState.lastDecisionId;

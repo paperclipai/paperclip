@@ -10,9 +10,9 @@ import {
   type WorkspaceFileContent,
   type WorkspaceFileListResponse,
 } from "@paperclipai/shared";
-import { HttpError, unprocessable } from "../errors.js";
+import { HttpError, notFound, unprocessable } from "../errors.js";
 import { workspaceFileResourceService } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 
 export type WorkspaceFileResourceService = {
@@ -352,7 +352,10 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      if (!hasCompanyAccess(req, issue.companyId)) {
+        // Same 404 as a missing issue so cross-tenant probes can't tell them apart.
+        throw notFound("Issue not found");
+      }
     } catch (error) {
       await logListDeniedAttempt({
         companyId: issue.companyId,
@@ -406,6 +409,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: listActivityDetails({
           outcome: result.state === "available" ? "success" : "unavailable",
           workspaceSelector: result.query.workspace,
@@ -458,7 +462,10 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      if (!hasCompanyAccess(req, issue.companyId)) {
+        // Same 404 as a missing issue so cross-tenant probes can't tell them apart.
+        throw notFound("Issue not found");
+      }
     } catch (error) {
       await logDeniedAttempt({
         companyId: issue.companyId,
@@ -515,6 +522,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: activityDetails({
           outcome: "success",
           workspaceKind: result.workspaceKind,
@@ -566,7 +574,10 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      if (!hasCompanyAccess(req, issue.companyId)) {
+        // Same 404 as a missing issue so cross-tenant probes can't tell them apart.
+        throw notFound("Issue not found");
+      }
     } catch (error) {
       await logDeniedAttempt({
         companyId: issue.companyId,
@@ -637,6 +648,7 @@ export function fileResourceRoutes(db: Db, opts: {
           entityId: req.params.issueId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           details: activityDetails({
             outcome: "success",
             workspaceKind: result.resource.workspaceKind,
@@ -686,6 +698,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: activityDetails({
           outcome: "success",
           workspaceKind: result.resource.workspaceKind,

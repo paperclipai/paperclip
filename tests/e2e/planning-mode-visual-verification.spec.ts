@@ -1,20 +1,21 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { completeCloudOnboarding, HIRING_TASK_TITLE } from "./onboarding-flow";
 
-const AGENT_NAME = "Chief of staff";
-const TASK_TITLE = "Hire your first engineer and create a hiring plan";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
-  const screenshotDir = "test-results/planning-mode";
+  // Resolve against this file, not the cwd, so screenshots land in the
+  // gitignored tests/e2e/test-results/ rather than an untracked dir at the
+  // repo root that a contributor could commit by accident.
+  const screenshotDir = path.join(__dirname, "test-results", "planning-mode");
 
-  await page.route("**/test-environment", (route) =>
-    route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ status: "pass", checks: [] }),
-    }),
-  );
-
+  // Intercept hire → perform a REAL hire server-side with an inert http adapter
+  // so no real agent process spawns. (The cloud flow hires with
+  // requireEnvProbe: false, so there is no adapter-environment probe to stub.)
   await page.route("**/agent-hires", async (route) => {
     const req = route.request();
     const body = JSON.parse(req.postData() || "{}");
@@ -41,31 +42,15 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto("/onboarding");
-  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
-  if (await startBtn.count()) await startBtn.first().click();
 
-  const createCard = page.getByRole("button", { name: /Build a new company/ });
-  if (await createCard.count()) await createCard.first().click();
+  // This spec only needs a company with a seeded first task to screenshot the
+  // planning-mode UI against; drive the whole onboarding flow to get one.
+  await completeCloudOnboarding(page, {
+    companyName,
+    mission: "Capture planning mode visual evidence for the graduated task UI.",
+    choice: "hiring",
+  });
 
-  await expect(page.getByRole("heading", { name: "Name your company" })).toBeVisible({ timeout: 15_000 });
-
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
-
-  await expect(page.getByRole("heading", { name: "Define your mission" })).toBeVisible({ timeout: 30_000 });
-  await page
-    .getByPlaceholder("What is your team trying to achieve?")
-    .fill("Capture planning mode visual evidence for the graduated task UI.");
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
-
-  await page.waitForSelector('input[placeholder="Chief of staff"]', { timeout: 30_000 });
-  await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
-
-  await page.getByRole("button", { name: /^Next/ }).click();
-  await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
-
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: /Get started/ }).click();
   await expect(page).toHaveURL(/\/dashboard$/, { timeout: 30_000 });
 
   const baseOrigin = new URL(page.url()).origin;
@@ -79,7 +64,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const issues = await issueRes.json();
   const planningSeedIssue = issues.find(
     (candidate: { id: string; identifier?: string; title: string }) =>
-      candidate.title === TASK_TITLE,
+      candidate.title === HIRING_TASK_TITLE,
   );
   expect(planningSeedIssue).toBeTruthy();
 

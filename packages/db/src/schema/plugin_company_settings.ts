@@ -6,8 +6,9 @@ import { plugins } from "./plugins.js";
  * `plugin_company_settings` table — stores operator-managed plugin settings
  * scoped to a specific company.
  *
- * This is distinct from `plugin_config`, which stores instance-wide plugin
- * configuration. Each company can have at most one settings row per plugin.
+ * This is distinct from `plugin_config`, which stores the plugin's declared
+ * operator configuration. Each company can have at most one settings row per
+ * plugin.
  *
  * Rows represent explicit overrides from the default company behavior:
  * - no row => plugin is enabled for the company by default

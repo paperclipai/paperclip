@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { createPortal } from "react-dom";
+import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +13,7 @@ import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
+import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -26,24 +30,37 @@ import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projec
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
-import { formatMonitorOffset } from "../../lib/issue-monitor";
+import {
+  formatMonitorAbsolute,
+  formatMonitorAbsoluteFull,
+  formatMonitorEta,
+  formatMonitorEtaLabel,
+  formatMonitorOffset,
+  useMonitorCountdown,
+} from "../../lib/issue-monitor";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import { formatRetryReason } from "../../lib/runRetryState";
 import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
 import { PriorityIcon } from "../PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
+import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
+import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -83,7 +100,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
   useEffect(() => () => clearTimeout(timerRef.current), []);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);
@@ -125,6 +142,8 @@ interface IssuePropertiesProps {
   externalObjectsLoading?: boolean;
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
+  onCheckMonitorNow?: () => void;
+  checkingMonitorNow?: boolean;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -141,6 +160,8 @@ export function IssueProperties({
   externalObjectsLoading,
   externalObjectsError,
   onRetryExternalObjects,
+  onCheckMonitorNow,
+  checkingMonitorNow = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -150,6 +171,45 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  // Task Chat Redesign: gate the Properties | Plans | Artifacts tab shell. Flag
+  // OFF renders today's stacked sections verbatim (no Tabs wrapper). This pane
+  // is always task-scoped, so the flag alone is a sufficient gate.
+  const taskChatRedesignEnabled = experimentalSettings?.enableTaskChatRedesign === true;
+  // When hosted by the redesigned PropertiesPanel, the tab strip portals into
+  // the pane's header bar (left of the window controls). The slot only exists
+  // once the panel has committed, hence the effect; inline hosts (mobile sheet)
+  // keep the tab strip in place.
+  const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!taskChatRedesignEnabled || inline) {
+      setPaneHeaderSlot(null);
+      return;
+    }
+    setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
+  }, [taskChatRedesignEnabled, inline]);
+  // Plan earns a tab as soon as an issue is in planning mode, even before the
+  // plan document arrives. This keeps an expected plan surface visible and
+  // lets its diagnostic empty state explain what is missing.
+  // Same query keys as the tab bodies, so these share their cached fetches.
+  const { data: paneTabPlanDocument } = useIssuePlanDocument(
+    taskChatRedesignEnabled ? issue.id : null,
+  );
+  const { data: paneTabAcceptedPlans } = useQuery({
+    queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
+    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+    enabled: taskChatRedesignEnabled,
+  });
+  const { data: paneTabAttachments } = useQuery({
+    queryKey: queryKeys.issues.attachments(issue.id),
+    queryFn: () => issuesApi.listAttachments(issue.id),
+    enabled: taskChatRedesignEnabled,
+  });
+  const hasPlanTab =
+    Boolean(paneTabPlanDocument)
+    || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || issue.workMode === "planning";
+  const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
+  const [paneTab, setPaneTab] = useState("properties");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -175,6 +235,7 @@ export function IssueProperties({
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [monitorDetailsOpen, setMonitorDetailsOpen] = useState(false);
   const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
@@ -187,6 +248,7 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
+  const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
@@ -216,8 +278,8 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId!),
-    queryFn: () => projectsApi.list(companyId!),
+    queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const activeProjects = useMemo(
@@ -267,6 +329,26 @@ export function IssueProperties({
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
+    },
+  });
+
+  const unarchiveFromInbox = useMutation({
+    mutationFn: () => issuesApi.unarchiveFromInbox(issue.id),
+    onMutate: () => {
+      setUnarchiveErrorMessage(null);
+    },
+    onSuccess: () => {
+      setUnarchiveErrorMessage(null);
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, archivedAt: null, archivedByActorType: null, archivedByAgentId: null, archivedByRunId: null } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      if (companyId) invalidateInboxIssueQueries(queryClient, companyId);
+    },
+    onError: (error) => {
+      setUnarchiveErrorMessage(error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "Failed to unarchive this issue. Please try again.");
     },
   });
 
@@ -512,9 +594,13 @@ export function IssueProperties({
         assigneeOverrideThinkingEffort,
         assigneeOverrideChrome ? "Chrome" : "",
       ].filter(Boolean);
+      const summary = details.length > 0 ? `Override · ${details.join(" · ")}` : "Override · adapter options";
       return (
-        <span className="min-w-0 truncate text-sm" title={details.length > 0 ? `Custom · ${details.join(" · ")}` : "Custom adapter options"}>
-          Custom{details.length > 0 ? ` · ${details.join(" · ")}` : " adapter options"}
+        <span
+          className="min-w-0 truncate text-sm"
+          title={`Task-level model override — replaces the agent's primary model for this issue.${details.length > 0 ? ` (${details.join(" · ")})` : ""}`}
+        >
+          {summary}
         </span>
       );
     }
@@ -537,7 +623,7 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Custom"}
+              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
             </button>
           ))}
         </div>
@@ -549,6 +635,11 @@ export function IssueProperties({
               : assigneeCheapProfile
                 ? <>· uses the agent&apos;s configured cheap profile</>
                 : <>· falls back to the primary model if no cheap profile is configured</>}
+          </p>
+        ) : null}
+        {assigneeOverrideLane === "custom" ? (
+          <p className="text-xs text-muted-foreground">
+            Task-level model override — replaces the agent&apos;s primary model for this issue.
           </p>
         ) : null}
       </div>
@@ -959,45 +1050,94 @@ export function IssueProperties({
     updateMonitor(null);
     setMonitorOpen(false);
   };
-  const currentMonitorLabel = (() => {
-    if (issue.executionPolicy?.monitor?.nextCheckAt) {
-      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
-    }
-    if (issue.executionState?.monitor?.status === "cleared") {
-      return "Cleared";
-    }
-    if (issue.monitorLastTriggeredAt) {
-      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
-    }
-    return "None";
-  })();
-  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorState = issue.executionState?.monitor ?? null;
+  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
+  const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
+  const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
+  const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
+  const monitorNow = useMonitorCountdown(monitorNextCheckAt);
+  const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
+  const monitorIsDueNow = monitorRelative === "due now";
+  const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
+  const monitorPrimary = monitorNextCheckAt
+    ? formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
+    : monitorState?.status === "cleared"
+      ? "Cleared"
+      : "None";
+  const monitorSecondary = monitorNextCheckAt
+    ? monitorIsDueNow
+      ? "checking momentarily…"
+      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
+    : monitorState?.status === "cleared"
+      ? [
+          monitorLastTriggeredAt ? `last checked ${timeAgo(monitorLastTriggeredAt)}` : null,
+          monitorAttemptCount > 0 ? `after attempt ${monitorAttemptCount}` : null,
+        ].filter(Boolean).join(" · ")
+      : null;
   const monitorTrigger = (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
+    <TooltipProvider>
+      <Tooltip open={monitorDetailsOpen} onOpenChange={setMonitorDetailsOpen}>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex min-w-0 items-start gap-1.5"
+          data-testid="monitor-row-trigger"
+          onClick={() => setMonitorDetailsOpen(false)}
+        >
       {monitorNextCheckAt ? (
-        <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       ) : null}
-      <span
-        className={cn(
-          "min-w-0 truncate text-sm",
-          monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
-        )}
-        title={monitorNextCheckAt ? currentMonitorLabel : undefined}
-      >
-        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
-      </span>
-      {monitorNextCheckAt ? (
-        <span className="shrink-0 text-xs text-muted-foreground" title={currentMonitorLabel}>
-          {formatDate(new Date(monitorNextCheckAt))}
+          <span className="flex min-w-0 flex-col items-start">
+            <span className={cn("text-sm", monitorNextCheckAt ? "font-semibold text-foreground" : "text-muted-foreground")}>{monitorPrimary}</span>
+            {monitorSecondary ? (
+              <span className="text-xs text-muted-foreground">{monitorSecondary}</span>
+            ) : null}
+          </span>
         </span>
+      </TooltipTrigger>
+      {monitorNextCheckAt ? (
+        <TooltipContent
+          side="left"
+          className="w-80 border border-border bg-popover p-0 text-popover-foreground shadow-md"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-sm font-semibold">Monitor</span>
+            {monitorAttemptCount > 0 ? <span className="text-xs text-muted-foreground">Attempt {monitorAttemptCount}</span> : null}
+          </div>
+          <div className="space-y-3 px-4 py-3 text-left">
+            <div>
+              <div className="text-xs text-muted-foreground">Next check</div>
+              <div className="text-sm">{formatMonitorAbsoluteFull(monitorNextCheckAt)}</div>
+              <div className="text-xs text-muted-foreground">{monitorRelative}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Watching</div>
+              <div className="text-sm">{monitorServiceName ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Notes</div>
+              <div className="whitespace-normal text-sm">{monitorNotes ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Last triggered</div>
+              <div className="text-sm">{monitorLastTriggeredAt ? formatMonitorAbsoluteFull(monitorLastTriggeredAt) : "— not yet triggered"}</div>
+            </div>
+          </div>
+          <div className="flex gap-2 border-t border-border px-4 py-3">
+            {onCheckMonitorNow ? (
+              <Button type="button" size="sm" variant="outline" disabled={checkingMonitorNow} onClick={() => { setMonitorDetailsOpen(false); onCheckMonitorNow(); }}>
+                {checkingMonitorNow ? "Checking…" : "Check now"}
+              </Button>
+            ) : null}
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); setMonitorOpen(true); }}>Edit</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); clearMonitor(); }}>Clear</Button>
+          </div>
+        </TooltipContent>
       ) : null}
-    </span>
+      </Tooltip>
+    </TooltipProvider>
   );
-  const monitorAttemptBadge = issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
-    <span className="text-xs text-muted-foreground">
-      Attempt {issue.monitorAttemptCount}
-    </span>
-  ) : null;
 
   const scheduledRetry = issue.scheduledRetry ?? null;
   const retryNow = useRetryNowMutation(issue.id);
@@ -1874,7 +2014,7 @@ export function IssueProperties({
     </button>
   );
 
-  return (
+  const propertiesBody = (
     <div>
       <PropertySection title="Triage" first>
         <PropertyRow label="Status">
@@ -1887,13 +2027,16 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => onUpdate({ priority })}
-            showLabel
-          />
-        </PropertyRow>
+        {/* PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI. Revive by flipping the flag. */}
+        {SHOW_TASK_PRIORITY_UI && (
+          <PropertyRow label="Priority">
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => onUpdate({ priority })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyPicker
           inline={inline}
@@ -2160,7 +2303,6 @@ export function IssueProperties({
           triggerContent={monitorTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
-          extra={monitorAttemptBadge}
         >
           {monitorContent}
         </PropertyPicker>
@@ -2293,6 +2435,52 @@ export function IssueProperties({
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
+        {issue.archivedAt && issue.archivedByActorType === "agent" && issue.archivedByAgentId ? (
+          (() => {
+            const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
+            const archivedByName = agentName(issue.archivedByAgentId);
+            return (
+              <PropertyRow label="Archived">
+                <div className="flex min-w-0 max-w-full flex-col items-start gap-1">
+                  {/* The row label already reads "Archived", so the value shows just
+                      the attributing agent (icon + name) — this gives the name the
+                      full ~164px value column at the real 320px pane width, where an
+                      "Archived by …" prefix would clip even short names. The full
+                      phrasing + timestamp live in the tooltip so any residual
+                      truncation on genuinely long names is recoverable. */}
+                  <span
+                    className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
+                    title={`Archived by ${archivedByName} · ${formatDateTime(issue.archivedAt)}`}
+                  >
+                    {archivedByAgent
+                      ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      : null}
+                    <span className="min-w-0 truncate">
+                      {archivedByName}
+                    </span>
+                  </span>
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(issue.archivedAt)}</span>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+                      onClick={() => unarchiveFromInbox.mutate()}
+                      disabled={unarchiveFromInbox.isPending}
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
+                    </button>
+                  </div>
+                  {unarchiveErrorMessage ? (
+                    <p className="text-xs text-destructive" role="alert">
+                      {unarchiveErrorMessage}
+                    </p>
+                  ) : null}
+                </div>
+              </PropertyRow>
+            );
+          })()
+        ) : null}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -2306,5 +2494,88 @@ export function IssueProperties({
         <IssueCasesPanel issueId={issue.id} />
       </div>
     </div>
+  );
+
+  // Flag OFF (or non-redesign hosts): today's stacked pane, byte-for-byte.
+  if (!taskChatRedesignEnabled) return propertiesBody;
+
+  // Flag ON with nothing to switch between: no tab strip — the header bar
+  // shows a plain title and the pane body is just the properties stack.
+  if (!hasPlanTab && !hasArtifactsTab) {
+    return (
+      <>
+        {paneHeaderSlot
+          ? createPortal(<span className="text-sm font-medium">Properties</span>, paneHeaderSlot)
+          : null}
+        {propertiesBody}
+      </>
+    );
+  }
+
+  // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
+  // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
+  // tab is unchanged. Panel hosts portal the strip into the pane header bar;
+  // portals keep React context, so the Tabs root still drives it.
+  // Fall back to Properties if the selected tab's content went away (or the
+  // selection was made on another issue).
+  const activePaneTab =
+    (paneTab === "plans" && !hasPlanTab) || (paneTab === "artifacts" && !hasArtifactsTab)
+      ? "properties"
+      : paneTab;
+  // In the pane header the strip stretches to the bar's full height and the
+  // active underline drops to bottom-0, so it hugs the header's border line.
+  const paneTabTriggerClass = paneHeaderSlot
+    ? "h-full group-data-[orientation=horizontal]/tabs:after:bottom-0"
+    : undefined;
+  const tabStrip = (
+    <TabsList
+      variant="line"
+      className={
+        paneHeaderSlot
+          ? "items-stretch justify-start gap-1 p-0 group-data-[orientation=horizontal]/tabs:h-full"
+          : "w-full justify-start gap-1"
+      }
+    >
+      <TabsTrigger value="properties" className={paneTabTriggerClass}>
+        Properties
+      </TabsTrigger>
+      {hasPlanTab ? (
+        <TabsTrigger value="plans" className={paneTabTriggerClass}>
+          Plan
+        </TabsTrigger>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsTrigger value="artifacts" className={paneTabTriggerClass}>
+          Artifacts
+        </TabsTrigger>
+      ) : null}
+    </TabsList>
+  );
+  return (
+    <Tabs value={activePaneTab} onValueChange={setPaneTab} className="flex min-h-0 flex-col gap-3">
+      {paneHeaderSlot
+        ? createPortal(
+            // Portals keep React context but break the DOM tree the Tailwind
+            // group-selectors need: the active-tab underline is styled via
+            // `group-data-[orientation=horizontal]/tabs:*`, so restore that
+            // ancestor here (display: contents keeps it out of layout).
+            <div className="group/tabs contents" data-orientation="horizontal">
+              {tabStrip}
+            </div>,
+            paneHeaderSlot,
+          )
+        : tabStrip}
+      <TabsContent value="properties">{propertiesBody}</TabsContent>
+      {hasPlanTab ? (
+        <TabsContent value="plans">
+          <IssuePropertiesPlansTab issue={issue} inline={inline} />
+        </TabsContent>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsContent value="artifacts">
+          <IssuePropertiesArtifactsTab issue={issue} />
+        </TabsContent>
+      ) : null}
+    </Tabs>
   );
 }

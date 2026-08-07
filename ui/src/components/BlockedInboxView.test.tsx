@@ -263,7 +263,7 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector("a") !== null);
 
-    const rowText = container.querySelector("a")?.textContent ?? "";
+    const rowText = container.querySelector("a")?.parentElement?.textContent ?? "";
     expect(rowText.indexOf("Pending board decision")).toBeGreaterThanOrEqual(0);
     expect(rowText.indexOf("Needs decision")).toBeGreaterThan(rowText.indexOf("Pending board decision"));
     expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));

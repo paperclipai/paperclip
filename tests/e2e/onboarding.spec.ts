@@ -1,79 +1,46 @@
 import { test, expect } from "@playwright/test";
+import { completeCompanyStep, startCloudOnboarding } from "./onboarding-flow";
 
 /**
- * E2E: Onboarding wizard flow (NUX Phase 2 expanded wizard).
+ * E2E: cloud onboarding flow.
  *
- * The wizard now opens on a front door (path picker) and the "Create a new
- * company" path runs:
- *   Step 0  — Front door (Create a new company / Level up existing)
- *   Step 1a — Name your company
- *   Step 1b — Define your mission (direct or guided)
- *   Step 2  — Hire your team lead (adapter picker)
- *   Step 3+ — Launch celebration → CEO chat → hiring plan → orientation
+ * The flow opens on a welcome screen and then runs three numbered steps:
+ *   Step 0 — Welcome (unnumbered path picker)
+ *   Step 1 — Company name + mission
+ *   Step 2 — Create your first agent (role picker)
+ *   Step 3 — Assign your agent a first task
  *
- * This test covers the deterministic, LLM-free core: it drives the front door
- * through company naming + mission definition (which creates the company and a
- * company-level goal) and verifies the wizard advances to the team-lead step.
+ * This test covers the deterministic, LLM-free core: it drives the welcome
+ * screen through the company step (which creates the company and a
+ * company-level goal) and verifies the flow advances to the agent step.
  *
- * The tail (CEO chat at step 4, hiring-plan generation at step 5, final
- * landing) depends on a live LLM and is verified separately during manual /
- * LLM-backed QA — see PAP-50. Surface-level rendering of every step is
- * snapshotted by nux-phase4-screenshots.spec.ts.
+ * The tail (hiring the agent, launching the first task) is covered by
+ * conference-room-typing-intro.spec.ts; surface-level rendering of every step
+ * is snapshotted by nux-phase4-screenshots.spec.ts.
  */
 
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
 const MISSION = "Build affordable home robots that handle household chores.";
 
-test.describe("Onboarding wizard", () => {
-  test("create-company path: name + mission creates company and goal", async ({
+test.describe("Onboarding flow", () => {
+  test("company step: name + mission creates company and goal", async ({
     page,
   }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (err) => pageErrors.push(err.message));
 
-    // New-NUX surfaces are flag-gated default-OFF (PAP-136/137/138): turn the
-    // experimental flag on for this throwaway instance before driving them.
-    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
-      data: { enableConferenceRoomChat: true },
-    });
-    expect(flagRes.ok()).toBe(true);
-
     await page.goto("/onboarding");
 
-    // The wizard may open on a launcher card or directly on the capsule
-    // wizard; the front door (step 0) requires a click into the create path.
-    const startBtn = page.getByRole("button", {
-      name: /Start Onboarding|New Company|Add Agent/,
+    await startCloudOnboarding(page);
+    await completeCompanyStep(page, {
+      companyName: COMPANY_NAME,
+      mission: MISSION,
     });
-    if (await startBtn.count()) {
-      await startBtn.first().click();
-    }
-    const createCard = page.getByRole("button", { name: /Build a new company/ });
-    if (await createCard.count()) {
-      await createCard.first().click();
-    }
 
-    // Step 1 — Name your company.
+    // Reaching the agent step means the company + goal writes succeeded.
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
-    ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
-    await page.getByRole("button", { name: /^Next/ }).click();
-
-    // Step 2 — Define your mission (direct entry is the default path).
-    await expect(
-      page.getByRole("heading", { name: "Define your mission" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page
-      .getByPlaceholder("What is your team trying to achieve?")
-      .fill(MISSION);
-
-    // "Confirm mission" creates the company + a company-level goal, then
-    // advances to the team-lead naming step of the capsule wizard.
-    await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
-      timeout: 30_000,
-    });
+      page.getByRole("heading", { name: "Create your first agent" }),
+    ).toBeVisible({ timeout: 30_000 });
 
     // Verify the company + company-level goal were persisted.
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
@@ -95,7 +62,7 @@ test.describe("Onboarding wizard", () => {
     );
     expect(companyGoal, "a company-level goal should be created").toBeTruthy();
 
-    // The expanded wizard must not crash the app (Rules-of-Hooks regression).
+    // The flow must not crash the app (Rules-of-Hooks regression).
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 });

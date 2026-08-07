@@ -46,7 +46,7 @@ interface SidebarNavItemProps {
   className?: string;
   labelClassName?: string;
   badge?: number;
-  badgeTone?: "default" | "danger";
+  badgeTone?: "default" | "danger" | "warning";
   /**
    * Accessible noun for the numeric badge when collapsed to the rail, where the
    * count is rendered as a dot (e.g. `badgeLabel="unread"` → "Inbox, 28 unread").
@@ -144,15 +144,19 @@ export function SidebarNavItem({
             icon. The icon markup is untouched so it stays pixel-aligned. */}
         {rail && !alert && hasLive && (
           <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2" aria-hidden="true">
-            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-agent-running) opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-(--status-agent-running) shadow-(--shadow-extract-12)" />
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 shadow-(--shadow-extract-12)" />
           </span>
         )}
         {rail && !alert && !hasLive && hasBadge && (
           <span
             className={cn(
               "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-(--shadow-extract-12)",
-              badgeTone === "danger" ? "bg-red-600" : "bg-primary",
+              badgeTone === "danger"
+                ? "bg-red-600"
+                : badgeTone === "warning"
+                  ? "bg-amber-500"
+                  : "bg-primary",
             )}
             aria-hidden="true"
           />
@@ -178,8 +182,8 @@ export function SidebarNavItem({
           {hasLive && (
             <>
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-agent-running) opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-agent-running)" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
               <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
             </>
@@ -192,7 +196,9 @@ export function SidebarNavItem({
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"
               ? "bg-red-600/90 text-red-50"
-              : "bg-primary text-primary-foreground",
+              : badgeTone === "warning"
+                ? "bg-amber-500/90 text-amber-50"
+                : "bg-primary text-primary-foreground",
           )}
         >
           {badge}

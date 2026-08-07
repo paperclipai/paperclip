@@ -32,6 +32,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
@@ -359,6 +360,20 @@ export interface PluginLoadResult {
   };
 }
 
+export interface PluginLoadSingleOptions {
+  /**
+   * When false, activation failures are reported to the caller but do not
+   * transition the shared plugin row to `error`. Partially-registered local
+   * runtime state (worker process, scheduler/tool registrations) is still
+   * torn down in this process.
+   */
+  markErrorOnFailure?: boolean;
+}
+
+interface PluginActivateOptions {
+  markErrorOnFailure: boolean;
+}
+
 /**
  * Result of activating all ready plugins at server startup.
  */
@@ -539,7 +554,7 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §8.3 — Install Process
    */
-  loadSingle(pluginId: string): Promise<PluginLoadResult>;
+  loadSingle(pluginId: string, options?: PluginLoadSingleOptions): Promise<PluginLoadResult>;
 
   /**
    * Deactivate a single plugin — stop its worker and unregister all
@@ -1936,9 +1951,10 @@ export function pluginLoader(
      * capabilities (tools, jobs, etc.).
      *
      * @param pluginId - The UUID of the plugin to load.
+     * @param options - Optional activation behavior overrides.
      * @returns A promise that resolves with the result of the activation.
      */
-    async loadSingle(pluginId: string): Promise<PluginLoadResult> {
+    async loadSingle(pluginId: string, options: PluginLoadSingleOptions = {}): Promise<PluginLoadResult> {
       if (!runtimeServices) {
         throw new Error(
           "Cannot loadSingle: no PluginRuntimeServices provided. " +
@@ -1974,7 +1990,9 @@ export function pluginLoader(
         );
       }
 
-      return activatePlugin(plugin);
+      return activatePlugin(plugin, {
+        markErrorOnFailure: options.markErrorOnFailure ?? true,
+      });
     },
 
     // -----------------------------------------------------------------------
@@ -1993,40 +2011,7 @@ export function pluginLoader(
         "plugin-loader: unloading single plugin",
       );
 
-      const {
-        workerManager,
-        eventBus,
-        jobScheduler,
-        toolDispatcher,
-      } = runtimeServices;
-
-      // 1. Unregister from job scheduler (cancels in-flight runs)
-      try {
-        await jobScheduler.unregisterPlugin(pluginId);
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to unregister from job scheduler (best-effort)",
-        );
-      }
-
-      // 2. Clear event subscriptions
-      eventBus.clearPlugin(pluginKey);
-
-      // 3. Unregister agent tools
-      toolDispatcher.unregisterPluginTools(pluginKey);
-
-      // 4. Stop the worker process
-      try {
-        if (workerManager.isRunning(pluginId)) {
-          await workerManager.stopWorker(pluginId);
-        }
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to stop worker during unload (best-effort)",
-        );
-      }
+      await teardownPluginRuntime(pluginId, pluginKey);
 
       log.info(
         { pluginId, pluginKey },
@@ -2060,6 +2045,58 @@ export function pluginLoader(
   };
 
   // -------------------------------------------------------------------------
+  // Internal: teardownPluginRuntime — shared by unloadSingle and activation
+  // failure cleanup
+  // -------------------------------------------------------------------------
+
+  /**
+   * Tear down a plugin's runtime state in this process: scheduler
+   * registration, event subscriptions, agent tools, and the worker process.
+   * Does not touch the plugin's database row.
+   */
+  async function teardownPluginRuntime(
+    pluginId: string,
+    pluginKey: string,
+  ): Promise<void> {
+    if (!runtimeServices) return;
+
+    const {
+      workerManager,
+      eventBus,
+      jobScheduler,
+      toolDispatcher,
+    } = runtimeServices;
+
+    // 1. Unregister from job scheduler (cancels in-flight runs)
+    try {
+      await jobScheduler.unregisterPlugin(pluginId);
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to unregister from job scheduler (best-effort)",
+      );
+    }
+
+    // 2. Clear event subscriptions
+    eventBus.clearPlugin(pluginKey);
+
+    // 3. Unregister agent tools
+    toolDispatcher.unregisterPluginTools(pluginKey);
+
+    // 4. Stop the worker process
+    try {
+      if (workerManager.isRunning(pluginId)) {
+        await workerManager.stopWorker(pluginId);
+      }
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to stop worker during unload (best-effort)",
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Internal: activatePlugin — shared logic for loadAll and loadSingle
   // -------------------------------------------------------------------------
 
@@ -2068,10 +2105,13 @@ export function pluginLoader(
    * sync jobs, register tools.
    *
    * This is the core orchestration logic shared by `loadAll()` and `loadSingle()`.
-   * Failures are caught and reported in the result; the plugin is marked as
-   * `error` in the database when activation fails.
+   * Failures are caught and reported in the result. By default the plugin is
+   * marked as `error` in the database when activation fails.
    */
-  async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
+  async function activatePlugin(
+    plugin: PluginRecord,
+    options: PluginActivateOptions = { markErrorOnFailure: true },
+  ): Promise<PluginLoadResult> {
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
     let activePlugin = plugin;
@@ -2133,17 +2173,41 @@ export function pluginLoader(
       const hostHandlers = buildHostHandlers(pluginId, manifest);
 
       // ------------------------------------------------------------------
-      // 4. Retrieve plugin config (if any)
+      // 4. Bootstrap worker config
       // ------------------------------------------------------------------
-      let config: Record<string, unknown> = {};
+      // Plugin configuration is company-scoped. Workers receive an empty
+      // bootstrap config and must use ctx.config.get(companyId) at runtime.
+      // Stored config is delivered right after the worker starts (step 5b) via
+      // the same configChanged path an operator config-save uses.
+      const config: Record<string, unknown> = {};
+
+      // ------------------------------------------------------------------
+      // 4b. Load stored company configs BEFORE starting the worker
+      // ------------------------------------------------------------------
+      // The worker authorizes its proactive (no-invocation) company scopes from
+      // its configured companies. A proactive plugin — e.g. the chat gateway —
+      // issues its one-shot events.subscribe calls from setup(), which runs
+      // while startWorker is still awaiting the worker's initialize response, so
+      // the authorized company set must be seeded onto the worker handle BEFORE
+      // startWorker spawns the process — not after startWorker resolves.
+      // Setting it afterwards (the previous ordering) was too late for those
+      // setup()-time subscribes: the governed-access gate rejected every one
+      // with "company context is required" and outbound push stayed dead
+      // (eventSubscriptions: 0) for the worker's life (LOOA-695). The same rows
+      // drive startup config delivery in step 5b below. Listing is best-effort:
+      // if it fails the worker still starts, just with no proactive access.
+      let configRows: Awaited<ReturnType<typeof registry.listConfigs>> = [];
       try {
-        const configRow = await registry.getConfig(pluginId);
-        if (configRow && typeof configRow === "object" && "configJson" in configRow) {
-          config = (configRow as { configJson: Record<string, unknown> }).configJson ?? {};
-        }
-      } catch {
-        // Config may not exist yet — use empty object
-        log.debug({ pluginId }, "plugin-loader: no config found, using empty config");
+        configRows = await registry.listConfigs(pluginId);
+      } catch (listErr) {
+        log.debug(
+          {
+            pluginId,
+            pluginKey,
+            err: listErr instanceof Error ? listErr.message : String(listErr),
+          },
+          "plugin-loader: could not list stored configs before worker start",
+        );
       }
 
       // ------------------------------------------------------------------
@@ -2159,6 +2223,12 @@ export function pluginLoader(
         hostHandlers,
         autoRestart: true,
         env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        // Authorize the worker to act on each configured company from its
+        // proactive loops/timers (LOOA-629). Seeded here so it is in place
+        // before any setup()-time worker→host call (LOOA-695). The authorized
+        // set is exactly the plugin's configured companies — proactive access
+        // never reaches an unconfigured company.
+        proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
@@ -2175,6 +2245,56 @@ export function pluginLoader(
         { pluginId, pluginKey },
         "plugin-loader: worker started",
       );
+
+      // ------------------------------------------------------------------
+      // 5b. Deliver stored configuration to the freshly-started worker
+      // ------------------------------------------------------------------
+      // The worker is spawned with an empty bootstrap config and is expected to
+      // read company-scoped config via ctx.config.get(companyId). That call
+      // only resolves inside a company-scoped invocation (event/action/tool),
+      // so a proactive plugin that does company work from setup() — e.g. the
+      // chat gateway opening a Slack Socket Mode connection — can never read
+      // its own config and comes up inert. Replay each configured company's
+      // config through the same configChanged path an operator config-save
+      // uses (routes/plugins.ts), so the worker receives it at startup.
+      // Best-effort: a worker that doesn't implement onConfigChanged
+      // (METHOD_NOT_IMPLEMENTED) or is momentarily unavailable simply keeps the
+      // runtime ctx.config.get(companyId) model. onConfigChanged is idempotent
+      // for well-behaved plugins, so replaying an unchanged config is safe.
+      //
+      // Reuses the `configRows` loaded in step 4b (which also seeded the
+      // worker's proactive company scopes before startup); no second listConfigs
+      // round-trip is needed here.
+      for (const row of configRows) {
+        try {
+          await workerManager.call(pluginId, "configChanged", {
+            config: (row.configJson ?? {}) as Record<string, unknown>,
+            companyId: row.companyId,
+          });
+        } catch (configErr) {
+          // A single-tenant worker fails closed (CROSS_TENANT_CONFIG) rather
+          // than collapse onto a second company's config — surface that at
+          // warn so the misconfiguration (multiple distinct companies
+          // configured for a single-tenant plugin) is visible, instead of
+          // being lost in the best-effort debug stream.
+          const code = (configErr as { code?: number } | null)?.code;
+          const details = {
+            pluginId,
+            pluginKey,
+            companyId: row.companyId,
+            code,
+            err: configErr instanceof Error ? configErr.message : String(configErr),
+          };
+          if (code === PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG) {
+            log.warn(
+              details,
+              "plugin-loader: startup config delivery rejected — single-tenant plugin configured for multiple companies",
+            );
+          } else {
+            log.debug(details, "plugin-loader: startup config delivery skipped for company");
+          }
+        }
+      }
 
       // ------------------------------------------------------------------
       // 6. Sync job declarations and register with scheduler
@@ -2270,18 +2390,37 @@ export function pluginLoader(
         "plugin-loader: failed to activate plugin",
       );
 
-      // Mark the plugin as errored in the database so it is not retried
-      // automatically on next startup without operator intervention.
-      try {
-        await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
-      } catch (markErr) {
-        log.error(
-          {
-            pluginId,
-            err: markErr instanceof Error ? markErr.message : String(markErr),
-          },
-          "plugin-loader: failed to mark plugin as error after activation failure",
-        );
+      if (options.markErrorOnFailure) {
+        // Mark the plugin as errored in the database so it is not retried
+        // automatically on next startup without operator intervention.
+        // markError also deactivates the plugin runtime in this process.
+        try {
+          await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
+        } catch (markErr) {
+          log.error(
+            {
+              pluginId,
+              err: markErr instanceof Error ? markErr.message : String(markErr),
+            },
+            "plugin-loader: failed to mark plugin as error after activation failure",
+          );
+        }
+      } else if (registered.worker) {
+        // The shared plugin row stays untouched, but this process spawned a
+        // worker before the failure — tear down the partially-registered
+        // runtime so a half-activated plugin does not linger locally.
+        try {
+          await teardownPluginRuntime(pluginId, pluginKey);
+        } catch (cleanupErr) {
+          log.warn(
+            {
+              pluginId,
+              pluginKey,
+              err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+            },
+            "plugin-loader: failed to tear down partially-activated plugin runtime",
+          );
+        }
       }
 
       return {

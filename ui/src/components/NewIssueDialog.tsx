@@ -73,6 +73,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -520,7 +521,7 @@ export function NewIssueDialog() {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(
-    () => (projects ?? []).filter((p) => !p.archivedAt),
+    () => projects ?? [],
     [projects],
   );
   const { orderedProjects } = useProjectOrder({
@@ -2072,7 +2073,8 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Priority chip */}
+          {/* Priority chip — PAP-411: hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && (
           <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
             <PopoverTrigger asChild>
               <button
@@ -2109,6 +2111,7 @@ export function NewIssueDialog() {
               ))}
             </PopoverContent>
           </Popover>
+          )}
 
           {/* Labels chip — disabled, not wired up yet */}
           {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
@@ -2187,6 +2190,8 @@ export function NewIssueDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
+              {/* PAP-411: mobile priority section hidden behind SHOW_TASK_PRIORITY_UI. */}
+              {SHOW_TASK_PRIORITY_UI && (
               <div className="sm:hidden">
                 <div className="px-2 py-1 text-(length:--text-nano) font-medium uppercase text-muted-foreground">
                   Priority
@@ -2211,6 +2216,7 @@ export function NewIssueDialog() {
                 ))}
                 <div className="my-1 border-t border-border" />
               </div>
+              )}
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
                 Start date
@@ -2242,7 +2248,7 @@ export function NewIssueDialog() {
           >
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
+              Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.
             </span>
           </div>
         ) : null}
@@ -2259,16 +2265,11 @@ export function NewIssueDialog() {
             Discard Draft
           </Button>
           <div className="flex items-center gap-3">
-            <div className="min-h-5 text-right">
-              {createIssue.isPending ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
-                </span>
-              ) : createIssue.isError ? (
+            {createIssue.isError ? (
+              <div className="min-h-5 text-right">
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem) disabled:opacity-100"
