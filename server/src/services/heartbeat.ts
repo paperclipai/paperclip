@@ -300,7 +300,7 @@ import {
   type HotRestartIntentRun,
   type HotRestartReportRun,
 } from "./hot-restart.js";
-import { evaluateRunProcessLiveness } from "./heartbeat-run-liveness.js";
+import { evaluateRunProcessLiveness, resolveReattachedRunTerminationTarget } from "./heartbeat-run-liveness.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
@@ -10654,10 +10654,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             graceMs: Math.max(1, running.graceSec) * 1000,
           });
         } else if (run.processPid || run.processGroupId) {
-          await terminateHeartbeatRunProcess({
-            pid: run.processPid,
-            processGroupId: run.processGroupId,
-          });
+          // No in-memory handle (e.g. after a hot restart): fall back to the
+          // persisted PID, but only signal it when its live OS identity is still
+          // the run's original child. A recycled PID owned by an unrelated local
+          // process must never be killed (CWE-672); the descendant group is still
+          // reaped.
+          await terminateHeartbeatRunProcess(
+            await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+          );
         }
       } finally {
         runningProcesses.delete(run.id);
@@ -18637,10 +18641,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           graceMs: Math.max(1, running.graceSec) * 1000,
         });
       } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+        // No in-memory handle: gate the persisted PID on its live OS identity so a
+        // recycled PID owned by an unrelated local process is never signalled
+        // during an explicit cancel (CWE-672); the descendant group is still reaped.
+        await terminateHeartbeatRunProcess(
+          await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+        );
       }
     } finally {
       runningProcesses.delete(run.id);
@@ -18712,10 +18718,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         runningProcesses.delete(run.id);
       } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+        // No in-memory handle: gate the persisted PID on its live OS identity so a
+        // recycled PID owned by an unrelated local process is never signalled when
+        // cancelling the agent's runs (CWE-672); the descendant group is still reaped.
+        await terminateHeartbeatRunProcess(
+          await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+        );
       }
       await releaseIssueExecutionAndPromote(run);
     }

@@ -107,3 +107,21 @@ export async function evaluateRunProcessLiveness(
   // killed -- that is exactly the "terminate an unrelated live process" harm.
   return { alive: false, safeToTerminatePid: false, provablyDead: true, reason: "identity_mismatch" };
 }
+
+// Terminate arguments for a run whose in-memory child handle was lost (e.g. after
+// a hot restart), used by the lifecycle/cancel paths that must fall back to the
+// persisted PID. The persisted PID is only signalled when its live OS identity is
+// confirmed to still be the run's original child; a recycled PID belonging to an
+// unrelated local process is never killed (CWE-672). Descendant process-group
+// cleanup always proceeds. Mirrors the stale-run reaper's identity gate so
+// graceful shutdown, stop-run, and cancel-run share the same guard.
+export async function resolveReattachedRunTerminationTarget(
+  run: RunProcessIdentitySource & { processGroupId: number | null },
+  deps: EvaluateRunProcessLivenessDeps,
+): Promise<{ pid: number | null; processGroupId: number | null }> {
+  const liveness = await evaluateRunProcessLiveness(run, deps);
+  return {
+    pid: liveness.safeToTerminatePid ? run.processPid : null,
+    processGroupId: run.processGroupId,
+  };
+}

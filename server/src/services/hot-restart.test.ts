@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendServerLifecycleEvent,
   beginServerLifecycle,
+  claimEmbeddedPostgresOwnershipRecovery,
   claimEmbeddedPostgresStartupRecovery,
+  writeEmbeddedPostgresOwnership,
   findMissingHotRestartSnapshotRunIds,
   isObservedHotRestartTargetAlive,
   readHotRestartIntent,
@@ -15,7 +17,9 @@ import {
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
+  resolveEmbeddedPostgresHandoffPath,
   writeHotRestartIntent,
+  writeEmbeddedPostgresHandoff,
   writeEmbeddedPostgresStartupRecovery,
 } from "./hot-restart.js";
 
@@ -617,6 +621,85 @@ describe("hot-restart path compatibility", { timeout: 30_000 }, () => {
         expectedPostgres: postgres,
         isProcessAlive: () => false,
       })).resolves.toBeNull();
+    });
+  });
+});
+
+// FAI-9637 F2: ownership is persisted durably BEFORE a replacement adopts the
+// embedded PostgreSQL process, so a crash after adopt() does not strand ownership
+// in memory. A durable receipt naming a now-dead replacement stays recoverable by
+// the next server. This encodes the refutation of "ownership only in memory".
+describe("embedded PostgreSQL ownership survives a post-adopt replacement crash", () => {
+  const postgres = {
+    pid: 7777,
+    startedAtEpochSeconds: 1_700_000_000,
+    processStartedAtEpochMs: 1_700_000_000_000,
+    executablePath: "/usr/lib/postgresql/16/bin/postgres",
+    dataDir: "/var/lib/paperclip/pgdata",
+    port: 5434,
+  };
+
+  it("recovers ownership from the durable receipt after the recorded owner dies", async () => {
+    await withTempHome(async (homeDir) => {
+      // The durable receipt a replacement writes during its ownership claim,
+      // before it calls adopt(). Then it crashes (recorded owner pid is dead).
+      await writeEmbeddedPostgresOwnership({
+        homeDir,
+        ownerServerPid: 424242,
+        ownerServerStartedAtEpochMs: 1_699_999_000_000,
+        ownerServerExecutablePath: "/rt/node",
+        postgres,
+      });
+
+      const recovered = await claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 999001,
+        replacementServerStartedAtEpochMs: 1_700_000_500_000,
+        replacementServerExecutablePath: "/rt/node",
+        isProcessAlive: () => false,
+      });
+
+      expect(recovered).not.toBeNull();
+      expect(recovered?.replacementServerPid).toBe(999001);
+      expect(recovered?.postgres.pid).toBe(postgres.pid);
+    });
+  });
+});
+
+// FAI-9637 F4: the hot-restart handoff carries a one-time transferToken. Its
+// file (and the private state directory) must not be world-readable under a
+// typical umask. POSIX mode bits are meaningless on win32, so this only asserts
+// on non-Windows CI (matches the platform gate in ensurePrivateStateDirectory).
+describe.skipIf(process.platform === "win32")("hot-restart handoff file permissions", () => {
+  const postgres = {
+    pid: 4321,
+    startedAtEpochSeconds: 1_700_000_000,
+    processStartedAtEpochMs: 1_700_000_000_000,
+    executablePath: "/usr/lib/postgresql/16/bin/postgres",
+    dataDir: "/var/lib/paperclip/pgdata",
+    port: 5433,
+  };
+
+  it("writes the transfer-token handoff 0600 inside a 0700 state directory", async () => {
+    await withTempHome(async (homeDir) => {
+      const handoff = await writeEmbeddedPostgresHandoff({
+        homeDir,
+        hotRestartRequestedAt: new Date().toISOString(),
+        shutdownSnapshotCapturedAt: new Date().toISOString(),
+        predecessorServerPid: 1234,
+        predecessorServerStartedAtEpochMs: 1_699_999_000_000,
+        predecessorServerExecutablePath: "/rt/node",
+        postgres,
+      });
+      expect(handoff.transferToken).toBeTruthy();
+
+      const handoffPath = resolveEmbeddedPostgresHandoffPath(homeDir);
+      const fileStat = await fs.stat(handoffPath);
+      expect(fileStat.mode & 0o777).toBe(0o600);
+
+      const dirStat = await fs.stat(path.dirname(handoffPath));
+      expect(dirStat.mode & 0o777).toBe(0o700);
     });
   });
 });

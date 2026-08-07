@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { evaluateRunProcessLiveness } from "./heartbeat-run-liveness.js";
+import {
+  evaluateRunProcessLiveness,
+  resolveReattachedRunTerminationTarget,
+} from "./heartbeat-run-liveness.js";
 
 const BOUND_EPOCH_MS = 1_700_000_000_000;
 const BOUND_EXE = process.platform === "win32" ? "C:\\rt\\node.exe" : "/rt/node";
@@ -103,5 +106,44 @@ describe("evaluateRunProcessLiveness", () => {
       deps({ observed: { startedAtEpochMs: BOUND_EPOCH_MS + 1, executablePath: "/anything" } }),
     );
     expect(mismatch.reason).toBe("identity_mismatch");
+  });
+});
+
+// FAI-9637 F1: the lifecycle/cancel fallback paths (graceful shutdown reap-all,
+// stop-run, cancel-run) have no in-memory child handle and previously killed the
+// persisted PID raw. These assert the shared gate never signals a recycled PID
+// while still reaping the descendant process group.
+describe("resolveReattachedRunTerminationTarget", () => {
+  const groupRun = { ...boundRun, processGroupId: 9090 };
+
+  it("never signals a recycled PID (identity mismatch) but still reaps the group", async () => {
+    const target = await resolveReattachedRunTerminationTarget(
+      groupRun,
+      deps({ observed: { startedAtEpochMs: BOUND_EPOCH_MS + 999, executablePath: BOUND_EXE } }),
+    );
+    expect(target).toEqual({ pid: null, processGroupId: 9090 });
+  });
+
+  it("never signals a dead PID but still reaps the group", async () => {
+    const target = await resolveReattachedRunTerminationTarget(groupRun, deps({ alive: false }));
+    expect(target).toEqual({ pid: null, processGroupId: 9090 });
+  });
+
+  it("does not kill the PID when its live identity cannot be read (fail closed)", async () => {
+    const target = await resolveReattachedRunTerminationTarget(groupRun, deps({ throws: true }));
+    expect(target).toEqual({ pid: null, processGroupId: 9090 });
+  });
+
+  it("signals the PID only when its live OS identity matches the bound child", async () => {
+    const target = await resolveReattachedRunTerminationTarget(groupRun, deps({}));
+    expect(target).toEqual({ pid: 4242, processGroupId: 9090 });
+  });
+
+  it("preserves PID-only termination for legacy rows with no bound identity", async () => {
+    const target = await resolveReattachedRunTerminationTarget(
+      { processPid: 4242, processStartedAtEpochMs: null, processExecutablePath: null, processGroupId: 9090 },
+      deps({}),
+    );
+    expect(target).toEqual({ pid: 4242, processGroupId: 9090 });
   });
 });
