@@ -387,6 +387,7 @@ export async function execute(
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
   const { preCommandArgs, postCommandArgs } = splitHermesGlobalExtraArgs(extraArgs);
+  const hasProfileArg = preCommandArgs.length > 0;
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -434,7 +435,7 @@ export async function execute(
     }
   }
 
-  if (model.toLowerCase() === "auto" && detectedConfig?.model && detectedConfig.model.toLowerCase() !== "auto") {
+  if (!hasProfileArg && model.toLowerCase() === "auto" && detectedConfig?.model && detectedConfig.model.toLowerCase() !== "auto") {
     model = detectedConfig.model;
   }
 
