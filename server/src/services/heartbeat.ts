@@ -292,6 +292,7 @@ import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
   readHotRestartReport,
+  readObservedProcessIdentity,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
   writeHotRestartReport,
@@ -299,6 +300,7 @@ import {
   type HotRestartIntentRun,
   type HotRestartReportRun,
 } from "./hot-restart.js";
+import { evaluateRunProcessLiveness } from "./heartbeat-run-liveness.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
@@ -6177,6 +6179,11 @@ export function buildPaperclipTaskMarkdown(input: {
   return lines.join("\n");
 }
 
+// Upper bound for the best-effort OS process identity probe taken at spawn.
+// Keeps a hung `Get-Process`/`ps` off the run's critical path; on timeout the
+// run falls back to PID-only liveness.
+const RUN_PROCESS_IDENTITY_CAPTURE_TIMEOUT_MS = 5_000;
+
 // A positive liveness check means some process currently owns the PID.
 // On Linux, PIDs can be recycled, so this is a best-effort signal rather
 // than proof that the original child is still alive.
@@ -9616,6 +9623,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function persistRunProcessIdentity(runId: string, pid: number) {
+    // Best-effort capture of the child's OS-observed creation identity right
+    // after spawn (creation time + executable image), so a later server -- after
+    // a hot restart, or after losing the in-memory handle -- can prove a live
+    // PID is still this child rather than an unrelated process that recycled the
+    // PID. Bounded by a timeout so a hung identity probe can never delay the run;
+    // the PID/group/wall-clock metadata is already persisted by
+    // persistRunProcessMetadata before this runs. If capture fails, the identity
+    // columns stay null and the run falls back to PID-only liveness (legacy).
+    try {
+      const identity = await Promise.race([
+        readObservedProcessIdentity(pid),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("process identity capture timed out")),
+            RUN_PROCESS_IDENTITY_CAPTURE_TIMEOUT_MS,
+          ).unref(),
+        ),
+      ]);
+      await db
+        .update(heartbeatRuns)
+        .set({
+          processStartedAtEpochMs: identity.startedAtEpochMs,
+          processExecutablePath: identity.executablePath,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.processPid, pid)));
+    } catch {
+      // Identity unavailable (process already exited, probe timed out, or the
+      // platform is unsupported). Leave the columns null; liveness on the run
+      // path falls back to PID-only for this run.
+    }
+  }
+
   async function clearDetachedRunWarning(runId: string) {
     const updated = await db
       .update(heartbeatRuns)
@@ -10333,10 +10374,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       patch: Partial<HotRestartIntentRun>;
       processPid: number | null;
       processGroupId: number | null;
+      // Whether the PID's live OS identity was confirmed to match the run's
+      // bound identity. When false (legacy rows aside, e.g. an unreadable
+      // identity), the PID must not be killed -- it may belong to an unrelated
+      // process that recycled the PID -- so only the process group is signalled.
+      safeToTerminatePid: boolean;
       classificationReason: string;
     }) => {
       await terminateHeartbeatRunProcess({
-        pid: input.processPid,
+        pid: input.safeToTerminatePid ? input.processPid : null,
         processGroupId: input.processGroupId,
       });
       const message = "Hot restart found a live child without reconstructable completion plumbing; stopped without automatic retry";
@@ -10414,9 +10460,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         const processPid = current.run.processPid ?? null;
         const processGroupId = current.run.processGroupId ?? null;
+        const tracksLocalChild = isTrackedLocalChildProcessAdapter(current.adapterType);
+        const liveness = tracksLocalChild
+          ? await evaluateRunProcessLiveness(current.run, { isProcessAlive })
+          : null;
         if (
-          isTrackedLocalChildProcessAdapter(current.adapterType)
-          && (isProcessAlive(processPid) || isProcessGroupAlive(processGroupId))
+          tracksLocalChild
+          && ((liveness?.alive ?? false) || isProcessGroupAlive(processGroupId))
         ) {
           await failClosedUnrecoverableChild({
             candidate,
@@ -10428,6 +10478,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
             processPid,
             processGroupId,
+            safeToTerminatePid: liveness?.safeToTerminatePid ?? false,
             classificationReason: "missing_shutdown_snapshot_completion_unrecoverable_retry_suppressed",
           });
         } else {
@@ -10488,13 +10539,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      const processPidAlive = isProcessAlive(processPid);
+      const liveness = await evaluateRunProcessLiveness(
+        {
+          processPid,
+          processStartedAtEpochMs: run.processStartedAtEpochMs,
+          processExecutablePath: run.processExecutablePath,
+        },
+        { isProcessAlive },
+      );
+      const processPidAlive = liveness.alive;
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
         classify(candidate, "lost", "missing_process_metadata", patch);
         continue;
       }
       if (!processPidAlive && !processGroupAlive) {
+        // The PID is dead, or alive but with a mismatched OS identity (recycled
+        // PID -> the original child is provably gone). A retry is correct and no
+        // process is terminated.
         classify(candidate, "lost", "process_not_alive", patch);
         continue;
       }
@@ -10509,6 +10571,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         patch,
         processPid,
         processGroupId,
+        safeToTerminatePid: liveness.safeToTerminatePid,
         classificationReason: "completion_plumbing_unrecoverable_retry_suppressed",
       });
     }
@@ -13137,7 +13200,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      // Identity-bind the PID liveness: a live PID whose OS creation identity no
+      // longer matches what was bound at spawn is a recycled PID, not our child.
+      const liveness = tracksLocalChild
+        ? await evaluateRunProcessLiveness(run, { isProcessAlive })
+        : { alive: false, safeToTerminatePid: false, provablyDead: true, reason: "pid_absent" as const };
+      const processPidAlive = liveness.alive;
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
         (processPidAlive || processGroupAlive) &&
@@ -13171,7 +13239,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
-          pid: run.processPid,
+          // Never kill the PID unless its live OS identity was confirmed to be
+          // ours; a recycled PID must not be terminated. Descendant group cleanup
+          // still proceeds.
+          pid: liveness.safeToTerminatePid ? run.processPid : null,
           processGroupId: run.processGroupId,
         });
       }
@@ -15587,6 +15658,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   : null,
               startedAt: meta.startedAt,
             });
+            // PID is now durable; capture the OS-observed identity separately so
+            // a slow probe can never leave a spawned child without persisted PID.
+            await persistRunProcessIdentity(run.id, meta.pid);
           },
           authToken: authToken ?? undefined,
         });

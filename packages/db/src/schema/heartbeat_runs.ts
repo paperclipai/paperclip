@@ -35,6 +35,12 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // OS-observed process creation identity captured at spawn, so a later server
+    // can prove a live PID is still the original child rather than an unrelated
+    // process that recycled the PID. Distinct from processStartedAt, which is
+    // the wall-clock run-start time. Mirrors hot-restart identity binding.
+    processStartedAtEpochMs: bigint("process_started_at_epoch_ms", { mode: "number" }),
+    processExecutablePath: text("process_executable_path"),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),

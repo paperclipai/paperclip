@@ -88,6 +88,16 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   }
 }
 
+// Scope note (FAI-9003, BLOCKER-1 residual): the adopt/reuse branches below
+// return `stop: async () => {}` -- they claim an already-running cluster without
+// real stop authority, and fresh-start ownership here is in-memory only. This is
+// deliberately scoped to the migrate/status CLI: this module is imported solely
+// by migrate.ts and migration-status.ts, never by the server boot path. The CLI
+// is a short-lived, single-shot process, so a no-op stop cannot strand a
+// survivor across the long-running server lifecycle (that path's durable,
+// identity-bound ownership receipt lives in server/src/index.ts). Promoting real
+// stop authority here would only matter if this runtime were ever wired into the
+// server, at which point it must adopt the server's ownership-receipt model.
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
