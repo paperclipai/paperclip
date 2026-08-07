@@ -19,6 +19,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+// A Date has typeof "object" but no own enumerable properties, so rebuilding it
+// with Object.entries() collapses it to `{}` and destroys the timestamp. That is
+// how every Date column on a redacted run row reached the client as an empty
+// object and blew up the activity charts with "Invalid time value".
+//
+// Dates are the only value exempted from the walk, and only because they carry
+// no string content to scan. Every other object shape — including class
+// instances and cross-realm objects — keeps getting walked: this is a response
+// boundary, so an unrecognized shape must stay fail-closed rather than pass
+// through unscanned.
+function isDate(value: unknown): value is Date {
+  return Object.prototype.toString.call(value) === "[object Date]";
+}
+
 function registryEntries(contextSnapshot: unknown): RegistryEntry[] {
   const context = asRecord(contextSnapshot);
   const raw = context?.[REGISTRY_KEY];
@@ -42,6 +56,7 @@ function redactText(input: string, values: string[]) {
 export function redactRegisteredSecretValues<T>(input: T, values: string[]): T {
   if (typeof input === "string") return redactText(input, values) as T;
   if (Array.isArray(input)) return input.map((value) => redactRegisteredSecretValues(value, values)) as T;
+  if (isDate(input)) return input;
   const record = asRecord(input);
   if (!record) return input;
   return Object.fromEntries(

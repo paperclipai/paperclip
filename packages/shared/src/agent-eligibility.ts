@@ -268,3 +268,233 @@ export function isAgentInvokable(input: {
 }): boolean {
   return getAgentWorkEligibility(input).invokable;
 }
+
+// ---------------------------------------------------------------------------
+// Assignment liveness warnings
+//
+// `error` is intentionally a member of ASSIGNABLE_AGENT_STATUSES so that work
+// queued for an agent that crashes mid-run is still waiting when it recovers.
+// The cost of that permissiveness is the defect in LEG-1924: a dead agent
+// (stuck in `error`, or flipped back to `running` with a lingering
+// `errorReason` and a stale heartbeat) stays assignable, work routes to it,
+// and the assignment succeeds silently — a P0 then sat in `in_review` for six
+// days with no error, bounce, or notification.
+//
+// These warnings turn that silent stall into a visible one. They are advisory:
+// the assignment is still recorded so queued work runs on recovery, but the
+// actor assigning the work (and the activity log) is told the assignee is not
+// live right now.
+// ---------------------------------------------------------------------------
+
+/**
+ * A heartbeat-enabled agent is considered stale once this many intervals have
+ * elapsed without a heartbeat.
+ */
+export const STALE_HEARTBEAT_ASSIGNMENT_WARNING_FACTOR = 3;
+/** Floor for the stale-heartbeat threshold, to tolerate long interval configs. */
+export const STALE_HEARTBEAT_ASSIGNMENT_WARNING_MIN_MS = 6 * 60 * 60 * 1000;
+/** Default heartbeat interval (seconds) when runtime config omits one. */
+export const DEFAULT_HEARTBEAT_ASSIGNMENT_INTERVAL_SEC = 3600;
+
+export interface AgentAssignmentLivenessInput {
+  name?: string | null;
+  status: AgentStatus | string;
+  errorReason?: string | null;
+  lastHeartbeatAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  /** Only heartbeat-driven agents can meaningfully go "stale"; on-demand
+   *  agents are expected to have an old lastHeartbeatAt between runs. */
+  heartbeatEnabled?: boolean;
+  heartbeatIntervalSec?: number;
+  now?: Date;
+}
+
+/**
+ * First-class liveness state for an issue's assignee agent, surfaced on the
+ * issue read model (LEG-1928) so a board user can see a stalled assignment
+ * without drilling into the agent. Computed at read time from current agent
+ * state, so it clears automatically when the agent recovers.
+ */
+export type AssigneeLivenessState = "live" | "error" | "paused" | "stale_heartbeat";
+
+export interface AssigneeLiveness {
+  state: AssigneeLivenessState;
+  /** Short, single-line reason for the non-live state (e.g. the agent's
+   *  errorReason). Null/absent when the assignee is live or has no detail. */
+  reason?: string | null;
+}
+
+function toTimestamp(value: Date | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function truncateLivenessReason(reason: string, max = 160): string {
+  const single = reason.replace(/\s+/g, " ").trim();
+  return single.length > max ? `${single.slice(0, max - 1)}…` : single;
+}
+
+export function isAgentAssignmentHeartbeatStale(input: {
+  lastHeartbeatAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  heartbeatEnabled?: boolean;
+  heartbeatIntervalSec?: number;
+  now?: Date;
+}): boolean {
+  if (input.heartbeatEnabled !== true) return false;
+  const now = (input.now ?? new Date()).getTime();
+  const last = toTimestamp(input.lastHeartbeatAt) ?? toTimestamp(input.createdAt);
+  if (last === null) return false;
+  const intervalSec = typeof input.heartbeatIntervalSec === "number" && input.heartbeatIntervalSec > 0
+    ? input.heartbeatIntervalSec
+    : DEFAULT_HEARTBEAT_ASSIGNMENT_INTERVAL_SEC;
+  const threshold = Math.max(
+    intervalSec * 1000 * STALE_HEARTBEAT_ASSIGNMENT_WARNING_FACTOR,
+    STALE_HEARTBEAT_ASSIGNMENT_WARNING_MIN_MS,
+  );
+  return now - last > threshold;
+}
+
+/**
+ * Returns the structured liveness summary for an assignee agent. This is the
+ * canonical classifier used to derive the issue read model's `assigneeLiveness`
+ * (LEG-1928). `state: "live"` means the assignee looks healthy.
+ */
+export function getAgentAssignmentLivenessState(
+  input: AgentAssignmentLivenessInput,
+): AssigneeLiveness {
+  const staleHeartbeat = isAgentAssignmentHeartbeatStale(input);
+  const hasErrorReason =
+    typeof input.errorReason === "string" && input.errorReason.trim().length > 0;
+
+  // Explicit error status, OR a lingering failure marker on an agent that is
+  // no longer heartbeating. The latter is the live LEG-1924 shape: status was
+  // recorded as "running" again, but errorReason + stale heartbeat remained.
+  if (input.status === "error" || (hasErrorReason && staleHeartbeat)) {
+    return {
+      state: "error",
+      reason: hasErrorReason ? truncateLivenessReason(input.errorReason!) : null,
+    };
+  }
+
+  if (input.status === "paused") {
+    return { state: "paused", reason: null };
+  }
+
+  if (staleHeartbeat) {
+    return { state: "stale_heartbeat", reason: null };
+  }
+
+  return { state: "live" };
+}
+
+/**
+ * Returns human-readable warnings when an agent that is being assigned work is
+ * not plausibly live. Empty array means the assignee looks live.
+ */
+export function getAgentAssignmentLivenessWarnings(
+  input: AgentAssignmentLivenessInput,
+): string[] {
+  const summary = getAgentAssignmentLivenessState(input);
+  if (summary.state === "live") return [];
+  const name = typeof input.name === "string" && input.name.trim().length > 0
+    ? input.name.trim()
+    : null;
+  const label = name ? `Assignee agent "${name}"` : "Assignee agent";
+  switch (summary.state) {
+    case "error": {
+      const detail = summary.reason ? `: ${summary.reason}` : "";
+      return [
+        `${label} is in an error state${detail}. Work assigned to it will not run until it recovers.`,
+      ];
+    }
+    case "paused":
+      return [
+        `${label} is paused. Work assigned to it will queue but will not run until it is resumed.`,
+      ];
+    case "stale_heartbeat":
+      return [
+        `${label} has not heartbeated recently and may not be live. Work assigned to it may stall until it next runs.`,
+      ];
+    default:
+      return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stale-agent reconciliation shape (LEG-1924 Ask #1 / LEG-1927)
+//
+// The warnings above fire at assignment time. A dead agent that no one assigns
+// to (e.g. a Senior Reviewer seat that crashed and left `status='error'`, or
+// got flipped back to `running` with a lingering `errorReason` and a stale
+// heartbeat) is never reconciled — it just sits there. These predicates define
+// that "non-live" shape so a background sweep and the attention surface can
+// flag it without mutating agent status (repair is board-gated — LEG-1923).
+//
+// The shape is exactly: `status='error'`, OR (`errorReason` non-empty AND the
+// shared heartbeat-staleness classifier is true). On-demand (heartbeat-
+// disabled) agents are never caught by the stale-heartbeat branch because
+// `isAgentAssignmentHeartbeatStale` returns false for them.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default ~24h an agent must have been stuck non-live before the
+ * reconciliation sweep flags it. Operators can override via the server config
+ * `staleAgentReconciliationThresholdMs`.
+ */
+export const DEFAULT_STALE_AGENT_RECONCILIATION_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+export type AgentReconciliationReason = "error_status" | "stale_error_heartbeat";
+
+export interface AgentReconciliationLivenessInput extends AgentAssignmentLivenessInput {
+  /** Override the default ~24h threshold before a non-live agent is flagged. */
+  staleReconciliationThresholdMs?: number;
+}
+
+export interface AgentReconciliationResult {
+  nonLive: boolean;
+  reason: AgentReconciliationReason | null;
+  /** Elapsed ms since the agent's last heartbeat (or createdAt). Null when neither is parseable. */
+  ageSinceHeartbeatMs: number | null;
+  /** Effective threshold (ms) used for the staleness gate. */
+  thresholdMs: number;
+}
+
+/**
+ * The "non-live" shape the reconciliation sweep and attention surface flag:
+ * explicit `status='error'`, OR a lingering `errorReason` on an agent whose
+ * heartbeat has gone stale. Advisory only — never mutates agent status.
+ */
+export function isAgentInNonLiveErrorShape(input: AgentAssignmentLivenessInput): boolean {
+  if (input.status === "error") return true;
+  const hasErrorReason = typeof input.errorReason === "string" && input.errorReason.trim().length > 0;
+  return hasErrorReason && isAgentAssignmentHeartbeatStale(input);
+}
+
+/**
+ * Classify an agent for the periodic reconciliation sweep. Like
+ * {@link isAgentInNonLiveErrorShape} but additionally gates on a configurable
+ * ~24h "stuck" window so the sweep only flags agents that have been non-live
+ * long enough to need operator attention, not a transient blip.
+ */
+export function classifyAgentReconciliationLiveness(
+  input: AgentReconciliationLivenessInput,
+): AgentReconciliationResult {
+  const now = (input.now ?? new Date()).getTime();
+  const last = toTimestamp(input.lastHeartbeatAt) ?? toTimestamp(input.createdAt);
+  const ageSinceHeartbeatMs = last === null ? null : Math.max(0, now - last);
+  const thresholdMs = typeof input.staleReconciliationThresholdMs === "number"
+      && input.staleReconciliationThresholdMs > 0
+    ? input.staleReconciliationThresholdMs
+    : DEFAULT_STALE_AGENT_RECONCILIATION_THRESHOLD_MS;
+
+  if (isAgentInNonLiveErrorShape(input) && ageSinceHeartbeatMs !== null && ageSinceHeartbeatMs > thresholdMs) {
+    const reason: AgentReconciliationReason = input.status === "error"
+      ? "error_status"
+      : "stale_error_heartbeat";
+    return { nonLive: true, reason, ageSinceHeartbeatMs, thresholdMs };
+  }
+
+  return { nonLive: false, reason: null, ageSinceHeartbeatMs, thresholdMs };
+}

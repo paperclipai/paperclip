@@ -14,6 +14,7 @@ import {
   recoveryChipLabel,
 } from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
+import { AssigneeLivenessBadge } from "./AssigneeLivenessBadge";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
@@ -277,6 +278,7 @@ export function IssueRow({
               </span>
               {parkedBlockerIndicator}
               {recoveryIndicator}
+              <AssigneeLivenessBadge liveness={issue.assigneeLiveness} className="ml-1.5" />
             </>
           )}
           {mobileMeta ? (

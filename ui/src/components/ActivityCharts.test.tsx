@@ -111,6 +111,24 @@ describe("ActivityCharts", () => {
     expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
   });
 
+  it("skips runs whose timestamp is unusable instead of crashing the page", () => {
+    render(
+      <RunActivityChart
+        runs={[
+          createRun({ id: "run-success", status: "succeeded" }),
+          // A malformed timestamp reaches the client as `{}` / null / garbage;
+          // one bad row must not take down the whole agent overview.
+          createRun({ id: "run-broken", createdAt: {} as unknown as Date }),
+          createRun({ id: "run-null", createdAt: null as unknown as Date }),
+        ]}
+      />,
+    );
+
+    expect(container.textContent).not.toContain("No runs yet");
+    const dayCell = container.querySelector("[title^='2026-04-20: 1 run']");
+    expect(dayCell).not.toBeNull();
+  });
+
   it("renders a distinct recovered segment and legend for recovered restart kills", () => {
     render(
       <RunActivityChart

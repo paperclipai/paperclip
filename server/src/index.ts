@@ -64,6 +64,7 @@ import {
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
+import { sweepStaleAgents } from "./services/agent-liveness-sweep.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -1231,6 +1232,24 @@ export async function startServer(): Promise<StartedServer> {
         })().catch((err) => {
           logger.error({ err }, "status-card scheduler tick failed");
         }));
+
+        if (heartbeatSchedulerStopped) return;
+        if (config.staleAgentReconciliationEnabled) {
+          // LEG-1927: flag agents stuck non-live (status='error' or stale
+          // heartbeat + lingering errorReason) past the configurable ~24h
+          // threshold. Detection/flagging only; does not mutate agent status.
+          trackHeartbeatSchedulerWork(sweepStaleAgents(db as any, {
+            thresholdMs: config.staleAgentReconciliationThresholdMs,
+          })
+            .then((swept) => {
+              if (swept.flagged > 0) {
+                logger.warn({ ...swept }, "periodic stale-agent reconciliation flagged non-live agents");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "periodic stale-agent reconciliation sweep failed");
+            }));
+        }
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(environmentCustomImages

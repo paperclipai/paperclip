@@ -20,6 +20,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { AssigneeLivenessBadge } from "./AssigneeLivenessBadge";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
@@ -358,6 +359,7 @@ function KanbanCard({
               {subtreeLiveCount} live below
             </Badge>
           )}
+          <AssigneeLivenessBadge liveness={issue.assigneeLiveness} />
         </div>
         <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
         <div className="flex items-center gap-2 min-w-0">
