@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { after, before, test } from "node:test";
 
 import { linkSdkInto, readPluginsUnder } from "./link-plugin-dev-sdk.mjs";
@@ -86,4 +87,51 @@ test("linkSdkInto replaces a symlink that points somewhere else", () => {
   assert.equal(linkSdkInto(pkg), true);
   assert.notEqual(readlinkSync(join(scopeDir, "plugin-sdk")), "../somewhere-else");
   assert.ok(existsSync(scopeDir));
+});
+
+// Regression test for the EEXIST race.
+//
+// linkSdkInto checks for an existing link, removes it, then creates its own.
+// Workspace installs run it for several packages at once, so two runs can
+// interleave between the check and the create. The loser used to fail the whole
+// install with EEXIST.
+//
+// The window only opens under real parallelism, so this uses separate processes.
+// In-process calls cannot interleave, because the underlying fs calls are
+// synchronous. Every worker targets the same package directory and busy-waits to a
+// shared start instant so they collide.
+test("linkSdkInto tolerates a concurrent create of the same link", async () => {
+  const moduleUrl = new URL("./link-plugin-dev-sdk.mjs", import.meta.url).href;
+  const WORKERS = 12;
+  const ROUNDS = 5;
+
+  const runWorker = (pkg, startAt) =>
+    new Promise((resolve) => {
+      const source = [
+        `while (Date.now() < ${startAt}) {}`,
+        `const { linkSdkInto } = await import(${JSON.stringify(moduleUrl)});`,
+        `linkSdkInto(${JSON.stringify(pkg)});`,
+      ].join("\n");
+      const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.on("close", (code) => resolve({ code, stderr }));
+    });
+
+  for (let round = 0; round < ROUNDS; round += 1) {
+    const pkg = makePackage(join(workDir, `race-${round}`));
+    const startAt = Date.now() + 400;
+    const results = await Promise.all(
+      Array.from({ length: WORKERS }, () => runWorker(pkg, startAt)),
+    );
+
+    const failures = results
+      .filter((result) => result.code !== 0)
+      .map((result) => result.stderr.trim().split("\n").find((line) => line.includes("Error")) ?? "unknown");
+
+    assert.deepEqual(failures, [], `round ${round}: ${failures.length}/${WORKERS} workers failed`);
+    assert.ok(lstatSync(join(pkg, "node_modules", "@paperclipai", "plugin-sdk")).isSymbolicLink());
+  }
 });
