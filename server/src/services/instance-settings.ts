@@ -64,7 +64,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
     id: row.id,
     general: normalizeGeneralSettings(row.general),
     experimental: normalizeExperimentalSettings(row.experimental),
-    sso: normalizeSsoSettings((row as Record<string, unknown>).sso),
+    sso: normalizeSsoSettings(row.sso),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -152,12 +152,12 @@ export function instanceSettingsService(db: Db) {
 
     getSso: async (): Promise<InstanceSsoSettings> => {
       const row = await getOrCreateRow();
-      return normalizeSsoSettings((row as Record<string, unknown>).sso);
+      return normalizeSsoSettings(row.sso);
     },
 
     updateSso: async (patch: PatchInstanceSsoSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const currentSso = normalizeSsoSettings((current as Record<string, unknown>).sso);
+      const currentSso = normalizeSsoSettings(current.sso);
       const nextSso = normalizeSsoSettings({ ...currentSso, ...patch });
       const now = new Date();
       const [updated] = await db

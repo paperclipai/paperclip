@@ -27,7 +27,7 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-paperclip-admin-123}"
 
 COOKIE_JAR="$(mktemp "${TMPDIR:-/tmp}/paperclip-bootstrap.XXXXXX")"
 TMP_RESPONSE="$(mktemp "${TMPDIR:-/tmp}/paperclip-response.XXXXXX")"
-cleanup() { rm -f "$COOKIE_JAR" "$TMP_RESPONSE"; }
+cleanup() { rm -f "$COOKIE_JAR" "$TMP_RESPONSE" "${TMP_CONFIG:-}"; }
 trap cleanup EXIT
 
 health_url="$BASE_URL/api/health"
@@ -58,7 +58,8 @@ http_status="$(curl -sS -o "$TMP_RESPONSE" -w "%{http_code}" \
   -H "Content-Type: application/json" \
   -H "Origin: $BASE_URL" \
   -c "$COOKIE_JAR" \
-  -d "{\"name\":\"$ADMIN_NAME\",\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
+  -d "$(jq -n --arg name "$ADMIN_NAME" --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
+    '{name: $name, email: $email, password: $password}')")"
 
 if [[ "$http_status" =~ ^2 ]]; then
   echo "    User created."
@@ -69,7 +70,8 @@ elif [[ "$http_status" == "422" ]] || [[ "$http_status" == "409" ]]; then
     -H "Content-Type: application/json" \
     -H "Origin: $BASE_URL" \
     -c "$COOKIE_JAR" \
-    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
+    -d "$(jq -n --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
+      '{email: $email, password: $password}')")"
   if [[ ! "$http_status" =~ ^2 ]]; then
     echo "FATAL: sign-in failed (HTTP $http_status)" >&2
     cat "$TMP_RESPONSE" >&2
