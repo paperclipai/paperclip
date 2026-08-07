@@ -785,7 +785,7 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
 // execute.log worker→host notification route
 // ---------------------------------------------------------------------------
 
-function makeExecuteLogHandle() {
+function makeExecuteLogHandle(extra?: Record<string, unknown>) {
   return createPluginWorkerHandle("test.plugin", {
     entrypointPath: EXECUTE_LOG_WORKER_ENTRYPOINT,
     manifest: TEST_MANIFEST,
@@ -793,6 +793,7 @@ function makeExecuteLogHandle() {
     instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
     apiVersion: 1,
     hostHandlers: {},
+    ...extra,
   });
 }
 
@@ -888,7 +889,7 @@ describe("plugin worker manager execute.log route", () => {
     }
   });
 
-  it("routes two concurrent execute calls to their own sink only", async () => {
+  it("routes two concurrent same-company execute calls to their own sink only", async () => {
     const handle = makeExecuteLogHandle();
     const sinkA = vi.fn();
     const sinkB = vi.fn();
@@ -897,7 +898,7 @@ describe("plugin worker manager execute.log route", () => {
       const callA = handle.call(
         "environmentExecute",
         executeParams({
-          companyId: "company-a",
+          companyId: "company-1",
           logs: [{ stream: "stdout", chunk: "a1" }],
           delayMs: 40,
         }),
@@ -907,7 +908,7 @@ describe("plugin worker manager execute.log route", () => {
       const callB = handle.call(
         "environmentExecute",
         executeParams({
-          companyId: "company-b",
+          companyId: "company-1",
           logs: [{ stream: "stdout", chunk: "b1" }],
           delayMs: 40,
         }),
@@ -915,8 +916,107 @@ describe("plugin worker manager execute.log route", () => {
         sinkB,
       );
       await Promise.all([callA, callB]);
+      // Both calls belong to one company, so the shared pipe stays
+      // single-company and each chunk reaches only its own call's sink.
       expect(sinkA.mock.calls).toEqual([["stdout", "a1"]]);
       expect(sinkB.mock.calls).toEqual([["stdout", "b1"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("fails closed and never delivers execute.log across companies, even with a forged peer id", async () => {
+    // A single worker process serves every company, so it knows both companies'
+    // active invocation ids. While company B's execute stays active, company A's
+    // execute forges B's known, valid id and aims a chunk at B's route. The host
+    // must not deliver it to B. Before the exact-company-scope validation, the
+    // route lookup by the worker-supplied id delivered the forged chunk to B.
+    const handle = makeExecuteLogHandle();
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    try {
+      await handle.start();
+      // Company B opens first and stays active (delayed finish), so its route is
+      // registered and known to the worker when company A runs.
+      const callB = handle.call(
+        "environmentExecute",
+        executeParams({ companyId: "company-b", logs: [], delayMs: 200 }),
+        undefined,
+        sinkB,
+      );
+      // Let the worker process B's execute, so it records B's id as the peer id.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const callA = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-a",
+          logs: [{ stream: "stdout", chunk: "forged-into-b", tag: "forge-previous" }],
+        }),
+        undefined,
+        sinkA,
+      );
+      await Promise.all([callA, callB]);
+      expect(sinkB).not.toHaveBeenCalled();
+      expect(sinkA).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops execute.log chunks once one execute call exceeds its output budget", async () => {
+    // Bound the total streamed output for one execute call. Past the ceiling the
+    // host drops further chunks, so one runaway or hostile execution cannot flood
+    // the host without limit.
+    const handle = makeExecuteLogHandle({
+      executeLogLimits: { maxTotalCharsPerExecute: 10 },
+    });
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "aaaaa" }, // total 5 → delivered
+            { stream: "stdout", chunk: "bbbbb" }, // total 10 → delivered
+            { stream: "stdout", chunk: "c" }, // total 11 > 10 → dropped
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      expect(sink.mock.calls).toEqual([
+        ["stdout", "aaaaa"],
+        ["stdout", "bbbbb"],
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an over-length worker line before parsing it and keeps serving the call", async () => {
+    // Enforce the framing bound before the JSON parse. The oversized note is a
+    // valid execute.log line for this call's own id, so without the pre-parse
+    // guard the host would parse and deliver it. The normal note stays under the
+    // limit and reaches the sink, and the call still completes.
+    const handle = makeExecuteLogHandle({
+      executeLogLimits: { maxIncomingMessageChars: 400 },
+    });
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({
+          oversizedLogChunkChars: 1_000,
+          logs: [{ stream: "stdout", chunk: "kept" }],
+          finalStdout: "kept",
+        }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      expect(sink.mock.calls).toEqual([["stdout", "kept"]]);
     } finally {
       await handle.stop().catch(() => undefined);
     }

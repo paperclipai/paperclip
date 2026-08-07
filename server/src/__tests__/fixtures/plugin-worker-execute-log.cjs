@@ -3,17 +3,31 @@
 // On `environmentExecute` the fixture emits the `execute.log` notifications
 // listed in `params.logs`, then returns the final result. Each log entry sets
 // the envelope invocation id by its `tag`:
-//   - "echo"    → the real host-issued id (the normal streaming path)
-//   - "unknown" → a forged id with no active route (must be dropped)
-//   - "none"    → no id at all (must be dropped)
+//   - "echo"           → the real host-issued id (the normal streaming path)
+//   - "unknown"        → a forged id with no active route (must be dropped)
+//   - "none"           → no id at all (must be dropped)
+//   - "forge-previous" → the id of the PREVIOUS execute call the same worker
+//                        process handled. One worker process sees every active
+//                        invocation id, so this reproduces a worker that runs
+//                        company A and forges company B's active id.
 // The default tag is "echo". The entry `stream` and `chunk` pass through
 // verbatim, so a test can send an invalid stream name or an empty chunk to
 // prove the host drops invalid input.
+//
+// When `params.oversizedLogChunkChars > 0` the fixture emits one VALID
+// `execute.log` note (own id) whose chunk holds that many characters BEFORE the
+// normal logs, so a test can prove the host drops an over-length line before it
+// parses the JSON.
 const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
+
+// The id of the previous execute call this worker process handled. A single
+// worker process serves every company, so it can name another company's active
+// invocation. The fixture uses this to forge a peer id.
+let previousInvocationId = null;
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -36,7 +50,18 @@ rl.on("line", (line) => {
 
   if (method === "environmentExecute") {
     const invocationId = message.paperclipInvocation && message.paperclipInvocation.id;
+    const forgeableId = previousInvocationId;
+    previousInvocationId = invocationId;
     const params = message.params ?? {};
+    const oversizedChars = Number(params.oversizedLogChunkChars ?? 0);
+    if (oversizedChars > 0) {
+      send({
+        jsonrpc: "2.0",
+        method: "execute.log",
+        paperclipInvocationId: invocationId,
+        params: { stream: "stdout", chunk: "d".repeat(oversizedChars) },
+      });
+    }
     const logs = Array.isArray(params.logs) ? params.logs : [];
     for (const entry of logs) {
       const note = {
@@ -49,6 +74,8 @@ rl.on("line", (line) => {
         note.paperclipInvocationId = invocationId;
       } else if (tag === "unknown") {
         note.paperclipInvocationId = "unknown-invocation";
+      } else if (tag === "forge-previous") {
+        note.paperclipInvocationId = forgeableId;
       }
       // tag === "none" → omit the invocation id entirely.
       send(note);

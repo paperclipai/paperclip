@@ -273,16 +273,18 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // Incremental log sink. The provider streams each output chunk
                 // through the execute.log notification while the command runs.
                 // Serialize the delivery per execute call so the runner sees the
-                // chunks in order, and mark that incremental delivery happened,
-                // so the final-result delivery below does not repeat already
-                // streamed bytes.
+                // chunks in order, and count the delivered characters per stream,
+                // so the final-result delivery below emits only the un-streamed
+                // suffix.
                 let incrementalLogChain: Promise<void> = Promise.resolve();
-                let deliveredIncrementalLog = false;
+                let deliveredStdoutChars = 0;
+                let deliveredStderrChars = 0;
                 const onIncrementalLog = (
                   stream: "stdout" | "stderr",
                   chunk: string,
                 ): Promise<void> => {
-                  deliveredIncrementalLog = true;
+                  if (stream === "stdout") deliveredStdoutChars += chunk.length;
+                  else deliveredStderrChars += chunk.length;
                   incrementalLogChain = incrementalLogChain.then(() =>
                     commandInput.onLog?.(stream, chunk),
                   );
@@ -354,17 +356,21 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // notifications while the command runs; awaiting the chain keeps
                 // the runner order and surfaces a log-sink rejection.
                 await incrementalLogChain;
-                // Deliver the captured output only when the provider did NOT
-                // stream it incrementally. This stops a duplicate live delivery
-                // of the same bytes; the result fields stay available to the
-                // caller for parsing and the fallback path. A rejected `onLog`
-                // still propagates to the caller (control flow is unchanged), but
-                // the span already carries the successful outcome, so a log
-                // failure never marks the execution failed.
-                if (!deliveredIncrementalLog) {
-                  if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-                  if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-                }
+                // Deliver only the suffix the provider did NOT already stream.
+                // The streamed chunks form an in-order prefix of the final
+                // result, so the remaining output is `result.<stream>` past the
+                // delivered character count. When the provider streamed nothing,
+                // the whole output is the suffix. When it streamed a prefix and
+                // then fell back to a poll that returned the complete output, the
+                // remaining tail still reaches the runner. When it streamed the
+                // complete output, the suffix is empty and nothing repeats. A
+                // rejected `onLog` still propagates to the caller (control flow
+                // is unchanged), but the span already carries the successful
+                // outcome, so a log failure never marks the execution failed.
+                const stdoutSuffix = result.stdout ? result.stdout.slice(deliveredStdoutChars) : "";
+                if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
+                const stderrSuffix = result.stderr ? result.stderr.slice(deliveredStderrChars) : "";
+                if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
                 return {
                   exitCode: result.exitCode,
                   signal: result.signal ?? null,

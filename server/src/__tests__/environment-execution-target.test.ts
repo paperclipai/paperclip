@@ -549,6 +549,93 @@ describe("resolveEnvironmentExecutionTarget", () => {
     } }).runner!;
   }
 
+  // Run the sandbox runner's execute with an incremental log sink and collect
+  // the ordered deliveries. The runner's execute accepts an `onLog`, so this
+  // casts past the narrowed helper return type.
+  async function runExecuteCollectingLogs(
+    runner: { execute(input: unknown): Promise<unknown> },
+  ): Promise<Array<[string, string]>> {
+    const delivered: Array<[string, string]> = [];
+    await runner.execute({
+      command: "echo",
+      onLog: async (stream: "stdout" | "stderr", chunk: string) => {
+        delivered.push([stream, chunk]);
+      },
+    });
+    return delivered;
+  }
+
+  it("delivers only the un-streamed suffix after a provider streams a prefix then polls the complete result", async () => {
+    // The provider streams a prefix through the incremental sink, then its
+    // stream fails and it polls the complete output as the final result. The
+    // reconciler must deliver the remaining tail once, so no output byte is lost
+    // or repeated.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "hello ");
+        await typed.onLog?.("stderr", "warn:");
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "hello world", stderr: "warn:done" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "hello "],
+      ["stderr", "warn:"],
+      ["stdout", "world"],
+      ["stderr", "done"],
+    ]);
+  });
+
+  it("does not repeat output when the provider already streamed the complete result", async () => {
+    // The provider streams the whole output through the incremental sink and
+    // returns the same complete result. The suffix is empty, so the reconciler
+    // never re-delivers the streamed bytes.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "full");
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "full", stderr: "" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([["stdout", "full"]]);
+  });
+
+  it("delivers the full captured output when the provider streams nothing incrementally", async () => {
+    // The provider streams no incremental chunk, so the whole final result is
+    // the suffix and reaches the sink once.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "batch-out",
+        stderr: "batch-err",
+      }),
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "batch-out"],
+      ["stderr", "batch-err"],
+    ]);
+  });
+
   it("sets the provider duration attributes from finite Daytona-shaped metadata", async () => {
     const { tracer, spans } = createRecordingExecTracer();
     const runner = await runnerFor({
