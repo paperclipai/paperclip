@@ -1134,6 +1134,86 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(comment || attachment);
   }
 
+  // Cancelled zombie runs can keep updating last_output_at after the control
+  // plane marks them terminal. Status-only active-path checks then
+  // false-positive "no live execution path" and escalate over a process that
+  // is still producing output.
+  async function hasRecentRunOutputEvidence(
+    companyId: string,
+    issueId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(
+            gt(heartbeatRuns.lastOutputAt, since),
+            gt(heartbeatRuns.lastUsefulActionAt, since),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // Stranded recovery lacked the issue-graph liveness re-escalation cooldown.
+  // After a source-scoped action is cleared, the same fingerprint can re-fire
+  // within minutes on a stale agent_paused retry.
+  async function hasRecentlyClearedStrandedRecovery(
+    companyId: string,
+    issueId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+          eq(issueRecoveryActions.kind, "stranded_assigned_issue"),
+          inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+          gt(issueRecoveryActions.resolvedAt, since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // Suppress only exhausted-continuation stranded escalation. Do not early-exit
+  // the reconciler — quota monitors, configuration escalation, and review
+  // participant recovery must still classify when a distinct failure is present.
+  async function shouldSuppressExhaustedContinuationEscalation(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+  ) {
+    return (
+      await hasRecentRunOutputEvidence(
+        companyId,
+        issueId,
+        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+      ) ||
+      await hasRecentlyClearedStrandedRecovery(
+        companyId,
+        issueId,
+        DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
+      ) ||
+      await hasRecentVisibleProgress(
+        companyId,
+        issueId,
+        agentId,
+        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+      )
+    );
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -4237,6 +4317,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
+            // Suppress only this stranded escalate. Other recovery branches
+            // (quota monitor, configuration, review participants) already ran
+            // above and must not be masked by zombie output or cooldown.
+            if (await shouldSuppressExhaustedContinuationEscalation(
+              issue.companyId,
+              issue.id,
+              agentId,
+            )) {
+              result.skipped += 1;
+              continue;
+            }
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
             const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const causeCopy = classification.errorCode
