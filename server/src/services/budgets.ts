@@ -98,6 +98,10 @@ async function resolveScopeRecord(
       .from(companies)
       .where(eq(companies.id, scopeId))
       .then((rows) => rows[0] ?? null);
+    // Deliberately strict even when strict is false. budget_policies.company_id
+    // and budget_incidents.company_id both carry a foreign key to companies, and
+    // upsertPolicy requires scope.companyId === companyId, so a company-scoped
+    // row cannot outlive its company the way an agent or project scope can.
     if (!row) throw notFound("Company not found");
     return {
       companyId: row.companyId,

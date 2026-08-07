@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -11,6 +10,7 @@ import {
   createDb,
   projects,
 } from "@paperclipai/db";
+import { agentService } from "../services/agents.ts";
 import { budgetService } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -655,9 +655,12 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       isActive: true,
     });
 
-    // scopeId is a soft reference with no foreign key, so deleting the agent
-    // leaves the policy pointing at a row that is gone.
-    await db.delete(agents).where(eq(agents.id, agentId));
+    // Delete through the real service path rather than the table, so this test
+    // also proves the dangling-scope state is reachable in production: nothing
+    // in agent deletion touches budget_policies, and scopeId carries no foreign
+    // key, so the policy is left pointing at a row that is gone.
+    const removed = await agentService(db).remove(agentId);
+    expect(removed).not.toBeNull();
 
     // Previously this threw notFound. The overview resolves every scope in one
     // pass, so one deleted agent took out the whole view instead of one row.
@@ -672,5 +675,4 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     });
     expect(overview.policies[0]?.scopeName).toContain("deleted");
   });
-
 });
