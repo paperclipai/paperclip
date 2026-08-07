@@ -1010,6 +1010,75 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(result).toMatchObject({ stdout: "final-out", stderr: "final-err" });
   });
 
+  it("creates exactly one sandbox.exec span for one streamed provider call", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        await input.onLog?.("stdout", "chunk-a");
+        await input.onLog?.("stdout", "chunk-b");
+        await input.onLog?.("stderr", "chunk-c");
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "chunk-achunk-b",
+          stderr: "chunk-c",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    await (runner as { execute(input: unknown): Promise<unknown> }).execute({
+      command: "echo",
+      onLog,
+    });
+
+    // One long-lived provider call opens one span; each stream chunk opens none.
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.name).toBe("sandbox.exec");
+    expect(spans[0]!.ended).toBe(true);
+  });
+
+  it("keeps streamed log text and secret values out of span attributes", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const secret = "sk-super-secret-value";
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        await input.onLog?.("stdout", `token=${secret}\n`);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: `token=${secret}\n`,
+          stderr: "",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    // The secret rides the env and the streamed chunk, never the command label.
+    await (runner as { execute(input: unknown): Promise<unknown> }).execute({
+      command: "run-agent",
+      env: { API_KEY: secret },
+      onLog,
+    });
+
+    expect(spans).toHaveLength(1);
+    const span = spans[0]!;
+    // Attributes carry only the closed allowlist — never log text or secrets.
+    for (const key of Object.keys(span.attributes)) {
+      expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
+    }
+    const serialized = JSON.stringify(span.attributes);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("token=");
+    expect(serialized).not.toContain("chunk");
+  });
+
   // Fire one run-time exec from a bridge continuation that runs after the step
   // span ended. Each bridge step (`bridge.paperclip`, `bridge.process-session`)
   // starts long-lived work with `criticalPath: false`. The bridge boundary wraps
