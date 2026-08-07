@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -9,6 +10,59 @@ import {
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
+export const EMBEDDED_POSTGRES_HANDOFF_FILENAME = "embedded-postgres-handoff.json";
+export const EMBEDDED_POSTGRES_OWNERSHIP_FILENAME = "embedded-postgres-ownership.json";
+export const EMBEDDED_POSTGRES_STARTUP_RECOVERY_FILENAME = "embedded-postgres-startup-recovery.json";
+export const SERVER_LIFECYCLE_JOURNAL_FILENAME = "server-lifecycle.json";
+
+const EMBEDDED_POSTGRES_HANDOFF_TTL_MS = 10 * 60 * 1_000;
+
+export type EmbeddedPostgresProcessIdentity = {
+  pid: number;
+  startedAtEpochSeconds: number;
+  processStartedAtEpochMs: number;
+  executablePath: string;
+  dataDir: string;
+  port: number;
+};
+
+export type EmbeddedPostgresHandoff = {
+  version: 1;
+  transferToken: string;
+  createdAt: string;
+  expiresAt: string;
+  hotRestartRequestedAt: string;
+  shutdownSnapshotCapturedAt: string;
+  predecessorServerPid: number;
+  predecessorServerStartedAtEpochMs: number;
+  predecessorServerExecutablePath: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+};
+
+export type EmbeddedPostgresHandoffClaim = {
+  version: 1;
+  claimId: string;
+  claimedAt: string;
+  expiresAt: string;
+  hotRestartRequestedAt: string;
+  shutdownSnapshotCapturedAt: string;
+  predecessorServerPid: number;
+  predecessorServerStartedAtEpochMs: number;
+  predecessorServerExecutablePath: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+  replacementServerPid: number;
+  replacementServerStartedAtEpochMs: number;
+  replacementServerExecutablePath: string;
+  ownershipKind?: "fresh_start" | "hot_restart";
+};
+export type EmbeddedPostgresStartupRecovery = {
+  version: 1;
+  createdAt: string;
+  predecessorServerPid: number;
+  predecessorServerStartedAtEpochMs: number;
+  predecessorServerExecutablePath: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+};
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
@@ -41,9 +95,42 @@ export type HotRestartIntent = {
   preflightActiveRunIds: string[];
   shutdownSnapshot?: {
     capturedAt: string;
-    signal: "SIGINT" | "SIGTERM";
+    signal: "SIGINT" | "SIGTERM" | "SIGBREAK";
     activeRuns: HotRestartIntentRun[];
   };
+};
+
+export type ServerLifecycleEventType =
+  | "ordinary_shutdown"
+  | "hot_restart"
+  | "startup_failure"
+  | "unexpected_exit"
+  | "embedded_postgres_unexpected_exit"
+  | "embedded_postgres_stopped";
+
+export type ServerLifecycleEvent = {
+  type: ServerLifecycleEventType;
+  at: string;
+  signal: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode: number | null;
+  postgresPid: number | null;
+  cleanupOutcome: "not_applicable" | "stopped" | "failed" | null;
+};
+
+export type ServerLifecycleBoot = {
+  bootId: string;
+  serverPid: number;
+  serverStartedAtEpochMs: number;
+  serverExecutablePath: string;
+  launcherIdentity: string;
+  startedAt: string;
+  events: ServerLifecycleEvent[];
+};
+
+export type ServerLifecycleJournal = {
+  version: 1;
+  activeBoot: ServerLifecycleBoot | null;
+  completedBoots: ServerLifecycleBoot[];
 };
 
 export type HotRestartReportRun = HotRestartIntentRun & {
@@ -92,17 +179,45 @@ export function resolveHotRestartReportPath(homeDir?: string) {
   return resolveHotRestartPath(HOT_RESTART_REPORT_FILENAME, homeDir);
 }
 
+export function resolveEmbeddedPostgresHandoffPath(homeDir?: string) {
+  return resolveHotRestartPath(EMBEDDED_POSTGRES_HANDOFF_FILENAME, homeDir);
+}
+
+export function resolveEmbeddedPostgresOwnershipPath(homeDir?: string) {
+  return resolveHotRestartPath(EMBEDDED_POSTGRES_OWNERSHIP_FILENAME, homeDir);
+}
+
+export function resolveEmbeddedPostgresStartupRecoveryPath(homeDir?: string) {
+  return resolveHotRestartPath(EMBEDDED_POSTGRES_STARTUP_RECOVERY_FILENAME, homeDir);
+}
+
+export function resolveServerLifecycleJournalPath(homeDir?: string) {
+  return resolveHotRestartPath(SERVER_LIFECYCLE_JOURNAL_FILENAME, homeDir);
+}
+
+async function ensurePrivateStateDirectory(filePath: string) {
+  const directoryPath = path.dirname(filePath);
+  await fs.mkdir(directoryPath, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await fs.chmod(directoryPath, 0o700);
+}
+
 async function writeJsonFileAtomic(filePath: string, value: unknown) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await ensurePrivateStateDirectory(filePath);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await fs.rename(tempPath, filePath);
 }
 
 async function writeJsonFileExclusiveAtomic(filePath: string, value: unknown) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await ensurePrivateStateDirectory(filePath);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   try {
     await fs.link(tempPath, filePath);
   } finally {
@@ -124,6 +239,764 @@ function asNumber(value: unknown): number | null {
 
 function asBoolean(value: unknown): boolean {
   return value === true;
+}
+
+function samePath(left: string, right: string) {
+  const normalize = (value: string) => {
+    const normalized = path.normalize(value);
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function samePostgresIdentity(
+  left: EmbeddedPostgresProcessIdentity,
+  right: EmbeddedPostgresProcessIdentity,
+) {
+  return left.pid === right.pid
+    && left.startedAtEpochSeconds === right.startedAtEpochSeconds
+    && left.processStartedAtEpochMs === right.processStartedAtEpochMs
+    && samePath(left.executablePath, right.executablePath)
+    && left.port === right.port
+    && samePath(left.dataDir, right.dataDir);
+}
+
+function parseEmbeddedPostgresProcessIdentity(
+  value: unknown,
+): EmbeddedPostgresProcessIdentity | null {
+  if (!isRecord(value)) return null;
+  const pid = asNumber(value.pid);
+  const startedAtEpochSeconds = asNumber(value.startedAtEpochSeconds);
+  const processStartedAtEpochMs = asNumber(value.processStartedAtEpochMs);
+  const executablePath = asString(value.executablePath);
+  const dataDir = asString(value.dataDir);
+  const port = asNumber(value.port);
+  if (!pid || !startedAtEpochSeconds || !processStartedAtEpochMs || !executablePath || !dataDir || !port) {
+    return null;
+  }
+  return { pid, startedAtEpochSeconds, processStartedAtEpochMs, executablePath, dataDir, port };
+}
+
+function parseEmbeddedPostgresHandoff(value: unknown): EmbeddedPostgresHandoff | null {
+  if (!isRecord(value) || value.version !== 1) return null;
+  const transferToken = asString(value.transferToken);
+  const createdAt = asString(value.createdAt);
+  const expiresAt = asString(value.expiresAt);
+  const hotRestartRequestedAt = asString(value.hotRestartRequestedAt);
+  const shutdownSnapshotCapturedAt = asString(value.shutdownSnapshotCapturedAt);
+  const predecessorServerPid = asNumber(value.predecessorServerPid);
+  const predecessorServerStartedAtEpochMs = asNumber(value.predecessorServerStartedAtEpochMs);
+  const predecessorServerExecutablePath = asString(value.predecessorServerExecutablePath);
+  const postgres = parseEmbeddedPostgresProcessIdentity(value.postgres);
+  if (
+    !transferToken
+    || !createdAt
+    || !expiresAt
+    || !hotRestartRequestedAt
+    || !shutdownSnapshotCapturedAt
+    || !predecessorServerPid
+    || !predecessorServerStartedAtEpochMs
+    || !predecessorServerExecutablePath
+    || !postgres
+    || !Number.isFinite(Date.parse(createdAt))
+    || !Number.isFinite(Date.parse(expiresAt))
+    || !Number.isFinite(Date.parse(shutdownSnapshotCapturedAt))
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    transferToken,
+    createdAt,
+    expiresAt,
+    hotRestartRequestedAt,
+    shutdownSnapshotCapturedAt,
+    predecessorServerPid,
+    predecessorServerStartedAtEpochMs,
+    predecessorServerExecutablePath,
+    postgres,
+  };
+}
+
+export async function readEmbeddedPostgresProcessIdentity(
+  dataDir: string,
+  options: {
+    readProcessIdentity?: (pid: number) => Promise<{
+      startedAtEpochMs: number;
+      executablePath: string;
+    }>;
+  } = {},
+): Promise<EmbeddedPostgresProcessIdentity | null> {
+  try {
+    const canonicalDataDir = await fs.realpath(dataDir);
+    const raw = await fs.readFile(path.join(canonicalDataDir, "postmaster.pid"), "utf8");
+    const lines = raw.split(/\r?\n/);
+    const pid = asNumber(Number(lines[0]?.trim()));
+    const pidDataDir = asString(lines[1]?.trim());
+    const startedAtEpochSeconds = asNumber(Number(lines[2]?.trim()));
+    const port = asNumber(Number(lines[3]?.trim()));
+    if (!pid || !pidDataDir || !startedAtEpochSeconds || !port) return null;
+    const canonicalPidDataDir = await fs.realpath(pidDataDir);
+    if (!samePath(canonicalDataDir, canonicalPidDataDir)) return null;
+    const processIdentity = await (options.readProcessIdentity ?? readObservedProcessIdentity)(pid);
+    return {
+      pid,
+      startedAtEpochSeconds,
+      processStartedAtEpochMs: processIdentity.startedAtEpochMs,
+      executablePath: processIdentity.executablePath,
+      dataDir: canonicalDataDir,
+      port,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function writeEmbeddedPostgresHandoff(input: {
+  hotRestartRequestedAt: string;
+  shutdownSnapshotCapturedAt: string;
+  predecessorServerPid: number;
+  predecessorServerStartedAtEpochMs: number;
+  predecessorServerExecutablePath?: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const now = input.now ?? new Date();
+  const handoff: EmbeddedPostgresHandoff = {
+    version: 1,
+    transferToken: randomUUID(),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + EMBEDDED_POSTGRES_HANDOFF_TTL_MS).toISOString(),
+    hotRestartRequestedAt: input.hotRestartRequestedAt,
+    shutdownSnapshotCapturedAt: input.shutdownSnapshotCapturedAt,
+    predecessorServerPid: input.predecessorServerPid,
+    predecessorServerStartedAtEpochMs: input.predecessorServerStartedAtEpochMs,
+    predecessorServerExecutablePath: input.predecessorServerExecutablePath
+      ?? await resolveCurrentProcessExecutablePath(),
+    postgres: input.postgres,
+  };
+  await writeJsonFileAtomic(resolveEmbeddedPostgresHandoffPath(input.homeDir), handoff);
+  return handoff;
+}
+
+export async function claimEmbeddedPostgresHandoff(input: {
+  expectedHotRestartRequestedAt: string;
+  expectedShutdownSnapshotCapturedAt: string;
+  expectedPredecessorServerPid: number;
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  replacementServerPid?: number;
+  replacementServerStartedAtEpochMs?: number;
+  replacementServerExecutablePath?: string;
+  isProcessAlive?: (pid: number, startedAtEpochMs: number, executablePath: string) => boolean | Promise<boolean>;
+  now?: Date;
+  homeDir?: string;
+}): Promise<EmbeddedPostgresHandoffClaim | null> {
+  const handoffPath = resolveEmbeddedPostgresHandoffPath(input.homeDir);
+  const ownershipPath = resolveEmbeddedPostgresOwnershipPath(input.homeDir);
+  return await withHotRestartPathLock(ownershipPath, async () => {
+    let handoff: EmbeddedPostgresHandoff | null;
+    try {
+      handoff = parseEmbeddedPostgresHandoff(JSON.parse(await fs.readFile(handoffPath, "utf8")));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    if (!handoff) return null;
+
+    const now = input.now ?? new Date();
+    if (Date.parse(handoff.expiresAt) <= now.getTime()) {
+      const expiredPath = `${handoffPath}.${handoff.transferToken}.expired`;
+      try {
+        await fs.rename(handoffPath, expiredPath);
+        await fs.rm(expiredPath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      return null;
+    }
+    if (
+      handoff.hotRestartRequestedAt !== input.expectedHotRestartRequestedAt
+      || handoff.shutdownSnapshotCapturedAt !== input.expectedShutdownSnapshotCapturedAt
+      || handoff.predecessorServerPid !== input.expectedPredecessorServerPid
+      || !samePostgresIdentity(handoff.postgres, input.expectedPostgres)
+    ) return null;
+
+    const ownerAlive = input.isProcessAlive ?? isServerProcessIdentityAlive;
+    if (await ownerAlive(
+      handoff.predecessorServerPid,
+      handoff.predecessorServerStartedAtEpochMs,
+      handoff.predecessorServerExecutablePath,
+    )) {
+      return null;
+    }
+
+    let existingOwnership: EmbeddedPostgresHandoffClaim | null = null;
+    try {
+      existingOwnership = parseEmbeddedPostgresOwnership(
+        JSON.parse(await fs.readFile(ownershipPath, "utf8")),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (existingOwnership && (
+      existingOwnership.replacementServerPid !== handoff.predecessorServerPid
+      || existingOwnership.replacementServerStartedAtEpochMs !== handoff.predecessorServerStartedAtEpochMs
+      || !samePath(existingOwnership.replacementServerExecutablePath, handoff.predecessorServerExecutablePath)
+      || !samePostgresIdentity(existingOwnership.postgres, handoff.postgres)
+    )) return null;
+
+    const replacementServerPid = input.replacementServerPid ?? process.pid;
+    const replacementServerStartedAtEpochMs = input.replacementServerStartedAtEpochMs
+      ?? Math.round(Date.now() - process.uptime() * 1_000);
+    const replacementServerExecutablePath = input.replacementServerExecutablePath
+      ?? await resolveCurrentProcessExecutablePath();
+    if (!existingOwnership) {
+      try {
+        await fs.rename(handoffPath, ownershipPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    }
+    const ownership = createEmbeddedPostgresOwnership(
+      handoff,
+      replacementServerPid,
+      replacementServerStartedAtEpochMs,
+      replacementServerExecutablePath,
+      now,
+    );
+    await writeJsonFileAtomic(ownershipPath, ownership);
+    if (existingOwnership) await fs.rm(handoffPath, { force: true });
+    return ownership;
+  });
+}
+
+export async function claimEmbeddedPostgresOwnershipRecovery(input: {
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  replacementServerPid?: number;
+  replacementServerStartedAtEpochMs?: number;
+  replacementServerExecutablePath?: string;
+  isProcessAlive?: (pid: number, startedAtEpochMs: number, executablePath: string) => boolean | Promise<boolean>;
+  now?: Date;
+  homeDir?: string;
+}): Promise<EmbeddedPostgresHandoffClaim | null> {
+  const ownershipPath = resolveEmbeddedPostgresOwnershipPath(input.homeDir);
+  return await withHotRestartPathLock(ownershipPath, async () => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await fs.readFile(ownershipPath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    const ownership = parseEmbeddedPostgresOwnership(raw);
+    const interruptedHandoff = ownership ? null : parseEmbeddedPostgresHandoff(raw);
+    const postgres = ownership?.postgres ?? interruptedHandoff?.postgres;
+    if (!postgres || !samePostgresIdentity(postgres, input.expectedPostgres)) return null;
+
+    const recordedPid = ownership?.replacementServerPid ?? interruptedHandoff!.predecessorServerPid;
+    const recordedStartedAtEpochMs = ownership?.replacementServerStartedAtEpochMs
+      ?? interruptedHandoff!.predecessorServerStartedAtEpochMs;
+    const recordedExecutablePath = ownership?.replacementServerExecutablePath
+      ?? interruptedHandoff!.predecessorServerExecutablePath;
+    const ownerAlive = input.isProcessAlive ?? isServerProcessIdentityAlive;
+    if (await ownerAlive(recordedPid, recordedStartedAtEpochMs, recordedExecutablePath)) return null;
+
+    const replacementServerPid = input.replacementServerPid ?? process.pid;
+    const replacementServerStartedAtEpochMs = input.replacementServerStartedAtEpochMs
+      ?? Math.round(Date.now() - process.uptime() * 1_000);
+    const replacementServerExecutablePath = input.replacementServerExecutablePath
+      ?? await resolveCurrentProcessExecutablePath();
+    const recovered = ownership
+      ? {
+          ...ownership,
+          claimedAt: (input.now ?? new Date()).toISOString(),
+          replacementServerPid,
+          replacementServerStartedAtEpochMs,
+          replacementServerExecutablePath,
+        }
+      : createEmbeddedPostgresOwnership(
+          interruptedHandoff!,
+          replacementServerPid,
+          replacementServerStartedAtEpochMs,
+          replacementServerExecutablePath,
+          input.now ?? new Date(),
+        );
+    await writeJsonFileAtomic(ownershipPath, recovered);
+    return recovered;
+  });
+}
+
+export async function releaseEmbeddedPostgresOwnership(input: {
+  ownerServerPid?: number;
+  ownerServerStartedAtEpochMs: number;
+  ownerServerExecutablePath?: string;
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  homeDir?: string;
+}) {
+  const ownershipPath = resolveEmbeddedPostgresOwnershipPath(input.homeDir);
+  return await withHotRestartPathLock(ownershipPath, async () => {
+    let ownership: EmbeddedPostgresHandoffClaim | null;
+    try {
+      ownership = parseEmbeddedPostgresOwnership(
+        JSON.parse(await fs.readFile(ownershipPath, "utf8")),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (
+      !ownership
+      || ownership.replacementServerPid !== (input.ownerServerPid ?? process.pid)
+      || ownership.replacementServerStartedAtEpochMs !== input.ownerServerStartedAtEpochMs
+      || !samePath(
+        ownership.replacementServerExecutablePath,
+        input.ownerServerExecutablePath ?? await resolveCurrentProcessExecutablePath(),
+      )
+      || !samePostgresIdentity(ownership.postgres, input.expectedPostgres)
+    ) return false;
+    await fs.rm(ownershipPath, { force: true });
+    return true;
+  });
+}
+
+function parseEmbeddedPostgresOwnership(value: unknown): EmbeddedPostgresHandoffClaim | null {
+  if (!isRecord(value) || value.version !== 1) return null;
+  const claimId = asString(value.claimId);
+  const claimedAt = asDateString(value.claimedAt);
+  const expiresAt = asDateString(value.expiresAt);
+  const hotRestartRequestedAt = asDateString(value.hotRestartRequestedAt);
+  const shutdownSnapshotCapturedAt = asDateString(value.shutdownSnapshotCapturedAt);
+  const predecessorServerPid = asNumber(value.predecessorServerPid);
+  const predecessorServerStartedAtEpochMs = asNumber(value.predecessorServerStartedAtEpochMs);
+  const predecessorServerExecutablePath = asString(value.predecessorServerExecutablePath);
+  const postgres = parseEmbeddedPostgresProcessIdentity(value.postgres);
+  const replacementServerPid = asNumber(value.replacementServerPid);
+  const replacementServerStartedAtEpochMs = asNumber(value.replacementServerStartedAtEpochMs);
+  const replacementServerExecutablePath = asString(value.replacementServerExecutablePath);
+  if (
+    !claimId
+    || !claimedAt
+    || !expiresAt
+    || !hotRestartRequestedAt
+    || !shutdownSnapshotCapturedAt
+    || !predecessorServerPid
+    || !predecessorServerStartedAtEpochMs
+    || !predecessorServerExecutablePath
+    || !postgres
+    || !replacementServerPid
+    || !replacementServerStartedAtEpochMs
+    || !replacementServerExecutablePath
+  ) return null;
+  return {
+    version: 1,
+    claimId,
+    claimedAt,
+    expiresAt,
+    hotRestartRequestedAt,
+    shutdownSnapshotCapturedAt,
+    predecessorServerPid,
+    predecessorServerStartedAtEpochMs,
+    predecessorServerExecutablePath,
+    postgres,
+    replacementServerPid,
+    replacementServerStartedAtEpochMs,
+    replacementServerExecutablePath,
+    ownershipKind: value.ownershipKind === "fresh_start" ? "fresh_start" : "hot_restart",
+  };
+}
+
+function createEmbeddedPostgresOwnership(
+  handoff: EmbeddedPostgresHandoff,
+  replacementServerPid: number,
+  replacementServerStartedAtEpochMs: number,
+  replacementServerExecutablePath: string,
+  now: Date,
+): EmbeddedPostgresHandoffClaim {
+  return {
+    version: 1,
+    claimId: createHash("sha256").update(handoff.transferToken).digest("hex"),
+    claimedAt: now.toISOString(),
+    expiresAt: handoff.expiresAt,
+    hotRestartRequestedAt: handoff.hotRestartRequestedAt,
+    shutdownSnapshotCapturedAt: handoff.shutdownSnapshotCapturedAt,
+    predecessorServerPid: handoff.predecessorServerPid,
+    predecessorServerStartedAtEpochMs: handoff.predecessorServerStartedAtEpochMs,
+    predecessorServerExecutablePath: handoff.predecessorServerExecutablePath,
+    postgres: handoff.postgres,
+    replacementServerPid,
+    replacementServerStartedAtEpochMs,
+    replacementServerExecutablePath,
+    ownershipKind: "hot_restart",
+  };
+}
+
+export async function writeEmbeddedPostgresOwnership(input: {
+  ownerServerPid?: number;
+  ownerServerStartedAtEpochMs?: number;
+  ownerServerExecutablePath?: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const now = input.now ?? new Date();
+  const ownerServerPid = input.ownerServerPid ?? process.pid;
+  const ownerServerStartedAtEpochMs = input.ownerServerStartedAtEpochMs
+    ?? Math.round(Date.now() - process.uptime() * 1_000);
+  const ownerServerExecutablePath = input.ownerServerExecutablePath
+    ?? await resolveCurrentProcessExecutablePath();
+  const receipt: EmbeddedPostgresHandoffClaim = {
+    version: 1,
+    claimId: createHash("sha256")
+      .update(`${randomUUID()}:${ownerServerPid}:${input.postgres.pid}`)
+      .digest("hex"),
+    claimedAt: now.toISOString(),
+    expiresAt: "9999-12-31T23:59:59.999Z",
+    hotRestartRequestedAt: now.toISOString(),
+    shutdownSnapshotCapturedAt: now.toISOString(),
+    predecessorServerPid: ownerServerPid,
+    predecessorServerStartedAtEpochMs: ownerServerStartedAtEpochMs,
+    predecessorServerExecutablePath: ownerServerExecutablePath,
+    postgres: input.postgres,
+    replacementServerPid: ownerServerPid,
+    replacementServerStartedAtEpochMs: ownerServerStartedAtEpochMs,
+    replacementServerExecutablePath: ownerServerExecutablePath,
+    ownershipKind: "fresh_start",
+  };
+  await writeJsonFileAtomic(resolveEmbeddedPostgresOwnershipPath(input.homeDir), receipt);
+  return receipt;
+}
+
+export async function writeEmbeddedPostgresStartupRecovery(input: {
+  predecessorServerPid: number;
+  predecessorServerStartedAtEpochMs?: number;
+  predecessorServerExecutablePath?: string;
+  postgres: EmbeddedPostgresProcessIdentity;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const recovery: EmbeddedPostgresStartupRecovery = {
+    version: 1,
+    createdAt: (input.now ?? new Date()).toISOString(),
+    predecessorServerPid: input.predecessorServerPid,
+    predecessorServerStartedAtEpochMs: input.predecessorServerStartedAtEpochMs
+      ?? Math.round(Date.now() - process.uptime() * 1_000),
+    predecessorServerExecutablePath: input.predecessorServerExecutablePath
+      ?? await resolveCurrentProcessExecutablePath(),
+    postgres: input.postgres,
+  };
+  await writeJsonFileAtomic(resolveEmbeddedPostgresStartupRecoveryPath(input.homeDir), recovery);
+  return recovery;
+}
+
+export async function claimEmbeddedPostgresStartupRecovery(input: {
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  replacementServerPid?: number;
+  replacementServerStartedAtEpochMs?: number;
+  replacementServerExecutablePath?: string;
+  isProcessAlive?: (pid: number, startedAtEpochMs: number, executablePath: string) => boolean | Promise<boolean>;
+  now?: Date;
+  homeDir?: string;
+}): Promise<EmbeddedPostgresStartupRecovery | null> {
+  const recoveryPath = resolveEmbeddedPostgresStartupRecoveryPath(input.homeDir);
+  return await withHotRestartPathLock(recoveryPath, async () => {
+    let recovery: EmbeddedPostgresStartupRecovery | null = null;
+    try {
+      const value = JSON.parse(await fs.readFile(recoveryPath, "utf8")) as unknown;
+      if (isRecord(value) && value.version === 1) {
+        const createdAt = asDateString(value.createdAt);
+        const predecessorServerPid = asNumber(value.predecessorServerPid);
+        const predecessorServerStartedAtEpochMs = asNumber(value.predecessorServerStartedAtEpochMs);
+        const predecessorServerExecutablePath = asString(value.predecessorServerExecutablePath);
+        const postgres = parseEmbeddedPostgresProcessIdentity(value.postgres);
+        if (
+          createdAt
+          && predecessorServerPid
+          && predecessorServerStartedAtEpochMs
+          && predecessorServerExecutablePath
+          && postgres
+        ) {
+          recovery = {
+            version: 1,
+            createdAt,
+            predecessorServerPid,
+            predecessorServerStartedAtEpochMs,
+            predecessorServerExecutablePath,
+            postgres,
+          };
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    if (!recovery || !samePostgresIdentity(recovery.postgres, input.expectedPostgres)) return null;
+    const alive = input.isProcessAlive ?? isServerProcessIdentityAlive;
+    if (await alive(
+      recovery.predecessorServerPid,
+      recovery.predecessorServerStartedAtEpochMs,
+      recovery.predecessorServerExecutablePath,
+    )) {
+      return null;
+    }
+    const claimed: EmbeddedPostgresStartupRecovery = {
+      ...recovery,
+      createdAt: (input.now ?? new Date()).toISOString(),
+      predecessorServerPid: input.replacementServerPid ?? process.pid,
+      predecessorServerStartedAtEpochMs: input.replacementServerStartedAtEpochMs
+        ?? Math.round(Date.now() - process.uptime() * 1_000),
+      predecessorServerExecutablePath: input.replacementServerExecutablePath
+        ?? await resolveCurrentProcessExecutablePath(),
+    };
+    await writeJsonFileAtomic(recoveryPath, claimed);
+    return claimed;
+  });
+}
+
+export async function releaseEmbeddedPostgresStartupRecovery(input: {
+  ownerServerPid?: number;
+  ownerServerStartedAtEpochMs: number;
+  ownerServerExecutablePath?: string;
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  homeDir?: string;
+}) {
+  const recoveryPath = resolveEmbeddedPostgresStartupRecoveryPath(input.homeDir);
+  return await withHotRestartPathLock(recoveryPath, async () => {
+    let recovery: EmbeddedPostgresStartupRecovery | null = null;
+    try {
+      const value = JSON.parse(await fs.readFile(recoveryPath, "utf8")) as unknown;
+      if (isRecord(value) && value.version === 1) {
+        const createdAt = asDateString(value.createdAt);
+        const predecessorServerPid = asNumber(value.predecessorServerPid);
+        const predecessorServerStartedAtEpochMs = asNumber(value.predecessorServerStartedAtEpochMs);
+        const predecessorServerExecutablePath = asString(value.predecessorServerExecutablePath);
+        const postgres = parseEmbeddedPostgresProcessIdentity(value.postgres);
+        if (
+          createdAt
+          && predecessorServerPid
+          && predecessorServerStartedAtEpochMs
+          && predecessorServerExecutablePath
+          && postgres
+        ) {
+          recovery = {
+            version: 1,
+            createdAt,
+            predecessorServerPid,
+            predecessorServerStartedAtEpochMs,
+            predecessorServerExecutablePath,
+            postgres,
+          };
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (
+      !recovery
+      || recovery.predecessorServerPid !== (input.ownerServerPid ?? process.pid)
+      || recovery.predecessorServerStartedAtEpochMs !== input.ownerServerStartedAtEpochMs
+      || !samePath(
+        recovery.predecessorServerExecutablePath,
+        input.ownerServerExecutablePath ?? await resolveCurrentProcessExecutablePath(),
+      )
+      || !samePostgresIdentity(recovery.postgres, input.expectedPostgres)
+    ) return false;
+    await fs.rm(recoveryPath, { force: true });
+    return true;
+  });
+}
+
+function parseServerLifecycleEvent(value: unknown): ServerLifecycleEvent | null {
+  if (!isRecord(value)) return null;
+  const type = asString(value.type);
+  const at = asDateString(value.at);
+  if (
+    !type
+    || !at
+    || ![
+      "ordinary_shutdown",
+      "hot_restart",
+      "startup_failure",
+      "unexpected_exit",
+      "embedded_postgres_unexpected_exit",
+      "embedded_postgres_stopped",
+    ].includes(type)
+  ) return null;
+  const signal = value.signal === "SIGINT" || value.signal === "SIGTERM" || value.signal === "SIGBREAK"
+    ? value.signal
+    : null;
+  const cleanupOutcome = value.cleanupOutcome === "not_applicable"
+    || value.cleanupOutcome === "stopped"
+    || value.cleanupOutcome === "failed"
+    ? value.cleanupOutcome
+    : null;
+  return {
+    type: type as ServerLifecycleEventType,
+    at,
+    signal,
+    exitCode: typeof value.exitCode === "number" && Number.isInteger(value.exitCode) ? value.exitCode : null,
+    postgresPid: asNumber(value.postgresPid),
+    cleanupOutcome,
+  };
+}
+
+function parseServerLifecycleBoot(value: unknown): ServerLifecycleBoot | null {
+  if (!isRecord(value)) return null;
+  const bootId = asString(value.bootId);
+  const serverPid = asNumber(value.serverPid);
+  const serverStartedAtEpochMs = asNumber(value.serverStartedAtEpochMs);
+  const serverExecutablePath = asString(value.serverExecutablePath);
+  const launcherIdentity = asString(value.launcherIdentity);
+  const startedAt = asDateString(value.startedAt);
+  if (!bootId || !serverPid || !serverStartedAtEpochMs || !serverExecutablePath || !launcherIdentity || !startedAt) {
+    return null;
+  }
+  const events = Array.isArray(value.events)
+    ? value.events.map(parseServerLifecycleEvent).filter((event): event is ServerLifecycleEvent => event !== null)
+    : [];
+  return { bootId, serverPid, serverStartedAtEpochMs, serverExecutablePath, launcherIdentity, startedAt, events };
+}
+
+function parseServerLifecycleJournal(value: unknown): ServerLifecycleJournal {
+  if (!isRecord(value) || value.version !== 1) {
+    return { version: 1, activeBoot: null, completedBoots: [] };
+  }
+  return {
+    version: 1,
+    activeBoot: parseServerLifecycleBoot(value.activeBoot),
+    completedBoots: Array.isArray(value.completedBoots)
+      ? value.completedBoots
+        .map(parseServerLifecycleBoot)
+        .filter((boot): boot is ServerLifecycleBoot => boot !== null)
+        .slice(-32)
+      : [],
+  };
+}
+
+async function readServerLifecycleJournalAtPath(filePath: string) {
+  try {
+    return parseServerLifecycleJournal(JSON.parse(await fs.readFile(filePath, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { version: 1, activeBoot: null, completedBoots: [] } satisfies ServerLifecycleJournal;
+    }
+    throw error;
+  }
+}
+
+export async function readServerLifecycleJournal(homeDir?: string) {
+  return await readServerLifecycleJournalAtPath(resolveServerLifecycleJournalPath(homeDir));
+}
+
+function buildServerLifecycleEvent(input: {
+  type: ServerLifecycleEventType;
+  at?: Date;
+  signal?: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode?: number | null;
+  postgresPid?: number | null;
+  cleanupOutcome?: "not_applicable" | "stopped" | "failed" | null;
+}): ServerLifecycleEvent {
+  return {
+    type: input.type,
+    at: (input.at ?? new Date()).toISOString(),
+    signal: input.signal ?? null,
+    exitCode: Number.isInteger(input.exitCode) ? input.exitCode! : null,
+    postgresPid: asNumber(input.postgresPid),
+    cleanupOutcome: input.cleanupOutcome ?? null,
+  };
+}
+
+export async function beginServerLifecycle(input: {
+  serverPid?: number;
+  serverStartedAtEpochMs: number;
+  serverExecutablePath?: string;
+  launcherIdentity: string;
+  startedAt?: Date;
+  bootId?: string;
+  homeDir?: string;
+  isProcessAlive?: (pid: number) => boolean;
+  isProcessIdentityAlive?: (
+    pid: number,
+    startedAtEpochMs: number,
+    executablePath: string,
+  ) => boolean | Promise<boolean>;
+}) {
+  const filePath = resolveServerLifecycleJournalPath(input.homeDir);
+  return await withHotRestartPathLock(filePath, async () => {
+    const journal = await readServerLifecycleJournalAtPath(filePath);
+    if (journal.activeBoot) {
+      if (
+        journal.activeBoot.serverPid === (input.serverPid ?? process.pid)
+        && journal.activeBoot.serverStartedAtEpochMs === input.serverStartedAtEpochMs
+      ) {
+        return journal.activeBoot;
+      }
+      const activeBootAlive = input.isProcessIdentityAlive
+        ? await input.isProcessIdentityAlive(
+          journal.activeBoot.serverPid,
+          journal.activeBoot.serverStartedAtEpochMs,
+          journal.activeBoot.serverExecutablePath,
+        )
+        : input.isProcessAlive
+          ? input.isProcessAlive(journal.activeBoot.serverPid)
+          : await isServerProcessIdentityAlive(
+            journal.activeBoot.serverPid,
+            journal.activeBoot.serverStartedAtEpochMs,
+            journal.activeBoot.serverExecutablePath,
+          );
+      if (activeBootAlive) {
+        throw new Error(`Paperclip lifecycle journal already has live server pid ${journal.activeBoot.serverPid}`);
+      }
+      journal.activeBoot.events.push(buildServerLifecycleEvent({
+        type: "unexpected_exit",
+        exitCode: null,
+        cleanupOutcome: "not_applicable",
+      }));
+      journal.completedBoots.push(journal.activeBoot);
+    }
+    const activeBoot: ServerLifecycleBoot = {
+      bootId: input.bootId ?? randomUUID(),
+      serverPid: input.serverPid ?? process.pid,
+      serverStartedAtEpochMs: input.serverStartedAtEpochMs,
+      serverExecutablePath: input.serverExecutablePath ?? await resolveCurrentProcessExecutablePath(),
+      launcherIdentity: input.launcherIdentity,
+      startedAt: (input.startedAt ?? new Date()).toISOString(),
+      events: [],
+    };
+    journal.activeBoot = activeBoot;
+    journal.completedBoots = journal.completedBoots.slice(-32);
+    await writeJsonFileAtomic(filePath, journal);
+    return activeBoot;
+  });
+}
+
+export async function appendServerLifecycleEvent(input: {
+  bootId: string;
+  type: ServerLifecycleEventType;
+  at?: Date;
+  signal?: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode?: number | null;
+  postgresPid?: number | null;
+  cleanupOutcome?: "not_applicable" | "stopped" | "failed" | null;
+  completeBoot?: boolean;
+  homeDir?: string;
+}) {
+  const filePath = resolveServerLifecycleJournalPath(input.homeDir);
+  return await withHotRestartPathLock(filePath, async () => {
+    const journal = await readServerLifecycleJournalAtPath(filePath);
+    if (!journal.activeBoot || journal.activeBoot.bootId !== input.bootId) return false;
+    journal.activeBoot.events.push(buildServerLifecycleEvent(input));
+    if (input.completeBoot) {
+      journal.completedBoots.push(journal.activeBoot);
+      journal.completedBoots = journal.completedBoots.slice(-32);
+      journal.activeBoot = null;
+    }
+    await writeJsonFileAtomic(filePath, journal);
+    return true;
+  });
 }
 
 function asDrainReason(value: unknown) {
@@ -158,7 +1031,7 @@ function runProcessCommand(command: string, args: string[]) {
       args,
       {
         encoding: "utf8",
-        timeout: 1_500,
+        timeout: 10_000,
         windowsHide: true,
       },
       (error, stdout) => {
@@ -226,6 +1099,72 @@ export async function readProcessStartedAt(
   }
 
   return null;
+}
+
+export async function readProcessExecutablePath(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    realpath?: (target: string) => Promise<string>;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const realpath = options.realpath ?? fs.realpath;
+  const runCommand = options.runCommand ?? runProcessCommand;
+
+  if (platform === "linux") return await realpath(`/proc/${pid}/exe`);
+
+  if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
+    const executablePath = asString((await runCommand("ps", ["-o", "comm=", "-p", String(pid)])).trim());
+    if (!executablePath) throw new Error(`Could not read ${platform} executable path for PID ${pid}`);
+    return path.isAbsolute(executablePath)
+      ? await realpath(executablePath).catch(() => executablePath)
+      : executablePath;
+  }
+
+  if (platform === "win32") {
+    const script = [
+      `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
+      "$process.Path",
+    ].join("; ");
+    let stdout: string;
+    try {
+      stdout = await runCommand("powershell.exe", [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
+      ]);
+    } catch {
+      stdout = await runCommand("pwsh.exe", [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script,
+      ]);
+    }
+    const executablePath = asString(stdout.trim());
+    if (!executablePath) throw new Error(`Could not read Windows executable path for PID ${pid}`);
+    return await realpath(executablePath).catch(() => executablePath);
+  }
+
+  throw new Error(`Cannot establish executable identity for PID ${pid} on ${platform}`);
+}
+
+async function resolveCurrentProcessExecutablePath() {
+  return await fs.realpath(process.execPath).catch(() => path.resolve(process.execPath));
+}
+
+export async function readObservedProcessIdentity(
+  pid: number,
+  options: {
+    readStartedAt?: (pid: number) => Promise<string | null>;
+    readExecutablePath?: (pid: number) => Promise<string>;
+  } = {},
+) {
+  const startedAt = await (options.readStartedAt ?? readProcessStartedAt)(pid);
+  const startedAtEpochMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+  if (!Number.isFinite(startedAtEpochMs) || startedAtEpochMs <= 0) {
+    throw new Error(`Could not establish process creation identity for PID ${pid}`);
+  }
+  const executablePath = await (options.readExecutablePath ?? readProcessExecutablePath)(pid);
+  if (!executablePath.trim()) throw new Error(`Could not establish executable identity for PID ${pid}`);
+  return { startedAtEpochMs, executablePath };
 }
 
 export function isObservedHotRestartTargetAlive(
@@ -385,6 +1324,22 @@ function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent
     && left.requestedByRunId === right.requestedByRunId;
 }
 
+async function isServerProcessIdentityAlive(
+  pid: number,
+  startedAtEpochMs: number,
+  executablePath: string,
+) {
+  if (!isProcessAlive(pid)) return false;
+  try {
+    const observed = await readObservedProcessIdentity(pid);
+    return Math.abs(observed.startedAtEpochMs - startedAtEpochMs) < 2_000
+      && samePath(observed.executablePath, executablePath);
+  } catch {
+    // Failure to prove PID reuse must not transfer privileged stop authority.
+    return true;
+  }
+}
+
 function parseRun(value: unknown): HotRestartIntentRun | null {
   if (!isRecord(value)) return null;
   const runId = asString(value.runId);
@@ -426,7 +1381,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   };
 
   const snapshot = isRecord(value.shutdownSnapshot) ? value.shutdownSnapshot : null;
-  const signal = snapshot?.signal === "SIGINT" || snapshot?.signal === "SIGTERM"
+  const signal = snapshot?.signal === "SIGINT" || snapshot?.signal === "SIGTERM" || snapshot?.signal === "SIGBREAK"
     ? snapshot.signal
     : null;
   const capturedAt = asString(snapshot?.capturedAt);
@@ -536,7 +1491,7 @@ export async function writeHotRestartIntent(input: {
 
 export async function writeHotRestartShutdownSnapshot(input: {
   intent: HotRestartIntent;
-  signal: "SIGINT" | "SIGTERM";
+  signal: "SIGINT" | "SIGTERM" | "SIGBREAK";
   activeRuns: HotRestartIntentRun[];
   drainReason?: "active_acp_run";
   drainRunIds?: string[];
@@ -573,6 +1528,48 @@ export async function writeHotRestartShutdownSnapshot(input: {
 export async function writeHotRestartReport(report: HotRestartReport, homeDir?: string) {
   await writeJsonFileAtomic(resolveHotRestartReportPath(homeDir), report);
   return report;
+}
+
+export async function readHotRestartReport(homeDir?: string): Promise<HotRestartReport | null> {
+  try {
+    const value = JSON.parse(await fs.readFile(resolveHotRestartReportPath(homeDir), "utf8")) as unknown;
+    if (!isRecord(value) || value.version !== 1) return null;
+    const requestedAt = asDateString(value.requestedAt);
+    const completedAt = asDateString(value.completedAt);
+    const previousServerPid = asNumber(value.previousServerPid);
+    const newServerPid = asNumber(value.newServerPid);
+    if (!requestedAt || !completedAt || !previousServerPid || !newServerPid) return null;
+    const runs = Array.isArray(value.runs)
+      ? value.runs.map((entry) => {
+        const run = parseRun(entry);
+        if (!run || !isRecord(entry)) return null;
+        const classification = ["adopted", "finalized_while_down", "lost", "skipped"].includes(String(entry.classification))
+          ? entry.classification as HotRestartReportRun["classification"]
+          : null;
+        const reason = asString(entry.reason);
+        return classification && reason ? { ...run, classification, reason } : null;
+      }).filter((run): run is HotRestartReportRun => run !== null)
+      : [];
+    return {
+      version: 1,
+      requestedAt,
+      completedAt,
+      drainRequired: asBoolean(value.drainRequired),
+      drainReason: asDrainReason(value.drainReason),
+      previousServerPid,
+      newServerPid,
+      previousServerVersion: asString(value.previousServerVersion),
+      newServerVersion: asString(value.newServerVersion) ?? "unknown",
+      adoptedRunIds: asStringArray(value.adoptedRunIds),
+      finalizedWhileDownRunIds: asStringArray(value.finalizedWhileDownRunIds),
+      lostRunIds: asStringArray(value.lostRunIds),
+      skippedRunIds: asStringArray(value.skippedRunIds),
+      runs,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function removeMatchingHotRestartIntent(filePath: string, expected?: HotRestartIntent) {

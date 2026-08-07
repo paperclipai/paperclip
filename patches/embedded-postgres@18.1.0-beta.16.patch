@@ -1,7 +1,21 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 082f635bd..c6c677b95 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -23,6 +23,8 @@ declare class EmbeddedPostgres {
+      * shut down when the script exits.
+      */
+     start(): Promise<void>;
++    /** Adopt an already-running cluster at this instance's data directory. */
++    adopt(): void;
+     /**
+      * Stop an already started cluster with the given configuration.
+      * NOTE: If you have `persisent` set to false, this method WILL DELETE your
 diff --git a/dist/index.js b/dist/index.js
+index ccfe17a82..9e20df9d0 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -23,7 +23,7 @@
+@@ -23,7 +23,7 @@ const { Client } = pg;
   * for a particular string, we need to force that string into the right locale.
   * @see https://github.com/leinelissen/embedded-postgres/issues/15
   */
@@ -10,21 +24,194 @@ diff --git a/dist/index.js b/dist/index.js
  // The default configuration options for the class
  const defaults = {
      databaseDir: path.join(process.cwd(), 'data', 'db'),
-@@ -133,7 +133,7 @@
+@@ -32,6 +32,7 @@ const defaults = {
+     password: 'password',
+     authMethod: 'password',
+     persistent: true,
++    autoShutdown: true,
+     initdbFlags: [],
+     postgresFlags: [],
+     createPostgresUser: false,
+@@ -55,6 +56,7 @@ const ensureBinIsExecutable = (filePath) => __awaiter(void 0, void 0, void 0, fu
+  * because we want to be able to shutdown any clusters when the script is exited.
+  */
+ const instances = new Set();
++let gracefulShutdownRegistered = false;
+ /**
+  * This class creates an instance from which a single Postgres cluster is
+  * managed. Note that many clusters may be created, but they will need seperate
+@@ -62,6 +64,8 @@ const instances = new Set();
+  */
+ class EmbeddedPostgres {
+     constructor(options = {}) {
++        this.adopted = false;
++        this.stopRequested = false;
+         // Options were previously specified in snake_case rather than
+         // camelCase. We still want to accept the old style of options.
+         const legacyOptions = {};
+@@ -74,8 +78,23 @@ class EmbeddedPostgres {
+         // Assign default options to options object
+         this.options = Object.assign({}, defaults, legacyOptions, options);
+         instances.add(this);
++        if (this.options.autoShutdown && !gracefulShutdownRegistered) {
++            AsyncExitHook(gracefulShutdown);
++            gracefulShutdownRegistered = true;
++        }
+         this.isRootUser = userInfo().uid === 0;
+     }
++    /**
++     * Adopt an already-running cluster at this instance's data directory.
++     * The next call to stop() uses pg_ctl because no ChildProcess handle is
++     * available in the adopting process.
++     */
++    adopt() {
++        if (this.process) {
++            throw new Error('Cannot adopt a cluster started by this instance');
++        }
++        this.adopted = true;
++    }
+     /**
+      * This function needs to be called whenever a Postgres cluster first needs
+      * to be created. It will populate the data directory with the right
+@@ -133,7 +152,7 @@ class EmbeddedPostgres {
                      `--pwfile=${passwordFile}`,
                      `--lc-messages=${LC_MESSAGES_LOCALE}`,
                      ...this.options.initdbFlags,
 -                ], Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
-+                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
++                ], Object.assign(Object.assign({}, permissionIds), { windowsHide: true, env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
                  // Connect to stderr, as that is where the messages get sent
                  (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -177,7 +177,7 @@
+@@ -170,6 +189,7 @@ class EmbeddedPostgres {
+             ensureBinIsExecutable(postgres);
+             yield new Promise((resolve, reject) => {
+                 var _a;
++                let ready = false;
+                 // Spawn a postgres server
+                 this.process = spawn(postgres, [
+                     '-D',
+@@ -177,7 +197,7 @@ class EmbeddedPostgres {
                      '-p',
                      this.options.port.toString(),
                      ...this.options.postgresFlags,
 -                ], Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
-+                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
++                ], Object.assign(Object.assign({}, permissionIds), { detached: globalThis.process.platform === 'win32', windowsHide: true, env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
+@@ -185,12 +205,21 @@ class EmbeddedPostgres {
+                     this.options.onLog(message);
+                     // GUARD: Check for the right message to determine server start
+                     if (message.includes('database system is ready to accept connections')) {
++                        ready = true;
+                         resolve();
+                     }
+                 });
+                 // In case the process exits early, the promise is rejected.
+-                this.process.on('close', () => {
+-                    reject();
++                this.process.on('close', (code, signal) => {
++                    const expected = this.stopRequested;
++                    this.process = undefined;
++                    this.stopRequested = false;
++                    if (this.options.onExit) {
++                        this.options.onExit({ code, signal, expected });
++                    }
++                    if (!ready) {
++                        reject();
++                    }
+                 });
+             });
+         });
+@@ -204,10 +233,40 @@ class EmbeddedPostgres {
+     stop() {
+         return __awaiter(this, void 0, void 0, function* () {
+             // GUARD: If no database is running, immdiately return the function.
+-            if (!this.process) {
++            if (!this.process && !this.adopted) {
++                return;
++            }
++            if (this.adopted) {
++                const { pg_ctl } = yield bin;
++                const permissionIds = yield this.getUidAndGid()
++                    .catch(() => {
++                    throw new Error('Postgres cannot run as a root user. embedded-postgres could not find a postgres user to run as instead.');
++                });
++                yield ensureBinIsExecutable(pg_ctl);
++                yield new Promise((resolve, reject) => {
++                    const stopProcess = spawn(pg_ctl, [
++                        'stop',
++                        '-D',
++                        this.options.databaseDir,
++                        '-m',
++                        'fast',
++                        '-w',
++                    ], Object.assign(Object.assign({}, permissionIds), { windowsHide: true, env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: LC_MESSAGES_LOCALE }) }));
++                    stopProcess.on('error', reject);
++                    stopProcess.on('exit', (code) => {
++                        if (code === 0) {
++                            resolve();
++                        }
++                        else {
++                            reject(new Error(`pg_ctl stop exited with code ${code}`));
++                        }
++                    });
++                });
++                this.adopted = false;
+                 return;
+             }
+             // Kill the existing postgres process
++            this.stopRequested = true;
+             yield new Promise((resolve) => {
+                 var _a, _b, _c;
+                 // Register a handler for when the process finally exists
+@@ -219,7 +278,7 @@ class EmbeddedPostgres {
+                         throw new Error('Could not find process PID');
+                     }
+                     // Actually kill the process using the Windows taskkill command
+-                    spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t']);
++                    spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t'], { windowsHide: true });
+                 }
+                 else {
+                     // If on a sane OS, simply kill using SIGINT
+@@ -354,13 +413,11 @@ function execAsync(command) {
+ function gracefulShutdown(done) {
+     return __awaiter(this, void 0, void 0, function* () {
+         // Loop through all instances, stop them, and await the response
+-        yield Promise.all([...instances].map((instance) => {
++        yield Promise.all([...instances].filter((instance) => instance.options.autoShutdown).map((instance) => {
+             return instance.stop();
+         }));
+         // Let NodeJS know we're done
+         done();
+     });
+ }
+-// Register graceful shutdown function
+-AsyncExitHook(gracefulShutdown);
+ export default EmbeddedPostgres;
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index cfde9e866..38f9caedb 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -17,6 +17,10 @@ export interface PostgresOptions {
+     /** Whether all data should be left in place when the database is shut down.
+      * Defaults to `true`. */
+     persistent: boolean;
++    /** Whether this instance is stopped by the package-global process exit hook.
++     * Defaults to `true`. Set this to `false` when the host application owns
++     * shutdown coordination. */
++    autoShutdown: boolean;
+     /** Pass any additional flags to the initdb process. You can find all
+      * available flags here:
+      * https://www.postgresql.org/docs/current/app-initdb.html. Flags should be
+@@ -51,4 +55,10 @@ export interface PostgresOptions {
+      * results coming in from the postgres and initdb processes. Defaults to
+      * `console.error` */
+     onError: (messageOrError: string | Error | unknown) => void;
++    /** Called when the managed postgres child exits. */
++    onExit: (event: {
++        code: number | null;
++        signal: string | null;
++        expected: boolean;
++    }) => void;
+ }

@@ -136,12 +136,12 @@ at least one identity source. Supported-platform process probes fail explicitly
 instead of silently treating a live PID as either the original owner or a
 recycled process when identity cannot be established.
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for any queue-claim callback already in flight, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. ACP-backed local runs use server-owned stdio and cannot survive their parent server, so the old server instead persists their complete snapshot, changes the marker to `drainRequired` with `drainReason: "active_acp_run"`, and drains only those runs to queued retries. Detached CLI runs remain eligible for adoption during the same mixed restart. If an ACP process terminates but its terminal run update does not persist, startup classifies it as lost with reason `selective_drain_not_finalized` rather than treating the drain as successful. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+Use `--drain-required` only when the deploy intentionally requires terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for queue claims and in-process heartbeat executions to reach their durable result boundary, and then snapshots any remaining running rows before transferring the database. A replacement never treats PID liveness alone as adoption: that cannot reconstruct streams, exit listeners, or result promises. If an abnormal replacement still finds a live unobservable child, it stops the child and suppresses automatic retry to avoid duplicate side effects. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
 
 When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eager
 `SIGINT`/`SIGTERM` cleanup hooks. Paperclip owns signal ordering so the heartbeat
 snapshot and any required drain complete while the database is still available;
-the coordinated shutdown path stops embedded PostgreSQL afterward.
+the coordinated shutdown path transfers or stops embedded PostgreSQL afterward.
 
 The request command records the preflight set of running heartbeat IDs and writes
 an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
@@ -150,6 +150,21 @@ the new server correlates that snapshot back to the authoritative instance
 request. If any preflight run ID is absent from the shutdown snapshot, the
 startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
 look like a zero-loss restart.
+
+When the server owns embedded PostgreSQL, a validated hot restart leaves that database process running and opts out of the dependency's package-global signal hook. Every fresh start first persists durable stop authority. The predecessor then issues a short-lived, one-time handoff bound to the validated restart intent, both servers' OS creation/executable identities, and the PostgreSQL PID, postmaster start time, OS creation time, executable, canonical data directory, and port. Exactly one replacement process can claim that handoff after the predecessor exits; an unrelated or mismatched server may reuse the live database but does not acquire authority to stop it. Normal shutdowns stop either the originally started or validly adopted embedded database.
+
+The instance directory also contains `server-lifecycle.json`, a bounded lifecycle
+journal with allowlisted process, signal, exit-code, PostgreSQL PID, and cleanup
+outcome fields. A normal shutdown closes its boot entry; the next server records
+an unclosed entry from a dead predecessor as an unexpected exit. If startup fails
+after embedded PostgreSQL is running and immediate cleanup fails, Paperclip writes
+an exact-identity, one-time startup recovery claim. The next server may claim and
+stop only that same database process after confirming that the failed predecessor
+is dead. These files never contain database URLs, credentials, or environment
+values.
+
+Handoff persistence fails closed. The predecessor resolves PostgreSQL ownership before stopping telemetry, schedulers, run-log mirrors, or app services. If the handoff cannot be written or the PostgreSQL identity changes before it is written, the predecessor stops its owned database instead of exiting and leaving it ownerless. If that stop also fails, the predecessor aborts teardown, restores scheduler activity, and remains operational so an operator can correct the failure and retry the signal.
+When managed by systemd, that aborted path also reports the server ready again with an explicit recovery status so the service-manager lifecycle matches the restored runtime state.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 

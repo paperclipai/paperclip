@@ -291,6 +291,8 @@ import {
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
+  readHotRestartReport,
+  readObservedProcessIdentity,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
   writeHotRestartReport,
@@ -298,6 +300,7 @@ import {
   type HotRestartIntentRun,
   type HotRestartReportRun,
 } from "./hot-restart.js";
+import { evaluateRunProcessLiveness, resolveReattachedRunTerminationTarget } from "./heartbeat-run-liveness.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
@@ -6196,6 +6199,11 @@ export function buildPaperclipTaskMarkdown(input: {
   return lines.join("\n");
 }
 
+// Upper bound for the best-effort OS process identity probe taken at spawn.
+// Keeps a hung `Get-Process`/`ps` off the run's critical path; on timeout the
+// run falls back to PID-only liveness.
+const RUN_PROCESS_IDENTITY_CAPTURE_TIMEOUT_MS = 5_000;
+
 // A positive liveness check means some process currently owns the PID.
 // On Linux, PIDs can be recycled, so this is a best-effort signal rather
 // than proof that the original child is still alive.
@@ -6262,6 +6270,7 @@ function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | nu
 function mergeHotRestartAdoptionResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   input: {
+    adoptionId: string;
     adoptedAt: Date;
     previousServerPid: number;
     newServerPid: number;
@@ -6278,7 +6287,10 @@ function mergeHotRestartAdoptionResultJson(
     hotRestart: {
       ...existing,
       adopted: true,
-      adoptedAt: input.adoptedAt.toISOString(),
+      adoptionId: input.adoptionId,
+      adoptedAt: typeof existing.adoptedAt === "string"
+        ? existing.adoptedAt
+        : input.adoptedAt.toISOString(),
       previousServerPid: input.previousServerPid,
       newServerPid: input.newServerPid,
       previousServerVersion: input.previousServerVersion,
@@ -9714,6 +9726,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function persistRunProcessIdentity(runId: string, pid: number) {
+    // Best-effort capture of the child's OS-observed creation identity right
+    // after spawn (creation time + executable image), so a later server -- after
+    // a hot restart, or after losing the in-memory handle -- can prove a live
+    // PID is still this child rather than an unrelated process that recycled the
+    // PID. Bounded by a timeout so a hung identity probe can never delay the run;
+    // the PID/group/wall-clock metadata is already persisted by
+    // persistRunProcessMetadata before this runs. If capture fails, the identity
+    // columns stay null and the run falls back to PID-only liveness (legacy).
+    try {
+      const identity = await Promise.race([
+        readObservedProcessIdentity(pid),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("process identity capture timed out")),
+            RUN_PROCESS_IDENTITY_CAPTURE_TIMEOUT_MS,
+          ).unref(),
+        ),
+      ]);
+      await db
+        .update(heartbeatRuns)
+        .set({
+          processStartedAtEpochMs: identity.startedAtEpochMs,
+          processExecutablePath: identity.executablePath,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.processPid, pid)));
+    } catch {
+      // Identity unavailable (process already exited, probe timed out, or the
+      // platform is unsupported). Leave the columns null; liveness on the run
+      // path falls back to PID-only for this run.
+    }
+  }
+
   async function clearDetachedRunWarning(runId: string) {
     const updated = await db
       .update(heartbeatRuns)
@@ -10227,7 +10273,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
   }
 
-  async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+  async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM" | "SIGBREAK", now = new Date()) {
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
       intent = await readHotRestartIntent();
@@ -10294,7 +10340,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    await writeHotRestartShutdownSnapshot({
+    const preparedIntent = await writeHotRestartShutdownSnapshot({
       intent: intentWithVersion,
       signal,
       activeRuns: snapshotRuns,
@@ -10306,7 +10352,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "Hot restart requested; leaving child process alive for startup adoption",
+        message: "Hot restart requested; draining child process to its normal result boundary before replacement",
         payload: {
           signal,
           previousServerPid: intent.previousServerPid,
@@ -10319,13 +10365,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     logger.info(
       { signal, previousServerPid: intent.previousServerPid, activeRunIds: snapshotRuns.map((run) => run.runId) },
-      "hot-restart shutdown snapshot captured; skipping graceful run drain",
+      "hot-restart shutdown snapshot captured; waiting for active runs before database handoff",
     );
 
     return {
       mode: "hot_restart" as const,
-      skipDrain: true as const,
+      skipDrain: false as const,
+      preserveEmbeddedPostgres: true as const,
       activeRunIds: snapshotRuns.map((run) => run.runId),
+      previousServerPid: intent.previousServerPid,
+      requestedAt: intent.requestedAt,
+      shutdownSnapshotCapturedAt: preparedIntent.shutdownSnapshot!.capturedAt,
     };
   }
 
@@ -10350,6 +10400,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finalizedWhileDownRunIds: [] as string[],
         lostRunIds: [] as string[],
         skippedRunIds: [] as string[],
+      };
+    }
+
+    const completedReport = await readHotRestartReport().catch((err) => {
+      logger.warn({ err }, "failed to read prior hot-restart report; resuming reconciliation from intent");
+      return null;
+    });
+    if (
+      completedReport?.requestedAt === intent.requestedAt
+      && completedReport.previousServerPid === intent.previousServerPid
+    ) {
+      await removeHotRestartIntent(undefined, intent);
+      return {
+        mode: "reported" as const,
+        adoptedRunIds: completedReport.adoptedRunIds,
+        finalizedWhileDownRunIds: completedReport.finalizedWhileDownRunIds,
+        lostRunIds: completedReport.lostRunIds,
+        skippedRunIds: completedReport.skippedRunIds,
       };
     }
 
@@ -10403,10 +10471,89 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       else skippedRunIds.push(candidate.runId);
     };
 
+    const failClosedUnrecoverableChild = async (input: {
+      candidate: HotRestartIntentRun;
+      run: typeof heartbeatRuns.$inferSelect;
+      patch: Partial<HotRestartIntentRun>;
+      processPid: number | null;
+      processGroupId: number | null;
+      // Whether the PID's live OS identity was confirmed to match the run's
+      // bound identity. When false (legacy rows aside, e.g. an unreadable
+      // identity), the PID must not be killed -- it may belong to an unrelated
+      // process that recycled the PID -- so only the process group is signalled.
+      safeToTerminatePid: boolean;
+      classificationReason: string;
+    }) => {
+      await terminateHeartbeatRunProcess({
+        pid: input.safeToTerminatePid ? input.processPid : null,
+        processGroupId: input.processGroupId,
+      });
+      const message = "Hot restart found a live child without reconstructable completion plumbing; stopped without automatic retry";
+      const updateResult = await setRunStatusIfRunning(input.run.id, "failed", {
+        finishedAt: now,
+        error: message,
+        errorCode: "hot_restart_completion_unrecoverable",
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          hotRestart: {
+            reconciledAt: now.toISOString(),
+            previousServerPid: intent.previousServerPid,
+            newServerPid: process.pid,
+            processPid: input.processPid,
+            processGroupId: input.processGroupId,
+            retrySuppressed: true,
+            reason: "completion_plumbing_unrecoverable",
+          },
+        },
+      });
+
+      const updated = updateResult.run;
+      if (!updateResult.updated || !updated) {
+        const latest = updated ?? await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.run.id))
+          .then((rows) => rows[0] ?? null);
+        if (latest && latest.status !== "running") {
+          classify(input.candidate, "finalized_while_down", `run_status_${latest.status}`, input.patch);
+        } else {
+          classify(input.candidate, "lost", "safe_reconciliation_update_not_applied", input.patch);
+        }
+        return;
+      }
+
+      await setWakeupStatus(input.run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+      await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message,
+        payload: {
+          processPid: input.processPid,
+          processGroupId: input.processGroupId,
+          retrySuppressed: true,
+        },
+      });
+      await releaseIssueExecutionAndPromote(updated, { suppressImmediateRecovery: true });
+      classify(input.candidate, "lost", input.classificationReason, {
+        ...input.patch,
+        status: "failed",
+      });
+    };
+
     for (const runId of missingSnapshotRunIds) {
       const current = currentByRunId.get(runId);
       if (!current) {
-        finalizedWhileDownRunIds.push(runId);
+        classify({
+          runId,
+          companyId: "unavailable",
+          agentId: "unavailable",
+          adapterType: "unknown",
+          status: "missing",
+          processPid: null,
+          processGroupId: null,
+          issueId: null,
+        }, "finalized_while_down", "run_row_missing");
         continue;
       }
 
@@ -10414,7 +10561,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (current.run.status !== "running") {
         classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
       } else {
-        classify(candidate, "lost", "missing_shutdown_snapshot");
+        const processPid = current.run.processPid ?? null;
+        const processGroupId = current.run.processGroupId ?? null;
+        const tracksLocalChild = isTrackedLocalChildProcessAdapter(current.adapterType);
+        const liveness = tracksLocalChild
+          ? await evaluateRunProcessLiveness(current.run, { isProcessAlive })
+          : null;
+        if (
+          tracksLocalChild
+          && ((liveness?.alive ?? false) || isProcessGroupAlive(processGroupId))
+        ) {
+          await failClosedUnrecoverableChild({
+            candidate,
+            run: current.run,
+            patch: {
+              adapterType: current.adapterType,
+              processPid,
+              processGroupId,
+            },
+            processPid,
+            processGroupId,
+            safeToTerminatePid: liveness?.safeToTerminatePid ?? false,
+            classificationReason: "missing_shutdown_snapshot_completion_unrecoverable_retry_suppressed",
+          });
+        } else {
+          classify(candidate, "lost", "missing_shutdown_snapshot");
+        }
       }
     }
 
@@ -10470,67 +10642,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
-      const processPidAlive = isProcessAlive(processPid);
+      const liveness = await evaluateRunProcessLiveness(
+        {
+          processPid,
+          processStartedAtEpochMs: run.processStartedAtEpochMs,
+          processExecutablePath: run.processExecutablePath,
+        },
+        { isProcessAlive },
+      );
+      const processPidAlive = liveness.alive;
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
         classify(candidate, "lost", "missing_process_metadata", patch);
         continue;
       }
       if (!processPidAlive && !processGroupAlive) {
+        // The PID is dead, or alive but with a mismatched OS identity (recycled
+        // PID -> the original child is provably gone). A retry is correct and no
+        // process is terminated.
         classify(candidate, "lost", "process_not_alive", patch);
         continue;
       }
 
-      const resultJson = mergeHotRestartAdoptionResultJson(parseObject(run.resultJson), {
-        adoptedAt: now,
-        previousServerPid: intent.previousServerPid,
-        newServerPid: process.pid,
-        previousServerVersion: intent.previousServerVersion,
-        newServerVersion: serverVersion,
+      // A numeric PID cannot restore the predecessor's streams, exit listener,
+      // or result promise. Never claim adoption from liveness alone: stop the
+      // unobservable child and fail closed without an automatic retry, which
+      // prevents a completed external side effect from being repeated.
+      await failClosedUnrecoverableChild({
+        candidate,
+        run,
+        patch,
         processPid,
         processGroupId,
+        safeToTerminatePid: liveness.safeToTerminatePid,
+        classificationReason: "completion_plumbing_unrecoverable_retry_suppressed",
       });
-      const updated = await db
-        .update(heartbeatRuns)
-        .set({
-          resultJson,
-          error: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
-          errorCode: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.errorCode,
-          updatedAt: now,
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-
-      if (!updated) {
-        const latest = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, run.id))
-          .then((rows) => rows[0] ?? null);
-        if (latest && latest.status !== "running") {
-          classify(candidate, "finalized_while_down", `run_status_${latest.status}`, patch);
-        } else {
-          classify(candidate, "lost", "adoption_update_not_applied", patch);
-        }
-        continue;
-      }
-
-      await appendRunEvent(updated, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message: "Adopted live child process after hot restart",
-        payload: {
-          previousServerPid: intent.previousServerPid,
-          newServerPid: process.pid,
-          previousServerVersion: intent.previousServerVersion,
-          newServerVersion: serverVersion,
-          processPid,
-          processGroupId,
-        },
-      });
-      classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
     }
 
     const report = await writeHotRestartReport({
@@ -10574,7 +10720,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function drainRunningRunsForShutdown(
-    signal: "SIGINT" | "SIGTERM",
+    signal: "SIGINT" | "SIGTERM" | "SIGBREAK",
     now = new Date(),
     runIds: readonly string[] | null = null,
   ) {
@@ -10611,10 +10757,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             graceMs: Math.max(1, running.graceSec) * 1000,
           });
         } else if (run.processPid || run.processGroupId) {
-          await terminateHeartbeatRunProcess({
-            pid: run.processPid,
-            processGroupId: run.processGroupId,
-          });
+          // No in-memory handle (e.g. after a hot restart): fall back to the
+          // persisted PID, but only signal it when its live OS identity is still
+          // the run's original child. A recycled PID owned by an unrelated local
+          // process must never be killed (CWE-672); the descendant group is still
+          // reaped.
+          await terminateHeartbeatRunProcess(
+            await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+          );
         }
       } finally {
         runningProcesses.delete(run.id);
@@ -13157,7 +13307,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      // Identity-bind the PID liveness: a live PID whose OS creation identity no
+      // longer matches what was bound at spawn is a recycled PID, not our child.
+      const liveness = tracksLocalChild
+        ? await evaluateRunProcessLiveness(run, { isProcessAlive })
+        : { alive: false, safeToTerminatePid: false, provablyDead: true, reason: "pid_absent" as const };
+      const processPidAlive = liveness.alive;
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
         (processPidAlive || processGroupAlive) &&
@@ -13191,7 +13346,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
-          pid: run.processPid,
+          // Never kill the PID unless its live OS identity was confirmed to be
+          // ours; a recycled PID must not be terminated. Descendant group cleanup
+          // still proceeds.
+          pid: liveness.safeToTerminatePid ? run.processPid : null,
           processGroupId: run.processGroupId,
         });
       }
@@ -15611,6 +15769,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   : null,
               startedAt: meta.startedAt,
             });
+            // PID is now durable; capture the OS-observed identity separately so
+            // a slow probe can never leave a spawned child without persisted PID.
+            await persistRunProcessIdentity(run.id, meta.pid);
           },
           authToken: authToken ?? undefined,
         });
@@ -18600,10 +18761,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           graceMs: Math.max(1, running.graceSec) * 1000,
         });
       } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+        // No in-memory handle: gate the persisted PID on its live OS identity so a
+        // recycled PID owned by an unrelated local process is never signalled
+        // during an explicit cancel (CWE-672); the descendant group is still reaped.
+        await terminateHeartbeatRunProcess(
+          await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+        );
       }
     } finally {
       runningProcesses.delete(run.id);
@@ -18675,10 +18838,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         runningProcesses.delete(run.id);
       } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+        // No in-memory handle: gate the persisted PID on its live OS identity so a
+        // recycled PID owned by an unrelated local process is never signalled when
+        // cancelling the agent's runs (CWE-672); the descendant group is still reaped.
+        await terminateHeartbeatRunProcess(
+          await resolveReattachedRunTerminationTarget(run, { isProcessAlive }),
+        );
       }
       await releaseIssueExecutionAndPromote(run);
     }

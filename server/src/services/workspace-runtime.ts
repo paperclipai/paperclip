@@ -552,6 +552,7 @@ async function executeProcess(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
       env: input.env ?? process.env,
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -4390,6 +4391,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
+    windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   const spawnErrorPromise = new Promise<never>((_, reject) => {

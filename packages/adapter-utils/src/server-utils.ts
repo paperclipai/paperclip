@@ -3248,7 +3248,8 @@ export async function runChildProcess(
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
-          detached: process.platform !== "win32",
+          detached: true,
+          windowsHide: true,
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;

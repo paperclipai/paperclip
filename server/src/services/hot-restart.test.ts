@@ -3,14 +3,24 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendServerLifecycleEvent,
+  beginServerLifecycle,
+  claimEmbeddedPostgresOwnershipRecovery,
+  claimEmbeddedPostgresStartupRecovery,
+  writeEmbeddedPostgresOwnership,
   findMissingHotRestartSnapshotRunIds,
   isObservedHotRestartTargetAlive,
   readHotRestartIntent,
+  readServerLifecycleJournal,
   readProcessStartedAt,
+  releaseEmbeddedPostgresStartupRecovery,
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
+  resolveEmbeddedPostgresHandoffPath,
   writeHotRestartIntent,
+  writeEmbeddedPostgresHandoff,
+  writeEmbeddedPostgresStartupRecovery,
 } from "./hot-restart.js";
 
 const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
@@ -29,7 +39,7 @@ async function withTempHome<T>(fn: (homeDir: string) => Promise<T>) {
   }
 }
 
-describe("hot-restart path compatibility", () => {
+describe("hot-restart path compatibility", { timeout: 30_000 }, () => {
   it("reads Linux process start time from proc metadata", async () => {
     await expect(
       readProcessStartedAt(123, {
@@ -472,5 +482,224 @@ describe("hot-restart path compatibility", () => {
         }],
       },
     })).toEqual(["missing-run"]);
+  });
+
+  it("persists only allowlisted lifecycle provenance and closes intentional boots", async () => {
+    await withTempHome(async (homeDir) => {
+      const boot = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7001,
+        serverStartedAtEpochMs: 1_754_000_000_000,
+        launcherIdentity: "node:paperclipai",
+        startedAt: new Date("2026-08-02T01:00:00.000Z"),
+        isProcessAlive: () => false,
+      });
+      await appendServerLifecycleEvent({
+        homeDir,
+        bootId: boot.bootId,
+        type: "hot_restart",
+        signal: "SIGBREAK",
+        exitCode: 0,
+        postgresPid: 7002,
+        cleanupOutcome: "not_applicable",
+        completeBoot: true,
+      });
+
+      const journal = await readServerLifecycleJournal(homeDir);
+      expect(journal.activeBoot).toBeNull();
+      expect(journal.completedBoots).toEqual([
+        expect.objectContaining({
+          bootId: boot.bootId,
+          serverPid: 7001,
+          launcherIdentity: "node:paperclipai",
+          events: [{
+            type: "hot_restart",
+            at: expect.any(String),
+            signal: "SIGBREAK",
+            exitCode: 0,
+            postgresPid: 7002,
+            cleanupOutcome: "not_applicable",
+          }],
+        }),
+      ]);
+      expect(JSON.stringify(journal)).not.toContain("DATABASE_URL");
+      expect(JSON.stringify(journal)).not.toContain("transferToken");
+    });
+  });
+
+  it("reconciles an unclosed prior boot as an unexpected exit on the next boot", async () => {
+    await withTempHome(async (homeDir) => {
+      const prior = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7101,
+        serverStartedAtEpochMs: 1_754_000_000_000,
+        launcherIdentity: "node:paperclipai",
+        isProcessAlive: () => false,
+      });
+      const replacement = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7102,
+        serverStartedAtEpochMs: 1_754_000_100_000,
+        launcherIdentity: "node:paperclipai",
+        isProcessAlive: () => false,
+      });
+
+      const journal = await readServerLifecycleJournal(homeDir);
+      expect(journal.activeBoot?.bootId).toBe(replacement.bootId);
+      expect(journal.completedBoots).toEqual([
+        expect.objectContaining({
+          bootId: prior.bootId,
+          events: [expect.objectContaining({ type: "unexpected_exit", exitCode: null })],
+        }),
+      ]);
+    });
+  });
+
+  it("keeps failed-startup PostgreSQL recovery authority durable across replacement exits", async () => {
+    await withTempHome(async (homeDir) => {
+      const postgres = {
+        pid: 7201,
+        startedAtEpochSeconds: 1_754_000_000,
+        processStartedAtEpochMs: 1_754_000_000_250,
+        executablePath: path.resolve(homeDir, "postgres.exe"),
+        dataDir: path.resolve(homeDir, "postgres"),
+        port: 5432,
+      };
+      await writeEmbeddedPostgresStartupRecovery({
+        homeDir,
+        predecessorServerPid: 7200,
+        predecessorServerStartedAtEpochMs: 1_754_000_000_000,
+        postgres,
+        now: new Date("2026-08-02T01:10:00.000Z"),
+      });
+
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => true,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: { ...postgres, startedAtEpochSeconds: postgres.startedAtEpochSeconds + 1 },
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 7202,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
+        isProcessAlive: () => false,
+      })).resolves.toEqual(expect.objectContaining({
+        predecessorServerPid: 7202,
+        predecessorServerStartedAtEpochMs: 1_754_000_200_000,
+        postgres,
+      }));
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => true,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 7203,
+        replacementServerStartedAtEpochMs: 1_754_000_300_000,
+        isProcessAlive: () => false,
+      })).resolves.toEqual(expect.objectContaining({
+        predecessorServerPid: 7203,
+        predecessorServerStartedAtEpochMs: 1_754_000_300_000,
+        postgres,
+      }));
+      await expect(releaseEmbeddedPostgresStartupRecovery({
+        homeDir,
+        ownerServerPid: 7203,
+        ownerServerStartedAtEpochMs: 1_754_000_300_000,
+        expectedPostgres: postgres,
+      })).resolves.toBe(true);
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+    });
+  });
+});
+
+// FAI-9637 F2: ownership is persisted durably BEFORE a replacement adopts the
+// embedded PostgreSQL process, so a crash after adopt() does not strand ownership
+// in memory. A durable receipt naming a now-dead replacement stays recoverable by
+// the next server. This encodes the refutation of "ownership only in memory".
+describe("embedded PostgreSQL ownership survives a post-adopt replacement crash", () => {
+  const postgres = {
+    pid: 7777,
+    startedAtEpochSeconds: 1_700_000_000,
+    processStartedAtEpochMs: 1_700_000_000_000,
+    executablePath: "/usr/lib/postgresql/16/bin/postgres",
+    dataDir: "/var/lib/paperclip/pgdata",
+    port: 5434,
+  };
+
+  it("recovers ownership from the durable receipt after the recorded owner dies", async () => {
+    await withTempHome(async (homeDir) => {
+      // The durable receipt a replacement writes during its ownership claim,
+      // before it calls adopt(). Then it crashes (recorded owner pid is dead).
+      await writeEmbeddedPostgresOwnership({
+        homeDir,
+        ownerServerPid: 424242,
+        ownerServerStartedAtEpochMs: 1_699_999_000_000,
+        ownerServerExecutablePath: "/rt/node",
+        postgres,
+      });
+
+      const recovered = await claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 999001,
+        replacementServerStartedAtEpochMs: 1_700_000_500_000,
+        replacementServerExecutablePath: "/rt/node",
+        isProcessAlive: () => false,
+      });
+
+      expect(recovered).not.toBeNull();
+      expect(recovered?.replacementServerPid).toBe(999001);
+      expect(recovered?.postgres.pid).toBe(postgres.pid);
+    });
+  });
+});
+
+// FAI-9637 F4: the hot-restart handoff carries a one-time transferToken. Its
+// file (and the private state directory) must not be world-readable under a
+// typical umask. POSIX mode bits are meaningless on win32, so this only asserts
+// on non-Windows CI (matches the platform gate in ensurePrivateStateDirectory).
+describe.skipIf(process.platform === "win32")("hot-restart handoff file permissions", () => {
+  const postgres = {
+    pid: 4321,
+    startedAtEpochSeconds: 1_700_000_000,
+    processStartedAtEpochMs: 1_700_000_000_000,
+    executablePath: "/usr/lib/postgresql/16/bin/postgres",
+    dataDir: "/var/lib/paperclip/pgdata",
+    port: 5433,
+  };
+
+  it("writes the transfer-token handoff 0600 inside a 0700 state directory", async () => {
+    await withTempHome(async (homeDir) => {
+      const handoff = await writeEmbeddedPostgresHandoff({
+        homeDir,
+        hotRestartRequestedAt: new Date().toISOString(),
+        shutdownSnapshotCapturedAt: new Date().toISOString(),
+        predecessorServerPid: 1234,
+        predecessorServerStartedAtEpochMs: 1_699_999_000_000,
+        predecessorServerExecutablePath: "/rt/node",
+        postgres,
+      });
+      expect(handoff.transferToken).toBeTruthy();
+
+      const handoffPath = resolveEmbeddedPostgresHandoffPath(homeDir);
+      const fileStat = await fs.stat(handoffPath);
+      expect(fileStat.mode & 0o777).toBe(0o600);
+
+      const dirStat = await fs.stat(path.dirname(handoffPath));
+      expect(dirStat.mode & 0o777).toBe(0o700);
+    });
   });
 });
