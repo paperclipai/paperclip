@@ -1433,22 +1433,34 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
 export type LatestRunIssue = { id: string; title: string; status: string; identifier?: string | null };
 
 /**
+ * The id of the issue a run works on, read from its context snapshot. Newer
+ * snapshots use `issueId`; older ones use `taskId`. Returns undefined for pure
+ * timer heartbeats that carry no task reference.
+ */
+export function getRunSnapshotIssueId(
+  run: Pick<HeartbeatRun, "contextSnapshot">,
+): string | undefined {
+  const ctx = run.contextSnapshot as Record<string, unknown> | null;
+  const issueId = ctx?.issueId ?? ctx?.taskId;
+  return issueId ? String(issueId) : undefined;
+}
+
+/**
  * Resolve the Live Run section's two navigation destinations and the task (if
  * any) the run works on. The run→task link lives in the run's context snapshot
  * (`issueId`, falling back to `taskId` for older snapshots); the `HeartbeatRun`
  * itself doesn't carry the issue id. The heading always links to the run detail
  * page; the running row links to the task detail page when the snapshot resolves
  * to a known issue, otherwise falls back to the run detail page (pure timer
- * heartbeats or an issue not in the loaded set).
+ * heartbeats or an issue that can't be resolved).
  */
 export function resolveLatestRunNavigation(
   run: Pick<HeartbeatRun, "id" | "contextSnapshot">,
   agentId: string,
   issuesById: Map<string, LatestRunIssue>,
 ): { task: LatestRunIssue | undefined; runHref: string; rowHref: string } {
-  const ctx = run.contextSnapshot as Record<string, unknown> | null;
-  const issueId = ctx?.issueId ?? ctx?.taskId;
-  const task = issueId ? issuesById.get(String(issueId)) : undefined;
+  const issueId = getRunSnapshotIssueId(run);
+  const task = issueId ? issuesById.get(issueId) : undefined;
   const runHref = `/agents/${agentId}/runs/${run.id}`;
   const rowHref = task ? `/issues/${task.identifier ?? task.id}` : runHref;
   return { task, runHref, rowHref };
@@ -1463,22 +1475,36 @@ function LatestRunCard({
   agentId: string;
   issuesById: Map<string, LatestRunIssue>;
 }) {
-  if (runs.length === 0) return null;
-
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  const sorted = useMemo(
+    () =>
+      [...runs].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      ),
+    [runs]
   );
 
   const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
   const run = liveRun ?? sorted[0];
-  const isLive = run.status === "running" || run.status === "queued";
 
-  const { task, runHref, rowHref } = resolveLatestRunNavigation(run, agentId, issuesById);
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
-  const StatusIcon = statusInfo.icon;
-  const summaryRaw = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+  // The assigned-issues list this card resolves against is bounded (server page
+  // limit), so a live run can reference a valid issue that isn't on the loaded
+  // page. When the snapshot points at an issue we don't already have, fetch it
+  // directly so the running row always links to the task rather than falling
+  // back to run metadata. `enabled` keeps this a no-op for the common case.
+  const snapshotIssueId = run ? getRunSnapshotIssueId(run) : undefined;
+  const needsFallbackFetch = !!snapshotIssueId && !issuesById.has(snapshotIssueId);
+  const { data: fallbackIssue } = useQuery({
+    queryKey: queryKeys.issues.detail(snapshotIssueId ?? "__none__"),
+    queryFn: () => issuesApi.get(snapshotIssueId as string),
+    enabled: needsFallbackFetch,
+    staleTime: 30_000,
+  });
+
+  const summaryRaw = run
+    ? run.resultJson
+      ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+      : run.error ?? ""
+    : "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = useMemo(() => {
@@ -1497,6 +1523,24 @@ function LatestRunCard({
     }
     return excerpt.join(" ");
   }, [summaryRaw]);
+
+  if (!run) return null;
+
+  const isLive = run.status === "running" || run.status === "queued";
+  // Fold any directly-fetched fallback issue into the lookup, keyed by the same
+  // snapshot id used to resolve the row so it hits regardless of id-vs-slug.
+  const effectiveIssuesById =
+    fallbackIssue && snapshotIssueId
+      ? new Map(issuesById).set(snapshotIssueId, {
+          id: fallbackIssue.id,
+          title: fallbackIssue.title,
+          status: fallbackIssue.status,
+          identifier: fallbackIssue.identifier,
+        })
+      : issuesById;
+  const { task, runHref, rowHref } = resolveLatestRunNavigation(run, agentId, effectiveIssuesById);
+  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+  const StatusIcon = statusInfo.icon;
 
   return (
     <div className="space-y-3">
