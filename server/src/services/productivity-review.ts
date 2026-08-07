@@ -443,6 +443,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     thresholds: ProductivityReviewThresholds,
     now: Date,
   ): Promise<ProductivityReviewEvidence | null> {
+    // A paused/retired assignee has no actionable productivity signal.
+    if (!isAgentInvokable(sourceAgent)) return null;
+
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
@@ -458,6 +461,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(MAX_RUNS_FOR_STREAK);
+
+    // A stale in_progress timestamp without any issue-linked run is not an active episode.
+    if (latestRuns.length === 0) return null;
 
     const runIds = latestRuns.map((run) => run.id);
     const commentRunIds = new Set<string>();
