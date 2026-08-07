@@ -169,3 +169,19 @@ test("execute uses Hermes config model when adapter model is auto", async () => 
   expect(args[modelFlagIndex + 1]).toBe("gpt-5.5");
   expect(resultModel).toBe("gpt-5.5");
 });
+
+test("execute lets a selected Hermes profile resolve its own model", async () => {
+  const { args, resultModel } = await runExecuteWithFakeHermes(
+    { model: "auto", extraArgs: ["--profile", "profile-a"] },
+    [
+      "model:",
+      "  default: gpt-5.5",
+      "  provider: openai-codex",
+    ].join("\n"),
+  );
+
+  expect(args.slice(0, 3)).toEqual(["--profile", "profile-a", "chat"]);
+  expect(args).not.toContain("-m");
+  expect(args).not.toContain("gpt-5.5");
+  expect(resultModel).toBe("auto");
+});
