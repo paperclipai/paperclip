@@ -1123,6 +1123,31 @@ async function isSshEnvLabFixtureProcess(state: Pick<SshEnvLabFixtureState, "pid
   return command.includes(state.sshdConfigPath);
 }
 
+async function stopOwnedSshEnvLabFixtureProcess(
+  state: Pick<SshEnvLabFixtureState, "pid" | "sshdConfigPath">,
+): Promise<void> {
+  if (!(await isSshEnvLabFixtureProcess(state))) return;
+  process.kill(state.pid, "SIGTERM");
+  try {
+    await waitForCondition(async () => {
+      if (await isSshEnvLabFixtureProcess(state)) {
+        throw new Error("SSH fixture process is still running.");
+      }
+    }, { timeoutMs: 5_000, intervalMs: 100 });
+    return;
+  } catch {
+    // Revalidate the command identity before escalation so PID reuse fails closed.
+    if (!(await isSshEnvLabFixtureProcess(state))) return;
+  }
+
+  process.kill(state.pid, "SIGKILL");
+  await waitForCondition(async () => {
+    if (await isSshEnvLabFixtureProcess(state)) {
+      throw new Error("SSH fixture process is still running after SIGKILL.");
+    }
+  }, { timeoutMs: 2_000, intervalMs: 50 });
+}
+
 export async function getSshEnvLabSupport(): Promise<SshEnvLabSupport> {
   if (process.platform === "darwin" && process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB !== "1") {
     return {
@@ -1685,14 +1710,7 @@ export async function stopSshEnvLabFixture(statePath: string): Promise<boolean> 
   const state = await readSshEnvLabFixtureState(statePath);
   if (!state) return false;
 
-  if (await isSshEnvLabFixtureProcess(state)) {
-    process.kill(state.pid, "SIGTERM");
-    await waitForCondition(async () => {
-      if (await isSshEnvLabFixtureProcess(state)) {
-        throw new Error("SSH fixture process is still running.");
-      }
-    }, { timeoutMs: 5_000, intervalMs: 100 });
-  }
+  await stopOwnedSshEnvLabFixtureProcess(state);
 
   await fs.rm(state.rootDir, { recursive: true, force: true }).catch(() => undefined);
   return true;
@@ -1823,9 +1841,7 @@ export async function startSshEnvLabFixture(input: {
     await fs.writeFile(input.statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
     return state;
   } catch (error) {
-    if (await isPidRunning(state.pid)) {
-      process.kill(state.pid, "SIGTERM");
-    }
+    await stopOwnedSshEnvLabFixtureProcess(state);
     await fs.rm(rootDir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }

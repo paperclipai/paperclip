@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, or, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 import {
   activityLog,
   agents,
@@ -299,7 +300,7 @@ async function spawnOrphanedProcessGroup() {
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  const childProcesses = new Set<ChildProcess>();
+  let childProcesses: FixtureSupervisor;
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
@@ -315,6 +316,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: now,
     });
   }, 20_000);
+
+  beforeEach(() => {
+    childProcesses = new FixtureSupervisor({ owner: "heartbeat process recovery tests", maxProcesses: 32 });
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -332,10 +337,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       model: "test-model",
     }));
     runningProcesses.clear();
-    for (const child of childProcesses) {
-      child.kill("SIGKILL");
-    }
-    childProcesses.clear();
+    await childProcesses.teardown();
     for (const pid of cleanupPids) {
       try {
         process.kill(pid, "SIGKILL");
@@ -453,10 +455,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   afterAll(async () => {
-    for (const child of childProcesses) {
-      child.kill("SIGKILL");
-    }
-    childProcesses.clear();
     for (const pid of cleanupPids) {
       try {
         process.kill(pid, "SIGKILL");
@@ -1198,7 +1196,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "live recorded heartbeat" });
     expect(child.pid).toBeTypeOf("number");
 
     const { runId, wakeupRequestId } = await seedRunFixture({
@@ -1442,7 +1440,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "heartbeat recovery child" });
     expect(child.pid).toBeGreaterThan(0);
     const { runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
@@ -1506,7 +1504,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("snapshots and drains a server-stdio ACP run before embedded database shutdown", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "heartbeat recovery child" });
     expect(child.pid).toBeGreaterThan(0);
     const { agentId, runId } = await seedRunFixture({
       agentStatus: "running",
@@ -1594,7 +1592,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("reports a selectively drained ACP run as lost when terminal persistence fails", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "heartbeat recovery child" });
     expect(child.pid).toBeGreaterThan(0);
     const { runId } = await seedRunFixture({
       agentStatus: "running",
@@ -1650,8 +1648,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("drains only server-stdio runs and preserves detached CLI adoption in a mixed restart", async () => {
     const acpChild = spawnAliveProcess();
     const cliChild = spawnAliveProcess();
-    childProcesses.add(acpChild);
-    childProcesses.add(cliChild);
+    childProcesses.registerProcess(acpChild, { label: "ACP heartbeat child" });
+    childProcesses.registerProcess(cliChild, { label: "CLI heartbeat child" });
     expect(acpChild.pid).toBeGreaterThan(0);
     expect(cliChild.pid).toBeGreaterThan(0);
 
@@ -1746,7 +1744,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("adopts an old-server legacy snapshot written for a new instance-scoped marker", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "heartbeat recovery child" });
     expect(child.pid).toBeGreaterThan(0);
     const { companyId, agentId, issueId, runId } = await seedRunFixture({
       agentStatus: "running",
@@ -1900,7 +1898,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
         };
         const child = spawnAliveProcess();
-        childProcesses.add(child);
+        childProcesses.registerProcess(child, { label: "adapter execution child" });
         if (!child.pid) throw new Error("Test codex_local child did not expose a pid");
         spawnedPid = child.pid;
         await input.onSpawn?.({
@@ -2009,7 +2007,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
     const child = spawnAliveProcess();
-    childProcesses.add(child);
+    childProcesses.registerProcess(child, { label: "heartbeat recovery child" });
     expect(child.pid).toBeGreaterThan(0);
     const { runId } = await seedRunFixture({
       agentStatus: "running",

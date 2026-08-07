@@ -352,7 +352,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("PAPERCLIP_") && key !== "PAPERCLIP_TEST_INVOCATION_ID") {
       delete env[key];
     }
   }

@@ -3,10 +3,12 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const helperPath = path.resolve(__dirname, "../../skills/paperclip-task-bridge/paperclip-task.mjs");
 const apiKey = "pc_test_secret_should_not_print";
+let fixtures: FixtureSupervisor;
 
 type RequestRecord = {
   method: string;
@@ -24,6 +26,7 @@ function runHelper(args: string[], env: Record<string, string>) {
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    fixtures.registerProcess(child, { label: "Hermes task bridge helper" });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -45,6 +48,7 @@ describe("paperclip-task-bridge helper", () => {
   let requests: RequestRecord[];
 
   beforeEach(async () => {
+    fixtures = new FixtureSupervisor({ owner: "Hermes task bridge tests" });
     requests = [];
     server = http.createServer(async (req, res) => {
       let raw = "";
@@ -126,6 +130,7 @@ describe("paperclip-task-bridge helper", () => {
   });
 
   afterEach(async () => {
+    await fixtures.teardown();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
