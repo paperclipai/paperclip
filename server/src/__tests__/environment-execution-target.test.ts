@@ -636,6 +636,35 @@ describe("resolveEnvironmentExecutionTarget", () => {
     ]);
   });
 
+  it("delivers the whole final output when the poll fallback buffer does not continue the streamed prefix", async () => {
+    // The provider streams a prefix, then its stream fails and it polls a
+    // buffer that does NOT start with that prefix. A length slice would drop
+    // the leading bytes of the poll buffer and corrupt the durable log, so the
+    // reconciler delivers the whole final output instead. The streamed prefix
+    // repeats, but no output byte is lost or truncated.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "hello ");
+        await typed.onLog?.("stderr", "warn:");
+        // The poll buffer starts with different leading text on both streams.
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "RESYNCED output", stderr: "RESET err" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "hello "],
+      ["stderr", "warn:"],
+      ["stdout", "RESYNCED output"],
+      ["stderr", "RESET err"],
+    ]);
+  });
+
   it("sets the provider duration attributes from finite Daytona-shaped metadata", async () => {
     const { tracer, spans } = createRecordingExecTracer();
     const runner = await runnerFor({

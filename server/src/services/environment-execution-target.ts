@@ -70,6 +70,28 @@ function toBoolean(value: unknown): boolean | undefined {
 }
 
 /**
+ * Compute the tail of `final` that the provider did NOT already stream.
+ *
+ * The provider streams output chunks in order. Those chunks form `delivered`.
+ * The final result is `final`. In the normal path `final` continues
+ * `delivered`, so the tail is `final` past the delivered length.
+ *
+ * A provider can stream a prefix and then fall back to a poll that returns a
+ * different buffer. When `final` does not start with `delivered`, a length
+ * slice would drop unrelated leading output or cut a chunk mid-text, so the
+ * durable log would hold truncated or corrupt output. In that case this
+ * function returns the whole `final` instead. That can repeat the streamed
+ * prefix in the log, but the complete final output always reaches the log.
+ * Repetition is safer than a silent loss of output.
+ */
+function undeliveredSuffix(delivered: string, final: string): string {
+  if (!final) return "";
+  if (delivered.length === 0) return final;
+  if (final.startsWith(delivered)) return final.slice(delivered.length);
+  return final;
+}
+
+/**
  * The closed input for one `sandbox.exec` span. The seam builds it from the
  * exec result and the active step context. Every field is already bounded or
  * numeric; the raw command clamps inside the helper below.
@@ -273,18 +295,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // Incremental log sink. The provider streams each output chunk
                 // through the execute.log notification while the command runs.
                 // Serialize the delivery per execute call so the runner sees the
-                // chunks in order, and count the delivered characters per stream,
-                // so the final-result delivery below emits only the un-streamed
-                // suffix.
+                // chunks in order, and keep the delivered text per stream, so the
+                // final-result delivery below emits only the un-streamed suffix
+                // and can detect a provider poll fallback that returns a
+                // different buffer.
                 let incrementalLogChain: Promise<void> = Promise.resolve();
-                let deliveredStdoutChars = 0;
-                let deliveredStderrChars = 0;
+                let deliveredStdout = "";
+                let deliveredStderr = "";
                 const onIncrementalLog = (
                   stream: "stdout" | "stderr",
                   chunk: string,
                 ): Promise<void> => {
-                  if (stream === "stdout") deliveredStdoutChars += chunk.length;
-                  else deliveredStderrChars += chunk.length;
+                  if (stream === "stdout") deliveredStdout += chunk;
+                  else deliveredStderr += chunk;
                   incrementalLogChain = incrementalLogChain.then(() =>
                     commandInput.onLog?.(stream, chunk),
                   );
@@ -357,19 +380,21 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // the runner order and surfaces a log-sink rejection.
                 await incrementalLogChain;
                 // Deliver only the suffix the provider did NOT already stream.
-                // The streamed chunks form an in-order prefix of the final
-                // result, so the remaining output is `result.<stream>` past the
-                // delivered character count. When the provider streamed nothing,
-                // the whole output is the suffix. When it streamed a prefix and
-                // then fell back to a poll that returned the complete output, the
-                // remaining tail still reaches the runner. When it streamed the
-                // complete output, the suffix is empty and nothing repeats. A
-                // rejected `onLog` still propagates to the caller (control flow
-                // is unchanged), but the span already carries the successful
-                // outcome, so a log failure never marks the execution failed.
-                const stdoutSuffix = result.stdout ? result.stdout.slice(deliveredStdoutChars) : "";
+                // The streamed chunks usually form an in-order prefix of the
+                // final result, so the remaining output is the final text past
+                // the delivered text. When the provider streamed nothing, the
+                // whole output is the suffix. When it streamed the complete
+                // output, the suffix is empty and nothing repeats. When it
+                // streamed a prefix and then fell back to a poll whose buffer
+                // does not continue that prefix, `undeliveredSuffix` returns the
+                // whole final output, so the durable log keeps the complete
+                // result and never holds a truncated slice. A rejected `onLog`
+                // still propagates to the caller (control flow is unchanged),
+                // but the span already carries the successful outcome, so a log
+                // failure never marks the execution failed.
+                const stdoutSuffix = undeliveredSuffix(deliveredStdout, result.stdout ?? "");
                 if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
-                const stderrSuffix = result.stderr ? result.stderr.slice(deliveredStderrChars) : "";
+                const stderrSuffix = undeliveredSuffix(deliveredStderr, result.stderr ?? "");
                 if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
                 return {
                   exitCode: result.exitCode,
