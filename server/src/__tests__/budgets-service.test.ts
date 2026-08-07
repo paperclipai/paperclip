@@ -640,6 +640,59 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     }
   });
 
+  it("fires a distinct company-scope guardrail alert for each stage escalation (0->1, 1->2, 2->3)", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const onBudgetAlert = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { onBudgetAlert });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1000,
+      warnPercent: 60,
+      warnHighPercent: 85,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    // 0 -> 1 (WARN): crosses 60% (600/1000)
+    const toWarn = await insertCostEvent({ companyId, agentId, costCents: 610 });
+    await service.evaluateCostEvent(toWarn);
+    // Re-processing the same event must not re-fire (incident-based dedup).
+    await service.evaluateCostEvent(toWarn);
+
+    expect(onBudgetAlert).toHaveBeenCalledTimes(1);
+    expect(onBudgetAlert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ scopeType: "company", thresholdType: "soft", utilizationPercent: 61 }),
+    );
+
+    // 1 -> 2 (HIGH): crosses 85% (850/1000) without ever leaving the same
+    // once-per-window "soft" incident — this is exactly the transition the
+    // incident-dedup path alone cannot detect.
+    const toHigh = await insertCostEvent({ companyId, agentId, costCents: 250 });
+    await service.evaluateCostEvent(toHigh);
+
+    expect(onBudgetAlert).toHaveBeenCalledTimes(2);
+    expect(onBudgetAlert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ scopeType: "company", thresholdType: "soft", utilizationPercent: 86 }),
+    );
+
+    // 2 -> 3 (HARD STOP): crosses 100% (1000/1000)
+    const toHardStop = await insertCostEvent({ companyId, agentId, costCents: 150 });
+    await service.evaluateCostEvent(toHardStop);
+
+    expect(onBudgetAlert).toHaveBeenCalledTimes(3);
+    expect(onBudgetAlert).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ scopeType: "company", thresholdType: "hard", utilizationPercent: 101 }),
+    );
+  });
+
   it("hard-stops project work until a valid budget raise resumes it and overview reconciles ledger spend", async () => {
     const { companyId, agentId, projectId } = await createBudgetFixture();
     const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);

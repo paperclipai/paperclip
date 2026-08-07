@@ -1,0 +1,1 @@
+ALTER TABLE "budget_incidents" ADD COLUMN "high_notified_at" timestamp with time zone;

@@ -691,8 +691,16 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
         const utilizationPercent = Number(((observedAmount / policy.amount) * 100).toFixed(2));
 
+        let openSoftIncident: IncidentRow | null = null;
+        // If a single event jumps straight past HIGH (e.g. 40% -> 90%), the
+        // company-scope HIGH-escalation block below already covers notification;
+        // skip the WARN-level notify here so we don't double-send for one crossing.
+        const jumpsStraightToHighOnCreate =
+          policy.scopeType === "company" && utilizationPercent >= (policy.warnHighPercent ?? 85);
+
         if (policy.notifyEnabled && observedAmount >= softThreshold) {
           const result = await createIncidentIfNeeded(policy, "soft", observedAmount);
+          openSoftIncident = result?.incident ?? null;
           if (result?.isNew) {
             const { incident: softIncident } = result;
             await logActivity(db, {
@@ -710,7 +718,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               },
             });
             // Notify CEO only when the incident is newly created (avoid spam)
-            if (hooks.onBudgetAlert) {
+            if (hooks.onBudgetAlert && !jumpsStraightToHighOnCreate) {
               const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
               await hooks.onBudgetAlert({
                 companyId: policy.companyId,
@@ -725,6 +733,37 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               });
             }
           }
+        }
+
+        // Company-wide guardrail stage escalation (1=WARN -> 2=HIGH). The soft/hard
+        // incident dedup above only distinguishes "crossed warnPercent" vs. "crossed
+        // 100%" once per window, which cannot represent the intermediate HIGH stage.
+        // Dedup this against the open soft incident's `highNotifiedAt` marker so it
+        // fires exactly once per window, independent of how many times this event
+        // (or later events) re-run evaluateCostEvent.
+        if (
+          policy.scopeType === "company" &&
+          hooks.onBudgetAlert &&
+          openSoftIncident &&
+          !openSoftIncident.highNotifiedAt &&
+          utilizationPercent >= (policy.warnHighPercent ?? 85)
+        ) {
+          await db
+            .update(budgetIncidents)
+            .set({ highNotifiedAt: new Date() })
+            .where(eq(budgetIncidents.id, openSoftIncident.id));
+          const scope = await resolveScopeRecord(db, "company", policy.scopeId);
+          await hooks.onBudgetAlert({
+            companyId: policy.companyId,
+            scopeType: "company",
+            scopeId: policy.scopeId,
+            scopeName: normalizeScopeName("company", scope.name),
+            thresholdType: "soft",
+            observedCents: observedAmount,
+            limitCents: policy.amount,
+            utilizationPercent,
+            windowKind: policy.windowKind as BudgetWindowKind,
+          });
         }
 
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
