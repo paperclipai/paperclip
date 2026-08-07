@@ -5277,6 +5277,82 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  // A stranded escalation used to write `blocked` with no blocker edge and no unblock
+  // descriptor. `blocked` has exactly one automatic exit — the release of an unresolved
+  // blocker — so a row in that shape has no wake path at all and stays silent until an
+  // operator finds it by hand. The descriptor is what the PATCH route requires from every
+  // other actor before it accepts `blocked`, and it puts the row back on a live path:
+  // an agent owner gets the `issue_unblock_requested` wake, a board owner gets the
+  // attention-inbox entry.
+  it("attaches a routable unblock descriptor when it blocks stranded work that has no blocker", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const blockers = await db
+      .select({ id: issueRelations.id })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      ));
+    expect(blockers).toHaveLength(0);
+
+    const descriptor = issue?.unblockDescriptor;
+    expect(descriptor).toBeTruthy();
+    expect((descriptor?.action ?? "").trim().length).toBeGreaterThan(0);
+    // The owner must be reachable: the recovery owner agent, or the board when Paperclip
+    // found no invokable owner. The fixture agent is invokable, so it owns the unblock.
+    expect(descriptor?.owner).toEqual({ agentId });
+    // `deliverAgentUnblockNotification` only fires for a transition after the routable-blocked
+    // rollout, so the stamp is part of the wake path, not decoration.
+    expect(issue?.blockedTransitionAt).toBeTruthy();
+  });
+
+  it("does not attach an unblock descriptor when a live blocker already carries the wake path", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const openBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: openBlockerId,
+      companyId,
+      title: "Blocking issue still open",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 20,
+      identifier: `${issuePrefix}-20`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: openBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.unblockDescriptor).toBeNull();
+  });
+
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
