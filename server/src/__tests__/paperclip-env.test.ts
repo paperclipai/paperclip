@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe("buildPaperclipEnv", () => {
-  it("prefers an explicit PAPERCLIP_RUNTIME_API_URL", () => {
+  it("uses the canonical loopback API URL even when runtime URLs are configured", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://203.0.113.42:3102";
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
@@ -37,10 +37,10 @@ describe("buildPaperclipEnv", () => {
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.42:3102");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
   });
 
-  it("falls back to PAPERCLIP_API_URL when no runtime URL is configured", () => {
+  it("does not forward PAPERCLIP_API_URL when no runtime URL is configured", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
@@ -48,10 +48,10 @@ describe("buildPaperclipEnv", () => {
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
   });
 
-  it("uses runtime listen host/port when explicit URL is not set", () => {
+  it("does not derive an agent URL from the runtime listen host or port", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
@@ -60,10 +60,10 @@ describe("buildPaperclipEnv", () => {
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3101");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
   });
 
-  it("formats IPv6 hosts safely in fallback URL generation", () => {
+  it("does not derive an agent URL from an IPv6 listen host", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_LISTEN_HOST = "::1";
@@ -71,6 +71,6 @@ describe("buildPaperclipEnv", () => {
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
   });
 });

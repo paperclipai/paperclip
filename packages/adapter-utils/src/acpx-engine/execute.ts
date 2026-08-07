@@ -2235,6 +2235,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
   if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
   const lines = [
     "Paperclip API access note:",
+    "Agent runs use http://127.0.0.1:3100 as the Paperclip API base URL.",
     "Use terminal commands with curl to make Paperclip API requests.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,

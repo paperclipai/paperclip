@@ -1978,25 +1978,13 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
-  const resolveHostForUrl = (rawHost: string): string => {
-    const host = rawHost.trim();
-    if (!host || host === "0.0.0.0" || host === "::") return "localhost";
-    if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
-    return host;
-  };
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
-  const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
-  );
-  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
+  // Agent runs execute in the same host network namespace as the control plane.
+  // Keep this independent of public URLs and container-gateway addresses.
+  vars.PAPERCLIP_API_URL = "http://127.0.0.1:3100";
   return vars;
 }
 
