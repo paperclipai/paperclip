@@ -31,6 +31,8 @@ const {
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
+      PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:4310",
+      PAPERCLIP_RUNTIME_API_CANDIDATES_JSON: '["http://127.0.0.1:4310"]',
       PAPERCLIP_API_KEY: "bridge-token",
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
     },
@@ -204,6 +206,8 @@ describe("codex remote execution", () => {
       },
     ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBe('["http://127.0.0.1:4310"]');
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
