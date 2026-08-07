@@ -55,6 +55,43 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 
+/**
+ * Fallback workspace dir keyed by BOTH agent and issue, so a non-project issue
+ * that does iterative local file work (e.g. git worktrees) across multiple
+ * heartbeats lands in the same directory each run instead of a per-agent dir
+ * shared across every issue that agent touches. Without this, heartbeat N+1 can
+ * be trampled by an interleaved run on a different non-project issue and loses
+ * the branch/commit heartbeat N produced, silently re-deriving the work.
+ */
+export function resolveIssueScopedAgentWorkspaceDir(agentId: string, issueId: string): string {
+  const trimmedAgent = agentId.trim();
+  if (!PATH_SEGMENT_RE.test(trimmedAgent)) {
+    throw new Error(`Invalid agent id for workspace path '${agentId}'.`);
+  }
+  const trimmedIssue = issueId.trim();
+  if (!PATH_SEGMENT_RE.test(trimmedIssue)) {
+    throw new Error(`Invalid issue id for workspace path '${issueId}'.`);
+  }
+  return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmedAgent, trimmedIssue);
+}
+
+/**
+ * True when `cwd` is one of this agent's local fallback workspaces — either the
+ * per-agent dir (resolveDefaultAgentWorkspaceDir) or an issue-scoped subdir of it
+ * (resolveIssueScopedAgentWorkspaceDir). Used to decide whether a resumed session
+ * still sitting in a fallback should migrate into a now-available project workspace,
+ * so that migration keeps working after the fallback became issue-scoped.
+ */
+export function isAgentFallbackWorkspaceCwd(agentId: string, cwd: string | null | undefined): boolean {
+  const trimmedAgent = agentId.trim();
+  if (!PATH_SEGMENT_RE.test(trimmedAgent)) return false;
+  const trimmedCwd = cwd?.trim();
+  if (!trimmedCwd) return false;
+  const agentRoot = path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmedAgent);
+  const target = path.resolve(trimmedCwd);
+  return target === agentRoot || path.dirname(target) === agentRoot;
+}
+
 function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback = "_default"): string {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return fallback;
