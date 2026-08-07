@@ -96,6 +96,35 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it("binds /usr before the merged-/usr symlink targets", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-usrmerge-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "console.log('ok')"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+
+    const bindIndex = (candidate: string): number => {
+      for (let index = 0; index < target.args.length - 1; index += 1) {
+        if (target.args[index] === "--ro-bind" && target.args[index + 1] === candidate) return index;
+      }
+      return -1;
+    };
+
+    const usrIndex = bindIndex("/usr");
+    expect(usrIndex).toBeGreaterThanOrEqual(0);
+    for (const merged of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const mergedIndex = bindIndex(merged);
+      if (mergedIndex < 0) continue;
+      expect(mergedIndex).toBeGreaterThan(usrIndex);
+    }
+  });
+
   it("binds a confined absolute alias to the synchronized workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
     cleanup.push(root);
