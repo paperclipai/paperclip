@@ -40,7 +40,7 @@ describeEmbeddedPostgres("productivity review service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-productivity-review-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
@@ -48,7 +48,7 @@ describeEmbeddedPostgres("productivity review service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  }, 30_000);
+  });
 
   async function seedAssignedIssue(opts?: {
     status?: "todo" | "in_progress";

@@ -252,7 +252,7 @@ describe("instance settings routes", () => {
       enableIsolatedWorkspaces: true,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  }, 10_000);
+  });
 
   it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
     const app = await createApp({

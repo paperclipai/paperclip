@@ -456,7 +456,7 @@ describe("issue activity event routes", () => {
         }),
       );
     });
-  }, 15_000);
+  });
 
   it("logs readable workspace change activity details for issue updates", async () => {
     const previousProjectWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

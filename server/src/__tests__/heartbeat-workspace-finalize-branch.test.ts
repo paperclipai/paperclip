@@ -264,7 +264,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-finalize-branch-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -312,6 +312,9 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
+    // RBR-949: closes the live pg client pool, then (outside the
+    // shared-cluster fast path) stops a dedicated embedded Postgres cluster
+    // — slower than the 30s config default in that fallback case.
   }, 60_000);
 
   it("repairs clean unrecorded branch drift before recording workspace finalization", async () => {
@@ -399,7 +402,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         }),
       },
     });
-  }, 20_000);
+  });
 
   it("adopts unrecorded forward branch drift for finalization without persisting it", async () => {
     const repoRoot = await createGitRepo();
@@ -468,7 +471,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       }),
     });
     expect(recordedBranch).not.toBe(publishBranch);
-  }, 20_000);
+  });
 
   it("allows a successful adapter run when the branch transition is recorded before finalization", async () => {
     const repoRoot = await createGitRepo();
@@ -534,5 +537,5 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         actualBranchName: publishBranch,
       },
     });
-  }, 20_000);
+  });
 });

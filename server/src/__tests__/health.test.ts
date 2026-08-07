@@ -77,7 +77,7 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
-  }, 15_000);
+  });
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
     const app = createApp(undefined, testServerInfo, undefined, {});

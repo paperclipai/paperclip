@@ -33,6 +33,9 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-lock-release-on-reassignment-");
     db = createDb(tempDb.connectionString);
+    // RBR-949: outside the shared-cluster fast path, this boots a dedicated
+    // embedded Postgres cluster, which can take longer than the 30s config
+    // default.
   }, 60_000);
 
   afterEach(async () => {

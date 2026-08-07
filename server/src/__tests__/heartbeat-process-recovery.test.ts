@@ -314,7 +314,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdAt: now,
       updatedAt: now,
     });
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();

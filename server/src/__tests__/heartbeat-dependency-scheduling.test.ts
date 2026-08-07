@@ -97,7 +97,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     let idlePolls = 0;
@@ -682,6 +682,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     } finally {
       finishFirstRun();
     }
+    // RBR-949: real heartbeat scheduling scenario with a 30s waitForCondition()
+    // nested inside — genuinely slower than the config default.
   }, 40_000);
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {

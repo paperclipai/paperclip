@@ -168,6 +168,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const started = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-comment-wake-");
     db = createDb(started.connectionString);
     tempDb = started;
+    // RBR-949: every `it` in this suite runs a full mock-gateway + heartbeat
+    // scheduling scenario with waitFor() polling (up to 90s per wait) across
+    // multiple simulated runs — genuinely slower than DB-only suites, so the
+    // per-test 120s budgets below stay. See after each `it`.
   }, 120_000);
 
   afterAll(async () => {
@@ -613,6 +617,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
@@ -761,6 +766,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("promotes deferred comment wakes after the active run closes the issue", async () => {
@@ -955,6 +961,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("does not reopen a finished issue when the deferred comment wake came from another agent", async () => {
@@ -1157,6 +1164,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("does not reopen a finished issue when the deferred comment wake is self-authored by the closing run", async () => {
@@ -1325,6 +1333,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("still reopens a finished issue when a deferred batch mixes self-authored and human comments", async () => {
@@ -1538,6 +1547,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("queues exactly one follow-up run when an issue-bound run exits without a comment", async () => {
@@ -1689,7 +1699,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 20_000);
+  });
 
   it("defers mentioned-agent wakes while another agent is actively executing the same issue", async () => {
     const gateway = await createControlledGatewayServer();
@@ -1892,6 +1902,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
 
   it("does not mark a direct mentioned-agent run as the issue execution owner", async () => {
@@ -2043,6 +2054,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
+  // RBR-949: see beforeAll comment above — real gateway + heartbeat waitFor() scenario.
   }, 120_000);
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
@@ -2180,5 +2192,5 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 20_000);
+  });
 });

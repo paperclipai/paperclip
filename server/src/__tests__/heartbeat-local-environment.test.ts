@@ -70,7 +70,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-local-environment-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.execute(sql.raw(`

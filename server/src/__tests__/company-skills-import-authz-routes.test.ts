@@ -50,7 +50,7 @@ describeEmbeddedPostgres("company skill import authorization routes", () => {
     process.env.PAPERCLIP_INSTANCE_ID = "default";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-import-authz-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

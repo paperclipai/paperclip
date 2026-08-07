@@ -332,7 +332,7 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Missing permission");
     expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
     expect(mockAssertCanManageProjectWorkspaceRuntimeServices).toHaveBeenCalled();
-  }, 15000);
+  });
 
   it("blocks shared-project stop/restart requests from agents", async () => {
     mockProjectService.getById.mockResolvedValue(buildProject({
@@ -381,7 +381,7 @@ describe.sequential("workspace runtime service route authorization", () => {
       expect(mockAssertCanManageProjectWorkspaceRuntimeServices).not.toHaveBeenCalled();
     }
 
-  }, 15000);
+  });
 
   it("rejects agent callers that create project execution workspace commands", async () => {
     const app = await createProjectApp({
@@ -473,7 +473,7 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Missing permission");
     expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith(executionWorkspaceId);
     expect(mockAssertCanManageExecutionWorkspaceRuntimeServices).toHaveBeenCalled();
-  }, 15000);
+  });
 
   it("rejects agent callers that patch execution workspace command config", async () => {
     mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ id: executionWorkspaceId }));

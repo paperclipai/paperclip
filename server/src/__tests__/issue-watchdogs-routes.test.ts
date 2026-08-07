@@ -71,7 +71,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-watchdogs-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();

@@ -701,7 +701,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-low-trust-red-team-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -1517,6 +1517,8 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       gateway.releaseFirstWait();
       await gateway.close();
     }
+    // RBR-949: real HTTP gateway + heartbeat scheduling scenario with a
+    // 30s waitFor() nested inside — genuinely slower than the config default.
   }, 120_000);
 
   it("keeps board positive controls for issue-linked approvals and sanitized promotion", async () => {

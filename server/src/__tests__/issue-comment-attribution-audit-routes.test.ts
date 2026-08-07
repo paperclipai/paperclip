@@ -60,7 +60,7 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-comment-attribution-audit-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -245,7 +245,7 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
         details: expect.objectContaining({ authorizationReason: "allow_visible_issue_write" }),
       }),
     ]));
-  }, 30_000);
+  });
 
   it("rejects and audits an agent-supplied onBehalfOfUserId", async () => {
     const fixture = await seed();
@@ -276,5 +276,5 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
         derivedFrom: "authenticated_actor",
       },
     });
-  }, 30_000);
+  });
 });

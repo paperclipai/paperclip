@@ -285,7 +285,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-autobuild-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -299,7 +299,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  }, 30_000);
+  });
 
   it("auto-builds bundled local plugins during POST /api/plugins/install when dist is missing", async () => {
     const fixture = await createBundledPluginFixture("success");
@@ -319,6 +319,8 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(existsSync(path.join(fixture.distDir, "worker.js"))).toBe(true);
     expect(existsSync(path.join(fixture.distDir, "ui", "index.js"))).toBe(true);
     expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
+    // RBR-949: real `pnpm install`/build against a fixture package on disk, not
+    // a DB round-trip — genuinely slower than the 30s config default.
   }, 60_000);
 
   it("auto-builds standalone bundled local plugins outside the root pnpm workspace", async () => {
@@ -341,6 +343,8 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(existsSync(path.join(fixture.distDir, "ui", "index.js"))).toBe(true);
     expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"))).toBe(true);
     expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
+    // RBR-949: standalone install also runs a real `pnpm install --ignore-workspace`
+    // outside the root workspace, same real-build cost as the case above.
   }, 60_000);
 
   it("bootstraps standalone bundled local plugin runtime dependencies when dist already exists", async () => {
@@ -363,6 +367,8 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.body.pluginKey).toBe(fixture.pluginKey);
     expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"))).toBe(true);
     expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
+    // RBR-949: bootstraps real runtime deps via `pnpm install`, same real-build
+    // cost as the two auto-build cases above.
   }, 60_000);
 
   it("returns the manual build command when auto-build is disabled and dist is missing", async () => {
@@ -380,7 +386,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.body.error).toContain(`pnpm --filter ${fixture.packageName} build`);
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(false);
     expect(mockLifecycle.load).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("returns the standalone bootstrap command when auto-build is disabled for sandbox-provider plugins", async () => {
     process.env["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] = "1";
@@ -398,5 +404,5 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.body.error).toContain("pnpm install --ignore-workspace --no-lockfile && pnpm build");
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(false);
     expect(mockLifecycle.load).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 });

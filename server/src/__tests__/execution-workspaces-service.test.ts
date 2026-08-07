@@ -254,7 +254,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         ?? { state: "unknown", headRef: null, headSha: null }
       ),
     });
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
@@ -464,7 +464,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(sweep.archived).toBe(1);
     expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
-  }, 20_000);
+  });
 
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
@@ -761,7 +761,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .where(eq(activityLog.entityId, eligible.executionWorkspaceId));
     expect(reopenedWorkspace?.status).toBe("archived");
     expect(reopenActivities).toContainEqual({ action: "execution_workspace.source_issue_reopened" });
-  }, 20_000);
+  });
 
   it("allows archiving shared workspace sessions with warnings even when issues are still open", async () => {
     const companyId = randomUUID();
@@ -1143,7 +1143,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       outcome: "restored",
       resolutionNote: "Execution workspace branch record reconciled from \"feature/recorded\" to \"feature/current\".",
     });
-  }, 20_000);
+  });
 
   it("reconciles forward when the recorded branch has no resolvable commit and the worktree is clean", async () => {
     const repoRoot = await createTempRepo();
@@ -1226,7 +1226,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comment?.body).toContain("Execution workspace branch reconciled.");
     expect(comment?.body).toContain("- From branch: `feature/never-created`");
     expect(comment?.body).toContain("- To branch: `feature/current`");
-  }, 20_000);
+  });
 
   it("keeps forward reconciliation fail-closed when the recorded branch is missing but the worktree is dirty", async () => {
     const repoRoot = await createTempRepo();
@@ -1292,7 +1292,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: 422,
       message: expect.stringContaining("requires the recorded branch to be an ancestor"),
     });
-  }, 20_000);
+  });
 
   it("keeps forward reconciliation fail-closed when the checked-out branch ref does not resolve either", async () => {
     const repoRoot = await createTempRepo();
@@ -1365,7 +1365,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: 422,
       message: expect.stringContaining("requires the recorded branch to be an ancestor"),
     });
-  }, 20_000);
+  });
 
   it("quarantine_restore rescues dirty live-branch work, resolves recovery, and returns the source issue to todo", async () => {
     const repoRoot = await createTempRepo();
@@ -1536,7 +1536,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments[1]?.body).toContain("Execution workspace branch reconciled.");
     expect(comments[1]?.body).toContain("- Mode: `quarantine_restore`");
     expect(comments[1]?.body).toContain(`- Rescue ref: \`${rescueRef}\``);
-  }, 20_000);
+  });
 
   it("quarantine_restore rejects active runtime services before creating a rescue branch", async () => {
     const repoRoot = await createTempRepo();
@@ -1640,7 +1640,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     )).resolves.toBeNull();
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it.each(["review", "approval"] as const)(
     "quarantine_restore preserves pending execution-%s semantics on the source issue",
@@ -1813,7 +1813,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       currentParticipant: { type: "agent", agentId: reviewerAgentId },
       returnAssignee: { type: "agent", agentId: coderAgentId },
     });
-  }, 20_000);
+  });
 
   it.each([
     {
@@ -2085,7 +2085,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects branch reconciliation while the workspace lifecycle is active", async () => {
     const repoRoot = await createTempRepo();
@@ -2170,7 +2170,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects branch reconciliation if the workspace becomes active before the branch record update", async () => {
     const repoRoot = await createTempRepo();
@@ -2273,7 +2273,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects branch reconciliation while runtime services are active", async () => {
     const repoRoot = await createTempRepo();
@@ -2380,7 +2380,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects branch reconciliation when a runtime service starts before the locked update", async () => {
     const repoRoot = await createTempRepo();
@@ -2509,7 +2509,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects branch reconciliation when runtime service activation is already spawning", async () => {
     const repoRoot = await createTempRepo();
@@ -2688,7 +2688,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("rejects forward branch reconciliation for diverged branches", async () => {
     const repoRoot = await createTempRepo();
@@ -2776,7 +2776,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.branchName).toBe("feature/recorded");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
-  }, 20_000);
+  });
 
   it("returns full details at the observed volume without multiplying unconfigured shared service history", async () => {
     const companyId = randomUUID();
@@ -2854,7 +2854,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       primaryService: null,
       hasRuntimeConfig: false,
     });
-  }, 30_000);
+  });
 
   it("inherits only runtime-service rows matching the current project workspace configuration and reuse scopes", async () => {
     const companyId = randomUUID();
@@ -3420,5 +3420,5 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
-  }, 20_000);
+  });
 });

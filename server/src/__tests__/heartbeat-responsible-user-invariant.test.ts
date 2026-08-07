@@ -87,7 +87,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-responsible-user-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();
@@ -114,6 +114,9 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    // RBR-949: outside the shared-cluster fast path (e.g. this file run in
+    // isolation), cleanup() stops a dedicated embedded Postgres cluster,
+    // which can take longer than the 30s config default.
   }, 60_000);
 
   async function seedCompany() {

@@ -57,7 +57,7 @@ describeEmbeddedPostgres("pipelineService", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-pipelines-service-");
     db = createDb(tempDb.connectionString);
     svc = pipelineService(db, { heartbeat: noopHeartbeat });
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(pipelineAutomationExecutions);

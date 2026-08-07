@@ -201,6 +201,9 @@ describeEmbeddedPostgres("workspace file resources", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
     db = createDb(tempDb.connectionString);
+    // RBR-949: this suite also does real filesystem work (mkdtemp, writes,
+    // reads) per test via makeWorkspace(), on top of the DB clone — kept
+    // above the 30s config default with headroom.
   }, 60_000);
 
   afterAll(async () => {
@@ -1447,6 +1450,8 @@ describeEmbeddedPostgres("file resource route guards", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resource-guards-");
     db = createDb(tempDb.connectionString);
+    // RBR-949: same real filesystem work as the "workspace file resources"
+    // suite above — kept above the 30s config default with headroom.
   }, 60_000);
 
   afterAll(async () => {

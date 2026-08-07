@@ -36,7 +36,7 @@ describeEmbeddedPostgres("issue review attention", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-review-attention-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);

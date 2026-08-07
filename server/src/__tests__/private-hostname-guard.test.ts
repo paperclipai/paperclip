@@ -75,5 +75,5 @@ describe("privateHostnameGuard", () => {
     expect(res.send).toHaveBeenCalledWith(
       expect.stringContaining(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`),
     );
-  }, 20_000);
+  });
 });

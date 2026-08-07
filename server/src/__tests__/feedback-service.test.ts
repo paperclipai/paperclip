@@ -51,6 +51,9 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     db = createDb(started.connectionString);
     svc = feedbackService(db);
     tempDb = started;
+    // RBR-949: outside the shared-cluster fast path, this boots a dedicated
+    // embedded Postgres cluster, which can take longer than the 30s config
+    // default.
   }, 120_000);
 
   afterEach(async () => {
