@@ -157,8 +157,8 @@ file fails fast with an error if it's missing. Copy the example env file into
 cp docker/sso/.env.sso.example docker/.env
 ```
 
-Then edit `docker/.env` and replace the placeholder `BETTER_AUTH_SECRET` with a
-generated value:
+Then edit `docker/.env` and fill in the empty `BETTER_AUTH_SECRET` with a
+generated value (the example file ships with no value, not a placeholder one):
 
 ```sh
 sed -i.bak "s#^BETTER_AUTH_SECRET=.*#BETTER_AUTH_SECRET=$(openssl rand -hex 32)#" docker/.env && rm docker/.env.bak

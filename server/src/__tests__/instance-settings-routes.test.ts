@@ -10,6 +10,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
   listCompanyIds: vi.fn(),
+  getSso: vi.fn(),
+  updateSso: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 

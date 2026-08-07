@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  reconcilePendingMigrationHistory,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -461,6 +462,95 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             data_type: "jsonb",
           }),
         ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "reconciles migration 0054 as already-applied instead of re-running its DDL",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const ssoSafetyGuardHash = await migrationHash(
+          "0054_add_instance_settings_sso_safety_guard.sql",
+        );
+
+        // Simulate an environment whose migration-history row for 0054 was lost
+        // (e.g. a hash-only migrations table that predates a rename), which is
+        // exactly the situation reconcilePendingMigrationHistory() exists to repair.
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${ssoSafetyGuardHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'instance_settings'
+              AND column_name = 'sso'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0054_add_instance_settings_sso_safety_guard.sql"],
+        reason: "pending-migrations",
+      });
+
+      // This is the regression check: 0054's only statement must be recognised
+      // by migrationStatementAlreadyApplied() (an ALTER TABLE ... ADD COLUMN
+      // form) so reconciliation repairs it via a history-table insert rather
+      // than stopping short. If 0054 ever regains a leading SET LOCAL
+      // statement, migrationContentAlreadyApplied() will see an unrecognised
+      // statement first and reconciliation will report nothing repaired here.
+      const repair = await reconcilePendingMigrationHistory(connectionString);
+      expect(repair.repairedMigrations).toEqual([
+        "0054_add_instance_settings_sso_safety_guard.sql",
+      ]);
+      expect(repair.remainingMigrations).toEqual([]);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      // And confirm reconciliation genuinely skipped re-execution: still exactly
+      // one "sso" column, no duplicate-column error, no second history row.
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const columns = await verifySql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'instance_settings'
+              AND column_name = 'sso'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+
+        const ssoSafetyGuardHash = await migrationHash(
+          "0054_add_instance_settings_sso_safety_guard.sql",
+        );
+        const historyRows = await verifySql.unsafe<{ count: number }[]>(
+          `
+            SELECT count(*)::int AS count
+            FROM "drizzle"."__drizzle_migrations"
+            WHERE hash = '${ssoSafetyGuardHash}'
+          `,
+        );
+        expect(historyRows[0]?.count).toBe(1);
       } finally {
         await verifySql.end();
       }
