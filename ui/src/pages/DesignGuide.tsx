@@ -120,15 +120,6 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
-import {
-  Chip,
-  ChoiceCard,
-  ConnectorRow,
-  OnboardingCard,
-  OnboardingHeading,
-  Stepper,
-} from "@/components/onboarding/OnboardingPrimitives";
-import { CONNECTORS, MISSION_CHIPS } from "@/components/onboarding/onboarding-data";
 import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
@@ -258,61 +249,6 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
     <div className="space-y-3">
       <h4 className="text-sm font-medium">{title}</h4>
       {children}
-    </div>
-  );
-}
-
-// Onboarding flow primitives (ported prototype): interactive demos need local
-// selection state, mirroring how OnboardingFlow drives them.
-function OnboardingChipsShowcase() {
-  const [active, setActive] = useState<string | null>(MISSION_CHIPS[0] ?? null);
-  return (
-    <div className="flex flex-wrap gap-2">
-      {MISSION_CHIPS.map((chip) => (
-        <Chip key={chip} label={chip} active={active === chip} onClick={() => setActive(chip)} />
-      ))}
-    </div>
-  );
-}
-
-function OnboardingChoiceShowcase() {
-  const [choice, setChoice] = useState<"hiring" | "strategy">("hiring");
-  return (
-    <div className="flex max-w-xl flex-col gap-3">
-      <ChoiceCard
-        icon={<Bot className="size-5" />}
-        title="Create a hiring plan"
-        description="A staffing plan for the agents your team needs — roles, order, and what each one owns."
-        selected={choice === "hiring"}
-        onClick={() => setChoice("hiring")}
-      />
-      <ChoiceCard
-        icon={<ListTodo className="size-5" />}
-        title="Write a team strategy doc"
-        description="Turn your mission into a one-page strategy: goals, bets, and how you'll measure them."
-        selected={choice === "strategy"}
-        onClick={() => setChoice("strategy")}
-      />
-    </div>
-  );
-}
-
-function OnboardingConnectorShowcase() {
-  const [connected, setConnected] = useState<string[]>([CONNECTORS[0]?.name ?? ""]);
-  return (
-    <div className="flex max-w-xl flex-col gap-3">
-      {CONNECTORS.slice(0, 2).map((c) => (
-        <ConnectorRow
-          key={c.name}
-          connector={c}
-          connected={connected.includes(c.name)}
-          onToggle={() =>
-            setConnected((prev) =>
-              prev.includes(c.name) ? prev.filter((n) => n !== c.name) : [...prev, c.name],
-            )
-          }
-        />
-      ))}
     </div>
   );
 }
@@ -496,7 +432,6 @@ export function DesignGuide() {
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
                 "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip",
-                "AgentCapsule", "OnboardingCard", "Stepper", "Chip", "ChoiceCard", "ConnectorRow",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -828,38 +763,6 @@ export function DesignGuide() {
               </div>
             ))}
           </div>
-        </SubSection>
-      </Section>
-
-      {/* ============================================================ */}
-      {/*  ONBOARDING FLOW                                              */}
-      {/* ============================================================ */}
-      <Section title="Onboarding Flow">
-        <p className="text-sm text-muted-foreground max-w-prose">
-          Primitives for the full-screen onboarding flow (
-          <code className="font-mono">components/onboarding/</code>). Bespoke surfaces keep
-          their prototype dimensions via verbatim size tokens (
-          <code className="font-mono">--sz-560px</code> card,{" "}
-          <code className="font-mono">--sz-320px</code> start tiles); type, fields, and focus
-          treatment come from the shared primitives and scale.
-        </p>
-        <SubSection title="Card frame + heading + stepper">
-          <OnboardingCard>
-            <Stepper step={2} />
-            <OnboardingHeading
-              title="Create your first agent"
-              lede="Display heading (text-4xl) with a supporting lede, inside the 560px card frame."
-            />
-          </OnboardingCard>
-        </SubSection>
-        <SubSection title="Mission chips">
-          <OnboardingChipsShowcase />
-        </SubSection>
-        <SubSection title="Choice cards">
-          <OnboardingChoiceShowcase />
-        </SubSection>
-        <SubSection title="Connector rows">
-          <OnboardingConnectorShowcase />
         </SubSection>
       </Section>
 

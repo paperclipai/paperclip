@@ -7,13 +7,6 @@
       "runtimeArgs": ["-c", "TMPDIR=/tmp pnpm dev"],
       "port": 3108,
       "autoPort": false
-    },
-    {
-      "name": "ui-preview",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@paperclipai/ui", "exec", "vite"],
-      "port": 5188,
-      "autoPort": true
     }
   ]
 }

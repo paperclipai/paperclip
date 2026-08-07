@@ -993,57 +993,38 @@
 
 /* Agent capsule motif (PAP-119) — "the capsule is the agent".
    Three states realized in the AgentCapsule component:
-   - slot:       static dashed outline (an empty agent slot)
+   - slot:       dashed outline gently pulsing (an empty agent slot)
    - configured: solid stroke (named/model picked, not yet live)
-   - online:     brand agent-gradient fill radiating outward from the center
-                 + online-pulse (the only pulsing state)
-   prefers-reduced-motion skips the fill + pulses and renders the final
-   state. */
-/* Radial outward reveal of the (linear-gradient) fill: a centered circular
-   clip grows past the half-diagonal (~71%) so it covers the whole capsule. */
-@keyframes agent-cap-fill-radial {
-  0% { clip-path: circle(0% at 50% 50%); }
-  100% { clip-path: circle(75% at 50% 50%); }
+   - online:     brand agent-gradient liquid rises to fill + green online-pulse
+   prefers-reduced-motion skips the liquid rise + pulses and renders the
+   final state. */
+@keyframes agent-cap-slot-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes agent-cap-rise {
+  0% { height: 0; }
+  100% { height: 100%; }
 }
 
 @keyframes agent-cap-online-pulse {
   0%, 100% {
-    box-shadow:
-      0 0 0 0 color-mix(in oklab, #22c55e 0%, transparent),
-      0 0 0 0 color-mix(in oklab, #22c55e 0%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in oklab, #22c55e 0%, transparent);
     transform: scale(1);
   }
   50% {
-    box-shadow:
-      0 0 0 6px color-mix(in oklab, #22c55e 18%, transparent),
-      0 0 0 14px color-mix(in oklab, #22c55e 7%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in oklab, #22c55e 18%, transparent);
     transform: scale(1.03);
   }
 }
 
+.agent-cap-slot {
+  animation: agent-cap-slot-pulse 1.6s ease-in-out infinite;
+}
+
 .agent-cap-liquid {
-  /* Dramatic ease-in-out: the radial fill eases in, rushes, and eases out. */
-  animation: agent-cap-fill-radial var(--agent-cap-reveal-duration, 1.4s)
-    cubic-bezier(0.83, 0, 0.17, 1) forwards;
-}
-
-/* Online carryover: the solid white outline begins fading as soon as the fill
-   starts so the two overlap toward the start (outline gone by the fill's
-   midpoint). Shares the reveal duration so an onboarding-scoped override slows
-   both together. */
-@keyframes agent-cap-stroke-carryover {
-  0% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-.agent-cap-stroke-carryover {
-  animation: agent-cap-stroke-carryover var(--agent-cap-reveal-duration, 1.4s)
-    linear forwards;
+  animation: agent-cap-rise 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .agent-cap-online {
@@ -1054,15 +1035,11 @@
    Same breathing ring as the green pulse, recoloured to brand blue (#2563eb). */
 @keyframes agent-cap-online-pulse-blue {
   0%, 100% {
-    box-shadow:
-      0 0 0 0 color-mix(in oklab, #2563eb 0%, transparent),
-      0 0 0 0 color-mix(in oklab, #2563eb 0%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in oklab, #2563eb 0%, transparent);
     transform: scale(1);
   }
   50% {
-    box-shadow:
-      0 0 0 6px color-mix(in oklab, #2563eb 22%, transparent),
-      0 0 0 14px color-mix(in oklab, #2563eb 9%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in oklab, #2563eb 22%, transparent);
     transform: scale(1.03);
   }
 }
@@ -1078,6 +1055,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-cap-slot,
   .agent-cap-online,
   .agent-cap-online-blue {
     animation: none;
@@ -1087,11 +1065,7 @@
   }
   .agent-cap-liquid {
     animation: none;
-    clip-path: none;
-  }
-  .agent-cap-stroke-carryover {
-    animation: none;
-    opacity: 0;
+    height: 100%;
   }
 }
 
@@ -2350,8 +2324,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    * allow ui/src/pages/RunTranscriptUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
    * allow ui/src/pages/InviteUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
    * allow ui/src/pages/IssueChatUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
-   * allow ui/src/components/onboarding/OnboardingAuthScreens.tsx — Google/GitHub official brand-mark SVG fills (third-party logo colors); brand identity values, not themeable roles
-   * allow ui/src/components/onboarding/onboarding-data.ts — connector glyph colors are third-party brand hexes (GitHub/Google/Notion/Linear/…) rendered as logo-tile backgrounds; brand identity values, not themeable roles
    * allow ui/src/pages/SystemNoticeUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
 
    Test-fixture hex-literal policy (Batch 4, resolving TOKEN-AUDIT.md section

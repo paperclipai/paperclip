@@ -11,12 +11,6 @@ export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   build: {
     minify: "esbuild",
-    rollupOptions: {
-      input: {
-        main: path.resolve(__dirname, "index.html"),
-        "onboarding-preview": path.resolve(__dirname, "onboarding-preview.html"),
-      },
-    },
   },
   esbuild:
     mode === "production"
@@ -32,9 +26,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   server: {
-    // Harness-managed preview servers assign a port via the PORT env var;
-    // default stays 5173 for plain `vite` runs.
-    port: process.env.PORT ? Number(process.env.PORT) : 5173,
+    port: 5173,
     watch: createUiDevWatchOptions(process.cwd()),
     proxy: apiProxy,
   },
