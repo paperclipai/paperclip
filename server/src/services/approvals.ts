@@ -140,6 +140,47 @@ export function approvalService(db: Db) {
       return updated;
     },
 
+    withdraw: async (
+      id: string,
+      actor: { agentId?: string | null; userId?: string | null },
+      reason: string,
+    ): Promise<ResolutionResult> => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "pending") {
+        if (existing.status === "withdrawn") {
+          return { approval: existing, applied: false };
+        }
+        throw unprocessable("Only pending approvals can be withdrawn");
+      }
+
+      const now = new Date();
+      const updated = await db
+        .update(approvals)
+        .set({
+          status: "withdrawn",
+          decisionNote: reason,
+          decidedByUserId: null,
+          decidedAt: now,
+          withdrawnByAgentId: actor.agentId ?? null,
+          withdrawnByUserId: actor.userId ?? null,
+          withdrawnAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        return { approval: updated, applied: true };
+      }
+
+      const latest = await getExistingApproval(id);
+      if (latest.status === "withdrawn") {
+        return { approval: latest, applied: false };
+      }
+      throw unprocessable("Only pending approvals can be withdrawn");
+    },
+
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
         id,

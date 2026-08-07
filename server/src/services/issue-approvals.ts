@@ -57,6 +57,9 @@ export function issueApprovalService(db: Db) {
           decisionNote: approvals.decisionNote,
           decidedByUserId: approvals.decidedByUserId,
           decidedAt: approvals.decidedAt,
+          withdrawnByAgentId: approvals.withdrawnByAgentId,
+          withdrawnByUserId: approvals.withdrawnByUserId,
+          withdrawnAt: approvals.withdrawnAt,
           createdAt: approvals.createdAt,
           updatedAt: approvals.updatedAt,
         })
