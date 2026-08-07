@@ -183,6 +183,93 @@ Recommended defaults for a new catalog entry:
 
 If a gallery card cannot pass this path against a real vendor, de-list it or mark it unavailable until the missing auth, transport, or governance dependency is fixed.
 
+## MCP-Direct Connections (Hosted MCP + OAuth)
+
+Many vendors now expose an official hosted MCP server whose authorization
+server is discovered from the MCP endpoint itself, instead of documenting fixed
+OAuth URLs. For these connectors the manifest's `oauth` block is a hint at
+most; the broker resolves endpoints at connect time:
+
+1. `GET <serverUrl>` unauthenticated returns `401` with a `WWW-Authenticate`
+   header naming the protected-resource metadata URL (RFC 9728).
+2. `GET /.well-known/oauth-protected-resource[/<path>]` names the
+   authorization server(s).
+3. `GET /.well-known/oauth-authorization-server` (RFC 8414) yields
+   `authorization_endpoint`, `token_endpoint`, and — when the vendor supports
+   dynamic registration — `registration_endpoint`.
+
+The broker implements this in `discoverOAuthEndpoints`
+(`server/src/services/tool-access.ts`); connections with transport
+`mcp_remote` and `auth: "oauth"` prefer discovered endpoints over manifest
+hints. Keep manifest hints current anyway so reviewers can read the expected
+endpoints without running discovery.
+
+### Dynamic client registration (RFC 7591)
+
+Vendors whose authorization server advertises a `registration_endpoint` and
+supports public clients (`token_endpoint_auth_method: "none"` plus PKCE S256)
+need **no pre-provisioned OAuth app at all**. At first connect the broker
+registers a client on the fly and stores it on the connection:
+
+- Registration request: `client_name` `Paperclip (<instance host>)`,
+  `redirect_uris` = the instance's own callback, `grant_types`
+  `["authorization_code", "refresh_token"]`, `response_types` `["code"]`,
+  `token_endpoint_auth_method` `"none"`.
+- The issued `client_id` is persisted in the connection's OAuth config and any
+  issued `client_secret` becomes a `company_secrets` ref. The registered
+  client is **reused** for every later authorize/refresh on that connection —
+  re-registering orphans prior grants on providers that bind grants to the
+  client.
+- Env-registered clients always win: when
+  `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID/_SECRET` are configured, the
+  broker uses them (`customer` ownership) and skips registration. List both
+  `customer` and `dcr` in the method's `ownershipModes` when the vendor
+  supports both.
+
+**DCR needs neither Paperclip ID nor Paperclip Connect.** DCR is always
+instance-local (ratified in the PAP-14828 connector-service spec, section 10
+item 8.4: "DCR is always instance-local; the service has no DCR involvement").
+Each instance registers its own public client with the vendor and uses its own
+`/api/tools/oauth/callback` redirect. **Cloud-hosted and self-hosted instances
+use the SAME path** — the only per-instance difference is the hostname inside
+the redirect URI. `id.paperclip.ing` authenticates operators only and never
+holds resource tokens; `connect.paperclip.ing` is a fallback only for
+providers that genuinely require a pre-registered public redirect, which a DCR
+provider by definition does not.
+
+### Redirect-URI constraints
+
+Vendors restrict what `redirect_uris` a dynamic client may register. Record
+the probed constraint in the `AppDefinition` `redirectConstraints` field and
+enforce it before starting OAuth. The first supported value is
+`https-or-loopback-http` (Notion's rule): HTTPS on any host — public or
+private — or plain HTTP only on loopback (`localhost`, `*.localhost`, `::1`,
+`127.0.0.0/8`). A plain-HTTP non-loopback origin fails fast with
+`oauth_redirect_origin_unsupported` ("This provider requires an HTTPS or
+loopback origin. Configure TLS before connecting.") and a pointer to the TLS
+deployment docs, instead of a confusing vendor-side `invalid_redirect_uri`.
+Probe the constraint with real registration attempts before writing the
+manifest — the redirect-URI rule and browser-reachability are independent
+axes; a private HTTPS host can be fine even when plain HTTP is not.
+
+### Documentation standards for every connection doc
+
+Every connection doc — playbook appendix, proposal, or user-facing doc —
+must include all three of the following (they are part of the template below):
+
+1. **Service involvement statement.** Say explicitly whether Paperclip ID or
+   Paperclip Connect participates in the flow. For RFC 7591 DCR providers the
+   answer is always: neither — DCR is instance-local and cloud vs self-hosted
+   use the same path.
+2. **Sequence diagram + exact endpoints.** A sequence diagram of how the
+   connection works, and the exact paths/endpoints used for auth: authorize,
+   token, registration (if DCR), and the Paperclip callback. Keep mermaid
+   sources next to the doc; do not put semicolons inside mermaid message text
+   (they parse as statement separators).
+3. **Administrator setup instructions.** Step-by-step: what (if anything) an
+   admin must register — callback URLs? client credentials? nothing, for DCR? —
+   where to register it, and how to verify the connection works end to end.
+
 ## Template
 
 Copy this section into a connector proposal or implementation issue.
@@ -207,6 +294,25 @@ Copy this section into a connector proposal or implementation issue.
 - Credential owner: company / user-delegated / app-installation
 - Secret storage: company_secrets refs only
 - Revocation behavior:
+
+## Connection Flow (mandatory)
+
+- Sequence diagram: <mermaid source or rendered image — REQUIRED for every connection doc>
+- Auth endpoints (exact paths):
+  - Authorize:
+  - Token:
+  - Registration (if DCR):
+  - Discovery (.well-known), if any:
+  - Paperclip callback: `/api/tools/oauth/callback` (or n/a)
+- Redirect constraints (probed): none / https-or-loopback-http / requires-public-redirect
+- Paperclip ID / Paperclip Connect involvement: <"none — DCR is instance-local; cloud and self-hosted use the same path" for RFC 7591 providers; otherwise name the role>
+
+## Administrator Setup (mandatory)
+
+- What the admin must register (callback URLs? client credentials? nothing for DCR?):
+- Where to register it:
+- Instance prerequisites (TLS, base URL, feature flags):
+- How to verify the connection works:
 
 ## Resource Filters
 
@@ -362,4 +468,262 @@ Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The
 ### AppDefinition catalog authoring
 
 Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. FIRST-30 remains authoritative for `riskTier` and `requiredResourceFilters`; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
+
+## Appendix: Notion Dry Run (MCP-Direct With DCR)
+
+This dry run applies the template to Notion, the first MCP-direct connector to
+ship with RFC 7591 dynamic client registration (PAP-16637; server
+implementation PAP-16649, PR #11009). Unlike the Linear appendix, every
+endpoint and constraint below comes from a live request log, not vendor docs
+alone.
+
+### Vendor
+
+- App key: `notion`
+- App name: Notion
+- First-30 classification: MCP-direct. Notion ships an official hosted MCP
+  server; its ~20 `notion-*` tools map directly to Paperclip grants.
+- Reason for classification: no shim or wrapper needed — the hosted server
+  speaks Streamable HTTP, which `server/src/services/mcp-http.ts` already
+  handles. The FIRST-30 matrix's "thin wrapper for block/database policy" is
+  explicitly deferred; v1 enforcement is gateway policy plus filters-as-config.
+- Security tier: S3 — workspace content read/write, but no payments, tenant
+  admin, or production infrastructure.
+- Plugin needed: No. Gallery card, OAuth connect, filters, catalog, profiles,
+  policies, and audit cover the UX.
+
+### Transport And Auth
+
+- Transport: `mcp_remote`
+- Endpoint: `https://mcp.notion.com/mcp` (Streamable HTTP; `/sse` fallback exists)
+- Auth mode: OAuth, endpoints resolved by discovery (RFC 9728 → RFC 8414),
+  public client via RFC 7591 DCR with PKCE S256 mandatory.
+- Ownership modes: `dcr` (default, zero setup) and `customer`
+  (env-registered classic integration via
+  `PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID/_SECRET`, which always wins when set).
+- Token behavior: access tokens last ~8 h (`expires_in` authoritative).
+  Refresh tokens **rotate on every refresh** — the old token is invalidated
+  (at most 2 valid per grant) and replaying a stale one can revoke the whole
+  grant, so the broker persists the rotated token before publishing the new
+  access token and serializes refresh per connection. Absolute expiry 180
+  days, inactivity expiry 30 days. `invalid_grant` on refresh is terminal:
+  clear tokens, require re-auth, never retry.
+- Secret storage: access/refresh tokens and any DCR `client_secret` are
+  `company_secrets` refs; the DCR `client_id` persists on the connection and
+  is reused — re-registering would orphan prior grants.
+- Revocation behavior: disabling or revoking the connection removes
+  `notion-*` tools from agent sessions and denies brokered execution on the
+  next gateway check.
+
+### Connection Flow (mandatory)
+
+Paperclip ID / Paperclip Connect involvement: **none — DCR is instance-local**
+(PAP-14828 spec section 10 item 8.4); **cloud-hosted and self-hosted use the
+same path**. The only per-instance difference is the hostname in the redirect
+URI.
+
+Auth endpoints (exact paths, from the live discovery chain):
+
+| Role | Endpoint |
+| --- | --- |
+| MCP server | `https://mcp.notion.com/mcp` |
+| Protected-resource metadata (RFC 9728) | `https://mcp.notion.com/.well-known/oauth-protected-resource/mcp` |
+| AS metadata (RFC 8414) | `https://mcp.notion.com/.well-known/oauth-authorization-server` |
+| Authorize | `https://mcp.notion.com/authorize` |
+| Token (exchange + refresh) | `https://mcp.notion.com/token` |
+| Registration (RFC 7591 DCR) | `https://mcp.notion.com/register` |
+| Paperclip connect (wizard) | `POST /api/companies/:companyId/tools/apps/connect` |
+| Paperclip OAuth start | `POST /api/tools/oauth/:connectionId/start` |
+| Paperclip callback | `GET /api/tools/oauth/callback` |
+
+Redirect constraints (probed): `https-or-loopback-http`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User's browser
+    participant UI as Paperclip UI<br/>/PAP/apps/connect?source=notion
+    participant S as Paperclip instance server<br/>(cloud or self-hosted — same path)
+    participant M as mcp.notion.com<br/>(MCP server + OAuth AS)
+    participant N as Notion web<br/>(app.notion.com, notion.com)
+
+    U->>UI: Click "Connect" (deep link ?source=notion)
+    UI->>S: POST /companies/:id/tools/apps/connect { appKey: "notion" }
+    S->>M: GET /.well-known/oauth-protected-resource (RFC 9728)
+    M-->>S: authorization_servers → mcp.notion.com
+    S->>M: GET /.well-known/oauth-authorization-server (RFC 8414)
+    M-->>S: authorize / token / registration endpoints
+    alt First connect on this instance (no stored client, no env client)
+        S->>M: POST registration_endpoint (RFC 7591 DCR, public client, PKCE-only)
+        M-->>S: client_id (persisted, REUSED for every later connect)
+    else Client already known
+        S->>S: Reuse stored DCR client_id (or env-registered client if configured)
+    end
+    S-->>UI: auth.startUrl (authorize URL + PKCE S256 challenge + state)
+    UI->>U: Redirect browser to startUrl
+    U->>M: GET /authorize?client_id + code_challenge + state
+    M->>N: 302 to app.notion.com/install-integration
+    N->>N: notion.com/login (only if signed out)
+    N-->>U: Consent page: pick workspace, approve integration
+    U->>S: 302 to GET /api/tools/oauth/callback?code&state (instance's OWN callback)
+    S->>M: POST token_endpoint (code + code_verifier)
+    M-->>S: access_token (~8 h) + rotating refresh_token
+    S->>S: Store tokens as company_secrets refs (server-side only)
+    S-->>U: Redirect to wizard actions/review step (?oauth=connected)
+    Note over S,M: Later: agent runs reach notion-* tools via the managed MCP gateway.<br/>Server refreshes ahead of use — each refresh ROTATES the refresh token.
+```
+
+### Dry-Run Request Log (PAP-16649, 2026-08-06/07)
+
+The verified request sequence for a first connect:
+
+1. `GET https://mcp.notion.com/mcp` → `401` with `WWW-Authenticate` naming
+   `https://mcp.notion.com/.well-known/oauth-protected-resource/mcp`.
+2. `GET https://mcp.notion.com/.well-known/oauth-protected-resource/mcp` →
+   `200`; authorization server `https://mcp.notion.com`, scope `default`.
+3. `GET https://mcp.notion.com/.well-known/oauth-authorization-server` →
+   `200`; `/authorize`, `/token`, `/register`; `token_endpoint_auth_method`
+   `none` supported; PKCE `S256` supported.
+4. `POST https://mcp.notion.com/register` (RFC 7591).
+5. Browser `GET https://mcp.notion.com/authorize` → Notion consent
+   (`app.notion.com/install-integration`, `notion.com/login` if signed out).
+6. `POST https://mcp.notion.com/token` for code exchange and every refresh.
+7. `POST https://mcp.notion.com/mcp` for MCP traffic.
+
+Redirect-URI probes against `/register`:
+
+| Probed `redirect_uris` value | Result |
+| --- | --- |
+| `http://paperclip-dev:3100/api/tools/oauth/callback` | 400 `invalid_redirect_uri` — "Redirect URI must use HTTPS unless it is a loopback HTTP URI" |
+| `https://paperclip-dev:3100/api/tools/oauth/callback` | Accepted — private host is fine over HTTPS |
+| `http://localhost:3100/api/tools/oauth/callback` | Accepted |
+| `http://127.0.0.1:3100/api/tools/oauth/callback` | Accepted |
+
+Hence `redirectConstraints: "https-or-loopback-http"` in `notion.json`, and
+the broker's fail-fast `oauth_redirect_origin_unsupported` error for
+plain-HTTP non-loopback origins.
+
+### Administrator Setup (mandatory)
+
+- What the admin must register: **nothing**. Notion's authorization server
+  supports RFC 7591 DCR, so the instance registers its own public client on
+  first connect. No Notion integration, no client credentials, no callback
+  registration, no Paperclip ID or Paperclip Connect involvement.
+- Optional escape hatch: to use a pre-registered classic Notion integration
+  instead, set `PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID` and
+  `PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET`; the env client always takes
+  precedence (`customer` ownership).
+- Instance prerequisites: the instance base URL must be HTTPS on any host or
+  loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
+  gets "This provider requires an HTTPS or loopback origin. Configure TLS
+  before connecting." — add TLS first (e.g. a tailscale cert, as
+  paperclip-dev did). The `enableApps` experimental setting must be on for
+  `/apps/*` routes. The connecting user must be allowed to install
+  integrations in their Notion workspace.
+- How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
+  consent flow, and land on the wizard's actions step listing `notion-*`
+  tools. Then confirm an agent run sees Notion tools through the runtime MCP
+  gateway and that a write call (e.g. `notion-create-pages`) opens an
+  ask-first action request.
+
+### Resource Filters
+
+- Required filters: workspace, page, database (per FIRST-30).
+- Optional filters: object type, database/data-source scope.
+- Write-enabling filters: workspace plus page/database scope for
+  create/update.
+- Enforced by: gateway policy plus filters-as-config in v1; the FIRST-30
+  "thin wrapper for block/database policy" is explicitly deferred. Notion-side
+  scoping also applies — the consent step lets the user share only selected
+  pages/databases with the integration.
+
+### Manifest Sketch
+
+The shipped `packages/shared/src/app-definitions/notion.json` (regenerate via
+`pnpm connections:ingest-app-definitions`):
+
+```json
+{
+  "schemaVersion": 1,
+  "slug": "notion",
+  "name": "Notion",
+  "description": "Read and update pages in your Notion workspace.",
+  "urlPatterns": ["https://mcp.notion.com/*"],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": ["customer", "dcr"],
+      "defaults": { "serverUrl": "https://mcp.notion.com/mcp" },
+      "riskTier": "S3",
+      "requiredResourceFilters": ["workspace", "page", "database"]
+    }
+  ],
+  "redirectConstraints": "https-or-loopback-http"
+}
+```
+
+### Actions
+
+Notion's hosted server exposes ~20 `notion-*` tools. Representative risk
+classes below; the full catalog review with per-tool defaults is PAP-16652
+(P4), and changed-action quarantine applies as usual.
+
+| Tool | Risk | Default status | Filters | Approval default | Audit fields | Negative case |
+| --- | --- | --- | --- | --- | --- | --- |
+| `notion-search` | read | active after catalog review; plan-gated by Notion (needs Notion AI) — may list but fail at call time | workspace | allow when profile includes Notion reads | query summary, result count | Ungranted agent cannot invoke. |
+| `notion-fetch` | read | active after catalog review | workspace, page, database | allow when profile includes Notion reads | page/database id | Fetch outside shared pages fails Notion-side and is audited. |
+| `notion-create-pages` | write | active only after review; changed versions quarantined | workspace, page, database | ask-first by default | parent id, title hash, created page id | Missing workspace/page filter denies. |
+| `notion-update-page` | write | active only after review; changed versions quarantined | workspace, page | ask-first by default | page id, redaction summary | Revoked connection blocks retry. |
+| `notion-query-data-sources` | read | active after catalog review | workspace, database | allow when profile includes Notion reads | data-source id, result count | Granted agent cannot query a disallowed database. |
+
+No destructive Notion action ships in the first pass; any future
+delete/archive/bulk action starts quarantined pending SecurityEngineer review.
+
+### Wizard Path
+
+1. Operator opens `/PAP/apps/connect?source=notion` (or the Notion gallery
+   card → Connect). The deep link POSTs connect immediately and redirects the
+   browser to `auth.startUrl`.
+2. Operator completes Notion consent (workspace picker → approve).
+3. Notion redirects to the instance's own `GET /api/tools/oauth/callback`;
+   Paperclip exchanges the code, stores token material in `company_secrets`,
+   and returns the operator to the wizard (`?oauth=connected`).
+4. Operator confirms resource filters and default ask-first writes.
+5. Paperclip runs health check and catalog refresh; `notion-*` tools appear
+   on the actions step.
+6. Write actions stay ask-first until the operator approves calls or creates
+   narrow trust rules.
+
+Error state: on a plain-HTTP non-loopback instance, step 1 fails fast with
+the TLS guidance error above — the operator never reaches Notion.
+
+### Governance Defaults
+
+- Default profile: Notion read actions for the selected scope; writes opt-in.
+- Policy defaults: ask-first for `notion-create-pages`, `notion-update-page`,
+  and comment writes; block any unreviewed destructive action.
+- Quarantine: new or schema-changed write actions receive
+  `quarantineReason: "pending_review"` and are hidden from agent tool lists.
+- Rate limits: per-connection search/fetch budget to protect vendor quota.
+- Audit: log connect, DCR registration, config/filter changes, grant changes,
+  action requests, allowed/denied calls, token refresh failures, revoke, and
+  catalog quarantine events.
+
+### Validation Hook
+
+End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
+
+- Zero-setup OAuth connect succeeds on
+  `https://paperclip-dev.tail29c1aa.ts.net/PAP/apps/connect?source=notion`
+  with no pre-provisioned OAuth env vars (proves DCR).
+- Catalog discovery lists `notion-*` tools; new/changed risky actions are
+  quarantined.
+- An agent run sees Notion tools through the managed runtime MCP gateway.
+- `notion-create-pages` opens ask-first review and executes only after
+  approval.
+- Revocation removes Notion tools and blocks execution.
+- Audit rows prove actor, run/issue context, connection, tool, decision,
+  reason code, and outcome.
 

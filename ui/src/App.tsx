@@ -60,6 +60,7 @@ import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Connections } from "./pages/apps/Connections";
 import { Browse } from "./pages/apps/Browse";
 import { AppsConnect } from "./pages/apps/AppsConnect";
+import { canEnterAppsConnect } from "./pages/apps/app-connect-policy";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
@@ -308,7 +309,7 @@ function boardRoutes() {
 function AppsConnectEntryRoute() {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  return searchParams.get("byo") === "1" ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
+  return canEnterAppsConnect(searchParams) ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
 }
 
 function InboxRootRedirect() {

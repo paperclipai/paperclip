@@ -32,6 +32,13 @@ import { environmentRuntimeService, findReusableSandboxLeaseId } from "../servic
 import { environmentService } from "../services/environments.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
+import {
+  getActiveStepContext,
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { traceparentFromContextToken } from "../instrumentation.ts";
+import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -697,6 +704,321 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released[0]?.lease.status).toBe("released");
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything(), 31000);
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything(), 31234);
+  });
+
+  // Build the fake plugin fixture for the run-parent release tests below. A
+  // plugin sandbox provider can open a persistent session on the first command
+  // and delete it on lease release; the delete emits a provider
+  // `session.teardown` span. The host mints that span's parent from the active
+  // step context at the release RPC. So the release must run under the run
+  // parent, or the span loses its traceparent and the backend drops it.
+  async function seedFakePluginSandbox() {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const fakePluginConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Fake Plugin Sandbox",
+      driver: "sandbox",
+      config: fakePluginConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: fakePluginConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Sandbox Provider",
+        description: "Test fake plugin provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    return { companyId, environment, runId, pluginId };
+  }
+
+  it("runs a plugin-backed lease release under the run-time exec parent, so the teardown span keeps a valid traceparent", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    // The active step context observed at the moment the host issues the release
+    // RPC. The real worker manager mints the provider-span traceparent from
+    // exactly this value, so a non-null context with a valid parent proves the
+    // teardown span keeps a host-minted parent.
+    let releaseStepContext: ReturnType<typeof getActiveStepContext> = null;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "ok\n", stderr: "" };
+        }
+        if (method === "environmentReleaseLease") {
+          releaseStepContext = getActiveStepContext();
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // Build a real host run-parent context and run the first command under it,
+    // exactly as the run drives an exec. The driver records this context for the
+    // lease and replays it around the later release RPC.
+    const runParent: StartupSpanContext = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "0af7651916cd43dd8448eb211c80319c",
+      spanId: "b7ad6b7169203331",
+      traceFlags: 1,
+      isRemote: false,
+    });
+    await runWithRuntimeParent(runParent, () =>
+      runtimeWithPlugin.execute({
+        environment,
+        lease: acquired.lease,
+        command: "printf",
+        args: ["ok"],
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+      }),
+    );
+
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+    const released = await runtimeWithPlugin.releaseRunLeases(runId);
+
+    expect(released).toHaveLength(1);
+    // The release RPC ran under the recorded run parent, so the host mints a
+    // valid W3C traceparent from it. A dropped span would show a null context.
+    expect(releaseStepContext).not.toBeNull();
+    expect(releaseStepContext?.parentContext).toBe(runParent);
+    expect(traceparentFromContextToken(releaseStepContext?.parentContext)).toBe(
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    );
+  });
+
+  it("releases a plugin-backed lease with no active step context when the run drove no exec", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    let releaseStepContext: ReturnType<typeof getActiveStepContext> = null;
+    let releaseCalled = false;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentReleaseLease") {
+          releaseCalled = true;
+          releaseStepContext = getActiveStepContext();
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+    const released = await runtimeWithPlugin.releaseRunLeases(runId);
+
+    expect(released).toHaveLength(1);
+    // No command ran, so no session opened and no teardown span is emitted. The
+    // release must not invent a parent from an unrelated ambient context; it
+    // runs unwrapped, exactly as before the fix.
+    expect(releaseCalled).toBe(true);
+    expect(releaseStepContext).toBeNull();
+  });
+
+  it("forwards the bypassSession flag to the plugin execute RPC so a pre-run command skips the session", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    // Capture the params of each environmentExecute RPC, so the test can assert
+    // the host forwards `bypassSession` to the provider unchanged.
+    const executeParams: Array<Record<string, unknown>> = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          executeParams.push(params);
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "ok\n", stderr: "" };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // A pre-run command (the provision command) sets bypassSession explicitly.
+    await runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "bash",
+      args: ["-lc", "true"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+      bypassSession: true,
+    });
+    // An in-run command runs under the run-parent context, so the host does not
+    // bypass the session and the provider opens/uses the session.
+    const runParent: StartupSpanContext = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "0af7651916cd43dd8448eb211c80319c",
+      spanId: "b7ad6b7169203331",
+      traceFlags: 1,
+      isRemote: false,
+    });
+    await runWithRuntimeParent(runParent, () =>
+      runtimeWithPlugin.execute({
+        environment,
+        lease: acquired.lease,
+        command: "printf",
+        args: ["ok"],
+        cwd: "/workspace",
+        env: {},
+        timeoutMs: 1000,
+      }),
+    );
+
+    expect(executeParams).toHaveLength(2);
+    expect(executeParams[0]?.bypassSession).toBe(true);
+    // An in-run command carries a run parent, so it does not bypass the session.
+    expect(executeParams[1]?.bypassSession).toBe(false);
+  });
+
+  it("bypasses the session for a context-less command so the setup span keeps a run parent", async () => {
+    const { companyId, environment, runId, pluginId } = await seedFakePluginSandbox();
+
+    // Capture the params of each environmentExecute RPC, so the test can assert
+    // the host derives `bypassSession` from the active run-parent context.
+    const executeParams: Array<Record<string, unknown>> = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-1",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentExecute") {
+          executeParams.push(params);
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "ok\n", stderr: "" };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // A command with no active run-parent context (a pre-run install/probe or
+    // the agent process launch) runs before the run trace is active. The host
+    // mints no plugin RPC traceparent for it, so a session opened here would drop
+    // its setup span. The host bypasses the session for such a command.
+    await runtimeWithPlugin.execute({
+      environment,
+      lease: acquired.lease,
+      command: "sh",
+      args: ["-c", "command -v claude"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    expect(executeParams).toHaveLength(1);
+    expect(executeParams[0]?.bypassSession).toBe(true);
   });
 
   it("builds the workspace-realization record with referenced sources for a plugin-backed sandbox realize", async () => {

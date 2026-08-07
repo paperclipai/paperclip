@@ -1108,7 +1108,7 @@ describe("IssueDetail", () => {
     expect(mockDecisionsApi.list).not.toHaveBeenCalled();
   });
 
-  it("updates status and priority from the task header controls", async () => {
+  it("updates status from the task header control and hides the priority control (PAP-411)", async () => {
     const issue = createIssue({ status: "todo", priority: "medium" });
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
@@ -1133,7 +1133,9 @@ describe("IssueDetail", () => {
       'button[aria-label="Change priority (current: medium)"]',
     );
     expect(statusButton).not.toBeNull();
-    expect(priorityButton).not.toBeNull();
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off), so the header
+    // priority control must not render.
+    expect(priorityButton).toBeNull();
 
     await act(async () => {
       statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -1141,13 +1143,10 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
     });
-
-    await act(async () => {
-      priorityButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
-    await waitForAssertion(() => {
-      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { priority: "high" });
-    });
+    expect(mockIssuesApi.update).not.toHaveBeenCalledWith(
+      issue.identifier,
+      expect.objectContaining({ priority: expect.anything() }),
+    );
 
     mockIssuesApi.update.mockReset();
   });

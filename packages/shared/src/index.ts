@@ -1393,6 +1393,7 @@ export type {
   AppDefinition,
   ConnectionMethodDef,
   FieldDef,
+  OAuthRedirectConstraints,
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";

@@ -283,7 +283,9 @@ export function Connections() {
                   const attention = rowNeedsAttention(row);
                   const hint =
                     status.tone === "attention"
-                      ? "The key stopped working — reconnect to fix."
+                      ? primaryConnection?.authKind === "oauth"
+                        ? "Reconnect required — sign in again to restore access."
+                        : "The key stopped working — reconnect to fix."
                       : status.tone === "paused"
                         ? "Paused — agents can’t use it right now."
                         : status.tone === "not_connected"

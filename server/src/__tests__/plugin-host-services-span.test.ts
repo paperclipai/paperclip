@@ -143,6 +143,21 @@ describe("plugin provider span host handler", () => {
     ]);
   });
 
+  it("admits the session setup and teardown span names", async () => {
+    const services = servicesFor();
+    for (const name of ["session.setup", "session.teardown"]) {
+      await services.tracer.record(
+        { name },
+        { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+      );
+    }
+    const recorded = mockRecordSpan.mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(recorded).toEqual([
+      "sandbox.provider.session.setup",
+      "sandbox.provider.session.teardown",
+    ]);
+  });
+
   it("forwards a valid start-time and end-time pair to the recorder", async () => {
     const services = servicesFor();
     const startTimeMs = Date.now() - 4500;

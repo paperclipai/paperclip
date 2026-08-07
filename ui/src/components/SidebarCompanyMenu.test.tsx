@@ -296,6 +296,9 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
+    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    expect(document.body.textContent).not.toContain("Switch company");
 
     act(() => {
       root.unmount();
@@ -456,6 +459,31 @@ describe("SidebarCompanyMenu", () => {
   });
 
   describe("in Paperclip Cloud", () => {
+    it("closes the menu and enters the Cloud logout flow without local sign-out", async () => {
+      const { root } = renderMenu({ cloud: true });
+      await flushReact();
+      await flushReact();
+      await openMenu("Open Acme Labs organization switcher");
+
+      const signOutItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+        .find((element) => element.textContent?.includes("Sign out"));
+      expect(signOutItem).toBeTruthy();
+
+      act(() => {
+        signOutItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+      expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
+      expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+      expect(document.body.textContent).not.toContain("Switch organization");
+
+      act(() => {
+        root.unmount();
+      });
+    });
+
     it("switches organizations instead of companies", async () => {
       const { root } = renderMenu({ cloud: true });
       await flushReact();

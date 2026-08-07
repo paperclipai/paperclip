@@ -19,17 +19,25 @@ import {
   AdvancedToolsLink,
   BYO_CONNECT_HREF,
   ByoConnectCard,
+  NOTION_CONNECT_HREF,
   POPULAR_KEYS,
   ZAPIER_CONNECT_HREF,
 } from "./store-cards";
+
+function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
+  const slug = appDefinitionSlug(entry);
+  if (slug === "notion") return NOTION_CONNECT_HREF;
+  if (slug === "zapier") return ZAPIER_CONNECT_HREF;
+  return null;
+}
 
 /**
  * Door 1 — Browse (the store) (PAP-13254 / U3 §4).
  *
  * A persistent, browsable storefront: search + a Popular grid + the full
  * gallery + a first-class bring-your-own card + a labelled Developer link.
- * Browse remains the single discoverability surface. Zapier and bring-your-own
- * MCP servers use the URL flow; the remaining integrations stay unavailable.
+ * Browse remains the single discoverability surface. Notion uses MCP-direct
+ * OAuth, while Zapier and bring-your-own MCP servers use the URL flow.
  */
 export function Browse() {
   const navigate = useNavigate();
@@ -82,7 +90,7 @@ export function Browse() {
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect Zapier or your own MCP server. More integrations are coming soon.
+          Connect Notion, Zapier, or your own MCP server. More integrations are coming soon.
         </p>
       </header>
 
@@ -116,7 +124,7 @@ export function Browse() {
                   <AppTile
                     key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={appDefinitionSlug(entry) === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={connectHrefFor(entry) ? () => navigate(connectHrefFor(entry)!) : undefined}
                     compact
                   />
                 ))}
@@ -139,7 +147,7 @@ export function Browse() {
                   <AppTile
                     key={appDefinitionSlug(entry)}
                     entry={entry}
-                    onConnect={appDefinitionSlug(entry) === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={connectHrefFor(entry) ? () => navigate(connectHrefFor(entry)!) : undefined}
                   />
                 ))}
               </div>
@@ -150,7 +158,7 @@ export function Browse() {
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              Zapier connects with the MCP URL it gives you. Other listed integrations are previews.
+              Notion connects with secure sign-in. Zapier connects with its MCP URL. Other integrations are previews.
             </p>
             <AdvancedToolsLink />
           </div>

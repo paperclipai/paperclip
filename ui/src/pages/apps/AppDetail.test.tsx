@@ -23,6 +23,7 @@ const startOAuthMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -55,6 +56,10 @@ vi.mock("@/api/agents", () => ({
       { id: "agent-1", name: "Coder", title: "Engineer", status: "active" },
     ]),
   },
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: (target: string) => navigateTopLevelMock(target),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -371,6 +376,40 @@ describe("AppDetail", () => {
     ).toBe(true);
   });
 
+  it("matches connected Notion guidance to the reconnect action", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Notion",
+      config: {
+        sourceTemplateKey: "notion",
+        oauth: {
+          provider: "notion",
+          connectedAt: "2026-08-06T20:00:00.000Z",
+        },
+      },
+    }));
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        key: "notion",
+        name: "Notion",
+        logoUrl: "https://example.com/notion.png",
+        tagline: "Search and update your Notion workspace.",
+        description: "Give agents governed access to Notion.",
+        authKind: "oauth",
+        transportTemplate: { transport: "mcp_remote", url: "https://mcp.notion.com/mcp" },
+        credentialFields: [],
+        recommendedDefaults: {},
+        urlPatterns: [],
+      }],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain(
+      "Your workspace authorization is active. Reconnect any time to replace it.",
+    );
+    expect(container.textContent).not.toContain("Sign in again any time");
+  });
+
   it("lets Google Sheets connections add spreadsheet links from setup", async () => {
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(connection({
@@ -680,5 +719,30 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("This app needs reconnecting");
     expect(container.textContent).toContain("Token expired.");
     expect(container.textContent).toContain("Who can use it");
+  });
+
+  it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Reconnect required");
+    expect(container.textContent).toContain("Authorization expired (invalid_grant).");
+    expect(container.querySelector('input[placeholder="Paste your new key"]')).toBeNull();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("http://example.test/oauth");
   });
 });

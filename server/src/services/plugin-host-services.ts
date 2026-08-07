@@ -510,7 +510,8 @@ const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
 /** The closed set of provider span names a plugin may emit. `pack` and
  * `transfer` are the host-local build and the byte upload. `mkdir`, `guard`,
  * `rename`, `extract`, and `provision` are the per-round-trip command spans in
- * the inbound sync path. */
+ * the inbound sync path. `session.setup` and `session.teardown` are the short
+ * spans that wrap a persistent-session create and delete. */
 const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "pack",
   "transfer",
@@ -519,6 +520,8 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "rename",
   "extract",
   "provision",
+  "session.setup",
+  "session.teardown",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to

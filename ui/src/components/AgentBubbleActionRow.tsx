@@ -41,6 +41,36 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
 }
 
 /**
+ * Copy-to-clipboard icon button shared by every agent-bubble footer — the
+ * conference-room {@link AgentBubbleActionRow} and the redesigned task thread's
+ * {@link TaskChatBubbleActions} (PAP-413). Single-sourced so both footers keep
+ * identical sizing, radius, and the "copied ✓" feedback affordance rather than
+ * re-declaring the same button markup on each surface.
+ */
+export function BubbleCopyButton({ copyText }: { copyText: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title="Copy message"
+      aria-label="Copy message"
+      onClick={() => {
+        void copyTextToClipboard(copyText)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          })
+          .catch(() => {});
+      }}
+    >
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+/**
  * Shared agent-bubble action row — copy · 👍 · 👎 · timestamp · ⋯ menu.
  *
  * Rendered below every agent bubble so the task thread (`IssueChatThread`) and
@@ -79,26 +109,9 @@ export function AgentBubbleActionRow({
   menuItems?: ReactNode;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-
   return (
     <div className={cn("mt-2 flex items-center gap-1", className)}>
-      <button
-        type="button"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        title="Copy message"
-        aria-label="Copy message"
-        onClick={() => {
-          void copyTextToClipboard(copyText)
-            .then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2000);
-            })
-            .catch(() => {});
-        }}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <BubbleCopyButton copyText={copyText} />
       {feedback ? (
         <IssueChatFeedbackButtons
           activeVote={feedback.activeVote}
