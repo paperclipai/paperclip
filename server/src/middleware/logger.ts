@@ -41,7 +41,11 @@ export const logger = pino({
     },
     {
       target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      // Must ignore req/res like the stdout target above: prettifying the full
+      // req/res objects for every HTTP entry makes this worker slower than the
+      // log producers, so thread-stream's send buffer grows without bound and
+      // the server OOMs at the V8 heap limit (#1825).
+      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: false, destination: logFile, mkdir: true },
       level: "debug",
     },
   ],
