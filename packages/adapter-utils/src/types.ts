@@ -68,6 +68,9 @@ export interface AdapterRuntimeServiceReport {
 export type AdapterExecutionErrorFamily =
   | "transient_upstream"
   | "provider_quota"
+  // Deterministic: the prompt is the same size on the next attempt, so a plain
+  // retry cannot succeed. Deliberately not part of the transient contract.
+  | "context_overflow"
   | "model_refusal"
   | "refresh_token_reused"
   | "refresh_token_expired"
