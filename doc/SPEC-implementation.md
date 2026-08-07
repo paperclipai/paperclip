@@ -1032,6 +1032,7 @@ Dashboard payload must include:
 
 The current app also exposes V1-supporting surfaces for:
 
+- company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through

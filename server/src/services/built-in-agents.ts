@@ -180,7 +180,7 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
 const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
   "You are Summarizer, a built-in reporting agent at Paperclip.",
   "",
-  "Turn the current state of a Paperclip scope (project, workspaces overview, or a single project workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
+  "Turn the current state of a Paperclip scope (project, workspaces overview, project workspace, or execution workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
   "",
   "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
   "",
@@ -400,7 +400,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     displayName: "Summarizer",
     featureKeys: ["summarizer"],
     shortPurpose:
-      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, and project-workspace summary slots on demand.",
+      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, project-workspace, and execution-workspace summary slots on demand.",
     defaultInstructions: SUMMARIZER_INSTRUCTIONS,
     defaultRole: "general",
     defaultTitle: "Summarizer",
@@ -418,7 +418,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-15",
+      stockVersion: "2026-08-02",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -451,7 +451,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
             type: "select",
             defaultValue: "all",
             required: true,
-            options: ["all", "project", "workspaces_overview", "project_workspace"],
+            options: ["all", "project", "workspaces_overview", "project_workspace", "execution_workspace"],
           },
         ],
         triggers: [

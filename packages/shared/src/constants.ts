@@ -221,7 +221,12 @@ export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
-export const SUMMARY_SLOT_SCOPE_KINDS = ["project", "workspaces_overview", "project_workspace"] as const;
+export const SUMMARY_SLOT_SCOPE_KINDS = [
+  "project",
+  "workspaces_overview",
+  "project_workspace",
+  "execution_workspace",
+] as const;
 export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
 export const SUMMARY_SLOT_KEYS = ["header"] as const;
 export type SummarySlotKey = (typeof SUMMARY_SLOT_KEYS)[number];
