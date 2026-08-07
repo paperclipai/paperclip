@@ -3045,8 +3045,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
   }) {
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // The assignee of a stranded recovery issue may itself be the reason the run died: a paused,
+    // terminated, deleted or budget-blocked agent. Naming it in the descriptor would hand the only
+    // wake path to an agent that cannot be invoked, which is the same dead end this escalation is
+    // meant to close. Resolve through the ladder that validates invokability — assignee first, then
+    // the manager chain, and `null` (`board`) when Paperclip finds nobody live.
+    const unblockOwnerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
+      input.issue,
+      input.issue.assigneeAgentId,
+    );
     const unblockDescriptor = buildRecoveryUnblockDescriptor({
-      ownerAgentId: input.issue.assigneeAgentId,
+      ownerAgentId: unblockOwnerAgentId,
       action: RECOVERY_ISSUE_IN_PLACE_UNBLOCK_ACTION,
       unresolvedBlockerCount: blockerIds.length,
     });

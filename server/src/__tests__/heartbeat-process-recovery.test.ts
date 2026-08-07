@@ -2042,6 +2042,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
 
+  // The assignee of a stranded recovery issue is frequently the very reason its run died. Unlike
+  // `reconcileStrandedAssignedIssues`, this immediate terminal-run cleanup has no invokability
+  // gate in front of it, so a paused, terminated or budget-blocked assignee reaches the escalation.
+  // Copying it into the descriptor would hand the only wake path to an agent that can never be
+  // invoked: `issue_unblock_requested` would never be delivered and the row would be exactly as
+  // silent as the bare `blocked` this escalation replaced. The owner has to come from the ladder
+  // that validates invokability, and fall through to the board when nobody live is left.
+  it("routes the in-place unblock descriptor away from an assignee that is not invokable", async () => {
+    const sourceIssueId = randomUUID();
+    const { companyId, agentId, issueId } = await seedRunFixture({
+      agentStatus: "paused",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      runErrorCode: "process_lost",
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue PAP-1",
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+      })
+      .where(eq(issues.id, issueId));
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original stranded source",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const recoveryIssue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const issue = rows[0] ?? null;
+        return issue?.status === "blocked" ? issue : null;
+      })
+    );
+    // The escalation keeps the assignee — only the wake path is rerouted.
+    expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
+
+    const descriptor = recoveryIssue?.unblockDescriptor;
+    expect(descriptor).toBeTruthy();
+    expect(descriptor?.owner).not.toEqual({ agentId });
+    // The company has no other invokable agent, so the ladder ends at the board.
+    expect(descriptor?.owner).toBe("board");
+    expect((descriptor?.action ?? "").trim().length).toBeGreaterThan(0);
+    expect(recoveryIssue?.blockedTransitionAt).toBeTruthy();
+  });
+
   it("does not block paused-tree work when immediate continuation recovery is suppressed by the hold", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
