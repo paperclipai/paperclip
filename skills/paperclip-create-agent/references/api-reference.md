@@ -16,6 +16,8 @@
 - `POST /api/agents/:agentId/config-revisions/:revisionId/rollback`
 - `POST /api/issues/:issueId/approvals`
 - `GET /api/approvals/:approvalId/issues`
+- `GET /api/agents/:agentId/instructions-bundle` — post-hire verification (Step 10)
+- `PUT /api/agents/:agentId/instructions-bundle/file` — fallback upload when GET returns an empty bundle
 
 Approval collaboration:
 
@@ -100,6 +102,71 @@ For hire approvals:
 
 - approved: linked agent transitions `pending_approval -> idle`
 - rejected: linked agent is terminated
+
+## Post-Hire Bundle Verification
+
+Required after every hire (immediate-active or post-approval) and before marking any hire/source issue `done`. See SKILL.md Step 10.
+
+### `GET /api/agents/:agentId/instructions-bundle`
+
+Returns the persisted bundle state. Required assertions:
+
+- `files.length >= 1`
+- `resolvedEntryPath` is non-null (a string filesystem path)
+- `entryFile` matches what was sent on hire
+- every file from the original `instructionsBundle.files` appears in `files[].path`
+
+Response shape (abridged):
+
+```json
+{
+  "agentId": "uuid",
+  "companyId": "uuid",
+  "mode": "managed",
+  "rootPath": "/.../agents/<id>/instructions",
+  "managedRootPath": "/.../agents/<id>/instructions",
+  "entryFile": "AGENTS.md",
+  "resolvedEntryPath": "/.../agents/<id>/instructions/AGENTS.md",
+  "editable": true,
+  "warnings": [],
+  "legacyPromptTemplateActive": false,
+  "legacyBootstrapPromptTemplateActive": false,
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "size": 7015,
+      "language": "markdown",
+      "markdown": true,
+      "isEntryFile": true,
+      "editable": true,
+      "deprecated": false,
+      "virtual": false
+    }
+  ]
+}
+```
+
+### `PUT /api/agents/:agentId/instructions-bundle/file`
+
+Fallback upload when the bundle is empty or missing files after hire. The path goes in the **request body**, not the query string.
+
+Request body:
+
+```json
+{
+  "path": "AGENTS.md",
+  "content": "<full file body>",
+  "clearLegacyPromptTemplate": true
+}
+```
+
+Notes:
+
+- `path` is required (trimmed, min length 1)
+- `content` is required (string; pass the full file body)
+- `clearLegacyPromptTemplate` is optional and defaults to `false` — set to `true` when you want to scrub any legacy `promptTemplate` adapter setting at the same time
+- repeat the call once per file you sent in the original `instructionsBundle.files`
+- after each PUT, re-run the GET and re-assert the required conditions
 
 ## Safety Notes
 
