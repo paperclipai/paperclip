@@ -71,6 +71,13 @@ export {
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export {
+  calendarService,
+  normalizeCalendarWindow,
+  normalizeCalendarKinds,
+  CALENDAR_EVENT_KINDS,
+  type CalendarQuery,
+} from "./calendar.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";
 export { captureDecisionSnapshot, decisionTrainingService } from "./decision-training.js";
