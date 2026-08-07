@@ -1,0 +1,438 @@
+/**
+ * Two-tier QA modelProfile routing (TSMC-20243 / TSMC-20345 / TSKB0404).
+ *
+ * Tier-1: eligible product QA classes mint/run on `modelProfile: "cheap"`.
+ * Tier-2: escalate to `strong` on tier-1 fail, ambiguity, or hard floors
+ * (visual-truth frame inspect, G-class money/publish/identity/delivery binding).
+ *
+ * K25/K26 artifact-binding and identity stay deterministic outside this module
+ * (issue-close-evidence / never-again gates) — do not model-judge them here.
+ *
+ * Classification mirrors baseline SQL heuristics in
+ * work-products/TSMC-20243/baseline-queries.sql, narrowed so engineering cards
+ * that merely mention "QA" are not forced onto the cheap lane.
+ */
+
+export const TWO_TIER_QA_POLICY = "TSKB0404" as const;
+export const TWO_TIER_QA_SOURCE = "two_tier_qa_routing" as const;
+
+export type ProductQaClass =
+  | "deck_video_assembly_qa"
+  | "pack_lint_review"
+  | "close_evidence_checks"
+  | "guard_card_triage"
+  | "other_qa_review_verify";
+
+export type TwoTierQaTier = 1 | 2;
+
+export type TwoTierQaFloorReason =
+  | "visual_truth"
+  | "g_class_binding"
+  | "explicit_strong"
+  | "engineering_not_qa_pass"
+  | "close_evidence_deterministic_only"
+  | "strong_title_denylist";
+
+export type TwoTierQaClassification = {
+  qaClass: ProductQaClass | null;
+  tier1Eligible: boolean;
+  floorReason: TwoTierQaFloorReason | null;
+  requestedModelProfile: "cheap" | "strong" | null;
+  notes: string[];
+};
+
+export type TwoTierEscalateReason =
+  | "tier1_fail"
+  | "ambiguity"
+  | "visual_truth"
+  | "g_class_binding"
+  | "manual";
+
+const VISUAL_TRUTH_RE =
+  /\b(visual[-\s]?truth|look[-\s]?at[-\s]?a[-\s]?frame|frame[-\s]?inspect|beat[-\s]?level proof|real[-\s]?motion visual|Ken Burns|visual QA)\b/i;
+
+const G_CLASS_RE =
+  /\b(G[-\s]?class|money|payment|billing[-\s]?truth|publish[-\s]?gate|identity[-\s]?bind|delivery[-\s]?bind|secret[-\s]?binding|credential)\b/i;
+
+/** Engineering / platform work that mentions QA but is not a first-pass QA run. */
+const ENGINEERING_NOT_QA_PASS_RE =
+  /^\s*(\[?(PLATFORM|OPERATOR|BOARD|CTO)\]?|Implement|Build|Configure|Install|Enforce|Add |Rewrite|Make |Gate the|Manual live|CTO dispatch|OPERATOR ASK|BOARD ACTION)/i;
+
+const STRONG_TITLE_DENYLIST_RE =
+  /\b(architecture review|security review|auth review|crypto review|permission review|budget transfer|production incident)\b/i;
+
+const DECK_VIDEO_ASSEMBLY_QA_RE =
+  /\b(assembly gate|governed QA|all[-\s]?green QA|mandatory QA|QA runner|deck QA|re-?assemble master|assembly and all[-\s]?green)\b/i;
+
+const PACK_LINT_REVIEW_RE =
+  /\b(pack[.\s_-]?lint|packDraft QA|QA Pack|pending_qa|lint review)\b/i;
+
+const CLOSE_EVIDENCE_RE = /\bclose[.\s_-]?evidence\b/i;
+
+/** Residual narrative close-evidence review only — not platform guard implementation. */
+const CLOSE_EVIDENCE_NARRATIVE_RE =
+  /\b(residual narrative|narrative review|close[.\s_-]?evidence (check|review|verify|residual))\b/i;
+
+const GUARD_CARD_TRIAGE_RE = /\b(guard[.\s_-]?card|routing[.\s_-]?guard)\b/i;
+
+/**
+ * Residual product QA / independent verify passes (baseline other_qa_review_verify),
+ * kept tighter than the SQL catch-all so ordinary eng "review" cards stay default.
+ */
+const OTHER_PRODUCT_QA_RE =
+  /\b(Cerberus independent QA|independent QA|qa[-\s]?signoff|qaReceipt|rejection QA|reviewer[-\s]?owned QA|ship[-\s]?it QA|product QA|Postiz (?:promote )?(?:independent )?QA|rendered QA|step[-\s]?10 QA)\b/i;
+
+const ORIGIN_ALREADY_CHEAP = new Set([
+  "routine_health",
+  "issue_productivity_review",
+  "harness_liveness_escalation",
+  "stranded_issue_recovery",
+  "stale_active_run_evaluation",
+  "restart_lane_recovery",
+]);
+
+function readObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function readIssueModelProfileOverride(assigneeAdapterOverrides: unknown): "cheap" | "strong" | null {
+  const profile = readObject(assigneeAdapterOverrides).modelProfile;
+  return profile === "cheap" || profile === "strong" ? profile : null;
+}
+
+export function classifyProductQaClass(input: {
+  title?: string | null;
+  originKind?: string | null;
+}): ProductQaClass | null {
+  const title = input.title ?? "";
+  const origin = input.originKind ?? "";
+
+  if (origin === "issue_productivity_review" || origin === "routine_health") {
+    return null;
+  }
+  if (
+    origin === "harness_liveness_escalation" ||
+    origin === "stranded_issue_recovery" ||
+    origin === "stale_active_run_evaluation" ||
+    origin === "restart_lane_recovery"
+  ) {
+    return null;
+  }
+
+  if (GUARD_CARD_TRIAGE_RE.test(title)) return "guard_card_triage";
+  if (PACK_LINT_REVIEW_RE.test(title)) return "pack_lint_review";
+  if (CLOSE_EVIDENCE_RE.test(title)) return "close_evidence_checks";
+  if (DECK_VIDEO_ASSEMBLY_QA_RE.test(title) || VISUAL_TRUTH_RE.test(title)) {
+    return "deck_video_assembly_qa";
+  }
+  if (OTHER_PRODUCT_QA_RE.test(title)) return "other_qa_review_verify";
+  return null;
+}
+
+export function classifyTwoTierQa(input: {
+  title?: string | null;
+  description?: string | null;
+  originKind?: string | null;
+  assigneeAdapterOverrides?: unknown;
+}): TwoTierQaClassification {
+  const title = (input.title ?? "").trim();
+  const description = (input.description ?? "").trim();
+  const blob = `${title}\n${description}`;
+  const notes: string[] = [];
+  const explicit = readIssueModelProfileOverride(input.assigneeAdapterOverrides);
+
+  if (explicit === "strong") {
+    return {
+      qaClass: classifyProductQaClass(input),
+      tier1Eligible: false,
+      floorReason: "explicit_strong",
+      requestedModelProfile: "strong",
+      notes: ["explicit assigneeAdapterOverrides.modelProfile=strong"],
+    };
+  }
+
+  if (explicit === "cheap") {
+    const qaClass = classifyProductQaClass(input);
+    return {
+      qaClass,
+      tier1Eligible: true,
+      floorReason: null,
+      requestedModelProfile: "cheap",
+      notes: ["explicit assigneeAdapterOverrides.modelProfile=cheap"],
+    };
+  }
+
+  if (input.originKind && ORIGIN_ALREADY_CHEAP.has(input.originKind)) {
+    return {
+      qaClass: null,
+      tier1Eligible: false,
+      floorReason: null,
+      requestedModelProfile: null,
+      notes: [`origin ${input.originKind} already handled by sibling cheap pin`],
+    };
+  }
+
+  const qaClass = classifyProductQaClass(input);
+  if (!qaClass) {
+    return {
+      qaClass: null,
+      tier1Eligible: false,
+      floorReason: null,
+      requestedModelProfile: null,
+      notes: ["not a product QA class"],
+    };
+  }
+
+  if (ENGINEERING_NOT_QA_PASS_RE.test(title)) {
+    return {
+      qaClass,
+      tier1Eligible: false,
+      floorReason: "engineering_not_qa_pass",
+      requestedModelProfile: null,
+      notes: ["title looks like engineering/platform work, not a QA pass"],
+    };
+  }
+
+  if (STRONG_TITLE_DENYLIST_RE.test(blob)) {
+    return {
+      qaClass,
+      tier1Eligible: false,
+      floorReason: "strong_title_denylist",
+      requestedModelProfile: "strong",
+      notes: ["strong title denylist matched"],
+    };
+  }
+
+  if (VISUAL_TRUTH_RE.test(blob)) {
+    return {
+      qaClass,
+      tier1Eligible: false,
+      floorReason: "visual_truth",
+      requestedModelProfile: "strong",
+      notes: ["visual-truth / frame-inspect requires capable lane"],
+    };
+  }
+
+  if (G_CLASS_RE.test(blob)) {
+    return {
+      qaClass,
+      tier1Eligible: false,
+      floorReason: "g_class_binding",
+      requestedModelProfile: "strong",
+      notes: ["G-class money/publish/identity/delivery binding stays strong"],
+    };
+  }
+
+  if (qaClass === "close_evidence_checks") {
+    // Prefer deterministic measureCloseEvidence; only residual narrative review is tier-1.
+    if (!CLOSE_EVIDENCE_NARRATIVE_RE.test(blob)) {
+      return {
+        qaClass,
+        tier1Eligible: false,
+        floorReason: "close_evidence_deterministic_only",
+        requestedModelProfile: null,
+        notes: ["close_evidence without residual-narrative marker — leave default / deterministic"],
+      };
+    }
+  }
+
+  notes.push(`tier-1 cheap eligible for ${qaClass}`);
+  return {
+    qaClass,
+    tier1Eligible: true,
+    floorReason: null,
+    requestedModelProfile: "cheap",
+    notes,
+  };
+}
+
+/**
+ * Mint-time merge: if the issue is tier-1 eligible and the caller did not set a
+ * modelProfile, stamp `assigneeAdapterOverrides.modelProfile = "cheap"`.
+ * Never clobbers an explicit modelProfile or unrelated override keys.
+ */
+export function applyTwoTierQaMintOverrides(input: {
+  title?: string | null;
+  description?: string | null;
+  originKind?: string | null;
+  assigneeAdapterOverrides?: unknown;
+}): {
+  assigneeAdapterOverrides: Record<string, unknown> | null | undefined;
+  classification: TwoTierQaClassification;
+  applied: boolean;
+} {
+  const classification = classifyTwoTierQa(input);
+  const existing = input.assigneeAdapterOverrides;
+  const existingObj = existing == null ? null : readObject(existing);
+
+  if (!classification.tier1Eligible || classification.requestedModelProfile !== "cheap") {
+    return {
+      assigneeAdapterOverrides: existing as Record<string, unknown> | null | undefined,
+      classification,
+      applied: false,
+    };
+  }
+
+  if (existingObj && readIssueModelProfileOverride(existingObj)) {
+    return {
+      assigneeAdapterOverrides: existingObj,
+      classification,
+      applied: false,
+    };
+  }
+
+  const next: Record<string, unknown> = {
+    ...(existingObj ?? {}),
+    modelProfile: "cheap",
+    twoTierQa: {
+      policy: TWO_TIER_QA_POLICY,
+      source: TWO_TIER_QA_SOURCE,
+      tier: 1 as TwoTierQaTier,
+      qaClass: classification.qaClass,
+    },
+  };
+
+  return {
+    assigneeAdapterOverrides: next,
+    classification,
+    applied: true,
+  };
+}
+
+/**
+ * Effective issue model profile for run routing when the issue row may predate
+ * mint-time stamping. Explicit overrides always win.
+ */
+export function resolveTwoTierQaIssueModelProfile(input: {
+  title?: string | null;
+  description?: string | null;
+  originKind?: string | null;
+  assigneeAdapterOverrides?: unknown;
+}): {
+  modelProfile: "cheap" | "strong" | null;
+  classification: TwoTierQaClassification;
+  source: "issue_override" | "two_tier_qa_routing" | "none";
+} {
+  const explicit = readIssueModelProfileOverride(input.assigneeAdapterOverrides);
+  const classification = classifyTwoTierQa(input);
+  if (explicit) {
+    return { modelProfile: explicit, classification, source: "issue_override" };
+  }
+  if (classification.requestedModelProfile) {
+    return {
+      modelProfile: classification.requestedModelProfile,
+      classification,
+      source: "two_tier_qa_routing",
+    };
+  }
+  return { modelProfile: null, classification, source: "none" };
+}
+
+/**
+ * Tier-2 escalate: force strong on the issue and record why. Caller persists
+ * assigneeAdapterOverrides and re-wakes the assignee.
+ */
+export function buildTwoTierQaEscalateOverrides(input: {
+  assigneeAdapterOverrides?: unknown;
+  reason: TwoTierEscalateReason;
+  detail?: string | null;
+  qaClass?: ProductQaClass | null;
+}): {
+  assigneeAdapterOverrides: Record<string, unknown>;
+  modelProfile: "strong";
+  reason: TwoTierEscalateReason;
+} {
+  const existing = readObject(input.assigneeAdapterOverrides);
+  const prevTwoTier = readObject(existing.twoTierQa);
+  return {
+    modelProfile: "strong",
+    reason: input.reason,
+    assigneeAdapterOverrides: {
+      ...existing,
+      modelProfile: "strong",
+      twoTierQa: {
+        ...prevTwoTier,
+        policy: TWO_TIER_QA_POLICY,
+        source: TWO_TIER_QA_SOURCE,
+        tier: 2 as TwoTierQaTier,
+        qaClass: input.qaClass ?? prevTwoTier.qaClass ?? null,
+        escalatedAt: new Date().toISOString(),
+        escalateReason: input.reason,
+        escalateDetail: input.detail ?? null,
+      },
+    },
+  };
+}
+
+export function shouldEscalateTwoTierQaAfterFailedRun(input: {
+  title?: string | null;
+  description?: string | null;
+  originKind?: string | null;
+  assigneeAdapterOverrides?: unknown;
+  runModelProfile?: string | null;
+  runStatus: string;
+}): {
+  escalate: boolean;
+  reason: TwoTierEscalateReason | null;
+  classification: TwoTierQaClassification;
+} {
+  const classification = classifyTwoTierQa(input);
+  const explicit = readIssueModelProfileOverride(input.assigneeAdapterOverrides);
+  const failed =
+    input.runStatus === "failed" ||
+    input.runStatus === "timed_out" ||
+    input.runStatus === "error";
+
+  if (!failed) {
+    return { escalate: false, reason: null, classification };
+  }
+
+  // Already strong — nothing to do.
+  if (explicit === "strong") {
+    return { escalate: false, reason: null, classification };
+  }
+
+  const ranCheap =
+    input.runModelProfile === "cheap" ||
+    explicit === "cheap" ||
+    classification.requestedModelProfile === "cheap";
+
+  if (!ranCheap) {
+    return { escalate: false, reason: null, classification };
+  }
+
+  // Only escalate product-QA classes (or explicitly cheap two-tier stamps).
+  const twoTierMeta = readObject(readObject(input.assigneeAdapterOverrides).twoTierQa);
+  const isTwoTier =
+    classification.qaClass != null ||
+    twoTierMeta.source === TWO_TIER_QA_SOURCE ||
+    twoTierMeta.policy === TWO_TIER_QA_POLICY;
+
+  if (!isTwoTier) {
+    return { escalate: false, reason: null, classification };
+  }
+
+  return { escalate: true, reason: "tier1_fail", classification };
+}
+
+export function buildTwoTierQaEscalateSystemComment(input: {
+  reason: TwoTierEscalateReason;
+  detail?: string | null;
+  qaClass?: ProductQaClass | null;
+  fromRunId?: string | null;
+}): string {
+  const lines = [
+    "## Two-tier QA escalate (auto, TSKB0404 / TSMC-20243)",
+    "",
+    `- Tier-2 modelProfile: \`strong\``,
+    `- Reason: \`${input.reason}\``,
+    ...(input.qaClass ? [`- QA class: \`${input.qaClass}\``] : []),
+    ...(input.fromRunId ? [`- Failed tier-1 run: \`${input.fromRunId}\``] : []),
+    ...(input.detail ? [`- Detail: ${input.detail}`] : []),
+    "",
+    "Floors intact: visual-truth, G-class, K25/K26 deterministic gates unchanged.",
+  ];
+  return lines.join("\n");
+}

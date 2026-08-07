@@ -92,6 +92,7 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { inferDefaultCloseContractForIssueCreate } from "./issue-close-evidence.js";
+import { applyTwoTierQaMintOverrides } from "./two-tier-qa-routing.js";
 import { instanceSettingsService, isTruthyRuntimeEnvValue } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -7788,9 +7789,21 @@ export function issueService(db: Db) {
           identifier,
         });
 
+        // TSMC-20345 / TSKB0404: tier-1 cheap mint for eligible product QA classes.
+        // Floors (visual-truth, G-class) stay strong; explicit overrides are never clobbered.
+        const twoTierMint = applyTwoTierQaMintOverrides({
+          title: issueData.title,
+          description: issueData.description ?? null,
+          originKind: issueData.originKind ?? null,
+          assigneeAdapterOverrides: issueDataWithoutCardTemplate.assigneeAdapterOverrides,
+        });
+
         const values = {
           ...issueDataWithoutCardTemplate,
           ...(defaultedCloseContract ? { closeContract: defaultedCloseContract } : {}),
+          ...(twoTierMint.applied
+            ? { assigneeAdapterOverrides: twoTierMint.assigneeAdapterOverrides }
+            : {}),
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",

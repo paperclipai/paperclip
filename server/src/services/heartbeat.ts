@@ -242,6 +242,12 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
+import {
+  buildTwoTierQaEscalateOverrides,
+  buildTwoTierQaEscalateSystemComment,
+  resolveTwoTierQaIssueModelProfile,
+  shouldEscalateTwoTierQaAfterFailedRun,
+} from "./two-tier-qa-routing.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
@@ -15638,10 +15644,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "cleared expired modelProfileForce (limit-failover swap-back, THIAAAAA-853)",
       );
     }
+    // TSMC-20345 / TSKB0404: product QA tier-1 cheap routing when the running
+    // agent is the issue assignee (same scope as assigneeAdapterOverrides) and
+    // the issue has no stronger explicit override. Covers pre-mint cards too.
+    const twoTierIssueProfile =
+      issueContext && issueContext.assigneeAgentId === agent.id
+        ? resolveTwoTierQaIssueModelProfile({
+            title: issueContext.title,
+            description: issueContext.description,
+            originKind: issueContext.originKind,
+            assigneeAdapterOverrides: issueContext.assigneeAdapterOverrides,
+          })
+        : null;
+    const issueModelProfile = twoTierIssueProfile?.modelProfile ?? null;
+    if (
+      twoTierIssueProfile?.source === "two_tier_qa_routing" &&
+      twoTierIssueProfile.modelProfile
+    ) {
+      context.twoTierQa = {
+        policy: "TSKB0404",
+        source: "two_tier_qa_routing",
+        tier: twoTierIssueProfile.modelProfile === "cheap" ? 1 : 2,
+        qaClass: twoTierIssueProfile.classification.qaClass,
+        floorReason: twoTierIssueProfile.classification.floorReason,
+      };
+    }
     const modelProfileApplication = resolveModelProfileApplication({
       adapterModelProfiles,
       agentRuntimeConfig: agent.runtimeConfig,
-      issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
+      issueModelProfile,
       contextSnapshot: context,
       profileResolutionFallbackReason,
       forcedProfile,
@@ -18554,6 +18585,159 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         return { kind: "released" as const };
+      }
+
+      // TSMC-20345 / TSKB0404: tier-1 cheap product-QA fail → stamp strong + re-queue
+      // so tier-2 strong-on-failure is a real path (not prose-only).
+      if (
+        recoveryAgentInvokable &&
+        recoveryAgent &&
+        !activeQuotaCooldown &&
+        !isWorkspaceValidationFailedRun(run) &&
+        !isConfigurationIncompleteFailedRun(run)
+      ) {
+        const runProfile =
+          typeof runContext.modelProfile === "string"
+            ? runContext.modelProfile
+            : typeof parseObject(runContext.paperclipModelProfile).requested === "string"
+              ? String(parseObject(runContext.paperclipModelProfile).requested)
+              : null;
+        const escalateDecision = shouldEscalateTwoTierQaAfterFailedRun({
+          title: issue.title,
+          description: issue.description,
+          originKind: issue.originKind,
+          assigneeAdapterOverrides: issue.assigneeAdapterOverrides,
+          runModelProfile: runProfile,
+          runStatus: run.status,
+        });
+        if (escalateDecision.escalate && escalateDecision.reason) {
+          const escalated = buildTwoTierQaEscalateOverrides({
+            assigneeAdapterOverrides: issue.assigneeAdapterOverrides,
+            reason: escalateDecision.reason,
+            detail: `tier-1 run ${run.id} ended ${run.status}`,
+            qaClass: escalateDecision.classification.qaClass,
+          });
+          await tx
+            .update(issues)
+            .set({
+              assigneeAdapterOverrides: escalated.assigneeAdapterOverrides,
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, issue.id));
+          await tx.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorType: "system",
+            body: buildTwoTierQaEscalateSystemComment({
+              reason: escalateDecision.reason,
+              detail: `tier-1 run ended ${run.status}`,
+              qaClass: escalateDecision.classification.qaClass,
+              fromRunId: run.id,
+            }),
+          });
+
+          const retryReason = "two_tier_qa_tier2_escalate";
+          const recoveryReason = "two_tier_qa_tier2_escalate";
+          const now = new Date();
+          const recoveryContextSnapshot = {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: recoveryReason,
+            retryReason,
+            source: "issue.two_tier_qa_escalate",
+            retryOfRunId: run.id,
+            modelProfile: "strong" as const,
+            twoTierQa: {
+              policy: "TSKB0404",
+              source: "two_tier_qa_routing",
+              tier: 2,
+              qaClass: escalateDecision.classification.qaClass,
+              escalateReason: escalateDecision.reason,
+            },
+          };
+          const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
+            companyId: issue.companyId,
+            contextSnapshot: recoveryContextSnapshot,
+            issueContext: issue,
+            routineEnvContext: await getRoutineEnvForExecutionIssue(issue.companyId, issue),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            source: "automation",
+            triggerDetail: "system",
+            existingRunResponsibleUserId: run.responsibleUserId,
+          });
+          if (!responsibleUserId) {
+            throw new HttpError(422, "Unable to resolve responsible user for two-tier QA escalate run", {
+              code: "responsible_user_unresolved",
+              runId: run.id,
+              agentId: recoveryAgent.id,
+              companyId: issue.companyId,
+              issueId: issue.id,
+              wakeReason: recoveryReason,
+            });
+          }
+          const wakeupRequest = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: issue.companyId,
+              agentId: recoveryAgent.id,
+              source: "automation",
+              triggerDetail: "system",
+              reason: recoveryReason,
+              payload: {
+                issueId: issue.id,
+                retryOfRunId: run.id,
+                modelProfile: "strong",
+              },
+              status: "queued",
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              updatedAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+
+          const queuedRun = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId: issue.companyId,
+              agentId: recoveryAgent.id,
+              invocationSource: "automation",
+              triggerDetail: "system",
+              status: "queued",
+              wakeupRequestId: wakeupRequest.id,
+              contextSnapshot: recoveryContextSnapshot,
+              responsibleUserId,
+              sessionIdBefore: recoverySessionBefore,
+              retryOfRunId: run.id,
+              updatedAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              runId: queuedRun.id,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: queuedRun.id,
+              executionAgentNameKey: recoveryAgentNameKey,
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, issue.id));
+
+          return {
+            kind: "queued_recovery" as const,
+            run: queuedRun,
+          };
+        }
       }
 
       if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
