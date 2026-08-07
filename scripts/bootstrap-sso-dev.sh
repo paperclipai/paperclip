@@ -15,7 +15,22 @@
 #   ./scripts/bootstrap-sso-dev.sh
 #   ADMIN_EMAIL=me@example.com ADMIN_PASSWORD=secret123 ./scripts/bootstrap-sso-dev.sh
 #
+# Requires: curl, jq
+#
 set -euo pipefail
+
+fail() {
+  echo "FATAL: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || fail "missing required command: $cmd"
+}
+
+require_cmd curl
+require_cmd jq
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -27,7 +42,8 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-paperclip-admin-123}"
 
 COOKIE_JAR="$(mktemp "${TMPDIR:-/tmp}/paperclip-bootstrap.XXXXXX")"
 TMP_RESPONSE="$(mktemp "${TMPDIR:-/tmp}/paperclip-response.XXXXXX")"
-cleanup() { rm -f "$COOKIE_JAR" "$TMP_RESPONSE" "${TMP_CONFIG:-}"; }
+TMP_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/paperclip-payload.XXXXXX.json")"
+cleanup() { rm -f "$COOKIE_JAR" "$TMP_RESPONSE" "$TMP_PAYLOAD" "${TMP_CONFIG:-}"; }
 trap cleanup EXIT
 
 health_url="$BASE_URL/api/health"
@@ -53,25 +69,27 @@ if echo "$health_json" | grep -q '"bootstrapStatus":"ready"'; then
 fi
 
 echo "==> Creating admin user ($ADMIN_EMAIL) ..."
+jq -n --arg name "$ADMIN_NAME" --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
+  '{name: $name, email: $email, password: $password}' > "$TMP_PAYLOAD"
 http_status="$(curl -sS -o "$TMP_RESPONSE" -w "%{http_code}" \
   -X POST "$BASE_URL/api/auth/sign-up/email" \
   -H "Content-Type: application/json" \
   -H "Origin: $BASE_URL" \
   -c "$COOKIE_JAR" \
-  -d "$(jq -n --arg name "$ADMIN_NAME" --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
-    '{name: $name, email: $email, password: $password}')")"
+  --data "@$TMP_PAYLOAD")"
 
 if [[ "$http_status" =~ ^2 ]]; then
   echo "    User created."
 elif [[ "$http_status" == "422" ]] || [[ "$http_status" == "409" ]]; then
   echo "    User already exists, signing in ..."
+  jq -n --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
+    '{email: $email, password: $password}' > "$TMP_PAYLOAD"
   http_status="$(curl -sS -o "$TMP_RESPONSE" -w "%{http_code}" \
     -X POST "$BASE_URL/api/auth/sign-in/email" \
     -H "Content-Type: application/json" \
     -H "Origin: $BASE_URL" \
     -c "$COOKIE_JAR" \
-    -d "$(jq -n --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
-      '{email: $email, password: $password}')")"
+    --data "@$TMP_PAYLOAD")"
   if [[ ! "$http_status" =~ ^2 ]]; then
     echo "FATAL: sign-in failed (HTTP $http_status)" >&2
     cat "$TMP_RESPONSE" >&2

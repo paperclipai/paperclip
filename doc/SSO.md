@@ -145,6 +145,24 @@ A Docker Compose stack is provided for testing SSO locally with Keycloak.
 
 - Docker and Docker Compose
 - The repo checked out and built (`pnpm install && pnpm build`)
+- `jq` (used by `scripts/bootstrap-sso-dev.sh`)
+
+### Configure environment variables
+
+The `server` container requires `BETTER_AUTH_SECRET` to be set — the compose
+file fails fast with an error if it's missing. Copy the example env file into
+`docker/.env` and generate a real secret:
+
+```sh
+cp docker/sso/.env.sso.example docker/.env
+```
+
+Then edit `docker/.env` and replace the placeholder `BETTER_AUTH_SECRET` with a
+generated value:
+
+```sh
+sed -i.bak "s#^BETTER_AUTH_SECRET=.*#BETTER_AUTH_SECRET=$(openssl rand -hex 32)#" docker/.env && rm docker/.env.bak
+```
 
 ### Start the stack
 
@@ -207,6 +225,14 @@ After bootstrapping, SSO is **not** enabled by default. To set up the Keycloak S
 > because the browser needs to reach Keycloak directly. The server container uses
 > `extra_hosts: ["localhost:host-gateway"]` so that `localhost` inside the container
 > resolves to the Docker host, allowing it to reach the Keycloak port mapping.
+>
+> The Keycloak container also sets `KC_HOSTNAME: http://localhost:8080` so that
+> Keycloak always issues tokens with `http://localhost:8080` as the `iss` claim,
+> regardless of whether a request arrived via the browser (`localhost:8080`) or
+> from the `server` container over the Docker network. Without it, Keycloak
+> infers the issuer from each request's `Host` header, so backchannel token
+> validation from `server` and browser-driven redirects can disagree on the
+> issuer and token validation fails.
 
 ### Test the SSO flow
 
