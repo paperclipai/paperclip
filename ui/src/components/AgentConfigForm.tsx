@@ -8,7 +8,11 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  AGENT_ROLES,
+  supportedEnvironmentDriversForAdapter,
+} from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
@@ -40,6 +44,7 @@ import {
   DraftNumberInput,
   help,
   adapterLabels,
+  roleLabels,
 } from "./agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
@@ -1024,6 +1029,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="e.g. VP of Engineering"
               />
             </Field>
+            <Field label="Role" hint={help.role}>
+              <RoleDropdown
+                value={eff("identity", "role", props.agent.role)}
+                onChange={(r) => mark("identity", "role", r)}
+              />
+            </Field>
             <Field label="Reports to" hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
@@ -1728,6 +1739,44 @@ export function AdapterTypeDropdown({
             {item.comingSoon && (
               <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span>
             )}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function RoleDropdown({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (role: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+          <span className="truncate">{roleLabels[value] ?? value}</span>
+          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
+        {AGENT_ROLES.map((r) => (
+          <button
+            key={r}
+            className={cn(
+              "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+              r === value && "bg-accent",
+            )}
+            onClick={() => {
+              onChange(r);
+              setOpen(false);
+            }}
+          >
+            {roleLabels[r] ?? r}
           </button>
         ))}
       </PopoverContent>
