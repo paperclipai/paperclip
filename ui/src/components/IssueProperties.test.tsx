@@ -2121,10 +2121,14 @@ describe("IssueProperties", () => {
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {
-    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00.000Z").getTime());
+    // Monitor timestamps are stored as UTC instants but displayed in the user's
+    // local time zone. Build the fixtures from an explicit local wall clock so
+    // the same user-facing labels are asserted in every test-runner time zone.
+    const localIso = (hour: number, minute: number) => new Date(2026, 6, 17, hour, minute).toISOString();
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date(2026, 6, 17, 13, 56).getTime());
     const baseMonitorState = {
       status: "scheduled" as const,
-      nextCheckAt: "2026-07-17T16:08:00.000Z",
+      nextCheckAt: localIso(16, 8),
       lastTriggeredAt: null,
       attemptCount: 1,
       notes: "Verify deployment",
@@ -2155,9 +2159,9 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00.000Z" } }),
-      monitorNextCheckAt: new Date("2026-07-17T17:08:00.000Z"),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: localIso(18, 8) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: localIso(16, 8) } }),
+      monitorNextCheckAt: new Date(localIso(17, 8)),
     }));
     await flush();
     expect(monitorRowText()).toContain("In 2h 12m");
@@ -2172,16 +2176,16 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: localIso(13, 56) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: localIso(13, 56) } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Due now");
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: localIso(13, 38) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: localIso(13, 38) } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Overdue by 18m");
@@ -2193,13 +2197,13 @@ describe("IssueProperties", () => {
         ...baseMonitorState,
         status: "cleared",
         nextCheckAt: null,
-        lastTriggeredAt: "2026-07-17T11:56:00.000Z",
+        lastTriggeredAt: localIso(11, 56),
         attemptCount: 2,
         clearedAt: "2026-07-17T12:00:00.000Z",
         clearReason: "manual",
       } }),
       monitorAttemptCount: 2,
-      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
+      monitorLastTriggeredAt: new Date(localIso(11, 56)),
     }));
     await flush();
     expect(monitorRowText()).toContain("Cleared");
