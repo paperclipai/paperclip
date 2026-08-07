@@ -52,6 +52,8 @@ Edit an agent's configuration from the agent detail page:
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
 - **Budget** — monthly spend limit
 
+The prompt template field is available across adapter types, so operators can inspect and customize the run framing stored in adapter config.
+
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
 
 ## Pausing and Resuming
