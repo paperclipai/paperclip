@@ -46,3 +46,32 @@ export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T
     }
   }
 }
+
+/**
+ * RBR-974: instance-wide serialization for the run-admission critical section.
+ *
+ * withAgentStartLock only serializes starts for a single agent, so two different
+ * agents could each read "4 of 5 global slots used" and each start a run,
+ * overshooting the instance ceiling. The global ceiling is only a ceiling if the
+ * read-count-then-claim sequence is atomic across agents.
+ *
+ * The guarded section is short — count queued runs, claim rows, dispatch
+ * fire-and-forget — so serializing it does not serialize the runs themselves.
+ */
+let globalAdmissionLock: Promise<void> = Promise.resolve();
+
+export async function withGlobalAdmissionLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = globalAdmissionLock;
+  let release: () => void = () => {};
+  globalAdmissionLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Never let a rejected predecessor wedge the queue for everyone behind it.
+  await previous.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
