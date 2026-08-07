@@ -13,6 +13,7 @@ import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
   canCreateSkills: z.boolean().optional().default(true),
+  canReassignOwnedCards: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
@@ -226,6 +227,7 @@ export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
+  canReassignOwnedCards: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
