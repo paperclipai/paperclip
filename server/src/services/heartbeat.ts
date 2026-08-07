@@ -12854,6 +12854,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    // RBR-932: guard belongs in the WHERE, not in JS. The status === "paused" /
+    // "terminated" check above reads a snapshot taken before the two awaits
+    // (isFirstHeartbeat resolution, countRunningRunsForAgent) below it, so an
+    // operator pause/terminate landing in that window was previously clobbered
+    // by this write. Mirror recovery/service.ts's
+    // finalizeAgentAfterSourceResolvedRun and make the write itself a
+    // compare-and-set: it only applies when the row is still not paused/terminated
+    // at write time. The early-return above stays as a cheap, non-authoritative
+    // early-out.
     const updated = await db
       .update(agents)
       .set({
@@ -12865,7 +12874,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agentId))
+      .where(and(eq(agents.id, agentId), notInArray(agents.status, ["paused", "terminated"])))
       .returning()
       .then((rows) => rows[0] ?? null);
 
