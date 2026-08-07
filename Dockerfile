@@ -44,8 +44,21 @@ COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-w
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
+COPY packages/plugins/sandbox-providers/kubernetes/pnpm-lock.yaml packages/plugins/sandbox-providers/kubernetes/
 
 RUN pnpm install --frozen-lockfile
+
+# Install the kubernetes sandbox-provider plugin standalone. It is
+# intentionally excluded from the pnpm workspace to keep its heavy deps
+# (@kubernetes/client-node) out of the root lockfile, so the workspace install
+# above does NOT cover it. It carries its own pnpm-lock.yaml (the root
+# lockfile cannot cover a package outside the workspace); --frozen-lockfile
+# keeps the embedded @kubernetes/client-node resolution reproducible across
+# builds. Installing here (deps stage) scopes the layer cache to just the
+# plugin's package.json and lockfile, so unrelated source changes don't
+# re-download its dependency tree. The SDK link + build happen in the build
+# stage, after the in-repo @paperclipai/plugin-sdk is compiled.
+RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes install --ignore-workspace --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
@@ -55,6 +68,23 @@ RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+
+# Link + build the kubernetes sandbox-provider plugin (its standalone install
+# runs in the deps stage — see the comment there) so its dist/, node_modules/,
+# and the @paperclipai/plugin-sdk dev symlink land in /app and get copied into
+# the production stage; app.ts auto-installs it at startup so the "kubernetes"
+# sandbox provider is registered in containers. Plugins no longer carry a
+# postinstall (removed for supply-chain safety, #8255) and the standalone
+# install does not know about the in-repo @paperclipai/plugin-sdk, so link it
+# explicitly before building — the same install-then-link order
+# scripts/build-standalone-public-packages.mjs uses. A build failure here
+# fails the whole image build, so a broken plugin can never produce a
+# deployable image.
+RUN node scripts/link-plugin-dev-sdk.mjs
+RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes run build
+RUN test -f packages/plugins/sandbox-providers/kubernetes/dist/manifest.js \
+  && test -f packages/plugins/sandbox-providers/kubernetes/dist/worker.js \
+  || (echo "ERROR: kubernetes plugin build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000

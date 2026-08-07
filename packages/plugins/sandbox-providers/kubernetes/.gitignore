@@ -1,5 +1,2 @@
 node_modules/
 dist/
-# standalone installs generate a local lockfile; the package is built with
-# --no-lockfile (workspace-excluded) and must not commit one
-pnpm-lock.yaml
