@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const authUsers = pgTable("user", {
   id: text("id").primaryKey(),
@@ -10,16 +10,22 @@ export const authUsers = pgTable("user", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 
-export const authSessions = pgTable("session", {
-  id: text("id").primaryKey(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  token: text("token").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
-  ipAddress: text("ip_address"),
-  userAgent: text("user_agent"),
-  userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
-});
+export const authSessions = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    token: text("token").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+  },
+  (table) => ({
+    tokenUq: uniqueIndex("session_token_uq").on(table.token),
+  }),
+);
 
 export const authAccounts = pgTable("account", {
   id: text("id").primaryKey(),
