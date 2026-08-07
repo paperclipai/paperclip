@@ -270,6 +270,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        req.actor = { type: "none", source: "none" };
         next();
         return;
       }
@@ -281,11 +282,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        req.actor = { type: "none", source: "none" };
         next();
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+        req.actor = { type: "none", source: "none" };
         next();
         return;
       }
@@ -349,6 +352,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+      req.actor = { type: "none", source: "none" };
       next();
       return;
     }
