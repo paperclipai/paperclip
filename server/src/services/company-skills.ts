@@ -104,7 +104,9 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
+import { skillAnalyticsService } from "./skill-analytics.js";
 import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
@@ -2882,6 +2884,43 @@ export function companySkillService(db: Db) {
   const folderSvc = folderService(db);
   const agents = agentService(db);
   const projects = projectService(db);
+  const settings = instanceSettingsService(db);
+  const analytics = skillAnalyticsService(db);
+
+  async function applyUsageCountsForListedSkills(
+    companyId: string,
+    rows: CompanySkillListItem[],
+  ) {
+    const usageRows = rows.length > 0
+      ? await analytics.usageTotalsForSkills(companyId, {
+          window: "30d",
+          skillIds: rows.map((row) => row.id),
+          skillKeys: rows.map((row) => row.key),
+        })
+      : [];
+    const listedById = new Map(rows.map((row) => [row.id, row]));
+    const listedByKey = new Map(rows.map((row) => [row.key, row]));
+    const totalsBySkillId = new Map<string, { loadCount: number; invocationCount: number }>();
+    for (const usageRow of usageRows) {
+      // Events recorded before a skill row existed carry only the key; sum
+      // those into the same listed skill as id-resolved events.
+      const listed = (usageRow.skillId ? listedById.get(usageRow.skillId) : undefined)
+        ?? listedByKey.get(usageRow.skillKey);
+      if (!listed) continue;
+      const totals = totalsBySkillId.get(listed.id) ?? { loadCount: 0, invocationCount: 0 };
+      totals.loadCount += usageRow.totals.loadCount;
+      totals.invocationCount += usageRow.totals.invocationCount;
+      totalsBySkillId.set(listed.id, totals);
+    }
+    return rows.map((row) => {
+      const totals = totalsBySkillId.get(row.id);
+      return {
+        ...row,
+        usageCount: totals?.loadCount ?? 0,
+        invocationCount: totals?.invocationCount ?? 0,
+      };
+    });
+  }
 
   async function assertLocalImportSourceAllowed(companyId: string, source: string) {
     const sourceRealPath = await fs.realpath(path.resolve(source)).catch(() => null);
@@ -3252,14 +3291,22 @@ export function companySkillService(db: Db) {
       if (sort === "forks") return right.forkCount - left.forkCount || left.name.localeCompare(right.name);
       return left.name.localeCompare(right.name) || left.key.localeCompare(right.key);
     });
+    let usageEnriched = items;
+    if (query.include?.includes("usage")) {
+      const experimental = await settings.getExperimental();
+      if (experimental.enableSkillUsageAnalytics === true) {
+        usageEnriched = await applyUsageCountsForListedSkills(companyId, items);
+      }
+    }
+
     if (query.include?.includes("lastEditor")) {
-      const lastEditors = await listLastEditorsBySkillId(db, companyId, items.map((item) => item.id));
-      return items.map((item) => ({
+      const lastEditors = await listLastEditorsBySkillId(db, companyId, usageEnriched.map((item) => item.id));
+      return usageEnriched.map((item) => ({
         ...item,
         lastEditor: lastEditors.get(item.id) ?? null,
       }));
     }
-    return items;
+    return usageEnriched;
   }
 
   async function listFull(companyId: string): Promise<CompanySkill[]> {

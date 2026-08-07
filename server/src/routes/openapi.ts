@@ -4876,6 +4876,34 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/analytics/top-used",
+  tags: ["skills"],
+  summary: "Get top used skills",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      window: z.string().optional(),
+      metric: z.string().optional(),
+      limit: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/{skillId}/usage",
+  tags: ["skills"],
+  summary: "Get skill usage detail",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    query: z.object({ window: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/skills/browse-project",
   tags: ["skills"],

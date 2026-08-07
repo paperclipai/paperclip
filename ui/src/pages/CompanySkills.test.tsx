@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps, ReactNode } from "react";
+import { createContext, useContext, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CompanySkillDetail, CompanySkillUsageDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
   SkillDetailPage,
@@ -14,6 +14,14 @@ import {
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+const mockSkillUsageAnalyticsEnabled = vi.hoisted(() => ({
+  enabled: true,
+  loaded: true,
+}));
+
+vi.mock("@/hooks/useSkillUsageAnalyticsEnabled", () => ({
+  useSkillUsageAnalyticsEnabled: () => mockSkillUsageAnalyticsEnabled,
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -46,23 +54,55 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
 }));
 
-vi.mock("@/components/ui/dropdown-menu", () => ({
+vi.mock("@/components/ui/dropdown-menu", () => {
+  const RadioGroupContext = createContext<{ onValueChange?: (value: string) => void } | null>(null);
+  return {
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
   DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) => (
     <button type="button" onClick={onSelect}>{children}</button>
   ),
   DropdownMenuLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DropdownMenuRadioGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DropdownMenuRadioItem: ({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) => (
-    <button type="button" onClick={onSelect}>{children}</button>
+  DropdownMenuRadioGroup: ({
+    children,
+    onValueChange,
+  }: {
+    children: ReactNode;
+    onValueChange?: (value: string) => void;
+  }) => (
+    <RadioGroupContext.Provider value={{ onValueChange }}>
+      <div>{children}</div>
+    </RadioGroupContext.Provider>
   ),
+  DropdownMenuRadioItem: ({
+    children,
+    onSelect,
+    value,
+  }: {
+    children: ReactNode;
+    onSelect?: () => void;
+    value: string;
+  }) => {
+    const groupContext = useContext(RadioGroupContext);
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          onSelect?.();
+          groupContext?.onValueChange?.(value);
+        }}
+      >
+        {children}
+      </button>
+    );
+  },
   DropdownMenuSeparator: () => <hr />,
   DropdownMenuSub: ({ children }: { children: ReactNode }) => <>{children}</>,
   DropdownMenuSubContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuSubTrigger: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-}));
+  };
+});
 
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -113,6 +153,11 @@ afterEach(() => {
   root = null;
   container?.remove();
   container = null;
+});
+
+beforeEach(() => {
+  mockSkillUsageAnalyticsEnabled.enabled = true;
+  mockSkillUsageAnalyticsEnabled.loaded = true;
 });
 
 function makeVersion(revisionNumber: number, content: string): CompanySkillVersion {
@@ -180,6 +225,39 @@ function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<Comp
     sourcePath: null,
     currentVersion,
     starredByCurrentActor: false,
+    ...overrides,
+  };
+}
+
+function makeUsageDetail(overrides: Partial<CompanySkillUsageDetail> = {}): CompanySkillUsageDetail {
+  return {
+    skillId: "skill-1",
+    skillKey: "paperclip/demo-skill",
+    window: "7d",
+    lastUsedAt: new Date("2026-01-03T00:00:00Z"),
+    totals: {
+      loadCount: 8,
+      invocationCount: 2,
+    },
+    daily: [
+      { date: "2026-01-01", loadCount: 3, invocationCount: 1 },
+      { date: "2026-01-02", loadCount: 1, invocationCount: 0 },
+      { date: "2026-01-03", loadCount: 4, invocationCount: 1 },
+    ],
+    topAgents: [
+      {
+        agentId: "agent-1",
+        agentName: "Alice",
+        lastUsedAt: new Date("2026-01-03T00:00:00Z"),
+        totals: { loadCount: 5, invocationCount: 2 },
+      },
+      {
+        agentId: "agent-2",
+        agentName: "Bob",
+        lastUsedAt: new Date("2026-01-02T00:00:00Z"),
+        totals: { loadCount: 3, invocationCount: 0 },
+      },
+    ],
     ...overrides,
   };
 }
@@ -438,6 +516,88 @@ describe("DiscoveryGrid Studio entry points", () => {
     expect(node.querySelector('[aria-label="More actions for Bundled Skill"]')).toBeNull();
     expect(node.querySelector('input[type="checkbox"]')).toBeNull();
     expect(node.textContent).not.toContain("Move to folder");
+  });
+});
+
+describe("DiscoveryGrid usage analytics controls", () => {
+  const usageCard = {
+    key: "demo-skill",
+    skillId: "skill-1",
+    folderId: null,
+    catalogRef: null,
+    name: "Demo Skill",
+    slug: "demo-skill",
+    author: "Paperclip",
+    version: null,
+    tagline: null,
+    description: null,
+    categories: [],
+    iconUrl: null,
+    color: null,
+    starCount: 0,
+    agentCount: 12,
+    forkCount: 0,
+    usageCount: 8,
+    installed: true,
+    required: false,
+    forkedFrom: false,
+    updatedAt: 0,
+  };
+
+  it("shows usage sort and usage window controls only when analytics is enabled", async () => {
+    mockSkillUsageAnalyticsEnabled.enabled = false;
+    const disabledNode = await renderDiscoveryGrid({ cards: [usageCard], totalCount: 1 });
+    expect(disabledNode.textContent).not.toContain("Most used");
+    expect(disabledNode.textContent).not.toContain("Usage window");
+
+    mockSkillUsageAnalyticsEnabled.enabled = true;
+    const enabledNode = await renderDiscoveryGrid({ cards: [usageCard], totalCount: 1, usageAnalyticsEnabled: true });
+    expect(enabledNode.textContent).toContain("Most used");
+    expect(enabledNode.textContent).toContain("Usage window");
+  });
+
+  it("shows a usage stat on cards when analytics is enabled", async () => {
+    const node = await renderDiscoveryGrid({ cards: [usageCard], totalCount: 1, usageAnalyticsEnabled: true });
+
+    expect(node.textContent).toContain("12 agents");
+    expect(node.textContent).toContain("8 uses");
+  });
+
+  it("invokes the sort callback for the Most used option", async () => {
+    const onSortChange = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [
+        usageCard,
+        { ...usageCard, key: "other", skillId: "skill-2", name: "Second Skill", usageCount: 2 },
+      ],
+      totalCount: 2,
+      usageAnalyticsEnabled: true,
+      sort: "agents",
+      onSortChange,
+    });
+
+    const usedOption = buttonsNamed(node, "Most used")[0];
+    expect(usedOption).toBeTruthy();
+    await click(usedOption as HTMLButtonElement);
+
+    expect(onSortChange).toHaveBeenCalledWith("used");
+  });
+
+  it("invokes usage-window change when a different range is selected", async () => {
+    const onUsageWindowChange = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [usageCard],
+      totalCount: 1,
+      usageAnalyticsEnabled: true,
+      usageWindow: "7d",
+      onUsageWindowChange,
+    });
+
+    const thirtyDayOption = buttonsNamed(node, "30d")[0];
+    expect(thirtyDayOption).toBeTruthy();
+    await click(thirtyDayOption as HTMLButtonElement);
+
+    expect(onUsageWindowChange).toHaveBeenCalledWith("30d");
   });
 });
 
@@ -733,5 +893,79 @@ describe("SkillDetailPage settings", () => {
     });
 
     expect((node.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe("memory");
+  });
+});
+
+describe("SkillDetailPage analytics tab", () => {
+  it("renders usage metrics, trend chart, and top agents from usage detail", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "analytics",
+      usageData: makeUsageDetail(),
+      usageAnalyticsEnabled: true,
+      usageLoading: false,
+    });
+
+    expect(node.textContent).toContain("Usage trend");
+    expect(node.textContent).toContain("Total uses");
+    expect(node.textContent).toContain("Invoked");
+    expect(node.textContent).toContain("Unique agents");
+    expect(node.textContent).toContain("Alice");
+    expect(node.textContent).toContain("Bob");
+    expect(node.textContent).toContain("Load → Invoke");
+  });
+
+  it("shows a loading state while analytics data is fetching", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "analytics",
+      usageLoading: true,
+      usageData: null,
+      usageAnalyticsEnabled: true,
+    });
+
+    expect(node.querySelector('[data-slot="skeleton"]')).toBeTruthy();
+  });
+
+  it("shows invocation tracking-coming-soon state when there are no invocation events", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "analytics",
+      usageData: makeUsageDetail({
+        totals: { loadCount: 4, invocationCount: 0 },
+        daily: [{ date: "2026-01-03", loadCount: 4, invocationCount: 0 }],
+        topAgents: [],
+      }),
+      usageAnalyticsEnabled: true,
+      usageLoading: false,
+    });
+
+    expect(node.textContent).toContain("Invocation tracking coming soon");
+    expect(node.textContent).toContain("No agent activity yet.");
+  });
+
+  it("shows no usage yet when there is no analytics payload", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "analytics",
+      usageData: null,
+      usageAnalyticsEnabled: true,
+    });
+
+    expect(node.textContent).toContain("No usage data yet.");
+  });
+
+  it("does not render analytics content when analytics is disabled", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "analytics",
+      usageData: makeUsageDetail(),
+      usageAnalyticsEnabled: false,
+      usageLoading: false,
+    });
+
+    expect(node.textContent).not.toContain("Usage trend");
+    expect(node.textContent).toContain("About");
+    expect(node.textContent).toContain("Open in Studio");
   });
 });

@@ -92,6 +92,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableServerInfoDebugView: false,
     enableSimplifiedEnglishInteractions: false,
     enableSmokeLab: false,
+    enableSkillUsageAnalytics: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,

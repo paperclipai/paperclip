@@ -1,3 +1,5 @@
+import type { SkillUsageWindow } from "@paperclipai/shared";
+
 export const queryKeys = {
   companies: {
     all: ["companies"] as const,
@@ -92,6 +94,10 @@ export const queryKeys = {
     listRecent: (companyId: string) =>
       ["company-skills", companyId, "recent-updated"] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
+    usage: (companyId: string, skillId: string, window: SkillUsageWindow = "7d") =>
+      ["company-skills", companyId, skillId, "usage", window] as const,
+    topUsed: (companyId: string, window: SkillUsageWindow = "7d", limit: number = 500) =>
+      ["company-skills", companyId, "analytics", "top-used", window, String(limit)] as const,
     versions: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "versions"] as const,
     comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>

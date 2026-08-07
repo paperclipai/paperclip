@@ -8,6 +8,7 @@ import type {
   CompanySkillDetail,
   CompanySkillLastEditor,
   CompanySkillListItem,
+  CompanySkillUsageDetail,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillStudio } from "./SkillStudio";
@@ -20,10 +21,15 @@ const routeState = vi.hoisted(() => ({
 
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockSkillUsageAnalyticsEnabled = vi.hoisted(() => ({
+  enabled: true,
+  loaded: true,
+}));
 
 const mockCompanySkillsApi = vi.hoisted(() => ({
   list: vi.fn(),
   detail: vi.fn(),
+  usage: vi.fn(),
   create: vi.fn(),
   file: vi.fn(),
   updateFile: vi.fn(),
@@ -66,6 +72,10 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }),
+}));
+
+vi.mock("@/hooks/useSkillUsageAnalyticsEnabled", () => ({
+  useSkillUsageAnalyticsEnabled: () => mockSkillUsageAnalyticsEnabled,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -255,6 +265,39 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
   };
 }
 
+function makeUsageDetail(overrides: Partial<CompanySkillUsageDetail> = {}): CompanySkillUsageDetail {
+  return {
+    skillId: "source-skill",
+    skillKey: "paperclip/demo-skill",
+    window: "7d",
+    lastUsedAt: new Date("2026-01-03T00:00:00Z"),
+    totals: {
+      loadCount: 7,
+      invocationCount: 3,
+    },
+    daily: [
+      { date: "2026-01-01", loadCount: 0, invocationCount: 0 },
+      { date: "2026-01-02", loadCount: 2, invocationCount: 0 },
+      { date: "2026-01-03", loadCount: 5, invocationCount: 3 },
+    ],
+    topAgents: [
+      {
+        agentId: "agent-1",
+        agentName: "Alice",
+        lastUsedAt: new Date("2026-01-03T00:00:00Z"),
+        totals: { loadCount: 4, invocationCount: 2 },
+      },
+      {
+        agentId: "agent-2",
+        agentName: "Bob",
+        lastUsedAt: new Date("2026-01-02T00:00:00Z"),
+        totals: { loadCount: 3, invocationCount: 1 },
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) =>
     button.textContent?.trim() === name,
@@ -267,8 +310,11 @@ beforeEach(() => {
   routeState.skillId = "new";
   mockNavigate.mockReset();
   mockSetBreadcrumbs.mockReset();
+  mockSkillUsageAnalyticsEnabled.enabled = true;
+  mockSkillUsageAnalyticsEnabled.loaded = true;
   mockCompanySkillsApi.list.mockResolvedValue([]);
   mockCompanySkillsApi.detail.mockResolvedValue(makeSkill());
+  mockCompanySkillsApi.usage.mockResolvedValue(makeUsageDetail());
   mockCompanySkillsApi.create.mockResolvedValue({
     id: "created-skill",
     name: "Code Review",
@@ -672,5 +718,41 @@ describe("SkillStudio editor frontmatter", () => {
       link.getAttribute("href")?.includes("/skills/studio/new?forkFrom"),
     );
     expect(staleForkLink).toBeUndefined();
+  });
+
+  it("shows compact usage insights in Studio when analytics are enabled", async () => {
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Usage analytics"));
+    await waitFor(() => expect(mockCompanySkillsApi.usage).toHaveBeenCalledWith("company-1", "source-skill", "7d"));
+
+    await waitFor(() => expect(node.textContent).toContain("Total loads"));
+    expect(node.textContent).toContain("Invoked");
+    expect(node.textContent).toContain("Top agents");
+    expect(node.textContent).toContain("Alice");
+    expect(node.querySelector('a[href*="tab=analytics"]')).toBeTruthy();
+  });
+
+  it("does not show usage insights when usage analytics are disabled", async () => {
+    mockSkillUsageAnalyticsEnabled.enabled = false;
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Test runs"));
+    expect(node.textContent).not.toContain("Usage analytics");
+    expect(mockCompanySkillsApi.usage).not.toHaveBeenCalled();
+  });
+
+  it("marks missing invocation tracking honestly in the Studio strip", async () => {
+    mockCompanySkillsApi.usage.mockResolvedValueOnce(makeUsageDetail({
+      totals: { loadCount: 4, invocationCount: 0 },
+      daily: [{ date: "2026-01-03", loadCount: 4, invocationCount: 0 }],
+      topAgents: [],
+    }));
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Usage analytics"));
+    await waitFor(() => expect(node.textContent).toContain("Invocation tracking coming soon"));
+    expect(node.textContent).toContain("No agent activity yet.");
   });
 });

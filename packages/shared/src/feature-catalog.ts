@@ -151,6 +151,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableSkillUsageAnalytics: {
+    title: "Skill Usage Analytics",
+    description:
+      "See and sort skills by how much they're actually used across the instance, in the skill browser and Studio.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableBuiltInAgents: {
     title: "Built-in Agents",
     description:

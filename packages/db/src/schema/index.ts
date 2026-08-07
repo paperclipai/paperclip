@@ -156,6 +156,7 @@ export {
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export { companySkillUsageEvents } from "./company_skill_usage_events.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

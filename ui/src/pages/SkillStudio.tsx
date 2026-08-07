@@ -14,6 +14,7 @@ import {
   FolderPlus,
   FlaskConical,
   GitFork,
+  LineChart,
   History,
   MoreHorizontal,
   Pencil,
@@ -22,6 +23,7 @@ import {
   RotateCcw,
   Share2,
   Trash2,
+  Users,
 } from "lucide-react";
 import type {
   Agent,
@@ -54,7 +56,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { skillStudioNewRoute, skillStudioRoute } from "@/lib/company-skill-routes";
+import { skillStudioNewRoute, skillStudioRoute, skillRoute, withRouteSkill } from "@/lib/company-skill-routes";
 import {
   buildBlankSkillDraft,
   buildForkSkillDraft,
@@ -76,6 +78,9 @@ import {
 import { isProjectScanSkill } from "@/lib/skill-fork";
 import { cn, formatCents, relativeTime } from "@/lib/utils";
 import { SkillCardIcon, type DiscoveryCard } from "./CompanySkills";
+import { ChartCard, SkillUsageChart } from "@/components/ActivityCharts";
+import { MetricCard } from "@/components/MetricCard";
+import { QuotaBar } from "@/components/QuotaBar";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -139,6 +144,7 @@ import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGall
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { buildLineDiff } from "@/lib/line-diff";
+import { useSkillUsageAnalyticsEnabled } from "@/hooks/useSkillUsageAnalyticsEnabled";
 import {
   buildCreateRunRequest,
   buildReRunRequest,
@@ -972,6 +978,24 @@ function StudioShell({
     queryFn: () => companySkillsApi.testInputs(companyId, skillId),
     enabled: Boolean(companyId && skillId),
   });
+  const usageAnalytics = useSkillUsageAnalyticsEnabled();
+  const usageAnalyticsEnabled = usageAnalytics.enabled && usageAnalytics.loaded;
+  const usageWindow = "7d";
+  const usageQuery = useQuery({
+    queryKey: queryKeys.companySkills.usage(companyId, skillId, usageWindow),
+    queryFn: () => companySkillsApi.usage(companyId, skillId, usageWindow),
+    enabled: Boolean(usageAnalyticsEnabled && companyId && skillId),
+  });
+  const usage = usageQuery.data;
+  const usageLoading = usageQuery.isLoading;
+  const usageInvokedTracked = usage
+    ? usage.totals.invocationCount > 0 || usage.daily.some((day) => day.invocationCount > 0)
+    : false;
+  const usageLoadedTotal = usage?.totals.loadCount ?? 0;
+  const usageInvokedTotal = usage?.totals.invocationCount ?? 0;
+  const usageNonInvokedLoadTotal = Math.max(usageLoadedTotal - usageInvokedTotal, 0);
+  const usageTopAgents = usage?.topAgents.slice(0, 3) ?? [];
+  const usageInvokedRate = usageLoadedTotal > 0 ? Math.round((usageInvokedTotal / usageLoadedTotal) * 100) : 0;
 
   const persistLayout = useCallback((layout: Record<string, number>) => {
     const next: PaneLayout = {
@@ -1020,22 +1044,91 @@ function StudioShell({
       }}
     />
   );
+  const usageStrip = usageAnalyticsEnabled ? (
+    <section className="grid gap-2 border-b border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Usage analytics</h2>
+        <Button asChild size="xs" variant="outline">
+          <Link
+            to={`${skillRoute(skill, withRouteSkill(skills, skill))}?tab=analytics`}
+          >
+            Open in detail
+          </Link>
+        </Button>
+      </div>
+      {usageLoading ? (
+        <p className="text-xs text-muted-foreground">Loading usage...</p>
+      ) : !usage ? (
+        <p className="text-xs text-muted-foreground">No usage data yet.</p>
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <MetricCard
+              icon={LineChart}
+              label="Total loads"
+              value={usageLoadedTotal}
+              description={`Last ${usageWindow}`}
+            />
+            <MetricCard
+              icon={FlaskConical}
+              label="Invoked"
+              value={usageInvokedTotal}
+              description={usageInvokedTracked ? `Loaded only: ${usageNonInvokedLoadTotal}` : "Invocation tracking coming soon"}
+            />
+            <MetricCard
+              icon={Users}
+              label="Top agents"
+              value={usageTopAgents.length}
+              description="in window"
+            />
+          </div>
+          <ChartCard title="Usage trend" subtitle={`Window: ${usageWindow}`}>
+            <SkillUsageChart buckets={usage.daily} />
+          </ChartCard>
+          <QuotaBar
+            label="Load → Invoke"
+            percentUsed={usageInvokedTracked ? usageInvokedRate : 0}
+            leftLabel={`${usageInvokedTotal} / ${usageLoadedTotal}`}
+            rightLabel={usageInvokedTracked ? `${usageInvokedRate}%` : "Invocation tracking coming soon"}
+            showDeficitNotch={usageInvokedTracked}
+          />
+          {usageInvokedTracked ? null : (
+            <p className="text-xs text-muted-foreground">Invocation tracking coming soon.</p>
+          )}
+          {usageTopAgents.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No agent activity yet.</p>
+          ) : null}
+          <div className="space-y-1">
+            {usageTopAgents.map((agent) => (
+              <div key={agent.agentId} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate">{agent.agentName}</span>
+                <span className="text-muted-foreground">{agent.totals.loadCount} loads</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  ) : null;
   const rightPane = (
-    <RunsPane
-      companyId={companyId}
-      skill={skill}
-      inputs={inputs}
-      selectedInput={selectedInput}
-      adHocMode={adHocMode}
-      adHocContent={adHocContent}
-      selectedRunId={selectedRunId}
-      onSelectRun={setSelectedRunId}
-      selectedAgentId={selectedAgentId}
-      onSelectAgent={setSelectedAgentId}
-      skillDirty={skillDirty}
-      filterInput={selectedInput}
-      onClearFilter={() => setSelectedInputId(null)}
-    />
+    <div className="min-h-0 min-w-0">
+      {usageStrip}
+      <RunsPane
+        companyId={companyId}
+        skill={skill}
+        inputs={inputs}
+        selectedInput={selectedInput}
+        adHocMode={adHocMode}
+        adHocContent={adHocContent}
+        selectedRunId={selectedRunId}
+        onSelectRun={setSelectedRunId}
+        selectedAgentId={selectedAgentId}
+        onSelectAgent={setSelectedAgentId}
+        skillDirty={skillDirty}
+        filterInput={selectedInput}
+        onClearFilter={() => setSelectedInputId(null)}
+      />
+    </div>
   );
 
   return (

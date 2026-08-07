@@ -35,10 +35,13 @@ import type {
   CompanySkillTestRunTemplate,
   CompanySkillTestRunTemplateCreateRequest,
   CompanySkillTestRunTemplateUpdateRequest,
+  CompanySkillUsageDetail,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
+  SkillUsageWindow,
+  CompanySkillTopUsageItem,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -162,6 +165,20 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/fork`,
       payload,
     ),
+  usage: (companyId: string, skillId: string, window: SkillUsageWindow = "7d") =>
+    api.get<CompanySkillUsageDetail>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/usage?window=${window}`,
+    ),
+  topUsed: (companyId: string, window: SkillUsageWindow = "7d", limit = 500, metric: "loaded" | "invoked" = "loaded") => {
+    const params = new URLSearchParams({
+      window,
+      limit: String(limit),
+      metric,
+    });
+    return api.get<CompanySkillTopUsageItem[]>(
+      `/companies/${encodeURIComponent(companyId)}/skills/analytics/top-used?${params}`,
+    );
+  },
   forkPrecheck: (companyId: string, skillId: string) =>
     api.get<CompanySkillForkPrecheckResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/fork-precheck`,

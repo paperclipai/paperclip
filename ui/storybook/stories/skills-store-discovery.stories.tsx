@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { DiscoveryGrid, type DiscoveryCard, type DiscoveryCategory } from "@/pages/CompanySkills";
+import { type DiscoverySort as PageDiscoverySort, DiscoveryGrid, type DiscoveryCard, type DiscoveryCategory } from "@/pages/CompanySkills";
 
 type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
-type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
+type DiscoverySort = PageDiscoverySort;
 
 const MOCK_CARDS: DiscoveryCard[] = [
   {

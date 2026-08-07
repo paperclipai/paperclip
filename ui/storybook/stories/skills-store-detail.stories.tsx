@@ -5,9 +5,9 @@ import type {
   CompanySkillFileDetail,
   CompanySkillVersion,
 } from "@paperclipai/shared";
-import { SkillDetailPage } from "@/pages/CompanySkills";
+import { SkillDetailPage, type SkillDetailTab } from "@/pages/CompanySkills";
 
-type DetailTab = "overview" | "files" | "versions" | "agents";
+type DetailTab = SkillDetailTab;
 
 const NOW = new Date("2026-06-01T12:00:00Z");
 

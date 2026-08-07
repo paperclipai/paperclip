@@ -39,6 +39,7 @@ import {
   companySkillTestRuns,
   companySkillVersions,
   companySkills as companySkillsTable,
+  companySkillUsageEvents,
   companies,
   costEvents,
   documentAnnotationComments,
@@ -114,6 +115,11 @@ import {
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
+import {
+  buildSkillUsageInsertRows,
+  parsePaperclipSkillUsageEvent,
+  type PaperclipSkillUsageRuntimeEvent,
+} from "./skill-usage-events.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -14953,6 +14959,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
+    const paperclipSkillUsageEventsForRun: PaperclipSkillUsageRuntimeEvent[] = [];
+    const persistSkillUsageEvents = async () => {
+      if (paperclipSkillUsageEventsForRun.length === 0) return;
+      const runSkillKeys = Array.from(
+        new Set(
+          paperclipSkillUsageEventsForRun
+            .map((event) => event.skillKey)
+            .filter((skillKey): skillKey is string => Boolean(skillKey?.trim())),
+        ),
+      );
+      if (runSkillKeys.length === 0) {
+        paperclipSkillUsageEventsForRun.length = 0;
+        return;
+      }
+
+      const skillRows = await db
+        .select({
+          key: companySkillsTable.key,
+          id: companySkillsTable.id,
+        })
+        .from(companySkillsTable)
+        .where(and(eq(companySkillsTable.companyId, run.companyId), inArray(companySkillsTable.key, runSkillKeys)));
+
+      const skillIdByKey = new Map(skillRows.map((row) => [row.key, row.id]));
+      const eventRows = buildSkillUsageInsertRows({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        runId: run.id,
+        issueId,
+        events: paperclipSkillUsageEventsForRun,
+        skillIdByKey,
+      });
+
+      if (eventRows.length > 0) {
+        await db.insert(companySkillUsageEvents).values(eventRows);
+      }
+      // Multiple finalization paths may flush; clearing after a successful
+      // insert keeps a second call from double-counting the same events.
+      paperclipSkillUsageEventsForRun.length = 0;
+    };
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
       if (!pendingOutputProgress) return;
@@ -15238,6 +15284,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
         const eventType = event.eventType.trim();
         if (!eventType) return;
+        const parsedSkillUsageEvent = parsePaperclipSkillUsageEvent(event);
+        if (parsedSkillUsageEvent) {
+          paperclipSkillUsageEventsForRun.push(parsedSkillUsageEvent);
+        }
         await appendRunEvent(currentRun, seq++, {
           eventType: eventType.slice(0, 120),
           stream: event.stream,
@@ -15775,6 +15825,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "skipping late run finalization because the run already left running state",
         );
+        // An external cancel/interrupt already finalized the run status, but
+        // the usage events buffered during this run are only held here.
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: run.id }, "failed to persist paperclip skill usage events");
+        }
         return;
       }
 
@@ -15800,6 +15857,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             exitCode: adapterResult.exitCode,
           },
         });
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: finalizedRun.id }, "failed to persist paperclip skill usage events");
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to persist skill usage events: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
         try {
           await completeSkillTestRunForHeartbeatOutcome({
             run: finalizedRun,
@@ -16000,6 +16066,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "skipping late adapter failure finalization because the run already left running state",
         );
+        // An external cancel/interrupt already finalized the run status, but
+        // the usage events buffered during this run are only held here.
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: run.id }, "failed to persist paperclip skill usage events");
+        }
         return;
       }
 
@@ -16017,6 +16090,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           message,
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: livenessRun.id }, "failed to persist paperclip skill usage events");
+        }
         try {
           await completeSkillTestRunForHeartbeatOutcome({
             run: livenessRun,
@@ -16255,7 +16333,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // A run the graceful shutdown drain interrupted must not
+          // chain-dispatch the next queued run — usually its own process-loss
+          // retry: shutdown awaits this finalizer via drainActiveRunExecutions
+          // before process.exit, so a fresh dispatch here would either stall
+          // that drain or spawn an adapter that dies with the server. The
+          // queued retry is recovered on the next boot instead.
+          if (latestRun?.errorCode !== "server_shutdown_interrupted") {
+            await startNextQueuedRunForAgent(run.agentId);
+          }
         }
   }
 

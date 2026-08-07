@@ -12,6 +12,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+type SkillUsageEventKind = "loaded" | "invoked";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -98,6 +99,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
+import { detectInvokedSkill, type SkillInvocationContext } from "./skill-invocation.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -409,6 +411,7 @@ interface AcpxPreparedRuntime {
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
+  skillInvocationContext: SkillInvocationContext | null;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
@@ -798,6 +801,32 @@ async function buildSkillSetKey(input: {
   return hash.digest("hex");
 }
 
+const PAPERCLIP_SKILL_USAGE_EVENT_TYPE = "paperclip.skill.usage";
+
+async function emitPaperclipSkillUsageEvents(input: {
+  adapter: string;
+  entries: PaperclipSkillEntry[];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  eventKind: SkillUsageEventKind;
+}) {
+  if (!input.onEvent) return;
+  for (const entry of input.entries) {
+    await input.onEvent({
+      eventType: PAPERCLIP_SKILL_USAGE_EVENT_TYPE,
+      stream: "system",
+      level: "info",
+      message: `paperclip skill ${input.eventKind}: ${entry.key}`,
+      payload: {
+        adapter: input.adapter,
+        skillKey: entry.key,
+        skillRuntimeName: entry.runtimeName,
+        skillVersionId: entry.versionId ?? null,
+        eventKind: input.eventKind,
+      },
+    });
+  }
+}
+
 async function resolveSelectedRuntimeSkills(
   config: Record<string, unknown>,
   moduleDir: string,
@@ -817,10 +846,12 @@ async function prepareClaudeSkillRuntime(input: {
   config: Record<string, unknown>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
 }): Promise<{
   identity: Record<string, unknown>;
   promptInstructions: string;
   commandNotes: string[];
+  invocationContext: SkillInvocationContext | null;
 }> {
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
@@ -828,10 +859,12 @@ async function prepareClaudeSkillRuntime(input: {
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 
+  const materializedSkills: PaperclipSkillEntry[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      materializedSkills.push(entry);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
@@ -845,15 +878,27 @@ async function prepareClaudeSkillRuntime(input: {
       );
     }
   }
+  // Usage analytics only counts skills the session can actually read, so
+  // `loaded` must be emitted after materialization and skip failed copies.
+  await emitPaperclipSkillUsageEvents({
+    adapter: "claude",
+    entries: materializedSkills,
+    onEvent: input.onEvent,
+    eventKind: "loaded",
+  });
 
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
-  const promptInstructions = selectedSkills.length > 0
+  const materializedNames = materializedSkills.map((entry) => entry.runtimeName).sort();
+  // Like `loaded`/`invoked` above, the prompt may only advertise skills whose
+  // copies actually landed on disk — a failed materialization must not
+  // instruct the session to read an absent SKILL.md.
+  const promptInstructions = materializedNames.length > 0
     ? [
         "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
         `Skill root: ${skillsHome}`,
-        selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
+        `Selected skills: ${materializedNames.join(", ")}`,
         "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
-      ].filter(Boolean).join("\n")
+      ].join("\n")
     : "";
 
   return {
@@ -865,9 +910,14 @@ async function prepareClaudeSkillRuntime(input: {
       skillRoot: selectedSkills.length > 0 ? skillsHome : null,
     },
     promptInstructions,
-    commandNotes: selectedSkills.length > 0
-      ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
+    commandNotes: materializedSkills.length > 0
+      ? [`Materialized ${materializedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
+    // Like `loaded` above, invoked detection may only resolve skills the
+    // session can actually read, so the context excludes failed copies.
+    invocationContext: materializedSkills.length > 0
+      ? { skillRoot: skillsHome, entries: materializedSkills }
+      : null,
   };
 }
 
@@ -1001,10 +1051,12 @@ async function prepareCodexSkillRuntime(input: {
     nestedStepMetrics,
   );
 
+  const materializedSkills: PaperclipSkillEntry[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      materializedSkills.push(entry);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
@@ -1016,9 +1068,35 @@ async function prepareCodexSkillRuntime(input: {
         "stderr",
         `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
+      // A failed refresh usually preserves the prior run's copy intact
+      // (materialization is temp-dir + rename), and Codex discovers skills by
+      // directory scan — so that stale copy is still readable and usable by
+      // the session. Count it as loaded: analytics tracks what the session
+      // could actually use, not whether this run's copy succeeded.
+      try {
+        await fs.access(path.join(target, "SKILL.md"));
+        materializedSkills.push(entry);
+      } catch {
+        // No prior copy on disk — genuinely unavailable, stays uncounted.
+      }
     }
   }
+  // The manifest tracks which skillsHome paths Paperclip OWNS (reconcile uses
+  // it to revoke on deselect), not which copies succeeded this run. It must
+  // keep listing a skill whose re-copy failed: a prior run's copy may still be
+  // on disk, and dropping the name here would orphan that copy forever. Codex
+  // discovers skills by directory scan, so a failed copy with no prior
+  // materialization is simply absent and never advertised to the runtime.
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+  // Usage analytics only counts skills the session can actually read: fresh
+  // copies plus preserved prior copies (still discoverable), never entries
+  // with nothing on disk.
+  await emitPaperclipSkillUsageEvents({
+    adapter: "codex",
+    entries: materializedSkills,
+    onEvent: input.onEvent,
+    eventKind: "loaded",
+  });
 
   input.env.CODEX_HOME = effectiveCodexHome;
 
@@ -1602,6 +1680,7 @@ async function buildRuntime(input: {
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
+  let skillInvocationContext: SkillInvocationContext | null = null;
   const skillCommandNotes: string[] = [];
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
@@ -1610,9 +1689,11 @@ async function buildRuntime(input: {
       config,
       moduleDir: input.engine.moduleDir,
       onLog: input.ctx.onLog,
+      onEvent: input.ctx.onEvent,
     });
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
+    skillInvocationContext = preparedSkills.invocationContext;
     skillCommandNotes.push(...preparedSkills.commandNotes);
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
@@ -2092,6 +2173,7 @@ async function buildRuntime(input: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
     },
+    skillInvocationContext,
     childStderrLogPath,
     paperclipClaudeSettings,
     mcpServers,
@@ -3536,6 +3618,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let timeout: NodeJS.Timeout | null = null;
       let timedOut = false;
       const textParts: string[] = [];
+      const invokedSkillKeys = new Set<string>();
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
       // Open the agent turn span as a child of the run root span. It wraps the
@@ -3577,6 +3660,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (event.type === "status" && event.tag === "usage_update") {
             eventBreakdown = event.breakdown ?? eventBreakdown;
             eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+          }
+          if (prepared.skillInvocationContext) {
+            const invokedSkill = detectInvokedSkill(event, prepared.skillInvocationContext);
+            if (invokedSkill && !invokedSkillKeys.has(invokedSkill.key)) {
+              invokedSkillKeys.add(invokedSkill.key);
+              await emitPaperclipSkillUsageEvents({
+                adapter: prepared.acpxAgent,
+                entries: [invokedSkill],
+                onEvent: ctx.onEvent,
+                eventKind: "invoked",
+              });
+            }
           }
           await emitRuntimeEvent(ctx, event, toolTitles);
         }

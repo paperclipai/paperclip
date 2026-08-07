@@ -32,6 +32,8 @@ import {
   companySkillService,
   heartbeatService,
   issueService,
+  instanceSettingsService,
+  skillAnalyticsService,
   logActivity,
 } from "../services/index.js";
 import { isGitRepoSkillImportSource, parseSkillImportSourceInput } from "../services/company-skills.js";
@@ -40,9 +42,14 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { badRequest, forbidden, unauthorized } from "../errors.js";
+import { badRequest, forbidden, notFound, unauthorized } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import {
+  parseSkillUsageLimit,
+  parseSkillUsageMetric,
+  parseSkillUsageWindow,
+} from "../services/skill-analytics.js";
 import {
   companySkillPolicyService,
   normalizeSkillPolicySourceType,
@@ -90,6 +97,15 @@ export function companySkillRoutes(db: Db) {
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
   const skillPolicies = companySkillPolicyService(db);
+  const settings = instanceSettingsService(db);
+  const analytics = skillAnalyticsService(db);
+
+  async function assertSkillUsageAnalyticsEnabled() {
+    const experimental = await settings.getExperimental();
+    if (experimental.enableSkillUsageAnalytics !== true) {
+      throw notFound("Skill usage analytics are not enabled");
+    }
+  }
 
   function asString(value: unknown): string | null {
     if (typeof value !== "string") return null;
@@ -328,6 +344,34 @@ export function companySkillRoutes(db: Db) {
       includeSubtree: optionalQueryBoolean(req.query.includeSubtree),
     }));
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/skills/analytics/top-used", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertSkillUsageAnalyticsEnabled();
+    const queryWindow = parseSkillUsageWindow(firstQueryString(req.query.window));
+    const top = await analytics.topUsedSkills(companyId, {
+      window: queryWindow,
+      metric: parseSkillUsageMetric(firstQueryString(req.query.metric)),
+      limit: parseSkillUsageLimit(firstQueryString(req.query.limit)),
+    });
+    res.json(top);
+  });
+
+  router.get("/companies/:companyId/skills/:skillId/usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const skillId = req.params.skillId as string;
+    assertCompanyAccess(req, companyId);
+    await assertSkillUsageAnalyticsEnabled();
+    const detail = await analytics.skillUsageDetail(companyId, skillId, {
+      window: parseSkillUsageWindow(firstQueryString(req.query.window)),
+    });
+    if (!detail) {
+      res.status(404).json({ error: "Skill not found" });
+      return;
+    }
+    res.json(detail);
   });
 
   router.get("/companies/:companyId/skills/categories", async (req, res) => {

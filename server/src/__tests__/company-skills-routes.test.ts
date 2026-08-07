@@ -61,6 +61,15 @@ const mockCompanySkillPolicyService = vi.hoisted(() => ({
   evaluate: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+const mockSkillAnalyticsService = vi.hoisted(() => ({
+  topUsedSkills: vi.fn(),
+  skillUsageDetail: vi.fn(),
+}));
+
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
@@ -188,9 +197,11 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     companySkillService: () => mockCompanySkillService,
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
+    skillAnalyticsService: () => mockSkillAnalyticsService,
     logActivity: mockLogActivity,
   }));
 }
@@ -707,6 +718,11 @@ describe("company skill mutation permissions", () => {
       remediation: null,
     }));
     mockReflectionCoachMutationGate.assertConsented.mockResolvedValue(undefined);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableSkillUsageAnalytics: true,
+    });
+    mockSkillAnalyticsService.topUsedSkills.mockResolvedValue([]);
+    mockSkillAnalyticsService.skillUsageDetail.mockResolvedValue(null);
   });
 
   it("allows local board operators to mutate company skills", async () => {
@@ -1516,6 +1532,114 @@ describe("company skill mutation permissions", () => {
 
     await request(app).get("/api/companies/company-1/skills/categories").expect(200);
     expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("returns top-used skill analytics for a company", async () => {
+    mockSkillAnalyticsService.topUsedSkills.mockResolvedValueOnce([{
+      skillId: "skill-1",
+      skillKey: "company/company-1/skill-1",
+      name: "Skill 1",
+      slug: "skill-1",
+      window: "30d",
+      agentCount: 2,
+      lastUsedAt: new Date("2026-06-01T10:00:00.000Z"),
+      totals: { loadCount: 12, invocationCount: 8 },
+      uses: 12,
+      invocations: 8,
+      uniqueAgents: 2,
+    }]);
+
+    const app = await createApp({ type: "board", source: "local_implicit" });
+    const response = await request(app)
+      .get("/api/companies/company-1/skills/analytics/top-used?window=30d&limit=10&metric=invoked");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toEqual([{
+      skillId: "skill-1",
+      skillKey: "company/company-1/skill-1",
+      name: "Skill 1",
+      slug: "skill-1",
+      window: "30d",
+      agentCount: 2,
+      lastUsedAt: "2026-06-01T10:00:00.000Z",
+      totals: { loadCount: 12, invocationCount: 8 },
+      uses: 12,
+      invocations: 8,
+      uniqueAgents: 2,
+    }]);
+    expect(mockSkillAnalyticsService.topUsedSkills).toHaveBeenCalledWith("company-1", {
+      window: "30d",
+      metric: "invoked",
+      limit: 10,
+    });
+  });
+
+  it("hides analytics top-used endpoint when the feature flag is disabled", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValueOnce({
+      enableSkillUsageAnalytics: false,
+    });
+    const app = await createApp({ type: "board", source: "local_implicit" });
+    const response = await request(app)
+      .get("/api/companies/company-1/skills/analytics/top-used");
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body).toEqual({ error: "Skill usage analytics are not enabled" });
+  });
+
+  it("returns skill usage detail", async () => {
+    mockSkillAnalyticsService.skillUsageDetail.mockResolvedValueOnce({
+      skillId: "skill-1",
+      skillKey: "company/company-1/skill-1",
+      window: "30d",
+      totals: { loadCount: 5, invocationCount: 3 },
+      daily: [{ date: "2026-06-01", loadCount: 2, invocationCount: 1 }],
+      topAgents: [{
+        agentId: "agent-1",
+        agentName: "Skill Agent",
+        lastUsedAt: new Date("2026-06-01T12:00:00.000Z"),
+        totals: { loadCount: 2, invocationCount: 1 },
+      }],
+      lastUsedAt: new Date("2026-06-01T12:00:00.000Z"),
+    });
+    const app = await createApp({ type: "board", source: "local_implicit" });
+    const response = await request(app)
+      .get("/api/companies/company-1/skills/skill-1/usage?window=30d");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({
+      skillId: "skill-1",
+      skillKey: "company/company-1/skill-1",
+      window: "30d",
+      totals: { loadCount: 5, invocationCount: 3 },
+      daily: [{ date: "2026-06-01", loadCount: 2, invocationCount: 1 }],
+      topAgents: [{
+        agentId: "agent-1",
+        agentName: "Skill Agent",
+        lastUsedAt: "2026-06-01T12:00:00.000Z",
+        totals: { loadCount: 2, invocationCount: 1 },
+      }],
+      lastUsedAt: "2026-06-01T12:00:00.000Z",
+    });
+    expect(mockSkillAnalyticsService.skillUsageDetail).toHaveBeenCalledWith("company-1", "skill-1", {
+      window: "30d",
+    });
+  });
+
+  it("returns a missing-detail 404 when analytics detail data is unavailable", async () => {
+    mockSkillAnalyticsService.skillUsageDetail.mockResolvedValueOnce(null);
+    const app = await createApp({ type: "board", source: "local_implicit" });
+    const response = await request(app)
+      .get("/api/companies/company-1/skills/skill-1/usage?window=30d");
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body).toEqual({ error: "Skill not found" });
+  });
+
+  it("hides analytics skill detail endpoint when the feature flag is disabled", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValueOnce({
+      enableSkillUsageAnalytics: false,
+    });
+    const app = await createApp({ type: "board", source: "local_implicit" });
+    const response = await request(app)
+      .get("/api/companies/company-1/skills/skill-1/usage");
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body).toEqual({ error: "Skill usage analytics are not enabled" });
   });
 
   it("accepts category updates and logs the skill mutation", async () => {

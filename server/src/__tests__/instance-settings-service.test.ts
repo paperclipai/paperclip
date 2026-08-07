@@ -32,6 +32,7 @@ describe("instance settings service", () => {
       enableTaskChatRedesign: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
+      enableSkillUsageAnalytics: false,
       enablePipelines: false,
       enableCases: false,
       enableIssuePlanDecompositions: true,

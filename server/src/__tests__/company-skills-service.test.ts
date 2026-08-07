@@ -8,8 +8,10 @@ import {
   agents,
   authUsers,
   companies,
+  companySkillUsageEvents,
   companySkillVersions,
   companySkills,
+  heartbeatRuns,
   createDb,
   folders,
   projects,
@@ -21,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { folderService } from "../services/folders.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -62,6 +65,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(companySkillUsageEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(projectWorkspaces);
@@ -292,6 +297,323 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(enriched.find((skill) => skill.id === versionlessSkillId)).toMatchObject({
       lastEditor: null,
     });
+  });
+
+  it("optionally enriches list items with skill usage counts when enabled", async () => {
+    const companyId = randomUUID();
+    const skillWithUsageId = randomUUID();
+    const skillWithoutUsageId = randomUUID();
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    const runA = randomUUID();
+    const runB = randomUUID();
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableSkillUsageAnalytics: true });
+    async function writeTrackedSkillDir(slug: string, name: string) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-${slug}-`));
+      cleanupDirs.add(dir);
+      await fs.writeFile(path.join(dir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
+      return dir;
+    }
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: agentA,
+        companyId,
+        name: "Caller",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentB,
+        companyId,
+        name: "Listener",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: runA,
+        companyId,
+        agentId: agentA,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+      },
+      {
+        id: runB,
+        companyId,
+        agentId: agentB,
+        invocationSource: "assignment",
+        status: "succeeded",
+        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+      },
+    ]);
+    await db.insert(companySkills).values([
+      {
+        id: skillWithUsageId,
+        companyId,
+        key: `company/${companyId}/skill-with-usage`,
+        slug: "skill-with-usage",
+        name: "Skill With Usage",
+        description: null,
+        markdown: "# Skill With Usage",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("skill-with-usage", "Skill With Usage"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: {},
+      },
+      {
+        id: skillWithoutUsageId,
+        companyId,
+        key: `company/${companyId}/skill-without-usage`,
+        slug: "skill-without-usage",
+        name: "Skill Without Usage",
+        description: null,
+        markdown: "# Skill Without Usage",
+        sourceType: "local_path",
+        sourceLocator: await writeTrackedSkillDir("skill-without-usage", "Skill Without Usage"),
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: {},
+      },
+    ]);
+    await db.insert(companySkillUsageEvents).values([
+      {
+        companyId,
+        skillKey: `company/${companyId}/skill-with-usage`,
+        skillId: skillWithUsageId,
+        skillVersionId: null,
+        agentId: agentA,
+        runId: runA,
+        issueId: null,
+        adapter: "codex_local",
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 150 * 60 * 1000),
+      },
+      {
+        companyId,
+        skillKey: `company/${companyId}/skill-with-usage`,
+        skillId: skillWithUsageId,
+        skillVersionId: null,
+        agentId: agentA,
+        runId: runA,
+        issueId: null,
+        adapter: "codex_local",
+        eventKind: "invoked",
+        createdAt: new Date(Date.now() - 149 * 60 * 1000),
+      },
+      {
+        companyId,
+        skillKey: `company/${companyId}/skill-with-usage`,
+        skillId: skillWithUsageId,
+        skillVersionId: null,
+        agentId: agentB,
+        runId: runB,
+        issueId: null,
+        adapter: "codex_local",
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 90 * 60 * 1000),
+      },
+    ]);
+
+    const listed = await svc.list(companyId, { include: ["usage"] });
+    const withUsage = listed.find((skill) => skill.id === skillWithUsageId);
+    const withoutUsage = listed.find((skill) => skill.id === skillWithoutUsageId);
+
+    expect(withUsage).toMatchObject({
+      id: skillWithUsageId,
+      usageCount: 2,
+      invocationCount: 1,
+    });
+    expect(withoutUsage).toMatchObject({
+      id: skillWithoutUsageId,
+      usageCount: 0,
+      invocationCount: 0,
+    });
+  });
+
+  it("keeps usage counts for listed skills crowded out of the global top-N ranking", async () => {
+    const companyId = randomUUID();
+    const listedSkillId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableSkillUsageAnalytics: true });
+    const listedKey = `company/${companyId}/crowded-out`;
+    const trackedDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-crowded-out-"));
+    cleanupDirs.add(trackedDir);
+    await fs.writeFile(path.join(trackedDir, "SKILL.md"), "---\nname: Crowded Out\n---\n\n# Crowded Out\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Caller",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+    });
+    await db.insert(companySkills).values({
+      id: listedSkillId,
+      companyId,
+      key: listedKey,
+      slug: "crowded-out",
+      name: "Crowded Out",
+      description: null,
+      markdown: "# Crowded Out",
+      sourceType: "local_path",
+      sourceLocator: trackedDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: {},
+    });
+
+    const base = {
+      companyId,
+      skillVersionId: null,
+      agentId,
+      runId,
+      issueId: null,
+      adapter: "codex_local",
+    };
+    await db.insert(companySkillUsageEvents).values([
+      {
+        ...base,
+        skillKey: listedKey,
+        skillId: listedSkillId,
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+      },
+      {
+        ...base,
+        skillKey: listedKey,
+        skillId: listedSkillId,
+        eventKind: "invoked",
+        createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000 + 60_000),
+      },
+      // 501 distinct unlisted keys with one newer `loaded` event each: they
+      // tie the listed skill on the loaded metric, out-rank it on recency,
+      // and overflow any global top-N limit (the analytics cap is 500), so a
+      // global-ranking enrichment would zero-fill the listed skill.
+      ...Array.from({ length: 501 }, (_, index) => ({
+        ...base,
+        skillKey: `company/${companyId}/unlisted-${index}`,
+        skillId: null,
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 60 * 60 * 1000 + index * 1_000),
+      })),
+    ]);
+
+    const listed = await svc.list(companyId, { include: ["usage"] });
+    const crowdedOut = listed.find((skill) => skill.id === listedSkillId);
+    expect(crowdedOut).toMatchObject({
+      id: listedSkillId,
+      usageCount: 1,
+      invocationCount: 1,
+    });
+  });
+
+  it("does not enrich list usage when the feature flag is disabled", async () => {
+    const companyId = randomUUID();
+    const skillWithUsageId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableSkillUsageAnalytics: false });
+    const trackedDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-with-usage-"));
+    cleanupDirs.add(trackedDir);
+    await fs.writeFile(path.join(trackedDir, "SKILL.md"), "---\nname: Skill With Usage\n---\n\n# Skill With Usage\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Caller",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+    });
+    await db.insert(companySkills).values({
+      id: skillWithUsageId,
+      companyId,
+      key: `company/${companyId}/skill-with-usage`,
+      slug: "skill-with-usage",
+      name: "Skill With Usage",
+      description: null,
+      markdown: "# Skill With Usage",
+      sourceType: "local_path",
+      sourceLocator: trackedDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: {},
+    });
+    await db.insert(companySkillUsageEvents).values({
+      companyId,
+      skillKey: `company/${companyId}/skill-with-usage`,
+      skillId: skillWithUsageId,
+      skillVersionId: null,
+      agentId,
+      runId,
+      issueId: null,
+      adapter: "codex_local",
+      eventKind: "loaded",
+      createdAt: new Date(Date.now() - 150 * 60 * 1000),
+    });
+
+    const listed = await svc.list(companyId, { include: ["usage"] });
+    const item = listed.find((skill) => skill.id === skillWithUsageId);
+    expect(item).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(item ?? {}, "usageCount")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(item ?? {}, "invocationCount")).toBe(false);
   });
 
   it("rejects skill inventory refresh for a missing company", async () => {

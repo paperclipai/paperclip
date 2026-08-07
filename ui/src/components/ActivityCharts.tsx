@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { CompanySkillUsageDailyBucket } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
@@ -26,6 +27,11 @@ const runSegmentColors = {
   other: "var(--hex-737373)",
 } as const;
 
+const usageSegmentColors = {
+  loaded: "var(--status-task-done)",
+  invoked: "var(--status-task-todo)",
+} as const;
+
 // Compact per-day tooltip that also attributes failures to their error class.
 function runDayTooltip(entry: DashboardRunActivityDay): string {
   const lines = [`${entry.date}: ${entry.total} run${entry.total === 1 ? "" : "s"}`];
@@ -38,6 +44,10 @@ function runDayTooltip(entry: DashboardRunActivityDay): string {
   }
   if (entry.other > 0) lines.push(`  other: ${entry.other}`);
   return lines.join("\n");
+}
+
+function skillUsageTooltip(entry: CompanySkillUsageDailyBucket): string {
+  return `${entry.date}: ${entry.loadCount} loaded, ${entry.invocationCount} invoked`;
 }
 
 /* ---- Sub-components ---- */
@@ -322,6 +332,51 @@ export function SuccessRateChart(props: RunChartProps) {
         })}
       </div>
       <DateLabels days={days} />
+    </div>
+  );
+}
+
+export function SkillUsageChart({
+  buckets = [],
+  days = getLast14Days(),
+}: {
+  buckets?: CompanySkillUsageDailyBucket[];
+  days?: string[];
+}) {
+  const usageByDate = new Map(buckets.map((bucket) => [bucket.date, bucket]));
+  const normalized = days.map((date) => usageByDate.get(date) ?? { date, loadCount: 0, invocationCount: 0 });
+  const hasData = normalized.some((entry) => entry.loadCount > 0 || entry.invocationCount > 0);
+
+  if (!hasData) return <p className="text-xs text-muted-foreground">No usage yet</p>;
+
+  const maxValue = Math.max(...normalized.map((entry) => entry.loadCount), 1);
+
+  return (
+    <div>
+      <div className="flex items-end gap-(--sz-3px) h-20">
+        {normalized.map((entry) => {
+          const invoked = Math.max(0, Math.min(entry.invocationCount, entry.loadCount));
+          const loaded = Math.max(0, entry.loadCount - invoked);
+          const loadedHeight = (entry.loadCount / maxValue) * 100;
+          return (
+            <div key={entry.date} className="flex-1 h-full flex flex-col justify-end" title={skillUsageTooltip(entry)}>
+              {entry.loadCount > 0 ? (
+                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${loadedHeight}%`, minHeight: 2 }}>
+                  {invoked > 0 ? <div style={{ flex: invoked, backgroundColor: usageSegmentColors.invoked }} /> : null}
+                  {loaded > 0 ? <div style={{ flex: loaded, backgroundColor: usageSegmentColors.loaded }} /> : null}
+                </div>
+              ) : (
+                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <DateLabels days={days} />
+      <ChartLegend items={[
+        { color: usageSegmentColors.invoked, label: "Invoked" },
+        { color: usageSegmentColors.loaded, label: "Loaded" },
+      ]} />
     </div>
   );
 }

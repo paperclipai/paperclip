@@ -13,7 +13,7 @@ export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
 export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
 
-export type CompanySkillListInclude = "lastEditor";
+export type CompanySkillListInclude = "lastEditor" | "usage";
 
 export interface CompanySkillLastEditor {
   kind: "user" | "agent";
@@ -108,6 +108,67 @@ export interface CompanySkillListItem {
   packageName: string | null;
   packageVersion: string | null;
   lastEditor?: CompanySkillLastEditor | null;
+  /**
+   * Skill usage analytics (LOOA-956). Present only when
+   * `enableSkillUsageAnalytics` is on; otherwise omitted rather than zeroed,
+   * so callers can distinguish "no usage yet" from "not measured".
+   */
+  usageCount?: number;
+  invocationCount?: number;
+}
+
+/**
+ * Rolling lookback window for skill usage analytics queries (LOOA-956).
+ */
+export type SkillUsageWindow = "7d" | "30d" | "90d";
+
+export type SkillUsageEventKind = "loaded" | "invoked";
+
+export interface SkillUsageTotals {
+  loadCount: number;
+  invocationCount: number;
+}
+
+/**
+ * One row in the "most-used skills" ranking for a company within a window.
+ */
+export interface CompanySkillTopUsageItem {
+  skillId: string | null;
+  skillKey: string;
+  name: string | null;
+  slug: string | null;
+  window: SkillUsageWindow;
+  agentCount: number;
+  lastUsedAt: Date | null;
+  totals: SkillUsageTotals;
+}
+
+export interface CompanySkillUsageDailyBucket {
+  /** UTC calendar date, `YYYY-MM-DD`. */
+  date: string;
+  loadCount: number;
+  invocationCount: number;
+}
+
+export interface CompanySkillUsageByAgent {
+  agentId: string;
+  agentName: string;
+  lastUsedAt: Date;
+  totals: SkillUsageTotals;
+}
+
+/**
+ * Per-skill usage detail (Studio + skill detail tab): totals for the window,
+ * a daily time series, and the top agents driving usage.
+ */
+export interface CompanySkillUsageDetail {
+  skillId: string | null;
+  skillKey: string;
+  window: SkillUsageWindow;
+  lastUsedAt: Date | null;
+  totals: SkillUsageTotals;
+  daily: CompanySkillUsageDailyBucket[];
+  topAgents: CompanySkillUsageByAgent[];
 }
 
 export interface CompanySkillUsageAgent {
