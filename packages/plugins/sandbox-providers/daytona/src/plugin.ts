@@ -1508,13 +1508,16 @@ const MAX_SESSION_STREAM_RECONNECTS = 1;
 // The buffer stores each new tail as a separate chunk and joins the chunks one
 // time at read. It does not copy the earlier output on each append, so total
 // buffering work stays linear in the output size, not quadratic.
-function createSessionStreamBuffer() {
+function createSessionStreamBuffer(
+  onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
+) {
   const streams = {
     stdout: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
     stderr: { chunks: [] as Buffer[], length: 0, connectionBytes: 0 },
   };
 
   function append(
+    streamName: "stdout" | "stderr",
     stream: { chunks: Buffer[]; length: number; connectionBytes: number },
     chunk: string,
   ): void {
@@ -1531,11 +1534,16 @@ function createSessionStreamBuffer() {
     const tail = start >= stream.length ? buf : buf.subarray(stream.length - start);
     stream.chunks.push(tail);
     stream.length += tail.length;
+    // Deliver only the genuinely new tail to the live sink, so a replayed
+    // prefix on a reconnect never reaches the host twice.
+    if (onNewTail && tail.length > 0) {
+      onNewTail(streamName, tail.toString("utf8"));
+    }
   }
 
   return {
-    onStdout: (chunk: string) => append(streams.stdout, chunk),
-    onStderr: (chunk: string) => append(streams.stderr, chunk),
+    onStdout: (chunk: string) => append("stdout", streams.stdout, chunk),
+    onStderr: (chunk: string) => append("stderr", streams.stderr, chunk),
     // Reset the per-connection read cursors after a reconnect, so the replayed
     // prefix drops against the already-delivered byte count.
     resetConnectionCursors(): void {
@@ -1564,8 +1572,9 @@ async function runSessionLogStream(
   sandbox: Sandbox,
   sessionId: string,
   commandId: string,
+  onNewTail?: (stream: "stdout" | "stderr", text: string) => void,
 ): Promise<SessionLogStreamResult> {
-  const buffer = createSessionStreamBuffer();
+  const buffer = createSessionStreamBuffer(onNewTail);
   let reconnects = 0;
   while (true) {
     try {
@@ -1668,7 +1677,16 @@ async function executeInSession(
     // to the poll path below, because the command still runs to its exit on the
     // server.
     if (config.useLogStream) {
-      const streamResult = await runSessionLogStream(sandbox, sessionId, commandId);
+      // Emit each genuinely new output chunk to the host during the active
+      // execute call. The host routes it to the runner log sink by the
+      // host-issued invocation id. This is a no-op when no plugin context is
+      // set (a direct test call) or when the host has no active execute route.
+      const streamResult = await runSessionLogStream(
+        sandbox,
+        sessionId,
+        commandId,
+        (stream, text) => pluginContext?.execution.log(stream, text),
+      );
       if (streamResult.ok) {
         const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
         const durationMs = timingNow() - execStart;

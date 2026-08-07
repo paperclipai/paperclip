@@ -1668,6 +1668,53 @@ describe("Daytona sandbox provider plugin", () => {
         expect(result).toMatchObject({ exitCode: 0, timedOut: false, stdout: "AAABBB", stderr: "EEEFFF" });
         expect(sandbox.process.getSessionCommandLogs).toHaveBeenCalledTimes(2);
       });
+
+      it("emits each new chunk to the host and drops a replayed prefix (test_log_stream_emits_execute_log_per_chunk)", async () => {
+        process.env.DAYTONA_API_KEY = "host-key";
+        const executionLog = vi.fn();
+        const restore = __setDaytonaPluginContextForTest(
+          { execution: { log: executionLog } } as unknown as PluginContext,
+        );
+        try {
+          const sandbox = createMockSandbox();
+          let attempt = 0;
+          sandbox.process.getSessionCommandLogs.mockImplementation(
+            async (
+              _sid: string,
+              _cmdId: string,
+              onStdout?: (chunk: string) => void,
+              onStderr?: (chunk: string) => void,
+            ) => {
+              attempt += 1;
+              if (attempt === 1) {
+                onStdout?.("AAA");
+                onStderr?.("EEE");
+                throw new Error("socket error");
+              }
+              // Reconnect replays the whole log from byte 0, then the new tail.
+              onStdout?.("AAA");
+              onStdout?.("BBB");
+              onStderr?.("EEE");
+              onStderr?.("FFF");
+            },
+          );
+          sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", command: "", exitCode: 0 });
+          mockGet.mockResolvedValue(sandbox);
+
+          await plugin.definition.onEnvironmentExecute?.(streamExecParams());
+
+          // Each genuinely new chunk reaches the host exactly once. The replayed
+          // prefix ("AAA"/"EEE") on the reconnect is not re-emitted.
+          expect(executionLog.mock.calls).toEqual([
+            ["stdout", "AAA"],
+            ["stderr", "EEE"],
+            ["stdout", "BBB"],
+            ["stderr", "FFF"],
+          ]);
+        } finally {
+          restore();
+        }
+      });
     });
   });
 
