@@ -77,7 +77,8 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
     : null;
   const reviewCount =
-    (attentionItem?.pendingActionRequestCount ?? 0) + (attentionItem?.quarantinedCatalogEntryCount ?? 0);
+    (attentionItem?.pendingActionRequestCount ?? 0) +
+    ((attentionItem?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">

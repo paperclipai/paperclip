@@ -3045,7 +3045,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(callbackRes.body.connection).toMatchObject({
       id: connectRes.body.connectionId,
       status: "active",
-      enabled: false,
+      enabled: true,
       credentialSecretRefs: [
         expect.objectContaining({ configPath: "oauth.access_token", label: "OAuth access token" }),
         expect.objectContaining({ configPath: "oauth.refresh_token", label: "OAuth refresh token" }),
@@ -3713,7 +3713,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, connect.connectionId));
-    expect(preserved).toMatchObject({ status: "active", enabled: false });
+    expect(preserved).toMatchObject({ status: "active", enabled: true });
     expect(preserved.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining([
       "oauth.access_token",
       "oauth.refresh_token",
@@ -5084,6 +5084,56 @@ describeEmbeddedPostgres("tool access service", () => {
         catalogEntryId: updateEntry.id,
       }),
     });
+
+    const createEntry = rereview.catalog.find((entry) => entry.toolName === "create_zap")!;
+    await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+    const stillQuarantined = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    expect(stillQuarantined).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: updateEntry.id, status: "quarantined" }),
+      expect.objectContaining({ id: createEntry.id, status: "quarantined" }),
+    ]));
+
+    await expect(service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, createEntry.id],
+      askFirstCatalogEntryIds: [createEntry.id],
+      reviewedCatalogEntryIds: [createEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 400,
+      message: "Action review decisions must cover every currently quarantined action exactly once",
+    });
+
+    const reviewed = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, createEntry.id],
+      askFirstCatalogEntryIds: [createEntry.id],
+      reviewedCatalogEntryIds: [updateEntry.id, createEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(reviewed.profileEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: listEntry.id }),
+      expect.objectContaining({ catalogEntryId: createEntry.id }),
+    ]));
+    expect(reviewed.profileEntries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: updateEntry.id }),
+    ]));
+    const reviewedCatalog = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    expect(reviewedCatalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: updateEntry.id, status: "active", reviewedAt: expect.any(Date), quarantineReason: null }),
+      expect.objectContaining({ id: createEntry.id, status: "active", reviewedAt: expect.any(Date), quarantineReason: null }),
+    ]));
+    const attentionAfterReview = await service.listAppsNeedingAttention(company.id);
+    expect(attentionAfterReview.apps).toEqual([]);
   });
 
   it("resolves Notion reads as allowed, mutations as ask-first, and denies cross-company use", async () => {

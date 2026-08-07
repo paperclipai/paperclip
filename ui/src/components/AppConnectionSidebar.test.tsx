@@ -171,7 +171,7 @@ describe("AppConnectionSidebar", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.querySelectorAll("[data-to]").length).toBe(6);
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/setup", label: "Setup", end: true }));
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/review", label: "Review", badge: 5, badgeTone: "danger" }));
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/review", label: "Review", badge: 3, badgeTone: "danger" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/permissions", label: "Permissions", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/test", label: "Test", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/activity", label: "Activity", end: true }));

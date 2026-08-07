@@ -89,7 +89,7 @@ export function Browse() {
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect Notion, Zapier, or your own MCP server. More integrations are coming soon.
+          Choose an app or connect your own MCP server.
         </p>
       </header>
 
@@ -155,10 +155,7 @@ export function Browse() {
 
           <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              Notion connects with secure sign-in. Zapier connects with its MCP URL. Other integrations are previews.
-            </p>
+          <div className="flex justify-end">
             <AdvancedToolsLink />
           </div>
         </>

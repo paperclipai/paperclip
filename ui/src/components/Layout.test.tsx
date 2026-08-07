@@ -608,7 +608,7 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
     currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({

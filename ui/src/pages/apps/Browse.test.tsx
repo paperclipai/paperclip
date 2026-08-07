@@ -108,7 +108,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connect Notion, Zapier, or your own MCP server.");
+    expect(text).toContain("Choose an app or connect your own MCP server.");
+    expect(text).not.toContain("More integrations are coming soon.");
+    expect(text).not.toContain("Other integrations are previews.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");

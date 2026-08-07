@@ -14,12 +14,11 @@ import { SidebarNavItem } from "./SidebarNavItem";
  * Secondary sidebar for the prosumer Apps area (PAP-10856; three-door IA
  * PAP-13254 / U3).
  *
- *   ← Back · APPS: Browse / Connections / Review (n)
- *   DEVELOPER: Gateways / Profiles / Rules / Health / Activity
+ *   ← Back · APPS: Browse / Review (n)
+ *   DEVELOPER: Connections / Gateways / Profiles / Rules / Health / Activity
  *
- * The three consumer doors are peers: "Browse" (the store — discover + add),
- * "Connections" (your connected tools + health), and "Review" (PAP-12371,
- * Finding B — decisions waiting on your OK, with a live pending count).
+ * "Browse" is the store and "Review" holds decisions waiting on the user's
+ * OK. Connection management lives with the Developer tools.
  * "Needs attention" is no longer a door: health/error triage folds into
  * Connections as a status filter + banner, so approvals are never buried
  * behind an error label. The Developer section was folded in from the retired
@@ -72,7 +71,6 @@ export function AppsSidebar() {
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
-          <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
           <SidebarNavItem
             to="/apps/review"
             label="Review"
@@ -89,6 +87,7 @@ export function AppsSidebar() {
           Advanced setup for developers. Most teams never open this.
         </p>
         <div className="flex flex-col gap-0.5">
+          <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
           {developerTabs.map((tab) => (
             <SidebarNavItem
               key={tab.key}
