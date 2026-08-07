@@ -34,6 +34,14 @@ export interface CommandManagedRuntimeRunner {
     timeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    /**
+     * Run this command through the lease's persistent session even when no run
+     * step is active. A sandbox provider opens the session on the first
+     * non-bypassed command; the ACP process session bridge sets this so the
+     * long-lived agent command streams its output through the session log
+     * stream. The default keeps the context-based session selection.
+     */
+    useSession?: boolean;
   }): Promise<RunProcessResult>;
   /**
    * Optional native inbound file transfer. Present only when the sandbox

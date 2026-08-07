@@ -1692,6 +1692,13 @@ async function buildRuntime(input: {
     executionTarget.transport === "sandbox" &&
     Boolean(executionTarget.runner) &&
     Boolean(agentCommandShell);
+  // Stream the agent output through the persistent session log stream instead of
+  // the host output-file poll. Default OFF; an operator opts a sandbox
+  // environment in through the environment config.
+  const streamAgentSessionOutput =
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    executionTarget.streamAgentSessionOutput === true;
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused
@@ -2004,6 +2011,7 @@ async function buildRuntime(input: {
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
+          streamOutputViaSession: streamAgentSessionOutput,
         }),
         concurrentBridgeStepMetrics,
       );

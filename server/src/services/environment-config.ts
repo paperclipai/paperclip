@@ -77,6 +77,7 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -93,6 +94,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 

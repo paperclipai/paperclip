@@ -203,6 +203,14 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
    */
   bypassSession?: boolean;
   /**
+   * Force the command onto the lease's persistent session even when no run step
+   * is active. The ACP process session bridge sets this so the long-lived agent
+   * command opens the session and streams its output through the session log
+   * stream. `bypassSession: true` still wins, so an explicit bypass is never
+   * overridden. The default keeps the context-based session selection.
+   */
+  forceSession?: boolean;
+  /**
    * Incremental log sink for one execute call. When set, the plugin worker
    * delivers each `stdout` and `stderr` chunk to this sink through the
    * `execute.log` notification while the command runs, before the final result.
@@ -1346,7 +1354,12 @@ function createSandboxEnvironmentDriver(
         // the first in-run command that carries a run parent (an agent tool
         // command runs under the run trace), whose setup span parents to the run
         // trace. A command that sets `bypassSession` explicitly always bypasses.
-        const bypassSession = input.bypassSession === true || activeStep === null;
+        // A command that sets `forceSession` keeps the session even with no
+        // active step: the ACP process session bridge runs the long-lived agent
+        // command this way, so the session opens and streams its output through
+        // the session log stream. An explicit `bypassSession` still wins.
+        const bypassSession =
+          input.bypassSession === true || (activeStep === null && input.forceSession !== true);
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey = readString(input.lease.metadata?.provider);
         if (pluginId && providerKey) {

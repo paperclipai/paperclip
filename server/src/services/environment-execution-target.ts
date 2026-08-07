@@ -234,6 +234,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
       streamRunLogs: parsed.config.streamRunLogs !== false,
+      // Interactive ACP output streaming through the persistent session log
+      // stream. Default OFF: the process session bridge keeps the output-file
+      // poll unless an operator opts a sandbox environment in.
+      streamAgentSessionOutput: parsed.config.streamAgentSessionOutput === true,
       runner: input.environmentRuntime && input.lease
         ? {
             // Provider-backed sandbox RPCs do not surface bounded mid-stream
@@ -296,6 +300,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
+                    // The ACP process session bridge sets `useSession` so its
+                    // long-lived agent command opens the persistent session and
+                    // streams output, even though it runs with no active step.
+                    forceSession: commandInput.useSession,
                   });
                 } catch (error) {
                   // The provider execution threw. Mark the span failed with the
