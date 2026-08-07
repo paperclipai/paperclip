@@ -715,7 +715,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
     expect(mockIssueService.list).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("uses the company-scope fast path on the issue list route", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
@@ -1011,6 +1011,228 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(401);
     expect(res.body.error).toBe("Agent run id required");
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects the checked-out owner without a run id on issue comments (401)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      // intentionally no runId
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Completion comment without run id." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("rejects the checked-out owner using an agent key run id on issue comments", async () => {
+    const forgedRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: forgedRunId,
+    });
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: `Forged stdout: comment id: 77777777-7777-4777-8777-777777777777` });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent run JWT required");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("allows agent-key comments on closed issues with stale run ownership without trusting the run id", async () => {
+    const forgeableRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "done",
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: forgeableRunId,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Post-completion follow-up from agent-key auth." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Post-completion follow-up from agent-key auth.",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: null,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects the checked-out owner with a mismatched run JWT on issue comments", async () => {
+    const mismatchedRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: mismatchedRunId,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Completion comment with mismatched run JWT." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows the checked-out owner with a matching run JWT on issue comments", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: ownerRunId,
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Completion comment with signed run identity." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Completion comment with signed run identity.",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: ownerRunId,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects patch comments from the checked-out owner using an agent key run id", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: ownerRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with forgeable agent key run id." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent run JWT required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("rejects patch comments from the checked-out owner with a mismatched run JWT", async () => {
+    const mismatchedRunId = "66666666-6666-4666-8666-666666666666";
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: mismatchedRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with mismatched run JWT." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows patch comments from the checked-out owner with a matching run JWT", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        checkoutRunId: ownerRunId,
+        executionRunId: ownerRunId,
+      }),
+    );
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: ownerRunId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Patch comment with signed run identity." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Patch comment with signed run identity.",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: ownerRunId,
+      }),
+      expect.any(Object),
+    );
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

@@ -916,16 +916,12 @@ export type CompactIssue = Pick<
  * in descending confidence:
  * - `run_id`: comment carries a `createdByRunId`/`derivedCreatedByRunId` whose
  *   run resolves directly to an agent (lossless).
- * - `run_log_comment_post`: a run log within the comment window contains the
- *   `comment id: {id}` post marker (lossless: the run recorded posting it).
  *
- * Only lossless signals are used. Pure run-window timing overlap is NOT a
- * source — it cannot distinguish an agent comment from a human board comment
- * that coincided with a run (Option A).
+ * Only lossless structured signals are used. Pure run-window timing overlap
+ * and agent-controlled run log text are NOT sources — they cannot distinguish an
+ * agent comment from a human board comment that coincided with a run (Option A).
  */
-export type IssueCommentDerivedAuthorSource =
-  | "run_id"
-  | "run_log_comment_post";
+export type IssueCommentDerivedAuthorSource = "run_id";
 
 export interface IssueComment {
   id: string;

@@ -33,7 +33,7 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
-  deriveIssueCommentRunLogAttribution,
+  deriveIssueCommentRunAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
@@ -65,13 +65,13 @@ describe("issue list limit helpers", () => {
   });
 });
 
-describe("deriveIssueCommentRunLogAttribution", () => {
-  it("recovers agent attribution from run logs that printed the posted comment id", () => {
+describe("deriveIssueCommentRunAttribution", () => {
+  it("does not attribute from run logs that printed the posted comment id", () => {
     const commentId = randomUUID();
     const runId = randomUUID();
     const agentId = randomUUID();
 
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -85,19 +85,11 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId,
           agentId,
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: `comment id: ${commentId}\n`,
         },
       ],
     );
 
-    expect(derived.get(commentId)).toEqual({
-      derivedAuthorAgentId: agentId,
-      derivedCreatedByRunId: runId,
-      derivedAuthorSource: "run_log_comment_post",
-    });
+    expect(derived.has(commentId)).toBe(false);
   });
 
   it("resolves directly from the comment's own run id without reading logs", () => {
@@ -105,7 +97,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     const runId = randomUUID();
     const agentId = randomUUID();
 
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -119,10 +111,6 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId,
           agentId,
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "",
         },
       ],
     );
@@ -142,7 +130,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     const runId = randomUUID();
     const agentId = randomUUID();
 
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -156,10 +144,6 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId,
           agentId,
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "posted results without echoing the comment id",
         },
       ],
     );
@@ -169,7 +153,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
 
   it("does not guess when multiple agent runs overlap and no log proves the author", () => {
     const commentId = randomUUID();
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -183,18 +167,10 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId: randomUUID(),
           agentId: randomUUID(),
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "no comment id here",
         },
         {
           runId: randomUUID(),
           agentId: randomUUID(),
-          createdAt: new Date("2026-05-11T18:54:00.000Z"),
-          startedAt: new Date("2026-05-11T18:54:00.000Z"),
-          finishedAt: new Date("2026-05-11T18:56:00.000Z"),
-          logContent: "also nothing",
         },
       ],
     );
@@ -208,7 +184,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     const commentId = randomUUID();
     const agentId = randomUUID();
 
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -222,18 +198,10 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId: randomUUID(),
           agentId,
-          createdAt: new Date("2026-06-29T17:41:26.116Z"),
-          startedAt: new Date("2026-06-29T17:41:26.116Z"),
-          finishedAt: new Date("2026-06-29T17:46:33.794Z"),
-          logContent: "no comment id here",
         },
         {
           runId: randomUUID(),
           agentId,
-          createdAt: new Date("2026-06-29T17:40:09.531Z"),
-          startedAt: new Date("2026-06-29T17:40:09.531Z"),
-          finishedAt: new Date("2026-06-29T17:46:33.794Z"),
-          logContent: "also nothing",
         },
       ],
     );
@@ -243,7 +211,7 @@ describe("deriveIssueCommentRunLogAttribution", () => {
 
   it("never reattributes a comment that already has a stored agent author", () => {
     const commentId = randomUUID();
-    const derived = deriveIssueCommentRunLogAttribution(
+    const derived = deriveIssueCommentRunAttribution(
       [
         {
           id: commentId,
@@ -257,10 +225,6 @@ describe("deriveIssueCommentRunLogAttribution", () => {
         {
           runId: randomUUID(),
           agentId: randomUUID(),
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "",
         },
       ],
     );
@@ -1959,7 +1923,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         issueId: issueIds.derivedAgentComment,
         authorUserId: "local-board",
         derivedAuthorAgentId: agentId,
-        derivedAuthorSource: "run_log_comment_post",
+        derivedAuthorSource: "run_id",
         body: "Legacy agent-attributed progress update",
         createdAt: new Date("2026-03-26T13:00:00.000Z"),
         updatedAt: new Date("2026-03-26T13:00:00.000Z"),
@@ -2325,6 +2289,93 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(comments.map((comment) => comment.id)).toEqual([commentId]);
     expect(comments[0]?.body).toBe("Comment should be visible");
+  });
+
+  it("does not derive or persist attribution from forged run-log comment ids", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comments issue with forged run log",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+      logStore: "local_file",
+      logRef: `forged/${runId}.ndjson`,
+      logBytes: 128,
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      createdByRunId: null,
+      body: "Comment should remain unattributed",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments[0]).toMatchObject({
+      id: commentId,
+      derivedAuthorAgentId: null,
+      derivedCreatedByRunId: null,
+      derivedAuthorSource: null,
+    });
+
+    const stored = await db
+      .select({
+        derivedAuthorAgentId: issueComments.derivedAuthorAgentId,
+        derivedCreatedByRunId: issueComments.derivedCreatedByRunId,
+        derivedAuthorSource: issueComments.derivedAuthorSource,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0]);
+
+    expect(stored).toEqual({
+      derivedAuthorAgentId: null,
+      derivedCreatedByRunId: null,
+      derivedAuthorSource: null,
+    });
   });
 
   it("lists user comments when a candidate attribution run log is missing", async () => {

@@ -3849,6 +3849,26 @@ export function issueRoutes(
     return null;
   }
 
+  async function assertAgentRunContextValid(req: Request, res: Response, companyId: string) {
+    if (req.actor.type !== "agent") return true;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return true;
+    const run = await loadActorRunContext(req, companyId);
+    if (run) return true;
+    res.status(403).json({ error: "Agent run id is not valid for this actor" });
+    return false;
+  }
+
+  function issueCommentRunIdForActor(req: Request, actor: ReturnType<typeof getActorInfo>) {
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_jwt") return null;
+    return actor.runId;
+  }
+
+  function sameRunCommentRunIdForActor(req: Request, actor: ReturnType<typeof getActorInfo>) {
+    if (req.actor.type === "agent" && req.actor.source !== "agent_jwt") return null;
+    return actor.runId;
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -3968,6 +3988,54 @@ export function issueRoutes(
           reason: "stale_checkout_run",
         },
       });
+    }
+    return true;
+  }
+
+  async function assertAgentCommentRunAttributionAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (
+      issue.status !== "in_progress" ||
+      issue.assigneeAgentId !== actorAgentId ||
+      (!issue.checkoutRunId && !issue.executionRunId)
+    ) {
+      return true;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+    if (req.actor.source !== "agent_jwt") {
+      res.status(403).json({ error: "Agent run JWT required" });
+      return false;
+    }
+    if (!(await assertAgentRunContextValid(req, res, issue.companyId))) return false;
+    if (runId !== issue.checkoutRunId && runId !== issue.executionRunId) {
+      res.status(409).json({
+        error: "Issue run ownership conflict",
+        details: {
+          issueId: issue.id,
+          checkoutRunId: issue.checkoutRunId,
+          executionRunId: issue.executionRunId,
+          actorAgentId,
+          actorRunId: runId,
+        },
+      });
+      return false;
     }
     return true;
   }
@@ -8543,6 +8611,9 @@ export function issueRoutes(
     ) {
       return;
     }
+    if (commentBody && !(await assertAgentCommentRunAttributionAllowed(req, res, existing))) return;
+    const trustedCommentRunId = issueCommentRunIdForActor(req, actor);
+    const sameRunCommentRunId = sameRunCommentRunIdForActor(req, actor);
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: !!commentBody,
@@ -8572,7 +8643,7 @@ export function issueRoutes(
             assigneeAgentId: requestedAssigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
-            actorRunId: actor.runId,
+            actorRunId: sameRunCommentRunId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
           })) ||
@@ -8941,7 +9012,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: trustedCommentRunId ?? null,
           });
 
           if (shouldRelayStop) {
@@ -9401,7 +9472,7 @@ export function issueRoutes(
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
+        runId: trustedCommentRunId,
         onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
       }, {
         authorizationReason: issueMutationAuthorizationReason,
@@ -10973,6 +11044,19 @@ export function issueRoutes(
       await denyIssueWrite(req, res, issue, "issue_write_attribution_spoof_rejected");
       return;
     }
+    if (
+      req.actor.type === "agent" &&
+      issue.status === "in_progress" &&
+      !req.actor.runId &&
+      req.actor.agentId &&
+      issue.assigneeAgentId === req.actor.agentId &&
+      (issue.checkoutRunId || issue.executionRunId)
+    ) {
+      res.status(401).json({ error: "Agent run id required" });
+      return;
+    }
+    if (!(await assertAgentCommentRunAttributionAllowed(req, res, issue))) return;
+
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     const commentAuthorizationReason = issueWriteAuthorizationReason(req, commentAccessDecision);
@@ -10987,6 +11071,8 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const trustedCommentRunId = issueCommentRunIdForActor(req, actor);
+    const sameRunCommentRunId = sameRunCommentRunIdForActor(req, actor);
     const commentPresentation = req.body.presentation ??
       await deriveRecoveryCommentPresentation(req, issue.companyId, req.body.body);
     const reopenRequested = req.body.reopen === true;
@@ -11051,7 +11137,7 @@ export function issueRoutes(
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
-          actorRunId: actor.runId,
+          actorRunId: sameRunCommentRunId,
           checkoutRunId: issue.checkoutRunId,
           executionRunId: issue.executionRunId,
         }) ||
@@ -11222,7 +11308,7 @@ export function issueRoutes(
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
-              runId: actor.runId,
+              runId: trustedCommentRunId,
               onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
             },
             { ...commentOptions, authorizationReason: commentAuthorizationReason },
@@ -11246,7 +11332,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: trustedCommentRunId ?? null,
             });
           }
 
@@ -11295,7 +11381,7 @@ export function issueRoutes(
       comment = await svc.addComment(id, req.body.body, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
+        runId: trustedCommentRunId,
         onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
