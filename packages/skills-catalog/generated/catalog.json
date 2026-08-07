@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-28T22:35:25.645Z",
+  "generatedAt": "2026-08-05T08:52:08.653Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -449,6 +449,56 @@
         }
       ],
       "contentHash": "sha256:eabb2c9f7b5e1a27ebb1e05a711d61433a266478154cd671a685e99e67aadea2"
+    },
+    {
+      "id": "paperclipai:optional:content:publora",
+      "key": "paperclipai/optional/content/publora",
+      "kind": "optional",
+      "category": "content",
+      "slug": "publora",
+      "name": "publora",
+      "description": "Publish or schedule finished copy to a company's connected social accounts through Publora, with a confirmation gate before anything becomes public. Use after the copy is written and approved; not for drafting or analytics.",
+      "path": "catalog/optional/content/publora",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "marketer",
+        "devrel",
+        "writer",
+        "founder"
+      ],
+      "requires": [],
+      "tags": [
+        "social-media",
+        "publishing",
+        "scheduling",
+        "announcements",
+        "linkedin",
+        "mcp"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 8228,
+          "sha256": "3c50539114e29a3b4df0284aba857e5cd11b4a1c48ad0d7495ed19ca5105bc6e"
+        },
+        {
+          "path": "examples/post-to-a-platform-that-requires-media.md",
+          "kind": "markdown",
+          "sizeBytes": 3103,
+          "sha256": "4e65b1a9eedfc791a1a17239e6e6f2fd592e492300cee8cf23981e35be134445"
+        },
+        {
+          "path": "examples/schedule-a-release-announcement.md",
+          "kind": "markdown",
+          "sizeBytes": 2691,
+          "sha256": "0f07b9d533ae436db6916d3745745cc6c445967a6aaaf3f23542c2d0fe911bd6"
+        }
+      ],
+      "contentHash": "sha256:c8b29742bbc3c0be1a347f746fc8878d97cb26788c9d095878164231d35244ca"
     },
     {
       "id": "paperclipai:optional:content:release-announcement",
