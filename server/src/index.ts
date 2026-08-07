@@ -1067,6 +1067,24 @@ export async function startServer(): Promise<StartedServer> {
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
+
+        try {
+          const queuedLockReap = await heartbeat.reapStaleQueuedExecutionLocks();
+          logger.info(
+            {
+              reaped: queuedLockReap.reaped,
+              runIds: queuedLockReap.runIds,
+              issueIds: queuedLockReap.issueIds,
+            },
+            "startup reap of stale queued execution locks complete",
+          );
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup reap of stale queued execution locks failed - periodic reaper will serve as degraded backstop",
+          );
+        }
+
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
@@ -1270,6 +1288,7 @@ export async function startServer(): Promise<StartedServer> {
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();
+              await heartbeat.reapStaleQueuedExecutionLocks();
               const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
               if (
                 promotion.promoted > 0 ||
