@@ -1,6 +1,7 @@
 import type { CLIAdapterModule } from "@paperclipai/adapter-utils";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
+import { printCommandCodeStreamEvent } from "@paperclipai/adapter-commandcode-local/cli";
 import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
 import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
@@ -21,6 +22,11 @@ const claudeLocalCLIAdapter: CLIAdapterModule = {
 const codexLocalCLIAdapter: CLIAdapterModule = {
   type: "codex_local",
   formatStdoutEvent: printCodexStreamEvent,
+};
+
+const commandCodeLocalCLIAdapter: CLIAdapterModule = {
+  type: "commandcode_local",
+  formatStdoutEvent: printCommandCodeStreamEvent,
 };
 
 const openCodeLocalCLIAdapter: CLIAdapterModule = {
@@ -72,6 +78,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     claudeLocalCLIAdapter,
     codexLocalCLIAdapter,
+    commandCodeLocalCLIAdapter,
     openCodeLocalCLIAdapter,
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,

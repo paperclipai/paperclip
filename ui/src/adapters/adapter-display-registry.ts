@@ -79,6 +79,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Code,
     recommended: true,
   },
+  commandcode_local: {
+    label: "CommandCode",
+    description: "Local CommandCode agent",
+    icon: Terminal,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",
