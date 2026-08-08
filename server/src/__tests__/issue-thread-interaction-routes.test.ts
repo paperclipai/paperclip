@@ -37,6 +37,12 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockReviewTransition = vi.hoisted(() => ({
   value: null as null | { actorType: string; actorId: string; details: Record<string, unknown> },
 }));
+const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string }) => ({
+  allowed: true,
+  action: input.action,
+  reason: "allow_explicit_grant",
+  explanation: "Allowed by test grant.",
+})));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{ companyId: "company-1", agentId: CREATED_AGENT_ID, contextSnapshot: null }]).then(
@@ -77,12 +83,7 @@ function registerModuleMocks() {
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
+      decide: mockAccessDecide,
       hasPermission: vi.fn(async () => true),
     }),
     agentService: () => ({
@@ -417,6 +418,12 @@ describe.sequential("issue thread interaction routes", () => {
       }),
     }));
     mockReviewTransition.value = null;
+    mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
   });
 
   it("lists and creates board-authored interactions", async () => {
@@ -889,8 +896,53 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
   });
 
+  it("allows the assignee agent to cancel question interactions without waking itself", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-5" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "No longer needed" });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      { reason: "No longer needed" },
+      expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, userId: null }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rechecks assignee-agent cancellation through issue mutation authorization", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockAccessDecide
+      .mockResolvedValueOnce({
+        allowed: true,
+        action: "issue:mutate",
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        action: "issue:mutate",
+        reason: "deny_explicit",
+        explanation: "Denied by test grant.",
+      });
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-6" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessDecide).toHaveBeenCalledTimes(2);
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
   it("rejects cancellation by an unrelated agent", async () => {
-    const app = await createApp({ type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-5" });
+    const app = await createApp({ type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1", runId: "run-7" });
 
     const res = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")

@@ -10745,14 +10745,16 @@ export function issueRoutes(
         },
       });
 
-      await queueResolvedInteractionContinuationWakeup({
-        db,
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.cancel",
-      });
+      if (actor.agentId !== issue.assigneeAgentId) {
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.cancel",
+        });
+      }
 
       res.json(interaction);
     },
