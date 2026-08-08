@@ -75,16 +75,22 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 
-const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
-const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
+// Self-hosted/local model providers behind a tool call (e.g. a cold-booting
+// vLLM instance) can take much longer than a hosted API to answer the first
+// request after sleep/wake. Deployments that front such a provider can raise
+// these ceilings via env vars; defaults are unchanged for everyone else.
+const DEFAULT_SESSION_TTL_MS = Number(process.env.TOOL_GATEWAY_SESSION_TTL_DEFAULT_MS) || 15 * 60 * 1000;
+const MAX_SESSION_TTL_MS = Number(process.env.TOOL_GATEWAY_SESSION_TTL_MAX_MS) || 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 // When a human approves a parked write, the server carries it out on their
 // behalf with no interactive caller left to raise `timeoutMs`. Remote write
 // providers (e.g. Zapier Google Sheets `add_row`) routinely take longer than
-// the 10s interactive default, so an approved action would otherwise abort with
-// `tool_timeout` even though the approval succeeded. Give approved executions
-// the full permitted headroom instead.
-const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
+// the 10s interactive default, so an approved action would otherwise abort
+// with `tool_timeout` even though the approval succeeded. Give approved
+// executions the full permitted headroom instead. This also doubles as the
+// ceiling any caller-supplied `timeoutMs` can be clamped to (see `timeoutMs()`
+// below) — deployments fronting a slow-to-cold-start provider can raise it.
+const APPROVED_EXECUTION_TIMEOUT_MS = Number(process.env.TOOL_GATEWAY_MAX_TOOL_TIMEOUT_MS) || 60_000;
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -440,7 +446,7 @@ function gatewaySessionFromRow(row: typeof toolGatewaySessions.$inferSelect): To
 
 function timeoutMs(value: number | undefined) {
   if (!Number.isFinite(value)) return DEFAULT_TOOL_TIMEOUT_MS;
-  return Math.max(1, Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)));
+  return Math.max(1, Math.min(APPROVED_EXECUTION_TIMEOUT_MS, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)));
 }
 
 function sessionTtlMs(value: number | undefined) {
