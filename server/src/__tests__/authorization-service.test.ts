@@ -483,6 +483,216 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain(`Responsible user ${responsibleUserId} is not authorized`);
   });
 
+  it("allows an explicit credential-write agent grant for an active non-viewer responsible user without a duplicate user grant", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialWrite");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:write");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "credentials:write",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: { principalType: "agent", principalId: actorAgent.id, permissionKey: "credentials:write" },
+    });
+  });
+
+  it("fails closed for credential-write grants without an active same-company non-viewer responsible user", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialWriteDenied");
+    const otherCompany = await createCompany(db, "ResponsibleUserCredentialWriteOther");
+    const actorAgent = await createAgent(db, company.id);
+    const activeUserId = await createUser(db);
+    const viewerUserId = await createUser(db);
+    const inactiveUserId = await createUser(db);
+    const crossCompanyUserId = await createUser(db);
+    await db.insert(companyMemberships).values([
+      { companyId: company.id, principalType: "user", principalId: activeUserId, status: "active", membershipRole: "operator" },
+      { companyId: company.id, principalType: "user", principalId: viewerUserId, status: "active", membershipRole: "viewer" },
+      { companyId: company.id, principalType: "user", principalId: inactiveUserId, status: "inactive", membershipRole: "operator" },
+      { companyId: otherCompany.id, principalType: "user", principalId: crossCompanyUserId, status: "active", membershipRole: "operator" },
+    ]);
+
+    const decideFor = (onBehalfOfUserId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId,
+        source: "agent_jwt",
+      },
+      action: "credentials:write",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    await expect(decideFor(activeUserId)).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:write");
+
+    await expect(decideFor(viewerUserId)).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+    });
+    await expect(decideFor(inactiveUserId)).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor("missing-" + randomUUID())).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor(crossCompanyUserId)).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+
+    const priorMode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE;
+    process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE = "shadow";
+    try {
+      await expect(decideFor(viewerUserId)).resolves.toMatchObject({
+        allowed: false,
+        code: "RESPONSIBLE_USER_UNAUTHORIZED",
+      });
+    } finally {
+      if (priorMode === undefined) delete process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE;
+      else process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE = priorMode;
+    }
+  });
+
+  it("denies a credential-write grant when the agent has no responsible-user binding", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialWriteMissingBinding");
+    const actorAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:write");
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+      },
+      action: "credentials:write",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_membership",
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+  });
+
+  it("allows credential metadata grants for active responsible-user JWT and key actors", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialMetadata");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:view_metadata");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const decideFor = (source: "agent_jwt" | "agent_key") => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source,
+      },
+      action: "credentials:view_metadata" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    await expect(decideFor("agent_jwt")).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+    });
+    await expect(decideFor("agent_key")).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+    });
+  });
+
+  it("fails closed for credential metadata without an agent grant or active same-company responsible user", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialMetadataDenied");
+    const otherCompany = await createCompany(db, "ResponsibleUserCredentialMetadataOther");
+    const actorAgent = await createAgent(db, company.id);
+    const activeUserId = await createUser(db);
+    const inactiveUserId = await createUser(db);
+    const crossCompanyUserId = await createUser(db);
+    await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: activeUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: inactiveUserId,
+        status: "inactive",
+        membershipRole: "operator",
+      },
+      {
+        companyId: otherCompany.id,
+        principalType: "user",
+        principalId: crossCompanyUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+    ]);
+
+    const decideFor = (onBehalfOfUserId: string, source: "agent_jwt" | "agent_key") => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId,
+        source,
+      },
+      action: "credentials:view_metadata" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    await expect(decideFor(activeUserId, "agent_jwt")).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:view_metadata");
+
+    await expect(decideFor(`missing-${randomUUID()}`, "agent_key")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor(inactiveUserId, "agent_jwt")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor(crossCompanyUserId, "agent_key")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+  });
+
   it("denies cross-company agent decisions before grant evaluation", async () => {
     const sourceCompany = await createCompany(db, "Source");
     const targetCompany = await createCompany(db, "Target");

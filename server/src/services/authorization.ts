@@ -524,6 +524,45 @@ function activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
   );
 }
 
+function activeResponsibleUserCanAuthorizeAgentGrantedCredentialWrite(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+  agentDecision: AuthorizationDecision,
+  actorAgentId: string | null | undefined,
+) {
+  return Boolean(
+    action === "credentials:write" &&
+    membership &&
+    membership.status === "active" &&
+    membership.membershipRole !== "viewer" &&
+    agentDecision.allowed &&
+    agentDecision.reason === "allow_explicit_grant" &&
+    agentDecision.grant?.principalType === "agent" &&
+    agentDecision.grant.principalId === actorAgentId &&
+    agentDecision.grant.permissionKey === "credentials:write",
+  );
+}
+
+function activeResponsibleUserCanAuthorizeAgentGrantedCredentialMetadata(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+  agentDecision: AuthorizationDecision,
+  actorAgentId: string | null | undefined,
+) {
+  // Credential metadata is a read-only, agent-scoped audit grant. The bound
+  // user remains an active same-company accountability check, but does not
+  // need an identical user grant.
+  return Boolean(
+    action === "credentials:view_metadata" &&
+    membership &&
+    membership.status === "active" &&
+    agentDecision.allowed &&
+    agentDecision.reason === "allow_explicit_grant" &&
+    agentDecision.grant?.principalType === "agent" &&
+    agentDecision.grant.principalId === actorAgentId &&
+    agentDecision.grant.permissionKey === "credentials:view_metadata",
+  );
+}
 function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: string) {
   return scope?.[key] === true;
 }
@@ -2222,6 +2261,30 @@ export function authorizationService(db: Db) {
   ): Promise<AuthorizationDecision> {
     const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
     if (
+      input.actor.type === "agent" &&
+      input.action === "credentials:write" &&
+      !responsibleUserId &&
+      agentDecision.allowed
+    ) {
+      const denied = deny({
+        action: input.action,
+        reason: "deny_missing_membership",
+        code: "RESPONSIBLE_USER_UNAVAILABLE",
+        explanation: "A responsible user is required for credential writes.",
+      });
+      logger.warn({
+        authzMode: "enforce",
+        code: denied.code,
+        reason: denied.reason,
+        action: input.action,
+        resourceType: input.resource.type,
+        companyId: companyIdForResource(input.resource),
+        actorAgentId: input.actor.agentId ?? null,
+        responsibleUserId: null,
+      }, "responsible-user authorization intersection denied");
+      return denied;
+    }
+    if (
       input.actor.type !== "agent" ||
       input.action === "inbox:manage" ||
       !responsibleUserId ||
@@ -2256,6 +2319,27 @@ export function authorizationService(db: Db) {
       return agentDecision;
     }
 
+    if (
+      activeResponsibleUserCanAuthorizeAgentGrantedCredentialWrite(
+        input.action,
+        snapshot.activeMembership,
+        agentDecision,
+        input.actor.agentId,
+      )
+    ) {
+      return agentDecision;
+    }
+
+    if (
+      activeResponsibleUserCanAuthorizeAgentGrantedCredentialMetadata(
+        input.action,
+        snapshot.activeMembership,
+        agentDecision,
+        input.actor.agentId,
+      )
+    ) {
+      return agentDecision;
+    }
     const userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,
@@ -2307,7 +2391,9 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return input.action === "credentials:write" || !responsibleUserAuthzShadowMode()
+      ? denied
+      : agentDecision;
   }
 
   async function decide(input: {

@@ -17,12 +17,11 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { accessService, logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import {
@@ -117,6 +116,90 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
+  function serializeSecretMetadata(secret: Awaited<ReturnType<typeof svc.list>>[number]) {
+    return {
+      id: secret.id,
+      companyId: secret.companyId,
+      scope: secret.scope,
+      ownerUserId: secret.ownerUserId,
+      userSecretDefinitionId: secret.userSecretDefinitionId,
+      key: secret.key,
+      name: secret.name,
+      provider: secret.provider,
+      status: secret.status,
+      managedMode: secret.managedMode,
+      externalRef: secret.externalRef,
+      providerConfigId: secret.providerConfigId,
+      providerMetadata: secret.providerMetadata,
+      latestVersion: secret.latestVersion,
+      description: secret.description,
+      lastResolvedAt: secret.lastResolvedAt,
+      lastRotatedAt: secret.lastRotatedAt,
+      deletedAt: secret.deletedAt,
+      createdByAgentId: secret.createdByAgentId,
+      createdByUserId: secret.createdByUserId,
+      createdAt: secret.createdAt,
+      updatedAt: secret.updatedAt,
+      referenceCount: secret.referenceCount,
+    };
+  }
+
+  function serializeGrantedSecretMetadata(secret: Awaited<ReturnType<typeof svc.list>>[number]) {
+    return {
+      id: secret.id,
+      name: secret.name,
+      provider: secret.provider,
+      // Company rows may not have ownerUserId; audit exports use the creator as the accountable owner.
+      owner: secret.ownerUserId ?? secret.createdByUserId ?? secret.createdByAgentId ?? null,
+      latestVersion: secret.latestVersion,
+      createdAt: secret.createdAt,
+      lastUsedAt: secret.lastResolvedAt,
+    };
+  }
+
+  async function assertCanReadCredentialMetadata(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "credentials:view_metadata",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
+  }
+
+
+  async function assertCanCreateCompanySecret(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    if (req.actor.type === "board") {
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      return null;
+    }
+
+    assertCompanyAccess(req, companyId);
+    if (
+      req.actor.type !== "agent" ||
+      req.actor.source !== "agent_jwt" ||
+      !req.actor.agentId ||
+      !req.actor.runId ||
+      !req.actor.onBehalfOfUserId?.trim()
+    ) {
+      throw forbidden("Run-bound agent JWT with responsible-user binding required");
+    }
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "credentials:write",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
+    return { agentId: req.actor.agentId };
+  }
 
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
@@ -599,11 +682,12 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   });
 
   router.get("/companies/:companyId/secrets", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanReadCredentialMetadata(req, companyId);
     const secrets = await svc.list(companyId);
-    res.json(secrets);
+    res.json(req.actor.type === "board"
+      ? secrets.map(serializeSecretMetadata)
+      : secrets.map(serializeGrantedSecretMetadata));
   });
 
   router.get("/companies/:companyId/user-secret-definitions", async (req, res) => {
@@ -893,7 +977,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanySecretWrite(req, companyId);
+    const agent = await assertCanCreateCompanySecret(req, companyId);
 
     const created = await svc.create(
       companyId,
@@ -909,20 +993,20 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         providerVersionRef: req.body.providerVersionRef,
         providerMetadata: req.body.providerMetadata,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      agent ? { userId: null, agentId: agent.agentId } : { userId: req.actor.userId ?? "board", agentId: null },
     );
 
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: agent ? "agent" : "user",
+      actorId: agent?.agentId ?? req.actor.userId ?? "board",
       action: "secret.created",
       entityType: "secret",
       entityId: created.id,
-      details: { name: created.name, provider: created.provider },
+      details: agent ? {} : { name: created.name, provider: created.provider },
     });
 
-    res.status(201).json(created);
+    res.status(201).json(agent ? { id: created.id } : created);
   });
 
   router.post(
@@ -1111,7 +1195,38 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   });
 
   router.delete("/secrets/:id", async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const fetched = await svc.getById(id);
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+        "Secret not found",
+      );
+      if (!existing) return;
+
+      const removed = await svc.remove(id);
+      if (!removed) {
+        res.status(404).json({ error: "Secret not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: removed.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.deleted",
+        entityType: "secret",
+        entityId: removed.id,
+        details: { name: removed.name },
+      });
+
+      res.json({ ok: true });
+      return;
+    }
+
     const id = req.params.id as string;
     const fetched = await svc.getById(id);
     const existing = await getAccessibleResource(
@@ -1122,7 +1237,15 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const agent = await assertCanCreateCompanySecret(req, existing.companyId);
+    if (!agent) {
+      throw forbidden("Run-bound agent JWT with responsible-user binding required");
+    }
+    const removed = await svc.removeOwnedUnboundCompanySecret({
+      secretId: id,
+      companyId: existing.companyId,
+      agentId: agent.agentId,
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;
@@ -1130,12 +1253,13 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
     await logActivity(db, {
       companyId: removed.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: "agent",
+      actorId: agent.agentId,
       action: "secret.deleted",
       entityType: "secret",
       entityId: removed.id,
-      details: { name: removed.name },
+      // Opaque activity so request-controlled metadata is never logged.
+      details: {},
     });
 
     res.json({ ok: true });
