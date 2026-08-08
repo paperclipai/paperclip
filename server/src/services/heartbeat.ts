@@ -50,6 +50,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueContinuationLinks,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -213,6 +214,7 @@ import {
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
+  buildContinuationRecoveryFingerprint,
   buildSuccessfulRunHandoffRequiredNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
@@ -221,6 +223,7 @@ import {
   isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
+  resolveMaxCorrectiveAttempts,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
@@ -9119,6 +9122,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        executionPolicy: issues.executionPolicy,
+        updatedAt: issues.updatedAt,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
       })
@@ -9150,6 +9155,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(run.nextAction),
       currentUserRedactionOptions,
     );
+
+    const [continuationLinks, unresolvedDependencyRows] = issue
+      ? await Promise.all([
+        db
+          .select({
+            predecessorIssueId: issueContinuationLinks.predecessorIssueId,
+            successorIssueId: issueContinuationLinks.successorIssueId,
+            deliverableKey: issueContinuationLinks.deliverableKey,
+            createdAt: issueContinuationLinks.createdAt,
+            id: issueContinuationLinks.id,
+          })
+          .from(issueContinuationLinks)
+          .where(eq(issueContinuationLinks.companyId, issue.companyId))
+          .orderBy(asc(issueContinuationLinks.createdAt), asc(issueContinuationLinks.id)),
+        db
+          .select({ issueId: issueRelations.issueId })
+          .from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(
+            eq(issueRelations.companyId, issue.companyId),
+            eq(issueRelations.relatedIssueId, issue.id),
+            eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"]),
+          )),
+      ])
+      : [[], []];
+    const predecessorBySuccessor = new Map(
+      continuationLinks.map((link) => [link.successorIssueId, link.predecessorIssueId]),
+    );
+    const linkBySuccessor = new Map(
+      continuationLinks.map((link) => [link.successorIssueId, link]),
+    );
+    const visitedContinuationIssues = new Set<string>();
+    let canonicalContinuationRootId = issue?.id ?? "";
+    while (issue && predecessorBySuccessor.has(canonicalContinuationRootId)) {
+      if (visitedContinuationIssues.has(canonicalContinuationRootId)) break;
+      visitedContinuationIssues.add(canonicalContinuationRootId);
+      canonicalContinuationRootId = predecessorBySuccessor.get(canonicalContinuationRootId)!;
+    }
+    const continuationLink = issue ? linkBySuccessor.get(issue.id) : undefined;
+    const continuationFingerprint = issue
+      ? buildContinuationRecoveryFingerprint({
+        canonicalContinuationRootId,
+        deliverableKey: continuationLink?.deliverableKey ?? taskKey ?? issue.id,
+        unresolvedDependencyIssueIds: unresolvedDependencyRows.map((row) => row.issueId),
+        lastUsefulActionAt: run.lastUsefulActionAt ?? issue.updatedAt,
+      })
+      : null;
 
     const [
       activeExecutionPath,
@@ -9322,6 +9375,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      continuationFingerprint,
+      maxCorrectiveAttempts: issue ? resolveMaxCorrectiveAttempts(issue.executionPolicy) : null,
     });
 
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {

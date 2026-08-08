@@ -171,6 +171,7 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
   correctiveRunId: string;
   missingDisposition: string;
+  continuationFingerprint: string | null;
   handoffAttempt: number;
   maxHandoffAttempts: number;
 };
@@ -546,6 +547,7 @@ function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): Succes
     sourceRunId: readNonEmptyString(context.sourceRunId) ?? readNonEmptyString(context.resumeFromRunId),
     correctiveRunId: latestRun.id,
     missingDisposition: readNonEmptyString(context.missingDisposition) ?? "clear_next_step",
+    continuationFingerprint: readNonEmptyString(context.continuationFingerprint),
     handoffAttempt,
     maxHandoffAttempts,
   };
@@ -2907,7 +2909,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryCause,
         latestRun: input.latestRun,
       }),
-      continuationFingerprint: buildContinuationRecoveryFingerprint({
+      continuationFingerprint: input.successfulRunHandoffEvidence?.continuationFingerprint ?? buildContinuationRecoveryFingerprint({
         canonicalContinuationRootId: input.issue.id,
         deliverableKey: input.issue.id,
         unresolvedDependencyIssueIds: [],

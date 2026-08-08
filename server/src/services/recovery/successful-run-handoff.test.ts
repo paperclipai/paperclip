@@ -126,6 +126,25 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("you are on your normal model and allowed to work in this wake");
   });
 
+  it("preserves the runtime fingerprint and configured corrective budget", () => {
+    const decision = decide({
+      continuationFingerprint: "canonical-state-fingerprint",
+      maxCorrectiveAttempts: 3,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      continuationFingerprint: "canonical-state-fingerprint",
+      handoffAttempt: 1,
+      maxHandoffAttempts: 3,
+    });
+    expect(decision.contextSnapshot).toMatchObject({
+      continuationFingerprint: "canonical-state-fingerprint",
+      maxHandoffAttempts: 3,
+    });
+  });
+
   it.each([
     "**Blocked** — The benchmark target is not mounted…",
     "coqc … is not installed, so local compilation could not run",

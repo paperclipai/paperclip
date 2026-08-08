@@ -58,9 +58,14 @@ describeEmbedded("issue continuations", () => {
       kind: "residual", deliverableKey: "ui.audit.accessibility", residualScope: "Keyboard defects remain.",
       successor: { title: "Fix keyboard navigation", assigneeAgentId: successorOwner!.id },
     };
-    const created = await request(app).post(`/api/issues/${predecessor!.id}/continuations`).send(body).expect(201);
+    const concurrent = await Promise.all([
+      request(app).post(`/api/issues/${predecessor!.id}/continuations`).send(body),
+      request(app).post(`/api/issues/${predecessor!.id}/continuations`).send(body),
+    ]);
+    expect(concurrent.map((response) => response.status).sort()).toEqual([200, 201]);
+    const created = concurrent.find((response) => response.status === 201)!;
+    const replay = concurrent.find((response) => response.status === 200)!;
     expect(created.body).toMatchObject({ deduplicated: false, link: { predecessorIssueId: predecessor!.id, residualScope: body.residualScope } });
-    const replay = await request(app).post(`/api/issues/${predecessor!.id}/continuations`).send(body).expect(200);
     expect(replay.body).toMatchObject({ deduplicated: true, successor: { id: created.body.successor.id } });
     const links = await db.select().from(issueContinuationLinks).where(and(
       eq(issueContinuationLinks.companyId, company!.id), eq(issueContinuationLinks.predecessorIssueId, predecessor!.id),

@@ -54,10 +54,12 @@ export {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffRequiredNotice,
+  buildContinuationRecoveryFingerprint,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  resolveMaxCorrectiveAttempts,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,

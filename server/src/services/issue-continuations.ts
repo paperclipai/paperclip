@@ -66,7 +66,7 @@ export function issueContinuationService(db: Db) {
     return db.transaction(async (tx) => {
       const [predecessor] = await tx.select().from(issues).where(and(
         eq(issues.id, input.predecessorIssueId), eq(issues.companyId, input.companyId),
-      )).limit(1);
+      )).limit(1).for("update");
       if (!predecessor) throw new IssueContinuationError("Predecessor issue not found", 404);
 
       const dependencyIssueIds = [...new Set(input.request.dependencyIssueIds)].sort();
