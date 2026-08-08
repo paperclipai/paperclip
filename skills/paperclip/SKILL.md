@@ -75,6 +75,14 @@ Use comments incrementally:
 - if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
 - use the full `GET /api/issues/{issueId}/comments` route only when cold-starting or when incremental isn't enough
 
+**Thread checkpoint / read-latest discipline (TSMC-20242).** Long threads get rolling system checkpoint comments (`## Thread checkpoint`, `## Takeover checkpoint`, `## Park checkpoint`, or comment metadata `checkpoint=true`). Default read set:
+
+1. issue description (acceptance criteria verbatim),
+2. the **latest** checkpoint comment,
+3. comments **newer than** that checkpoint (plus the wake batch).
+
+Do **not** re-read the full historical thread unless the checkpoint + newer comments are genuinely insufficient — and say so in your run summary if you do. System/monitor notices older than the latest checkpoint are subsumed by it. Checkpoints are additive only (never delete/edit prior comments).
+
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.

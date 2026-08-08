@@ -1575,6 +1575,7 @@ export function renderPaperclipWakePrompt(
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+        "Read discipline (TSMC-20242): prefer issue description + latest checkpoint + comments newer than it; full-thread only if insufficient.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
         ...executionContractLines,
@@ -1589,6 +1590,7 @@ export function renderPaperclipWakePrompt(
           ? ["Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action."]
           : []),
         "Use this inline wake data first before refetching the issue thread.",
+        "Read discipline (TSMC-20242): prefer issue description + latest checkpoint comment (Thread/Takeover/Park) + comments newer than it. Full-thread reads only when that set is genuinely insufficient — say so in the run summary if you do.",
         ...(hasWakeCommentBatch || normalized.fallbackFetchNeeded
           ? ["Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch."]
           : []),

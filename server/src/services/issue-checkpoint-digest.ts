@@ -4,9 +4,78 @@ import { heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
 
-export type IssueCheckpointKind = "takeover" | "park";
+/** Takeover/park digests (TSMC-20213) plus rolling thread checkpoints (TSMC-20242). */
+export type IssueCheckpointKind = "takeover" | "park" | "thread";
+
+/**
+ * Body prefixes that mark a comment as a checkpoint for sweep thresholds and
+ * read-latest discipline. Takeover/park digests count as checkpoints
+ * (design §4: compose with 3a3a1c75b).
+ */
+export const ISSUE_CHECKPOINT_BODY_PREFIXES = [
+  "## Thread checkpoint (auto",
+  "## Takeover checkpoint (auto",
+  "## Park checkpoint (auto",
+] as const;
 
 const NON_TERMINAL_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
+
+/** True when body is a rolling/thread/takeover/park checkpoint comment. */
+export function isIssueCheckpointCommentBody(body: string | null | undefined): boolean {
+  const text = typeof body === "string" ? body : "";
+  if (!text) return false;
+  return ISSUE_CHECKPOINT_BODY_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
+/**
+ * Infer checkpoint kind from body heading. Used by wake payload + tests.
+ * Returns null when the body is not a recognized checkpoint.
+ */
+export function classifyIssueCheckpointCommentBody(
+  body: string | null | undefined,
+): IssueCheckpointKind | null {
+  const text = typeof body === "string" ? body : "";
+  if (text.startsWith("## Thread checkpoint (auto")) return "thread";
+  if (text.startsWith("## Takeover checkpoint (auto")) return "takeover";
+  if (text.startsWith("## Park checkpoint (auto")) return "park";
+  return null;
+}
+
+/** Structured flag + presentation for checkpoint comments (additive metadata). */
+export function buildIssueCheckpointCommentOptions(input: {
+  kind: IssueCheckpointKind;
+  runId?: string | null;
+}) {
+  const title =
+    input.kind === "thread"
+      ? "Thread checkpoint"
+      : input.kind === "park"
+        ? "Park checkpoint"
+        : "Takeover checkpoint";
+  return {
+    authorType: "system" as const,
+    presentation: {
+      kind: "system_notice" as const,
+      tone: "info" as const,
+      title,
+      detailsDefaultOpen: false,
+      density: "compact" as const,
+    },
+    metadata: {
+      version: 1 as const,
+      sourceRunId: input.runId ?? null,
+      sections: [
+        {
+          title: "checkpoint",
+          rows: [
+            { type: "key_value" as const, label: "checkpoint", value: "true" },
+            { type: "key_value" as const, label: "kind", value: input.kind },
+          ],
+        },
+      ],
+    },
+  };
+}
 
 function digestClip(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
@@ -165,7 +234,7 @@ export async function postIssueCheckpointDigest(
     issue.id,
     capped,
     { runId: input.runId ?? null },
-    { authorType: "system" },
+    buildIssueCheckpointCommentOptions({ kind: input.kind, runId: input.runId ?? null }),
   );
   return { posted: true, bodyLength: capped.length };
 }

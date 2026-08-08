@@ -13,6 +13,10 @@ import {
 import {
   postIssueCheckpointDigest,
   postParkCheckpointsForAgent,
+  isIssueCheckpointCommentBody,
+  classifyIssueCheckpointCommentBody,
+  buildIssueCheckpointCommentOptions,
+  ISSUE_CHECKPOINT_BODY_PREFIXES,
 } from "../services/issue-checkpoint-digest.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -133,6 +137,22 @@ describeEmbeddedPostgres("issue-checkpoint-digest (TSMC-20213)", () => {
     const body = comments[0]!.body;
     expect(body).toContain("## Takeover checkpoint (auto-generated");
     expect(body).toContain("Implement park checkpoint path");
+    expect(comments[0]!.presentation).toMatchObject({
+      kind: "system_notice",
+      title: "Takeover checkpoint",
+    });
+    expect(comments[0]!.metadata).toMatchObject({
+      version: 1,
+      sections: [
+        {
+          title: "checkpoint",
+          rows: [
+            { type: "key_value", label: "checkpoint", value: "true" },
+            { type: "key_value", label: "kind", value: "takeover" },
+          ],
+        },
+      ],
+    });
     expect(body).toContain("TSMC-999");
     expect(body).toContain("Resume from here");
     expect(body).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
@@ -218,5 +238,49 @@ describeEmbeddedPostgres("issue-checkpoint-digest (TSMC-20213)", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, doneId));
     expect(doneComments).toHaveLength(0);
+  });
+});
+
+describe("issue-checkpoint helpers (TSMC-20242)", () => {
+  it("recognizes thread, takeover, and park body prefixes as checkpoints", () => {
+    expect(ISSUE_CHECKPOINT_BODY_PREFIXES).toHaveLength(3);
+    expect(isIssueCheckpointCommentBody("## Thread checkpoint (auto, 2026-08-08T00:00:00.000Z)\n")).toBe(true);
+    expect(isIssueCheckpointCommentBody("## Takeover checkpoint (auto-generated, 2026-08-08T00:00:00.000Z)\n")).toBe(
+      true,
+    );
+    expect(isIssueCheckpointCommentBody("## Park checkpoint (auto-generated, 2026-08-08T00:00:00.000Z)\n")).toBe(true);
+    expect(isIssueCheckpointCommentBody("Ordinary agent comment")).toBe(false);
+    expect(isIssueCheckpointCommentBody("")).toBe(false);
+    expect(isIssueCheckpointCommentBody(null)).toBe(false);
+  });
+
+  it("classifies checkpoint kind from heading", () => {
+    expect(classifyIssueCheckpointCommentBody("## Thread checkpoint (auto, x)")).toBe("thread");
+    expect(classifyIssueCheckpointCommentBody("## Takeover checkpoint (auto-generated, x)")).toBe("takeover");
+    expect(classifyIssueCheckpointCommentBody("## Park checkpoint (auto-generated, x)")).toBe("park");
+    expect(classifyIssueCheckpointCommentBody("nope")).toBeNull();
+  });
+
+  it("builds checkpoint metadata flag + system_notice presentation", () => {
+    const opts = buildIssueCheckpointCommentOptions({ kind: "thread", runId: null });
+    expect(opts.authorType).toBe("system");
+    expect(opts.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "info",
+      title: "Thread checkpoint",
+      density: "compact",
+    });
+    expect(opts.metadata).toMatchObject({
+      version: 1,
+      sections: [
+        {
+          title: "checkpoint",
+          rows: [
+            { type: "key_value", label: "checkpoint", value: "true" },
+            { type: "key_value", label: "kind", value: "thread" },
+          ],
+        },
+      ],
+    });
   });
 });

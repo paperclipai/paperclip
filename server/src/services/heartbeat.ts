@@ -181,6 +181,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { buildIssueCheckpointCommentOptions } from "./issue-checkpoint-digest.js";
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
@@ -14542,7 +14543,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const commentThreshold = Math.max(3, opts?.commentThreshold ?? 15);
     const charThreshold = Math.max(2_000, opts?.charThreshold ?? 20_000);
     const maxPerPass = Math.max(1, opts?.maxPerPass ?? 20);
-    const checkpointMarker = "## Thread checkpoint (auto";
+    // Thread + takeover + park all count as checkpoints (TSMC-20242 §4 / 3a3a1c75b).
+    const threadMarker = "## Thread checkpoint (auto%";
+    const takeoverMarker = "## Takeover checkpoint (auto%";
+    const parkMarker = "## Park checkpoint (auto%";
 
     // Candidates: non-terminal issues whose comment volume SINCE the latest
     // checkpoint (or since the beginning) crosses either threshold.
@@ -14550,7 +14554,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       with latest_checkpoint as (
         select issue_id, max(created_at) as at
         from issue_comments
-        where author_type = 'system' and body like ${checkpointMarker + "%"} and deleted_at is null
+        where author_type = 'system'
+          and deleted_at is null
+          and (
+            body like ${threadMarker}
+            or body like ${takeoverMarker}
+            or body like ${parkMarker}
+          )
         group by issue_id
       )
       select i.id as issue_id,
@@ -14641,7 +14651,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "and say so in your run summary if you do.",
       ];
       try {
-        await issuesSvc.addComment(issue.id, lines.join("\n"), {}, { authorType: "system" });
+        await issuesSvc.addComment(
+          issue.id,
+          lines.join("\n"),
+          {},
+          buildIssueCheckpointCommentOptions({ kind: "thread" }),
+        );
         posted += 1;
       } catch (err) {
         logger.warn({ err, issueId: issue.id }, "thread checkpoint post failed");
