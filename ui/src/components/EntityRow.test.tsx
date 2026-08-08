@@ -60,6 +60,25 @@ describe("EntityRow", () => {
     expect(markup).toContain("min-w-0 flex-1");
   });
 
+  it("truncates the title by default but honors a caller wrap override (mobile <=480px)", () => {
+    const plain = renderToStaticMarkup(<EntityRow title="a-very-long-project-name.com" />);
+    // Default: single-line ellipsis so a long name never reflows on wide layouts.
+    expect(plain).toContain("truncate");
+
+    // Override (projects/agents index on mobile): wrap the name instead of
+    // ellipsizing it to an indistinguishable stub; the caller class replaces
+    // the default `truncate` rather than stacking with it.
+    const wrapped = renderToStaticMarkup(
+      <EntityRow
+        title="a-very-long-project-name.com"
+        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+      />,
+    );
+    expect(wrapped).toContain("whitespace-normal break-words xl:truncate xl:whitespace-nowrap");
+    // the bare default `truncate` class must not also be applied to the span
+    expect(wrapped).not.toContain('class="truncate"');
+  });
+
   it("gives the title a min-width floor and lets meta shrink under titlePriority (PAP-12988)", () => {
     const markup = renderToStaticMarkup(
       <EntityRow
