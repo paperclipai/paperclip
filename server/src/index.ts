@@ -854,6 +854,9 @@ export async function startServer(): Promise<StartedServer> {
         || result.duplicates > 0
         || result.autoEnsured > 0
         || result.companyFailures > 0
+        || (result.outcomes?.skipped_by_flag ?? 0) > 0
+        || (result.outcomes?.skipped_by_tombstone ?? 0) > 0
+        || (result.outcomes?.provisioned ?? 0) > 0
       ) {
         logger.warn(
           result,
