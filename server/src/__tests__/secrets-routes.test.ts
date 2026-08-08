@@ -194,6 +194,11 @@ describe("secret routes", () => {
       runId: "run-1",
     })).get("/api/companies/company-1/secrets");
     expect(ungranted.status).toBe(403);
+    expect(ungranted.body).toMatchObject({
+      error: "Missing permission",
+      details: { reason: "deny_missing_grant" },
+    });
+    expect(JSON.stringify(ungranted.body)).not.toContain("Board access required");
     expect(mockSecretService.list).not.toHaveBeenCalled();
 
     const crossCompany = await request(createApp({
@@ -311,11 +316,18 @@ describe("secret routes", () => {
       { type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt" },
     ];
 
+    const responses = [];
     for (const actor of actors) {
       const res = await request(createApp(actor)).post("/api/companies/company-1/secrets").send(body);
       expect(res.status).toBe(403);
+      responses.push(res);
     }
 
+    expect(responses[0].body).toMatchObject({
+      error: "Missing permission",
+      details: { reason: "deny_missing_grant" },
+    });
+    expect(JSON.stringify(responses[0].body)).not.toContain("Board access required");
     expect(mockSecretService.create).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
@@ -1397,6 +1409,42 @@ describe("secret routes", () => {
     })).delete("/api/secrets/99999999-9999-4999-8999-999999999999");
 
     expect(res.status).toBe(403);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies an owning agent missing a run or responsible-user binding before delete mutation", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "paperclip_managed",
+      createdByAgentId: "agent-1",
+      name: "Agent-created",
+      key: "agent_created_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const actors = [
+      { ...agentActor, runId: undefined },
+      { ...agentActor, onBehalfOfUserId: "   " },
+    ];
+    for (const actor of actors) {
+      const res = await request(createApp(actor)).delete(
+        "/api/secrets/99999999-9999-4999-8999-999999999999",
+      );
+      expect(res.status).toBe(403);
+    }
+
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockSecretService.listBindingReferences).not.toHaveBeenCalled();
     expect(mockSecretService.remove).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });

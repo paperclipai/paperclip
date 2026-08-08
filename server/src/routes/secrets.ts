@@ -17,12 +17,11 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { accessService, logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import {
@@ -152,6 +151,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       provider: secret.provider,
       // Company rows may not have ownerUserId; audit exports use the creator as the accountable owner.
       owner: secret.ownerUserId ?? secret.createdByUserId ?? secret.createdByAgentId ?? null,
+      latestVersion: secret.latestVersion,
       createdAt: secret.createdAt,
       lastUsedAt: secret.lastResolvedAt,
     };
