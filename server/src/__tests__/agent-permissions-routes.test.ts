@@ -184,6 +184,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/workspace-operations.js", () => ({
     workspaceOperationService: () => mockWorkspaceOperationService,
+    agentOwnershipService: () => ({}),
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
@@ -210,6 +211,7 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
+    agentOwnershipService: () => ({}),
     environmentService: () => mockEnvironmentService,
   }));
 }

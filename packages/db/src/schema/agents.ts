@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   jsonb,
+  boolean,
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -35,6 +36,11 @@ export const agents = pgTable(
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    // Ownership/roles (TECH-4929, stage 1: data model + write-on-create only,
+    // no enforcement). See agent_ownership_grants / agent_ownership_transfers.
+    // `isPublic` will grant every company member an implicit `user` role once
+    // enforcement ships; it is inert until that flag is on.
+    isPublic: boolean("is_public").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
