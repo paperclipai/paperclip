@@ -301,9 +301,150 @@ const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
+  reasoning?: string;
+  toolCall?: string;
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+}
+
+const HERMES_UNPARSEABLE_RESPONSE_MESSAGE =
+  "Hermes returned reasoning without a final answer or tool call after one recovery attempt.";
+const HERMES_RECOVERY_PROMPT = [
+  "Your previous turn contained reasoning but no usable final answer or tool call.",
+  "Continue from the current session and respond with exactly one final answer or one parseable tool call.",
+  "Do not include a <think> block, internal reasoning, or commentary before it.",
+].join(" ");
+
+interface LagunaCompletionParts {
+  reasoning: string;
+  toolCall: string;
+  finalAnswer: string;
+}
+
+function looksLikeLeakedReasoning(value: string): boolean {
+  return /(?:^|\b)(?:wait\s*[—-]|let me reconsider|am i truly|i should (?:inspect|check|verify)|i need to (?:think|reconsider)|perhaps i should)/i.test(value);
+}
+
+function isParseableToolCall(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  // Hermes' native XML form starts with the tool name and carries paired
+  // argument tags. Keep the check structural so arbitrary model prose inside
+  // a <tool_call> block cannot suppress the recovery path.
+  if (
+    /^[a-z][a-z0-9_.-]*(?:\s*<arg_key>[\s\S]*?<\/arg_key>\s*<arg_value>[\s\S]*?<\/arg_value>\s*)+$/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+
+  // Some Hermes/provider combinations serialize the same call as JSON.
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return false;
+    if (typeof parsed.name === "string" && parsed.name.trim()) return true;
+    if (typeof parsed.tool === "string" && parsed.tool.trim()) return true;
+    const fn = parsed.function;
+    return Boolean(
+      fn &&
+        typeof fn === "object" &&
+        typeof (fn as Record<string, unknown>).name === "string" &&
+        String((fn as Record<string, unknown>).name).trim(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Split Laguna's native interleaved completion format before it reaches the
+ * Paperclip result/error fields. Laguna's chat template emits `<think>` and
+ * `<tool_call>` blocks in the same content channel when the serving layer
+ * does not expose separate reasoning/tool-call fields.
+ */
+function splitLagunaCompletion(raw: string): LagunaCompletionParts {
+  let remaining = raw;
+  const reasoningParts: string[] = [];
+  const toolCallParts: string[] = [];
+
+  const removeBlocks = (
+    pattern: RegExp,
+    destination: string[],
+  ) => {
+    remaining = remaining.replace(pattern, (_match, body: string) => {
+      if (body.trim()) destination.push(body.trim());
+      return "";
+    });
+  };
+
+  // Support both closed blocks and a truncated final block, which is common
+  // when Hermes exits while a model is still emitting reasoning.
+  removeBlocks(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/gi, reasoningParts);
+  removeBlocks(/<tool_call\b[^>]*>([\s\S]*?)(?:<\/tool_call>|$)/gi, toolCallParts);
+
+  const finalAnswer = cleanResponse(remaining);
+  const reasoning = reasoningParts.join("\n\n").trim();
+  const parseableToolCalls = toolCallParts.filter(isParseableToolCall);
+  const hasMalformedToolCall = parseableToolCalls.length !== toolCallParts.length;
+  if (
+    !finalAnswer &&
+    !parseableToolCalls.length &&
+    (hasMalformedToolCall || looksLikeLeakedReasoning(reasoning))
+  ) {
+    return {
+      reasoning: reasoning || "Hermes returned a malformed tool call.",
+      toolCall: "",
+      finalAnswer: "",
+    };
+  }
+
+  if (!reasoning && !parseableToolCalls.length && looksLikeLeakedReasoning(finalAnswer)) {
+    return { reasoning: finalAnswer, toolCall: "", finalAnswer: "" };
+  }
+
+  return {
+    reasoning,
+    toolCall: parseableToolCalls.join("\n\n").trim(),
+    finalAnswer,
+  };
+}
+
+function isReasoningOnlyCompletion(parsed: ParsedOutput): boolean {
+  return Boolean(parsed.reasoning && !parsed.response && !parsed.toolCall);
+}
+
+function redactErrorMessage(errorMessage: string | undefined): string | undefined {
+  if (!errorMessage) return undefined;
+  const parts = splitLagunaCompletion(errorMessage);
+  if (parts.reasoning && !parts.finalAnswer && !parts.toolCall) {
+    return HERMES_UNPARSEABLE_RESPONSE_MESSAGE;
+  }
+  const cleaned = parts.finalAnswer || cleanResponse(errorMessage);
+  return cleaned || undefined;
+}
+
+function buildRecoveryArgs(
+  args: string[],
+  sessionId: string | undefined,
+): string[] {
+  const retryArgs = [...args];
+  const queryIndex = retryArgs.indexOf("-q");
+  if (queryIndex >= 0 && queryIndex + 1 < retryArgs.length) {
+    retryArgs[queryIndex + 1] = HERMES_RECOVERY_PROMPT;
+  }
+
+  if (sessionId) {
+    for (let index = retryArgs.length - 2; index >= 0; index -= 1) {
+      if (retryArgs[index] === "--resume") {
+        retryArgs.splice(index, 2);
+      }
+    }
+    retryArgs.push("--resume", sessionId);
+  }
+  return retryArgs;
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +494,10 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     // The response is everything before the session_id line
     const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
     if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
+      const parts = splitLagunaCompletion(stdout.slice(0, sessionLineIdx));
+      result.response = parts.finalAnswer || undefined;
+      result.reasoning = parts.reasoning || undefined;
+      result.toolCall = parts.toolCall || undefined;
     }
   } else {
     // Legacy format (non-quiet mode)
@@ -363,10 +507,10 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
-    const cleaned = cleanResponse(stdout);
-    if (cleaned.length > 0) {
-      result.response = cleaned;
-    }
+    const parts = splitLagunaCompletion(stdout);
+    result.response = parts.finalAnswer || undefined;
+    result.reasoning = parts.reasoning || undefined;
+    result.toolCall = parts.toolCall || undefined;
   }
 
   // Extract token usage
@@ -391,7 +535,7 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       .filter((line) => /error|exception|traceback|failed/i.test(line))
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
     if (errorLines.length > 0) {
-      result.errorMessage = errorLines.slice(0, 5).join("\n");
+      result.errorMessage = redactErrorMessage(errorLines.slice(0, 5).join("\n"));
     }
   }
 
@@ -445,7 +589,35 @@ export async function execute(
   // was added, or if the model was changed without updating provider, the
   // correct provider is still used.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
-  const explicitProvider = cfgString(config.provider);
+  const configuredProvider = config.provider;
+  const explicitProvider =
+    typeof configuredProvider === "string" && configuredProvider.trim().length > 0
+      ? configuredProvider
+      : undefined;
+
+  const allowedProviders = VALID_PROVIDERS.join(", ");
+  const invalidProviderMessage =
+    typeof configuredProvider === "string"
+      ? `Unsupported Hermes provider "${configuredProvider}". Approved providers: ${allowedProviders}.`
+      : `Invalid Hermes provider type "${configuredProvider === null ? "null" : typeof configuredProvider}". Approved providers: ${allowedProviders}.`;
+
+  // Never allow an explicit provider identifier to reach the CLI unless it is
+  // an exact member of the shared allowlist. This keeps argv discrete while
+  // rejecting injected-looking values before a child process is spawned.
+  if (
+    (configuredProvider !== undefined && typeof configuredProvider !== "string") ||
+    (explicitProvider && !(VALID_PROVIDERS as readonly string[]).includes(explicitProvider))
+  ) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_local_provider_invalid",
+      errorMessage: invalidProviderMessage,
+      ...(explicitProvider ? { provider: explicitProvider } : {}),
+      model,
+    };
+  }
 
   if (!explicitProvider) {
     try {
@@ -620,7 +792,7 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+  let result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
     timeoutSec,
@@ -630,7 +802,32 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  let parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+
+  // Laguna can stop after emitting only its native reasoning block. Give the
+  // existing session one deterministic recovery turn so transient parser
+  // brittleness does not become an adapter failure. A tool-call block is
+  // already parseable, so only reasoning-only completions are retried.
+  if (!result.timedOut && isReasoningOnlyCompletion(parsed)) {
+    await ctx.onLog(
+      "stdout",
+      "[hermes] Laguna returned reasoning without a final answer or tool call; requesting one recovery turn.\n",
+    );
+    result = await runChildProcess(
+      ctx.runId,
+      hermesCmd,
+      buildRecoveryArgs(args, parsed.sessionId),
+      {
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog: wrappedOnLog,
+        onSpawn: ctx.onSpawn,
+      },
+    );
+    parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  }
 
   await ctx.onLog(
     "stdout",
@@ -649,8 +846,11 @@ export async function execute(
     model,
   };
 
-  if (parsed.errorMessage) {
-    executionResult.errorMessage = parsed.errorMessage;
+  if (isReasoningOnlyCompletion(parsed)) {
+    executionResult.errorCode = "hermes_local_unparseable_response";
+    executionResult.errorMessage = HERMES_UNPARSEABLE_RESPONSE_MESSAGE;
+  } else if (parsed.errorMessage) {
+    executionResult.errorMessage = redactErrorMessage(parsed.errorMessage);
   }
 
   if (parsed.usage) {
@@ -662,7 +862,7 @@ export async function execute(
   }
 
   // Summary from agent response
-  if (parsed.response) {
+  if (parsed.response && !isReasoningOnlyCompletion(parsed)) {
     executionResult.summary = parsed.response.slice(0, 2000);
   }
 
