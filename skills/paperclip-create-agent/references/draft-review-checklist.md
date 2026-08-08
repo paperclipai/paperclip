@@ -56,6 +56,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `icon` is set to one of `/llms/agent-icons.txt` and fits the role
 - [ ] `sourceIssueId` (or `sourceIssueIds`) is set when the hire was triggered by an issue
 - [ ] `desiredSkills` lists only skills that already exist in the company library, or will be installed first via the company-skills workflow
+- [ ] For `Coder` hires, `desiredSkills` includes the seven-skill default bundle in the order documented in `references/agents/coder.md`; any omission or addition is justified in the hire comment
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
 - [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
