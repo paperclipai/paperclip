@@ -9,7 +9,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * zones see correct wall-clock times in their logs.
  *
  * We verify that:
- * 1. The logger module initialises pino-pretty with "SYS:HH:MM:ss".
+ * 1. The logger module initialises pino-pretty with "SYS:yyyy-mm-dd HH:MM:ss".
  * 2. The pino-pretty SYS: prefix resolves to a timezone-sensitive format
  *    string — confirmed via pino-pretty's own asynchronous formatter, which
  *    applies translateTime to a known epoch under different TZ values.
@@ -53,7 +53,7 @@ describe("logger translateTime respects TZ environment variable", () => {
     vi.clearAllMocks();
   });
 
-  it("configures pino-pretty with SYS:HH:MM:ss so timestamps honour the TZ env var", async () => {
+  it("configures pino-pretty with a SYS:-prefixed, date-inclusive format so timestamps honour the TZ env var", async () => {
     await import("../middleware/logger.js");
 
     expect(mockTransport).toHaveBeenCalledOnce();
@@ -61,7 +61,7 @@ describe("logger translateTime respects TZ environment variable", () => {
       targets: Array<{ options: Record<string, unknown> }>;
     };
     for (const target of targets) {
-      expect(target.options.translateTime).toBe("SYS:HH:MM:ss");
+      expect(target.options.translateTime).toBe("SYS:yyyy-mm-dd HH:MM:ss");
     }
   });
 

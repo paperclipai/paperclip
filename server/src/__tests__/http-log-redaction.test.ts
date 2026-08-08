@@ -15,6 +15,8 @@ describe("HTTP logger redaction", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-csrf-token"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-xsrf-token"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-api-key"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["cf-access-jwt-assertion"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["cf-access-authenticated-user-email"]');
   });
 
   it("redacts request and response header secrets from pino-http output", async () => {
@@ -53,6 +55,8 @@ describe("HTTP logger redaction", () => {
               authorization: "Bearer auth-secret",
               cookie: "sid=request-secret",
               "set-cookie": "proxy-secret",
+              "cf-access-jwt-assertion": "cf-jwt-secret",
+              "cf-access-authenticated-user-email": "cf-user-secret@example.com",
             },
           },
           (res) => {
@@ -72,7 +76,7 @@ describe("HTTP logger redaction", () => {
     }
 
     const output = chunks.join("");
-    expect(output).not.toMatch(/auth-secret|request-secret|proxy-secret|response-secret/);
+    expect(output).not.toMatch(/auth-secret|request-secret|proxy-secret|response-secret|cf-jwt-secret|cf-user-secret/);
 
     const log = JSON.parse(output.trim()) as {
       req: { headers: Record<string, string> };
@@ -82,5 +86,7 @@ describe("HTTP logger redaction", () => {
     expect(log.req.headers.cookie).toBe("[Redacted]");
     expect(log.req.headers["set-cookie"]).toBe("[Redacted]");
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
+    expect(log.req.headers["cf-access-jwt-assertion"]).toBe("[Redacted]");
+    expect(log.req.headers["cf-access-authenticated-user-email"]).toBe("[Redacted]");
   });
 });
