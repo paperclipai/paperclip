@@ -561,6 +561,7 @@ async function assertWatchdogAgentInvokable(dbOrTx: any, companyId: string, agen
       name: agents.name,
       reportsTo: agents.reportsTo,
       status: agents.status,
+      adapterType: agents.adapterType,
     })
     .from(agents)
     .where(eq(agents.id, agentId))
@@ -570,6 +571,7 @@ async function assertWatchdogAgentInvokable(dbOrTx: any, companyId: string, agen
       name: string;
       reportsTo: string | null;
       status: string;
+      adapterType: string | null;
     }>) => rows[0] ?? null);
   if (!agent || agent.companyId !== companyId) {
     throw notFound("Watchdog agent not found");

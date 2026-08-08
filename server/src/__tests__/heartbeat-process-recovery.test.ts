@@ -6890,8 +6890,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("skips human manager in management chain and escalates to AI CTO during recovery escalation", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
-      runStatus: "failed",
-      runErrorCode: "adapter_error",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
     });
     const humanManagerId = randomUUID();
     const aiCtoId = randomUUID();
@@ -6944,8 +6946,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("escalates to board when escalation target in management chain is Human CEO and no AI manager exists", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
-      runStatus: "failed",
-      runErrorCode: "adapter_error",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
     });
     const humanCeoId = randomUUID();
 
@@ -6964,6 +6968,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     // Set assignee's manager to Human CEO
     await db.update(agents).set({ reportsTo: humanCeoId }).where(eq(agents.id, agentId));
+
+    // The self-assignee is otherwise a valid recovery-owner fallback candidate
+    // once the manager ladder is exhausted, so pausing the company (budget
+    // hard-stop) is what forces zero invokable candidates and a real board
+    // escalation, matching production behavior for an exhausted company.
+    await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, companyId));
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
