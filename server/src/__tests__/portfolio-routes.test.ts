@@ -275,6 +275,147 @@ describeEmbeddedPostgres("portfolio routes", () => {
     expect(row.runs_total).toBe(row.runs_succeeded + row.runs_failed + row.runs_other);
   });
 
+  it("classifies fresh/reused from session columns when usage_json flags are absent (TSMC-20516)", async () => {
+    const opcoId = randomUUID();
+    const ledgerAgentId = randomUUID();
+    const opcoAgentId = randomUUID();
+    const runFreshFallback = randomUUID();
+    const runReusedFallback = randomUUID();
+    const runShellUnclassified = randomUUID();
+    const runFlagWins = randomUUID();
+    const since = new Date("2026-06-08T00:00:00.000Z");
+    const until = new Date("2026-06-15T00:00:00.000Z");
+
+    await db.insert(companies).values([
+      {
+        id: TSMC_COMPANY_ID,
+        name: "TSMC",
+        issuePrefix: "TSMC",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: opcoId,
+        name: "ThinkStack Capital",
+        issuePrefix: "TSC",
+        parentCompanyId: TSMC_COMPANY_ID,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values([
+      {
+        id: ledgerAgentId,
+        companyId: TSMC_COMPANY_ID,
+        name: "Ledger",
+        role: "analyst",
+        status: "idle",
+        capabilities: "portfolio_metrics:read",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: opcoAgentId,
+        companyId: opcoId,
+        name: "OpCo Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: runFreshFallback,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-06-10T10:00:00.000Z"),
+        finishedAt: new Date("2026-06-10T10:02:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+        // No usage_json flags — classify via session columns (cold start that produced a session).
+        sessionIdBefore: null,
+        sessionIdAfter: "sess-after-fresh",
+      },
+      {
+        id: runReusedFallback,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-06-10T11:00:00.000Z"),
+        finishedAt: new Date("2026-06-10T11:02:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+        sessionIdBefore: "sess-before-reused",
+        sessionIdAfter: "sess-after-reused",
+      },
+      {
+        id: runShellUnclassified,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "timer",
+        status: "succeeded",
+        startedAt: new Date("2026-06-10T12:00:00.000Z"),
+        finishedAt: new Date("2026-06-10T12:01:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+        // Shell-style: no session columns and no flags → stay out of both buckets.
+      },
+      {
+        id: runFlagWins,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-06-10T13:00:00.000Z"),
+        finishedAt: new Date("2026-06-10T13:02:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+        // Flags present: trust usage_json even if session columns would disagree.
+        sessionIdBefore: null,
+        sessionIdAfter: "sess-would-look-fresh",
+        usageJson: { freshSession: false, sessionReused: true },
+      },
+    ]);
+
+    const res = await request(makeActor({
+      type: "agent",
+      agentId: ledgerAgentId,
+      companyId: TSMC_COMPANY_ID,
+      source: "agent_key",
+    }, db))
+      .get("/api/portfolio/runs")
+      .query({
+        since: since.toISOString(),
+        until: until.toISOString(),
+        companyIds: opcoId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.rows).toEqual([
+      {
+        company_id: opcoId,
+        agent_id: opcoAgentId,
+        runs_total: 4,
+        runs_succeeded: 4,
+        runs_failed: 0,
+        runs_other: 0,
+        seconds_on_task: 420,
+        distinct_issues: 4,
+        heartbeats_avg: 1,
+        cost_cents: 0,
+        priced_cost_event_count: 0,
+        unpriced_cost_event_count: 0,
+        runs_fresh_session: 1,
+        runs_reused_session: 2,
+        fresh_session_ratio: 0.3333,
+      },
+    ]);
+  });
+
   it("returns only digest-safe issue and summary metadata for a dedicated CEO capability", async () => {
     const opcoId = randomUUID();
     const outsiderId = randomUUID();

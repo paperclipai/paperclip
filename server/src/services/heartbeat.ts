@@ -17593,8 +17593,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         declaredModel: configuredModel,
         servedModel: adapterResult.model,
       });
+      // TSMC-20516: session classification must not be gated on token/cost presence.
+      // hermes_local (and similar) often finish with no usage totals; the old gate left
+      // usage_json null so portfolio fresh_session_ratio saw 0 fresh + 0 reused.
+      const sessionReusedForUsage =
+        runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null;
+      const taskSessionReusedForUsage = taskSessionForRun != null;
+      const persistedSessionIdForUsage =
+        nextSessionState.displayId ?? nextSessionState.legacySessionId ?? null;
+      const shouldClassifySessionForUsage =
+        sessionReusedForUsage ||
+        taskSessionReusedForUsage ||
+        sessionCompaction.rotate ||
+        persistedSessionIdForUsage != null;
+      const hasLedgerUsage =
+        Boolean(normalizedUsage) ||
+        adapterResult.costUsd != null ||
+        cacheAdjustedCostUsd != null;
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
+        hasLedgerUsage || shouldClassifySessionForUsage
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -17607,14 +17624,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 : adapterResult.usageBasis === "per_run"
                   ? { usageSource: "per_run" }
                   : {}),
-              ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
-                ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
+              ...(persistedSessionIdForUsage
+                ? { persistedSessionId: persistedSessionIdForUsage }
                 : {}),
-              sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
-              taskSessionReused: taskSessionForRun != null,
-              freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
-              sessionRotated: sessionCompaction.rotate,
-              sessionRotationReason: sessionCompaction.reason,
+              ...(shouldClassifySessionForUsage
+                ? {
+                    sessionReused: sessionReusedForUsage,
+                    taskSessionReused: taskSessionReusedForUsage,
+                    // Partition: adapter or task reuse => non-fresh. Portfolio reused
+                    // bucket ORs both reuse flags; fresh must not also be true.
+                    freshSession: !sessionReusedForUsage && !taskSessionReusedForUsage,
+                    sessionRotated: sessionCompaction.rotate,
+                    sessionRotationReason: sessionCompaction.reason,
+                  }
+                : {}),
               configFreshness: configFreshnessResultMetadata,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),

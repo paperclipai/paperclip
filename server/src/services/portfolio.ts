@@ -59,13 +59,19 @@ export interface PortfolioRunsRow {
   /**
    * Runs that started with no prior session id (cold start). TSMC-20213 —
    * visible fresh-vs-reused ratio; target fleet-wide fresh_session_ratio < 0.30.
+   * Classification source (TSMC-20516): usage_json.freshSession when present,
+   * else session_id_before IS NULL AND session_id_after IS NOT NULL.
    */
   runs_fresh_session: number;
-  /** Runs that reused a prior adapter/task session. */
+  /**
+   * Runs that reused a prior adapter/task session.
+   * Source: usage_json.sessionReused|taskSessionReused when present, else
+   * session_id_before IS NOT NULL.
+   */
   runs_reused_session: number;
   /**
    * runs_fresh_session / (runs_fresh_session + runs_reused_session), or 0 when
-   * neither flag was recorded in the window.
+   * neither bucket has classified runs in the window.
    */
   fresh_session_ratio: number;
 }
@@ -269,12 +275,34 @@ export function portfolioService(db: Db) {
               0
             )::int AS seconds_on_task,
             COUNT(DISTINCT hr.context_snapshot ->> 'issueId')::int AS distinct_issues,
+            -- TSMC-20516: prefer usage_json flags; when absent (pre-fix / no-usage
+            -- adapters), fall back to session_id_before/after so shell runs (no session
+            -- columns) stay unclassified and sessionful runs still enter a bucket.
             COUNT(DISTINCT hr.id) FILTER (
-              WHERE COALESCE(hr.usage_json ->> 'freshSession', 'false') IN ('true', 't', '1')
+              WHERE
+                CASE
+                  WHEN hr.usage_json ? 'freshSession'
+                    OR hr.usage_json ? 'sessionReused'
+                    OR hr.usage_json ? 'taskSessionReused'
+                  THEN
+                    -- Prefer reuse when both sides were ever set (pre-partition writers).
+                    COALESCE(hr.usage_json ->> 'freshSession', 'false') IN ('true', 't', '1')
+                    AND COALESCE(hr.usage_json ->> 'sessionReused', 'false') NOT IN ('true', 't', '1')
+                    AND COALESCE(hr.usage_json ->> 'taskSessionReused', 'false') NOT IN ('true', 't', '1')
+                  ELSE hr.session_id_before IS NULL AND hr.session_id_after IS NOT NULL
+                END
             )::int AS runs_fresh_session,
             COUNT(DISTINCT hr.id) FILTER (
-              WHERE COALESCE(hr.usage_json ->> 'sessionReused', 'false') IN ('true', 't', '1')
-                 OR COALESCE(hr.usage_json ->> 'taskSessionReused', 'false') IN ('true', 't', '1')
+              WHERE
+                CASE
+                  WHEN hr.usage_json ? 'freshSession'
+                    OR hr.usage_json ? 'sessionReused'
+                    OR hr.usage_json ? 'taskSessionReused'
+                  THEN
+                    COALESCE(hr.usage_json ->> 'sessionReused', 'false') IN ('true', 't', '1')
+                    OR COALESCE(hr.usage_json ->> 'taskSessionReused', 'false') IN ('true', 't', '1')
+                  ELSE hr.session_id_before IS NOT NULL
+                END
             )::int AS runs_reused_session
           FROM heartbeat_runs hr
           WHERE
