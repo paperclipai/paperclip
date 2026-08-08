@@ -2041,7 +2041,11 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
   const workspaceExpectation =
     Boolean(issue.projectWorkspaceId) ||
-    Boolean(input.resolvedWorkspace.workspaceId) ||
+    // A resolvedWorkspace.workspaceId only implies a persistable execution workspace when a
+    // project actually backs the run. Without one, executionWorkspacesSvc.create() is skipped
+    // unconditionally (resolvedProjectId is null), so requiring persistence here would be
+    // unsatisfiable by construction — see resolveAnchorWorkspaceForRun's task_session branch.
+    (Boolean(input.resolvedWorkspace.workspaceId) && Boolean(input.resolvedWorkspace.projectId)) ||
     input.executionWorkspace.strategy === "git_worktree";
 
   const fail = (reason: string, message: string, extra: Record<string, unknown> = {}) => {
@@ -8595,13 +8599,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        // No project resolved for this run means no execution_workspace can ever be
+        // persisted for it (see the resolvedProjectId gate around executionWorkspacesSvc.create
+        // below in the caller). A workspaceId/repoUrl/repoRef inherited here from an earlier,
+        // project-bound session of the same task is therefore orphaned and would make
+        // assertGitSensitiveAdapterWorkspaceValid's workspaceExpectation fire without anything
+        // ever being persisted to satisfy it. Only propagate these when a project still backs
+        // the current run.
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
           projectId: resolvedProjectId,
-          workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
-          repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
-          repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+          workspaceId: resolvedProjectId ? readNonEmptyString(previousSessionParams?.workspaceId) : null,
+          repoUrl: resolvedProjectId ? readNonEmptyString(previousSessionParams?.repoUrl) : null,
+          repoRef: resolvedProjectId ? readNonEmptyString(previousSessionParams?.repoRef) : null,
           workspaceHints,
           warnings: [],
           baseCwdFallback: false,
