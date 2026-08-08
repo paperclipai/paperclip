@@ -1975,6 +1975,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-390px: 390px;
   --sz-64px: 64px;
   --sz-3px: 3px; /* Extracted from ui/src/components/ActivityCharts.tsx (gap-[3px]). */
+  --sz-12px: 12px; /* Next-action subtree depth step. */
   --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
   --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
   --sz-16rem: 16rem; /* Extracted from ui/src/components/ActivityFeed.tsx (max-w-[16rem]). */
@@ -2060,6 +2061,9 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-30px: 30px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[30px]). */
   --sz-8px: 8px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[8px]). */
   --sz-4px: 4px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[4px]). */
+  --surface-next-action-marker: color-mix(in oklab, var(--status-task-todo) 6%, transparent);
+  --surface-next-action-chip: color-mix(in oklab, var(--status-task-todo) 14%, transparent);
+  --shadow-next-action-marker: inset 3px 0 0 0 var(--status-task-todo);
   --sz-34px: 34px; /* Extracted from ui/src/components/environment-variables-editor/SecretPicker.tsx (h-[34px]). */
   --sz-11rem: 11rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (min-w-[11rem]). */
   --sz-32rem: 32rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (w-[32rem]). */

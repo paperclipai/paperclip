@@ -11,6 +11,8 @@ import type {
   Issue,
   IssueChanges,
   IssueAttachment,
+  IssueBlockerDiagnosticsResponse,
+  IssueSubtreeDiagnosticsResponse,
   IssueCostSummary,
   IssueComment,
   IssueDocument,
@@ -152,6 +154,10 @@ export const issuesApi = {
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),
+  getBlockerDiagnostics: (id: string) =>
+    api.get<IssueBlockerDiagnosticsResponse>(`/issues/${id}/diagnostics/blockers`),
+  getSubtreeDiagnostics: (id: string) =>
+    api.get<IssueSubtreeDiagnosticsResponse>(`/issues/${id}/diagnostics/subtree`),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),

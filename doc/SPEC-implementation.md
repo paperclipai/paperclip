@@ -507,10 +507,13 @@ V1 non-terminal liveness rule:
 - unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
 - heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
 - invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
+- every agent-owned non-terminal issue, and every unresolved blocker leaf, must expose one canonical next-action answer that is both machine-readable and human-readable. The answer is derived from durable control-plane state and names the action-path kind, source issue, target run/wake/participant/interaction/approval/monitor/owner/blocker/gate/recovery action, responsible owner, reason, evidence, and wake/monitor/retry/timeout/escalation policy.
+- terminal post-run gates such as `workspace_finalize_pending` are routed blockers, not opaque `done` issue blockers. If a terminal issue still prevents dependents from moving, the dependent's next-action answer must name the gate or the explicit recovery action that owns the gate. When blockers cannot target the gate directly, dependents must block on a source-scoped or issue-backed recovery action instead of only on the terminal issue.
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 - source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
 - recovery-scoped wakes replace the normal deliverable execution contract with a cause-specific recovery contract, and successful repair returns the issue to the recorded original owner by default while recording `handed_back` versus `owner_completed`
+- the liveness contract preserves three invariants: productive work continues through a capable live path, real blockers are named instead of inferred from stale status or prose, and recovery cannot spin indefinitely because bounded retries, fingerprints, and explicit escalation replace repeated ambiguous wakes
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
@@ -1127,6 +1130,10 @@ Behavior:
 The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
 
 Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
+
+Cheap/status-only recovery must fingerprint handoffs to the normal lane by company, source issue, recovery or gate kind, required action kind, target key, and evidence point. For each fingerprint, Paperclip may create exactly one normal-model continuation, wake, or recovery issue capable of doing the required source or deliverable work. Repeated cheap/status-only observations for the same fingerprint reuse the existing next-action answer or record a suppressed duplicate; they must not create duplicate normal continuations.
+
+If the normal continuation for a fingerprint finishes and the same required work remains unresolved, Paperclip escalates to an explicit recovery action for that fingerprint instead of scheduling another cheap/status-only recovery. This preserves productive work, stops only on real blockers, and prevents cheap-lane recovery loops.
 
 ## 11.6 Scheduler Rules
 

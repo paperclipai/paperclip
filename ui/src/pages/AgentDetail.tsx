@@ -98,6 +98,8 @@ import {
   MAX_LIVE_EVENTS,
   MAX_LIVE_LOG_LINES,
 } from "../lib/live-log-buffer";
+import { RunNextActionVerdict } from "../components/RunNextActionVerdict";
+import { isRunActiveForIssue } from "../lib/next-action";
 import {
   isUuidLike,
   type Agent,
@@ -3524,17 +3526,23 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <span className="text-xs font-medium text-muted-foreground">Tasks Touched ({touchedIssues.length})</span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
-              <Link
-                key={issue.issueId}
-                to={`/issues/${issue.identifier ?? issue.issueId}`}
-                className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <StatusBadge status={issue.status} />
-                  <span className="truncate">{issue.title}</span>
-                </div>
-                <span className="font-mono text-muted-foreground shrink-0 ml-2">{issue.identifier ?? issue.issueId.slice(0, 8)}</span>
-              </Link>
+              <div key={issue.issueId} className="px-3 py-2">
+                <Link
+                  to={`/issues/${issue.identifier ?? issue.issueId}`}
+                  className="flex items-center justify-between w-full text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusBadge status={issue.status} />
+                    <span className="truncate">{issue.title}</span>
+                  </div>
+                  <span className="font-mono text-muted-foreground shrink-0 ml-2">{issue.identifier ?? issue.issueId.slice(0, 8)}</span>
+                </Link>
+                <RunNextActionVerdict
+                  issueId={issue.issueId}
+                  runIsActive={isRunActiveForIssue(run, issue.issueId)}
+                  className="mt-2"
+                />
+              </div>
             ))}
           </div>
         </div>

@@ -223,6 +223,18 @@ export type IssueBlockerDiagnosticFlag =
   | "cancelled_blocker_in_set"
   | "workspace_finalize_pending";
 
+export interface IssueTerminalGateDiagnostic {
+  kind: "workspace_finalize_pending";
+  sourceIssueId: string;
+  owner: "system";
+  reason: string;
+  evidence: {
+    blockerIssueId: string;
+    gate: "workspace_finalize";
+  };
+  policy: "wait_for_workspace_finalize";
+}
+
 export interface IssueBlockerDiagnosticIssueSummary {
   id: string;
   identifier: string | null;
@@ -238,6 +250,7 @@ export interface IssueBlockerDiagnosticNode extends IssueBlockerDiagnosticIssueS
   isDependencyReady: boolean;
   isPendingFinalize: boolean;
   flags: IssueBlockerDiagnosticFlag[];
+  terminalGate?: IssueTerminalGateDiagnostic | null;
 }
 
 export interface IssueBlockerDiagnosticsReadiness {

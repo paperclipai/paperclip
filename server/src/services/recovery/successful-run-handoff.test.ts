@@ -5,6 +5,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
+  buildFinishSuccessfulRunNormalLaneHandoffFingerprint,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
@@ -67,27 +68,42 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
-  it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
+  it("queues one normal-lane corrective handoff wake for a successful progress run without a visible next action", () => {
     const decision = decide();
 
     expect(decision.kind).toBe("enqueue");
     if (decision.kind !== "enqueue") return;
     expect(decision.targetAgentId).toBe(run.agentId);
+    const fingerprint = buildFinishSuccessfulRunNormalLaneHandoffFingerprint({
+      companyId: "company-1",
+      issueId: "issue-1",
+      sourceRunId: "run-1",
+    });
     expect(decision.idempotencyKey).toBe("finish_successful_run_handoff:issue-1:run-1:1");
     expect(decision.payload).toMatchObject({
       issueId: "issue-1",
       sourceRunId: "run-1",
       handoffRequired: true,
       handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      handoffWorkClass: "normal_model",
+      normalLaneHandoffFingerprint: fingerprint,
+      requiredActionKind: "record_issue_disposition_or_continuation",
       missingDisposition: "clear_next_step",
       handoffAttempt: 1,
       maxHandoffAttempts: 1,
       resumeIntent: true,
       resumeFromRunId: "run-1",
     });
+    expect(decision.payload).not.toHaveProperty("modelProfile");
+    expect(decision.payload).not.toHaveProperty("allowDeliverableWork");
+    expect(decision.payload).not.toHaveProperty("allowDocumentUpdates");
+    expect(decision.payload).not.toHaveProperty("resumeRequiresNormalModel");
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
+      handoffWorkClass: "normal_model",
+      normalLaneHandoffFingerprint: fingerprint,
+      requiredActionKind: "record_issue_disposition_or_continuation",
     });
     for (const key of [
       "modelProfile",
@@ -205,6 +221,35 @@ describe("successful run handoff decision", () => {
     expect(instruction).toContain("Line one.\nLine two.");
     expect(instruction).toContain("Report body[0m intact.");
     expect(instruction).not.toMatch(/[\u0000-\u0008\u000B-\u001F\u007F]/);
+  });
+
+  it("scrubs copied cheap status-only guard hints from the normal handoff context", () => {
+    const decision = decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          modelProfile: "cheap",
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        },
+      } as any,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      handoffWorkClass: "normal_model",
+      normalLaneHandoffFingerprint: "normal_lane_handoff:company-1:issue-1:successful_run_missing_state:record_issue_disposition_or_continuation:issue_status:run-1",
+    });
+    expect(decision.payload).not.toHaveProperty("modelProfile");
+    expect(decision.payload).not.toHaveProperty("allowDocumentUpdates");
+    expect(decision.payload).not.toHaveProperty("resumeRequiresNormalModel");
+    expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
+    expect(decision.contextSnapshot).not.toHaveProperty("allowDocumentUpdates");
+    expect(decision.contextSnapshot).not.toHaveProperty("resumeRequiresNormalModel");
   });
 
   it("does not queue when the issue already has a valid disposition", () => {

@@ -943,6 +943,19 @@ function buildIssueBlockerDiagnosticsResponse(input: {
     if (issue.status === "blocked" && blocker.status === "done") flags.push("done_but_blocking");
     if (blocker.status === "cancelled") flags.push("cancelled_blocker_in_set");
     if (isPendingFinalize) flags.push("workspace_finalize_pending");
+    const terminalGate = isPendingFinalize
+      ? {
+          kind: "workspace_finalize_pending" as const,
+          sourceIssueId: blocker.id,
+          owner: "system" as const,
+          reason: `${blockerDiagnosticLabel(blocker)} reached done, but its execution workspace has not recorded a successful workspace_finalize gate.`,
+          evidence: {
+            blockerIssueId: blocker.id,
+            gate: "workspace_finalize" as const,
+          },
+          policy: "wait_for_workspace_finalize" as const,
+        }
+      : null;
 
     return {
       ...blocker,
@@ -950,6 +963,7 @@ function buildIssueBlockerDiagnosticsResponse(input: {
       isPendingFinalize,
       isDependencyReady: blocker.status === "done" && !isPendingFinalize,
       flags,
+      terminalGate,
     };
   });
 
@@ -4609,6 +4623,28 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertWorkflowHandoffMutationAllowedByRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot create issue-thread interactions or accepted-plan decompositions",
+      details: {
+        issueId: issue.id,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
   async function loadWorkProductRunAttribution(runId: string) {
     return await db
       .select({
@@ -8053,6 +8089,7 @@ export function issueRoutes(
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+    if (!(await assertWorkflowHandoffMutationAllowedByRunContext(req, res, sourceIssue))) return;
 
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
@@ -10176,6 +10213,7 @@ export function issueRoutes(
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
+      if (!(await assertWorkflowHandoffMutationAllowedByRunContext(req, res, issue))) return;
     } else {
       assertBoard(req);
     }

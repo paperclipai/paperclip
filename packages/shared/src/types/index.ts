@@ -577,6 +577,7 @@ export type {
   IssueBlockerDiagnosticNode,
   IssueBlockerDiagnosticsReadiness,
   IssueBlockerDiagnosticsResponse,
+  IssueTerminalGateDiagnostic,
   IssueWakeDiagnosticActivityRecord,
   IssueWakeDiagnosticEvent,
   IssueWakeDiagnosticWakeFailureClass,
