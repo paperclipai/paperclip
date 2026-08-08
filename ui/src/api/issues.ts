@@ -150,6 +150,8 @@ export const issuesApi = {
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),
+  getSubtreeDiagnostics: (id: string) =>
+    api.get<import("@paperclipai/shared").IssueSubtreeDiagnosticsResponse>(`/issues/${id}/diagnostics/subtree`),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),

@@ -123,6 +123,7 @@ import { PauseAffectsSummaryView } from "../components/interrupt-handoff/Interru
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueRunLedger } from "../components/IssueRunLedger";
+import { IssueTreeHealthDigest } from "../components/IssueTreeHealthDigest";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGalleryModal";
@@ -1348,6 +1349,11 @@ function IssueDetailActivityTab({
     queryFn: () => activityApi.runsForIssue(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
+  const { data: subtreeDiagnostics } = useQuery({
+    queryKey: queryKeys.issues.subtreeDiagnostics(issueId),
+    queryFn: () => issuesApi.getSubtreeDiagnostics(issueId),
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getSubtreeDiagnostics>>>(issueId),
+  });
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId),
     queryFn: () => issuesApi.listApprovals(issueId),
@@ -1509,6 +1515,7 @@ function IssueDetailActivityTab({
         </div>
       )}
       <div className="mb-3">
+        {subtreeDiagnostics ? <IssueTreeHealthDigest diagnostics={subtreeDiagnostics} /> : null}
         <IssueRunLedger
           issueId={issueId}
           companyId={companyId}

@@ -178,6 +178,7 @@ export const queryKeys = {
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
+    subtreeDiagnostics: (id: string) => ["issues", "subtree-diagnostics", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     commentsList: (issueId: string) => ["issues", "comments", issueId, "list"] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
