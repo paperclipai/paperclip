@@ -1120,6 +1120,159 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("cancelStaleQueuedRunsForIssue eagerly cancels the previous assignee's queued run right after a reassignment and clears the execution lock it held (RENA-55610)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    // Mirrors what the reassign PATCH leaves behind before this fix: the
+    // assignee already flipped, but the original assignee's queued run still
+    // holds the issue's execution lock (RENA-55610 Beleg 2).
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned mid-queue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+      executionRunId: runId,
+      executionAgentNameKey: "originalcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const cancelledRunIds = await heartbeat.cancelStaleQueuedRunsForIssue(companyId, issueId);
+    expect(cancelledRunIds).toEqual([runId]);
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
+    expect(wakeup?.status).toBe("skipped");
+    expect(issue?.executionRunId).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("sweeps and cancels obviously-stale queued runs even when the agent has no free concurrency slots (RENA-55610)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "BusyAgent", maxConcurrentRuns: 1 });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    // Occupy the agent's only concurrency slot so startNextQueuedRunForAgent's
+    // availableSlots is 0 — the exact condition under which the pre-fix lazy
+    // check never looked at any queued run (RENA-55610 Beleg 3).
+    const busyRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: busyRunId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned while agent is fully busy",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+    });
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, busyRun] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, busyRunId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
+    expect(wakeup?.status).toBe("skipped");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+    // The genuinely running run must be left untouched by the sweep.
+    expect(busyRun?.status).toBe("running");
+
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busyRunId));
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

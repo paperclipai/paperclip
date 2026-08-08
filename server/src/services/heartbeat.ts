@@ -12806,6 +12806,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  // Eagerly cancels queued runs left behind by the previous assignee right
+  // after a reassignment, instead of waiting for the lazy staleness check in
+  // claimQueuedRun to reach them (which only happens once the run reaches the
+  // queue head and a concurrency slot frees up — it can take hours behind a
+  // busy queue). Reuses evaluateQueuedRunStaleness/cancelQueuedRunForStaleIssue
+  // so the interaction-wake and review-participant exceptions still apply, and
+  // so the issue's executionRunId lock is cleared when a cancelled queued run
+  // was the one holding it.
+  async function cancelStaleQueuedRunsForIssue(companyId: string, issueId: string) {
+    const candidates = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "queued"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    if (candidates.length === 0) return [];
+
+    const cancelledRunIds: string[] = [];
+    for (const run of candidates) {
+      const context = parseObject(run.contextSnapshot);
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      if (!staleness.stale) continue;
+      const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+      if (cancelled) cancelledRunIds.push(cancelled.id);
+    }
+    return cancelledRunIds;
+  }
+
   function truncateAgentErrorReason(reason: string | null | undefined): string | null {
     if (!reason) return null;
     const trimmed = reason.trim();
@@ -13443,7 +13475,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
         .select()
@@ -13456,7 +13487,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
       const queuedIssueIds = [...new Set(
         queuedRuns
           .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
@@ -13467,6 +13497,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
         })
         .from(issues)
         .where(
@@ -13475,8 +13506,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+
+      // Cheap in-memory prefilter (no extra queries beyond the batch issue
+      // fetch above) so a backed-up queue — e.g. dozens of runs stuck behind a
+      // maxed-out concurrency cap — still gets its obviously-stale entries
+      // (reassigned/terminal/deleted issue) cancelled on every scheduling
+      // pass, not just once a run reaches the queue head with a free slot.
+      // evaluateQueuedRunStaleness still makes the final call so interaction-
+      // wake and review-participant exceptions keep applying.
+      let liveRuns = queuedRuns;
+      const obviouslyStaleCandidates = queuedRuns.filter((run) => {
+        const runIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        if (!runIssueId) return false;
+        const issueRow = issueById.get(runIssueId);
+        return (
+          !issueRow ||
+          issueRow.status === "done" ||
+          issueRow.status === "cancelled" ||
+          issueRow.assigneeAgentId !== agentId
+        );
+      });
+      if (obviouslyStaleCandidates.length > 0) {
+        const cancelledRunIds = new Set<string>();
+        for (const run of obviouslyStaleCandidates) {
+          const context = parseObject(run.contextSnapshot);
+          const runIssueId = readNonEmptyString(context.issueId);
+          if (!runIssueId) continue;
+          const staleness = await evaluateQueuedRunStaleness(run, runIssueId, context);
+          if (!staleness.stale) continue;
+          const cancelled = await cancelQueuedRunForStaleIssue(run, runIssueId, staleness);
+          if (cancelled) cancelledRunIds.add(run.id);
+        }
+        if (cancelledRunIds.size > 0) {
+          liveRuns = liveRuns.filter((run) => !cancelledRunIds.has(run.id));
+        }
+      }
+      if (liveRuns.length === 0 || availableSlots <= 0) return [];
+
+      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, liveRuns);
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+      const prioritizedRuns = [...liveRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
         const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
         const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
@@ -19060,6 +19129,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    cancelStaleQueuedRunsForIssue,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the
