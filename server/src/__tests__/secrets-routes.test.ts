@@ -1230,4 +1230,174 @@ describe("secret routes", () => {
       }),
     );
   });
+
+  const agentActor = {
+    type: "agent",
+    agentId: "agent-1",
+    companyId: "company-1",
+    runId: "run-1",
+    source: "agent_jwt",
+    onBehalfOfUserId: "user-1",
+    onBehalfOfMemberships: [
+      { companyId: "company-1", status: "active", membershipRole: "operator" },
+    ],
+  };
+
+  it("allows an owning run-bound agent JWT to delete its own unbound paperclip_managed secret", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "paperclip_managed",
+      createdByAgentId: "agent-1",
+      name: "Agent-created",
+      key: "agent_created_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockSecretService.remove.mockResolvedValue(secret);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp(agentActor)).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mockAccessService.decide).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ agentId: "agent-1", runId: "run-1", source: "agent_jwt" }),
+      action: "credentials:write",
+      resource: { type: "company", companyId: "company-1" },
+    });
+    expect(mockSecretService.listBindingReferences).toHaveBeenCalledWith("company-1", secret.id);
+    expect(mockSecretService.remove).toHaveBeenCalledWith(secret.id);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "secret.deleted",
+        actorType: "agent",
+        actorId: "agent-1",
+        entityId: secret.id,
+        details: {},
+      }),
+    );
+  });
+
+  it("denies an owning agent from deleting a bound paperclip_managed secret", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "paperclip_managed",
+      createdByAgentId: "agent-1",
+      name: "Agent-created",
+      key: "agent_created_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([{ id: "bind-1" }]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp(agentActor)).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies a non-owning agent from deleting another agent's secret", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "paperclip_managed",
+      createdByAgentId: "other-agent",
+      name: "Agent-created",
+      key: "agent_created_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp(agentActor)).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies an owning agent from deleting a non-paperclip_managed secret", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "external_reference",
+      createdByAgentId: "agent-1",
+      name: "Imported",
+      key: "imported_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp(agentActor)).delete(
+      "/api/secrets/99999999-9999-4999-8999-999999999999",
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies a granted but unbound-agent-key owner from deleting (run-bound JWT required)", async () => {
+    const secret = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: "company-1",
+      scope: "company",
+      status: "active",
+      managedMode: "paperclip_managed",
+      createdByAgentId: "agent-1",
+      name: "Agent-created",
+      key: "agent_created_key",
+    };
+    mockSecretService.getById.mockResolvedValue(secret);
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp({
+      ...agentActor,
+      source: "agent_key",
+    })).delete("/api/secrets/99999999-9999-4999-8999-999999999999");
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
 });

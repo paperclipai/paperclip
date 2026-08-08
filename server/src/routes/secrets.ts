@@ -1195,7 +1195,38 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   });
 
   router.delete("/secrets/:id", async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const fetched = await svc.getById(id);
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+        "Secret not found",
+      );
+      if (!existing) return;
+
+      const removed = await svc.remove(id);
+      if (!removed) {
+        res.status(404).json({ error: "Secret not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: removed.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.deleted",
+        entityType: "secret",
+        entityId: removed.id,
+        details: { name: removed.name },
+      });
+
+      res.json({ ok: true });
+      return;
+    }
+
     const id = req.params.id as string;
     const fetched = await svc.getById(id);
     const existing = await getAccessibleResource(
@@ -1206,6 +1237,22 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
+    const agent = await assertCanCreateCompanySecret(req, existing.companyId);
+    if (!agent) {
+      throw forbidden("Run-bound agent JWT with responsible-user binding required");
+    }
+    if (
+      existing.status !== "active" ||
+      existing.managedMode !== "paperclip_managed" ||
+      existing.createdByAgentId !== agent.agentId
+    ) {
+      throw forbidden("Not an active agent-created paperclip_managed secret owned by this agent");
+    }
+    const bindings = await svc.listBindingReferences(existing.companyId, existing.id);
+    if (bindings.length !== 0) {
+      throw forbidden("Secret is still bound and cannot be deleted");
+    }
+
     const removed = await svc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
@@ -1214,12 +1261,13 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
     await logActivity(db, {
       companyId: removed.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: "agent",
+      actorId: agent.agentId,
       action: "secret.deleted",
       entityType: "secret",
       entityId: removed.id,
-      details: { name: removed.name },
+      // Opaque activity so request-controlled metadata is never logged.
+      details: {},
     });
 
     res.json({ ok: true });
