@@ -3045,7 +3045,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(restored).toBeNull();
   });
 
-  it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
+  it("does not reprovision an existing persisted git worktree that is reused before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
@@ -3126,7 +3126,7 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
+    await expect(fs.access(path.join(initial.cwd, ".paperclip-restored-state"))).rejects.toThrow();
   }, 15_000);
 
   it("auto-detects the default branch when baseRef is not configured", async () => {

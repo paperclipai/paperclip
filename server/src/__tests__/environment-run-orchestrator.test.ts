@@ -158,6 +158,7 @@ function makeRealizeInput(overrides: {
   environment?: Environment;
   lease?: EnvironmentLease;
   persistedExecutionWorkspace?: ExecutionWorkspace | null;
+  executionWorkspace?: RealizedExecutionWorkspace;
 } = {}): Parameters<ReturnType<typeof environmentRunOrchestrator>["realizeForRun"]>[0] {
   return {
     environment: overrides.environment ?? makeEnvironment("local"),
@@ -166,7 +167,7 @@ function makeRealizeInput(overrides: {
     companyId: "company-1",
     issueId: null,
     heartbeatRunId: "run-1",
-    executionWorkspace: makeExecutionWorkspace(),
+    executionWorkspace: overrides.executionWorkspace ?? makeExecutionWorkspace(),
     effectiveExecutionWorkspaceMode: null,
     persistedExecutionWorkspace: overrides.persistedExecutionWorkspace !== undefined
       ? overrides.persistedExecutionWorkspace
@@ -554,7 +555,74 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
-  it("skips remote provision command when reusing an existing workspace", async () => {
+  it("skips remote provision command when reusing an existing isolated worktree workspace", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "task_session",
+        localPath: "/workspace/worktrees/issue-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "sandbox",
+            remote: { path: "/remote/workspace" },
+            isNew: false,
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+      executionWorkspace: makeExecutionWorkspace("/workspace/worktrees/issue-1", {
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+        created: false,
+      }),
+    }));
+
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it("still runs the remote provision command for a shared project_primary workspace even though its local directory is never reported as freshly \"created\"", async () => {
+    // `project_primary` (shared workspace) realizations always report `created: false` for the
+    // local directory (see workspace-runtime.ts) because it is the project's long-lived primary
+    // checkout rather than something freshly created per run. The reuse-skip gate must not key off
+    // that flag for this strategy, or shared-workspace remote/sandbox provisioning would silently
+    // never run again — not even on the very first run.
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "claude_local",
@@ -596,7 +664,6 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
             version: 1,
             transport: "sandbox",
             remote: { path: "/remote/workspace" },
-            isNew: false,
           },
         },
       }),
@@ -605,10 +672,13 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
     await orchestrator.realizeForRun(makeRealizeInput({
       environment: makeEnvironment("sandbox"),
-      executionWorkspace: makeExecutionWorkspace("/workspace/project", { created: false }),
+      executionWorkspace: makeExecutionWorkspace("/workspace/project", {
+        strategy: "project_primary",
+        created: false,
+      }),
     }));
 
-    expect(runtime.execute).not.toHaveBeenCalled();
+    expect(runtime.execute).toHaveBeenCalledOnce();
   });
 
   it("surfaces remote provision command failures before resolving the adapter target", async () => {

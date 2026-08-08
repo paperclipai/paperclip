@@ -420,7 +420,17 @@ export function environmentRunOrchestrator(
       (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
         ? lease.metadata.remoteCwd.trim()
         : executionWorkspace.cwd);
+    // `executionWorkspace.created` only carries a meaningful reuse signal for the
+    // `git_worktree` strategy (isolated per-issue worktrees, which are explicitly
+    // created or reused). For `project_primary` (shared workspace) realizations the
+    // local directory always reports `created: false` — it is the project's
+    // long-lived primary checkout, not something freshly created per run — so gating
+    // on that flag would silently skip provisioning forever for every shared-workspace
+    // remote/sandbox environment, including the very first run. Treat non-worktree
+    // strategies as always requiring provisioning, matching prior behavior for that
+    // strategy, and only apply the reuse skip where "created" is well-defined.
     const isNew =
+      executionWorkspace.strategy !== "git_worktree" ||
       executionWorkspace.created === true ||
       workspaceRealization.isNew === true ||
       workspaceRealization.created === true;
@@ -458,6 +468,19 @@ export function environmentRunOrchestrator(
           },
         );
       }
+    }
+
+    // Record the provisioning decision on the realization metadata so operators viewing
+    // run/workspace details can tell whether a workspace was freshly provisioned or reused
+    // without the provision command re-running.
+    if (provisionCommand && environment.driver !== "local") {
+      workspaceRealization = {
+        ...workspaceRealization,
+        provisioning: {
+          ran: isNew,
+          reason: isNew ? "new_workspace" : "reused_existing_workspace",
+        },
+      };
     }
 
     // Step 3: Persist realization metadata on lease and execution workspace
