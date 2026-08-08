@@ -138,12 +138,10 @@ export function BudgetPolicyCard({
           Budget (USD)
         </label>
         <Input
-          type="number"
-          min={0}
-          step="0.01"
           value={draftBudget}
           onChange={(event) => setDraftBudget(event.target.value)}
           className="mt-2"
+          inputMode="decimal"
           placeholder="0.00"
         />
       </div>
