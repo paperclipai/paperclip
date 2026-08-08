@@ -98,6 +98,7 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { findCompanyByUrlSegment } from "./lib/company-routes";
 
 function boardRoutes() {
   return (
@@ -330,9 +331,7 @@ function LegacySkillStudioRedirect() {
   if (loading) return null;
 
   const targetCompany =
-    (companyPrefix
-      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
-      : null) ??
+    findCompanyByUrlSegment(companies, companyPrefix) ??
     selectedCompany ??
     companies[0] ??
     null;
@@ -359,9 +358,7 @@ function LegacySettingsRedirect() {
   }
 
   const targetCompany =
-    (companyPrefix
-      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
-      : null) ??
+    findCompanyByUrlSegment(companies, companyPrefix) ??
     selectedCompany ??
     companies[0] ??
     null;
@@ -422,9 +419,7 @@ function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
-  const matchedCompany = companyPrefix
-    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
-    : null;
+  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
 
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
