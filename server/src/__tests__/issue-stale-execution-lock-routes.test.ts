@@ -487,9 +487,13 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionAgentNameKey: "codexcoder",
       executionLockedAt: new Date(Date.now() - 10 * 60 * 1000),
     });
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, currentRunId));
 
     const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
       .patch(`/api/issues/${issueId}`)
+      .set("X-Paperclip-Run-Id", currentRunId)
       .send({ title: "Recovered TTL stale checkout lock" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
