@@ -419,6 +419,126 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("skips generic timer wakes while the same agent has an active issue execution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Argus",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 16,
+          skipTimerWhenNoActionableWork: true,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review PR marker",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    let finishAssignmentRun!: () => void;
+    const assignmentRunCanFinish = new Promise<void>((resolve) => {
+      finishAssignmentRun = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await assignmentRunCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Assignment run complete.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const assignmentWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(assignmentWake).not.toBeNull();
+
+    const assignmentIsRunning = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, assignmentWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "running";
+    });
+    expect(assignmentIsRunning).toBe(true);
+
+    const timerWake = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "interval",
+      reason: "heartbeat_timer",
+      payload: {},
+      contextSnapshot: {},
+    });
+    expect(timerWake).toBeNull();
+
+    const runCountAfterTimer = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(runCountAfterTimer).toBe(1);
+
+    const skippedTimerWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.source, "timer"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedTimerWake).toEqual({
+      status: "skipped",
+      reason: "heartbeat.timer.issue_execution_active",
+    });
+
+    finishAssignmentRun();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, assignmentWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
