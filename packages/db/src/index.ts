@@ -22,10 +22,12 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  sweepBackupOrphans,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
+  type SweepBackupOrphansOptions,
 } from "./backup-lib.js";
 export {
   createEmbeddedPostgresLogBuffer,
