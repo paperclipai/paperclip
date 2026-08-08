@@ -86,6 +86,7 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import { createErrorThrottler, computeBackoffDelayMs } from "./lib/error-throttler.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -920,8 +921,11 @@ export async function startServer(): Promise<StartedServer> {
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
-  let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let heartbeatSchedulerInterval: ReturnType<typeof setTimeout> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
+  const schedulerThrottler = createErrorThrottler({ minIntervalMs: 5 * 60 * 1000 });
+  let consecutiveSchedulerFailures = 0;
+
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
     tracked = Promise.resolve(work)
@@ -936,9 +940,50 @@ export async function startServer(): Promise<StartedServer> {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
-  const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
-    heartbeatSchedulerInterval?.unref?.();
+  // Note: most sub-task failures inside a heartbeat tick (decision sweeps,
+  // routine ticks, etc.) already catch and throttle their own errors via
+  // schedulerThrottler.logError without rethrowing, so they don't reject the
+  // outer callback promise below. The backoff counter is intentionally driven
+  // by whatever *does* escape the tick uncaught (e.g. a failed
+  // resolveSchedulingSuppression() DB call) - that's the signal a systemic
+  // failure (like a downed database) is affecting the whole tick, which is
+  // the scenario this backoff exists to protect against. Individual,
+  // isolated sub-task failures are throttled but intentionally do not slow
+  // down the overall scheduler cadence.
+  const startHeartbeatSchedulerInterval = (callback: () => void | Promise<void>) => {
+    const runTick = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork((async () => {
+        try {
+          await callback();
+          if (consecutiveSchedulerFailures > 0) {
+            consecutiveSchedulerFailures = 0;
+            schedulerThrottler.reset();
+          }
+        } catch (err) {
+          consecutiveSchedulerFailures += 1;
+          schedulerThrottler.logError(logger, "heartbeat scheduler tick failed", err);
+        } finally {
+          scheduleNextTick();
+        }
+      })());
+    };
+
+    const scheduleNextTick = () => {
+      if (heartbeatSchedulerStopped) return;
+      const baseMs = Math.max(10000, config.heartbeatSchedulerIntervalMs);
+      const maxMs = 5 * 60 * 1000;
+      const nextIntervalMs = computeBackoffDelayMs(consecutiveSchedulerFailures, {
+        baseIntervalMs: baseMs,
+        maxIntervalMs: maxMs,
+        maxBackoffSteps: 4,
+      });
+
+      heartbeatSchedulerInterval = setTimeout(runTick, nextIntervalMs);
+      heartbeatSchedulerInterval?.unref?.();
+    };
+
+    scheduleNextTick();
   };
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
@@ -954,7 +999,7 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .catch((err) => {
-        logger.error({ err }, "external-object scheduler tick failed");
+        schedulerThrottler.logError(logger, "external-object scheduler tick failed", err);
       }));
   };
 
@@ -986,7 +1031,7 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .catch((err) => {
-          logger.error({ err }, "merged pull-request confirmation sweep failed");
+          schedulerThrottler.logError(logger, "merged pull-request confirmation sweep failed", err);
         }));
     };
     const scheduleTerminalWorkspaceSweep = () => {
@@ -999,7 +1044,7 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .catch((err) => {
-          logger.error({ err }, "terminal issue workspace reaper failed");
+          schedulerThrottler.logError(logger, "terminal issue workspace reaper failed", err);
         }));
     };
     const tools = toolAccessService(db as any, {
@@ -1152,13 +1197,13 @@ export async function startServer(): Promise<StartedServer> {
       // Track the outer async callback as well as the work it starts. Shutdown
       // can then wait through an already-running suppression check before it
       // captures the authoritative set of running heartbeat rows.
-      trackHeartbeatSchedulerWork((async () => {
+      return (async () => {
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
-          logger.error({ err }, "decision expiry sweep failed");
+          schedulerThrottler.logError(logger, "decision expiry sweep failed", err);
         }));
         trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
-          logger.error({ err }, "decision retention sweep failed");
+          schedulerThrottler.logError(logger, "decision retention sweep failed", err);
         }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
@@ -1177,7 +1222,7 @@ export async function startServer(): Promise<StartedServer> {
               }
             })
             .catch((err) => {
-              logger.error({ err }, "heartbeat timer tick failed");
+              schedulerThrottler.logError(logger, "heartbeat timer tick failed", err);
             }));
         }
 
@@ -1197,7 +1242,7 @@ export async function startServer(): Promise<StartedServer> {
             }
           })
           .catch((err) => {
-            logger.error({ err }, "routine scheduler tick failed");
+            schedulerThrottler.logError(logger, "routine scheduler tick failed", err);
           }));
 
         if (heartbeatSchedulerStopped) return;
@@ -1226,7 +1271,7 @@ export async function startServer(): Promise<StartedServer> {
             logger.info({ evaluated: result.evaluated, enqueued: result.enqueued.length }, "status-card scheduler tick complete");
           }
         })().catch((err) => {
-          logger.error({ err }, "status-card scheduler tick failed");
+          schedulerThrottler.logError(logger, "status-card scheduler tick failed", err);
         }));
 
         if (heartbeatSchedulerStopped) return;
@@ -1238,7 +1283,7 @@ export async function startServer(): Promise<StartedServer> {
             }
           })
           .catch((err) => {
-            logger.error({ err }, "environment customImage setup cleanup failed");
+            schedulerThrottler.logError(logger, "environment customImage setup cleanup failed", err);
           }));
 
         if (heartbeatSchedulerStopped) return;
@@ -1250,7 +1295,7 @@ export async function startServer(): Promise<StartedServer> {
             }
           })
           .catch((err) => {
-            logger.error({ err }, "periodic tool connection health sweep failed");
+            schedulerThrottler.logError(logger, "periodic tool connection health sweep failed", err);
           }));
 
         trackHeartbeatSchedulerWork(secretProposals.sweepExpired()
@@ -1258,7 +1303,7 @@ export async function startServer(): Promise<StartedServer> {
             if (expired > 0) logger.warn({ expired }, "periodic secret proposal expiry scrubbed proposals");
           })
           .catch((err) => {
-            logger.error({ err }, "periodic secret proposal expiry sweep failed");
+            schedulerThrottler.logError(logger, "periodic secret proposal expiry sweep failed", err);
           }));
 
         if (heartbeatSchedulerStopped) return;
@@ -1316,12 +1361,10 @@ export async function startServer(): Promise<StartedServer> {
               }
             })
             .catch((err) => {
-              logger.error({ err }, "periodic heartbeat recovery failed");
+              schedulerThrottler.logError(logger, "periodic heartbeat recovery failed", err);
             }));
         }
-      })().catch((err) => {
-        logger.error({ err }, "heartbeat scheduler tick failed");
-      }));
+      })();
     });
   } else {
     startHeartbeatSchedulerInterval(() => {
@@ -1434,7 +1477,7 @@ export async function startServer(): Promise<StartedServer> {
       await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
+        clearTimeout(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
 
