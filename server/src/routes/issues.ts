@@ -1841,6 +1841,13 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
 }
 
+function hasUnresolvedBlockerEdges(readiness: {
+  unresolvedBlockerCount: number;
+  pendingFinalizeBlockerIssueIds?: string[];
+}) {
+  return readiness.unresolvedBlockerCount > (readiness.pendingFinalizeBlockerIssueIds?.length ?? 0);
+}
+
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "cancelled" || status === "blocked" || status === "todo" || status === "in_progress";
 }
@@ -8582,7 +8589,7 @@ export function issueRoutes(
       : null;
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
-        ? (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0
+        ? hasUnresolvedBlockerEdges(await svc.getDependencyReadiness(existing.id))
         : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
@@ -11058,7 +11065,7 @@ export function issueRoutes(
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
-        ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
+        ? hasUnresolvedBlockerEdges(await svc.getDependencyReadiness(issue.id))
         : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
