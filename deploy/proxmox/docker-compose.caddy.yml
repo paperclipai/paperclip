@@ -1,0 +1,17 @@
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      paperclip:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PAPERCLIP_SERVER_NAME: "${PAPERCLIP_SERVER_NAME:?PAPERCLIP_SERVER_NAME must be set for caddy mode}"
+      PAPERCLIP_UPSTREAM: "paperclip:3100"
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - "${CADDY_DATA_DIR:-/srv/caddy/data}:/data"
+      - "${CADDY_CONFIG_DIR:-/srv/caddy/config}:/config"
