@@ -953,6 +953,39 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
   });
 
+  it("rejects cancellation by watchdog-scoped runs", async () => {
+    mockResolveTaskWatchdogMutationScope.mockResolvedValueOnce({
+      kind: "watchdog",
+      watchdogId: "watchdog-1",
+      companyId: "company-1",
+      watchedIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      watchdogIssueId: null,
+      stopFingerprint: "stop-1",
+    });
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-watchdog-cancel" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Task-watchdog");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
+  it("rejects cancellation by low-trust actors", async () => {
+    mockResolveCoreTrustPreset.mockReturnValueOnce({ kind: "low_trust_review" });
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-low-trust-cancel" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Low-trust");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
   it("accepts request confirmations and wakes the current assignee when configured for accept-only wakeups", async () => {
     mockInteractionService.acceptInteraction.mockResolvedValueOnce({
       interaction: {
