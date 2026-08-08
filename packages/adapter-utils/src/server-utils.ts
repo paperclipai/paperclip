@@ -704,6 +704,21 @@ type PaperclipWakeRecovery = {
   routingFallbackReason: string | null;
 };
 
+type PaperclipWakeIssueBatch = {
+  version: number;
+  mode: string | null;
+  primaryIssueId: string | null;
+  orderedIssueIds: string[];
+  issues: Array<{
+    issueId: string | null;
+    identifier: string | null;
+    title: string | null;
+    status: string | null;
+    priority: string | null;
+  }>;
+  processDirective: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
@@ -727,6 +742,7 @@ type PaperclipWakePayload = {
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
+  issueBatch: PaperclipWakeIssueBatch | null;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -1336,6 +1352,34 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
         .filter((entry): entry is PaperclipWakeChildIssueSummary => Boolean(entry))
     : [];
+  const issueBatchRaw = parseObject(payload.issueBatch);
+  const issueBatchOrderedIds = Array.isArray(issueBatchRaw.orderedIssueIds)
+    ? issueBatchRaw.orderedIssueIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const issueBatch: PaperclipWakeIssueBatch | null =
+    issueBatchOrderedIds.length > 0
+      ? {
+          version: asNumber(issueBatchRaw.version, 1),
+          mode: asString(issueBatchRaw.mode, "").trim() || null,
+          primaryIssueId: asString(issueBatchRaw.primaryIssueId, "").trim() || null,
+          orderedIssueIds: issueBatchOrderedIds,
+          issues: Array.isArray(issueBatchRaw.issues)
+            ? issueBatchRaw.issues.map((entry) => {
+                const row = parseObject(entry);
+                return {
+                  issueId: asString(row.issueId, "").trim() || null,
+                  identifier: asString(row.identifier, "").trim() || null,
+                  title: asString(row.title, "").trim() || null,
+                  status: asString(row.status, "").trim() || null,
+                  priority: asString(row.priority, "").trim() || null,
+                };
+              })
+            : [],
+          processDirective: asString(issueBatchRaw.processDirective, "").trim() || null,
+        }
+      : null;
   const unresolvedBlockerIssueIds = Array.isArray(payload.unresolvedBlockerIssueIds)
     ? payload.unresolvedBlockerIssueIds
         .map((entry) => asString(entry, "").trim())
@@ -1351,7 +1395,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && !issueBatch && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1378,6 +1422,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     agentMessage,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
+    issueBatch,
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
@@ -1568,12 +1613,16 @@ export function renderPaperclipWakePrompt(
       ? ["- instruction: Do not narrate the recovery in your next comment — at most one short sentence; lead with the work."]
       : []),
   ];
+  const hasIssueBatch = Boolean(normalized.issueBatch && normalized.issueBatch.orderedIssueIds.length > 1);
+  const scopeLine = hasIssueBatch
+    ? "This heartbeat carries a claim-time issue batch. Process issues in orderedIssueIds order to a full disposition each before ending the run; unfinished trailing issues are re-queued by the platform."
+    : "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.";
   const lines = resumedSession
       ? [
         "## Paperclip Resume Delta",
         "",
         "You are resuming an existing Paperclip session.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        scopeLine,
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Read discipline (TSMC-20242): prefer issue description + latest checkpoint + comments newer than it; full-thread only if insufficient.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
@@ -1585,7 +1634,7 @@ export function renderPaperclipWakePrompt(
         "## Paperclip Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        scopeLine,
         ...(hasWakeCommentBatch
           ? ["Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action."]
           : []),
@@ -1941,6 +1990,27 @@ export function renderPaperclipWakePrompt(
     }
     if (normalized.childIssueSummaryTruncated) {
       lines.push("[child issue summaries truncated]");
+    }
+  }
+
+  if (normalized.issueBatch && normalized.issueBatch.orderedIssueIds.length > 1) {
+    lines.push("", "Issue batch pickup (TSMC-20250):");
+    lines.push(`- batch size: ${normalized.issueBatch.orderedIssueIds.length}`);
+    lines.push(`- primary issue id: ${normalized.issueBatch.primaryIssueId ?? "unknown"}`);
+    if (normalized.issueBatch.processDirective) {
+      lines.push(`- directive: ${normalized.issueBatch.processDirective}`);
+    }
+    lines.push("- ordered issues:");
+    for (const entry of normalized.issueBatch.issues) {
+      const label = entry.identifier ?? entry.issueId ?? "unknown";
+      lines.push(
+        `  - ${label}${entry.title ? ` — ${entry.title}` : ""}${entry.status ? ` (${entry.status})` : ""}${entry.priority ? ` [${entry.priority}]` : ""}`,
+      );
+    }
+    if (normalized.issueBatch.issues.length === 0) {
+      for (const issueId of normalized.issueBatch.orderedIssueIds) {
+        lines.push(`  - ${issueId}`);
+      }
     }
   }
 

@@ -138,6 +138,18 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+import {
+  BATCH_ISSUE_PICKUP_CONTEXT_KEY,
+  buildIssueBatchContextPatch,
+  classifyBatchLane,
+  extractBatchIssueIdsFromContext,
+  isBatchIssuePickupEnabled,
+  readCommentBurstDebounceMs,
+  readMaxBatchIssues,
+  resolveBatchWindowMs,
+  selectIssueBatchPickup,
+  selectUnfinishedBatchIssuesForRequeue,
+} from "./batch-issue-pickup.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
@@ -5959,6 +5971,24 @@ export async function buildPaperclipWakePayload(input: {
       ? input.contextSnapshot.childIssueSummaries
       : [],
     childIssueSummaryTruncated: input.contextSnapshot.childIssueSummaryTruncated === true,
+    issueBatch: (() => {
+      const batch = parseObject(input.contextSnapshot[BATCH_ISSUE_PICKUP_CONTEXT_KEY]);
+      if (Object.keys(batch).length === 0) return null;
+      const orderedIssueIds = Array.isArray(batch.orderedIssueIds)
+        ? batch.orderedIssueIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      if (orderedIssueIds.length === 0) return null;
+      return {
+        version: typeof batch.version === "number" ? batch.version : 1,
+        mode: readNonEmptyString(batch.mode) ?? "claim_time_assignment_batch",
+        primaryIssueId: readNonEmptyString(batch.primaryIssueId),
+        orderedIssueIds,
+        issues: Array.isArray(batch.issues) ? batch.issues : [],
+        processDirective:
+          readNonEmptyString(batch.processDirective) ??
+          "Process issues in orderedIssueIds order to a full disposition each.",
+      };
+    })(),
     livenessContinuation: readNonEmptyString(input.contextSnapshot.livenessContinuationState) ||
       readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction) ||
       readNonEmptyString(input.contextSnapshot.livenessContinuationSourceRunId) ||
@@ -15083,6 +15113,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          identifier: issues.identifier,
+          title: issues.title,
         })
         .from(issues)
         .where(
@@ -15110,13 +15142,156 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      // TSMC-20250: claim-time batch pickup + comment-burst debounce.
+      // One warm session amortizes entry tax across N pending assignment wakes.
+      // A held head (lane window / comment debounce) must not starve later urgent wakes.
+      const batchPickupEnabled = isBatchIssuePickupEnabled();
+      const batchWindowMs = resolveBatchWindowMs({
+        role: agent.role,
+        name: agent.name,
+        title: agent.title,
+      });
+      const batchLaneClass = classifyBatchLane({
+        role: agent.role,
+        name: agent.name,
+        title: agent.title,
+      });
+      const issueMetaById = new Map(
+        issueRows.map(
+          (row: {
+            id: string;
+            priority: string | null;
+            status: string;
+            identifier: string | null;
+            title: string;
+          }) => [
+            row.id,
+            {
+              priority: row.priority,
+              status: row.status,
+              identifier: row.identifier,
+              title: row.title,
+            },
+          ],
+        ),
+      );
+
+      const heldRunIds = new Set<string>();
+      let batchSelection: ReturnType<typeof selectIssueBatchPickup> = null;
+      let claimSourceRuns = prioritizedRuns;
+      for (let holdPass = 0; holdPass < prioritizedRuns.length; holdPass += 1) {
+        const remaining = prioritizedRuns.filter((run) => !heldRunIds.has(run.id));
+        if (remaining.length === 0) break;
+        const selection = selectIssueBatchPickup({
+          prioritizedRuns: remaining,
+          agent: { role: agent.role, name: agent.name, title: agent.title },
+          enabled: batchPickupEnabled,
+          maxBatchIssues: readMaxBatchIssues(),
+          windowMs: batchWindowMs,
+          commentDebounceMs: readCommentBurstDebounceMs(),
+          issueMetaById,
+        });
+        if (!selection) break;
+        if (selection.held) {
+          heldRunIds.add(selection.primary.id);
+          logger.debug(
+            {
+              agentId,
+              holdReason: selection.holdReason,
+              primaryRunId: selection.primary.id,
+              windowMs: batchWindowMs,
+              laneClass: batchLaneClass,
+            },
+            "startNextQueuedRunForAgent: holding head run for batch/debounce window",
+          );
+          continue;
+        }
+        batchSelection = selection;
+        claimSourceRuns = remaining;
+        break;
+      }
+      if (!batchSelection && heldRunIds.size > 0 && heldRunIds.size >= prioritizedRuns.length) {
+        return [];
+      }
+
+      const claimCandidates: Array<typeof heartbeatRuns.$inferSelect> =
+        batchSelection && batchSelection.batch.length > 1
+          ? [batchSelection.primary as typeof heartbeatRuns.$inferSelect]
+          : (claimSourceRuns as Array<typeof heartbeatRuns.$inferSelect>);
+
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
+      for (const queuedRun of claimCandidates) {
         if (claimedRuns.length >= claimLimit) break;
+        if (heldRunIds.has(queuedRun.id)) continue;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
+
+      // Absorb sibling assignment wakes into the primary claimed run.
+      if (
+        batchSelection &&
+        batchSelection.siblings.length > 0 &&
+        claimedRuns[0] &&
+        claimedRuns[0].id === batchSelection.primary.id
+      ) {
+        const primaryClaimed = claimedRuns[0];
+        const absorbedRunIds: string[] = [];
+        for (const sibling of batchSelection.siblings) {
+          const cancelled = await cancelRunInternal(
+            sibling.id,
+            "Coalesced into batch issue pickup on a sibling assignment run",
+            {
+              errorCode: "batch_issue_pickup_absorbed",
+              resultJson: {
+                stopReason: "batch_issue_pickup_absorbed",
+                batchPrimaryRunId: primaryClaimed.id,
+                batchPrimaryIssueId: batchSelection.batch[0]?.issueId ?? null,
+              },
+              eventMessage: "queued assignment wake absorbed into batch issue pickup",
+              eventPayload: {
+                batchPrimaryRunId: primaryClaimed.id,
+                batchSize: batchSelection.batch.length,
+              },
+            },
+          );
+          if (cancelled) absorbedRunIds.push(sibling.id);
+        }
+
+        if (absorbedRunIds.length > 0) {
+          const batchPatch = buildIssueBatchContextPatch({
+            batch: batchSelection.batch,
+            absorbedRunIds,
+            laneClass: batchLaneClass,
+            windowMs: batchWindowMs,
+          });
+          const mergedContext = {
+            ...parseObject(primaryClaimed.contextSnapshot),
+            ...batchPatch,
+          };
+          const updatedPrimary = await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: mergedContext,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, primaryClaimed.id))
+            .returning()
+            .then((rows: Array<typeof heartbeatRuns.$inferSelect>) => rows[0] ?? primaryClaimed);
+          claimedRuns[0] = updatedPrimary;
+          logger.info(
+            {
+              agentId,
+              primaryRunId: updatedPrimary.id,
+              batchSize: batchSelection.batch.length,
+              absorbedRunIds,
+              laneClass: batchLaneClass,
+              orderedIssueIds: batchSelection.batch.map((entry) => entry.issueId),
+            },
+            "startNextQueuedRunForAgent: claimed batch issue pickup run",
+          );
+        }
+      }
 
       for (const claimedRun of claimedRuns) {
         const execution = executeRun(claimedRun.id).catch((err) => {
@@ -18948,6 +19123,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (promotionResult?.kind === "blocked") {
+      await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {
+        logger.warn({ err, runId: run.id }, "batch issue pickup requeue failed");
+      });
       await recovery.escalateStrandedAssignedIssue({
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
@@ -18967,6 +19145,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (promotionResult?.kind === "blocked_recovery_in_place") {
+      await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {
+        logger.warn({ err, runId: run.id }, "batch issue pickup requeue failed");
+      });
       await recovery.escalateStrandedRecoveryIssueInPlace({
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
@@ -18976,7 +19157,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
+    if (!promotedRun) {
+      await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {
+        logger.warn({ err, runId: run.id }, "batch issue pickup requeue failed");
+      });
+      return;
+    }
 
     if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
@@ -18995,6 +19181,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     await startNextQueuedRunForAgent(promotedRun.agentId);
+
+    // TSMC-20250: after locks clear and deferred promotion, requeue unfinished
+    // trailing batch siblings as fresh assignment wakes (primary keeps normal latch).
+    await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {
+      logger.warn({ err, runId: run.id }, "batch issue pickup requeue failed");
+    });
+  }
+
+  async function requeueUnfinishedBatchPickupSiblings(run: typeof heartbeatRuns.$inferSelect) {
+    const runContext = parseObject(run.contextSnapshot);
+    const contextIssueId = readNonEmptyString(runContext.issueId);
+    const batchIssueIds = extractBatchIssueIdsFromContext(runContext);
+    if (batchIssueIds.length <= 1) return;
+
+    const batchIssueStates = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, batchIssueIds)));
+    const unfinishedSiblingIds = selectUnfinishedBatchIssuesForRequeue({
+      batchIssueIds,
+      primaryIssueId: contextIssueId,
+      issueStates: batchIssueStates.map((row: { id: string; status: string; assigneeAgentId: string | null }) => row),
+      finishingAgentId: run.agentId,
+    });
+    for (const siblingIssueId of unfinishedSiblingIds) {
+      await enqueueWakeup(run.agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId: siblingIssueId,
+          mutation: "batch_issue_pickup_requeue",
+          batchSourceRunId: run.id,
+        },
+        contextSnapshot: {
+          issueId: siblingIssueId,
+          wakeReason: "issue_assigned",
+          source: "batch_issue_pickup_requeue",
+          batchSourceRunId: run.id,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: "system",
+        idempotencyKey: `batch-pickup-requeue:${run.id}:${siblingIssueId}`,
+      }).catch((err) => {
+        logger.warn(
+          { err, runId: run.id, siblingIssueId },
+          "failed to requeue unfinished batch sibling after run",
+        );
+      });
+    }
+    if (unfinishedSiblingIds.length > 0) {
+      logger.info(
+        {
+          runId: run.id,
+          agentId: run.agentId,
+          unfinishedSiblingIds,
+          batchIssueIds,
+        },
+        "requeued unfinished batch issue pickup siblings",
+      );
+    }
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
