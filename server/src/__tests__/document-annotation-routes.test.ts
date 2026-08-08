@@ -281,6 +281,32 @@ describe("document annotation routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("heals collapsed headings only for the plan document", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Document API",
+      status: "in_progress",
+      assigneeAgentId: null,
+    });
+
+    await request(await createApp())
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({ format: "markdown", body: "Intro)## Goal" })
+      .expect(200);
+    expect(mockDocumentService.upsertIssueDocument).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: "Intro)\n\n## Goal" }),
+    );
+
+    await request(await createApp())
+      .put(`/api/issues/${issueId}/documents/notes`)
+      .send({ format: "markdown", body: "Intro)## Legitimate inline text" })
+      .expect(200);
+    expect(mockDocumentService.upsertIssueDocument).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: "Intro)## Legitimate inline text" }),
+    );
+  });
+
   it("queues one bounded recovery when a board document revision expires the final review interactions", async () => {
     const assigneeAgentId = "99999999-9999-4999-8999-999999999999";
     mockIssueService.getById.mockResolvedValue({
