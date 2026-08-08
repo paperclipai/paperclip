@@ -16,9 +16,12 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS,
+  DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
@@ -265,7 +268,9 @@ describeEmbeddedPostgres("productivity review service", () => {
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
     });
-    const createdAt = new Date(now.getTime() - 8 * 60 * 60 * 1000);
+    // Older than the resolved snooze but still inside the 24h creation window, so the creation
+    // cap is what rejects this candidate rather than the snooze.
+    const createdAt = new Date(now.getTime() - DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS - 60 * 60 * 1000);
     await db.insert(issues).values({
       id: randomUUID(),
       companyId: seeded.companyId,
@@ -395,9 +400,12 @@ describeEmbeddedPostgres("productivity review service", () => {
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
     });
+    // Every updatedAt must sit outside the resolved snooze, otherwise the snooze short-circuits
+    // before the no-action streak is ever evaluated.
+    const outsideSnoozeMs = DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS + 60 * 60 * 1000;
     const reviewWindows = [
       { hoursAgo: 96, updatedAt: new Date(now.getTime() - 95 * 60 * 60 * 1000) },
-      { hoursAgo: 72, updatedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000) },
+      { hoursAgo: 72, updatedAt: new Date(now.getTime() - outsideSnoozeMs) },
       { hoursAgo: 48, updatedAt: new Date(now.getTime() - 47 * 60 * 60 * 1000) },
     ].map((window, index) => {
       const createdAt = new Date(now.getTime() - window.hoursAgo * 60 * 60 * 1000);
@@ -451,8 +459,11 @@ describeEmbeddedPostgres("productivity review service", () => {
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
     });
+    // Outside the resolved snooze but inside the 24h creation window, so the creation cap is the
+    // only guard under test here.
+    const snoozeHours = DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS / (60 * 60 * 1000);
     await db.insert(issues).values(
-      [8, 9, 10].map((hoursAgo, index) => {
+      [snoozeHours + 1, snoozeHours + 2, snoozeHours + 3].map((hoursAgo, index) => {
         const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
         return {
           id: randomUUID(),
@@ -640,6 +651,87 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     expect(result.snoozed).toBe(1);
     expect(reviews).toHaveLength(1);
+  });
+
+  it("keeps the resolved snooze strictly longer than the long-active trigger window", async () => {
+    // BLU-7716: equal windows let a permanently-long-active source re-trigger the instant the
+    // snooze lapses, which is what produced the unbounded review loop.
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS).toBeGreaterThan(
+      DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000,
+    );
+  });
+
+  it("clamps a resolved snooze override that would not exceed the long-active window", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    await db.update(issues).set({ status: "done", updatedAt: now }).where(eq(issues.id, review!.id));
+
+    // A poisoned override equal to the long-active window must degrade to a safe snooze rather
+    // than allowing an immediate re-trigger once the long-active window elapses.
+    const longActiveMs = DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000;
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + longActiveMs + 60 * 1000),
+      companyId: seeded.companyId,
+      thresholds: { resolvedSnoozeMs: longActiveMs },
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("escalates the snooze after repeated terminal reviews on a permanently active source", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    // Seed enough prior terminal reviews to cross the escalation threshold, all old enough that
+    // the base snooze and the creation cap have both lapsed.
+    const priorAge = 48 * 60 * 60 * 1000;
+    for (let index = 0; index < DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS; index += 1) {
+      const stamp = new Date(now.getTime() - priorAge - index * 60 * 60 * 1000);
+      await db.insert(issues).values({
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: `Prior productivity review ${index}`,
+        status: "done",
+        priority: "high",
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: seeded.issueId,
+        originFingerprint: `productivity-review:${seeded.issueId}`,
+        parentId: seeded.issueId,
+        issueNumber: 100 + index,
+        identifier: `${seeded.issuePrefix}-${100 + index}`,
+        createdAt: stamp,
+        updatedAt: stamp,
+      });
+    }
+
+    // Without escalation a 48h-old terminal review is outside the 12h base snooze, so the source
+    // would be reviewed again. The escalated window must keep it snoozed instead.
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
   });
 
   it("treats a recently cancelled review as a snooze window", async () => {
