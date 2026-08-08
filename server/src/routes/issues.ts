@@ -141,6 +141,7 @@ import {
   isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
+import { RECOVERY_ORIGIN_KINDS } from "../services/recovery/origins.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -3862,6 +3863,94 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  const ISSUE_GRAPH_CLEANUP_UPDATE_FIELDS = new Set(["status", "blockedByIssueIds", "comment"]);
+  const ISSUE_GRAPH_CLEANUP_ANCESTRY_MAX_DEPTH = 50;
+
+  function isIssueGraphCleanupUpdateRequest(input: unknown) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+    const keys = Object.keys(input as Record<string, unknown>).filter((key) =>
+      (input as Record<string, unknown>)[key] !== undefined
+    );
+    return keys.length > 0 && keys.every((key) => ISSUE_GRAPH_CLEANUP_UPDATE_FIELDS.has(key));
+  }
+
+  function readRunContextIssueId(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+    const context = contextSnapshot as Record<string, unknown>;
+    const issueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+    if (issueId) return issueId;
+    const taskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
+    return taskId || null;
+  }
+
+  async function loadIssueAncestryForCleanupOverride(
+    companyId: string,
+    issueId: string,
+    seed?: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId"> | null,
+  ): Promise<Array<Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId">> | null> {
+    const ancestry: Array<Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId">> = [];
+    const seen = new Set<string>();
+    let cursor: string | null = issueId;
+
+    for (let depth = 0; cursor && depth < ISSUE_GRAPH_CLEANUP_ANCESTRY_MAX_DEPTH; depth += 1) {
+      if (seen.has(cursor)) return null;
+      seen.add(cursor);
+
+      const issue: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId"> | null =
+        seed && cursor === seed.id ? seed : await svc.getById(cursor);
+      if (!issue || issue.companyId !== companyId) return null;
+      ancestry.push({ id: issue.id, companyId: issue.companyId, parentId: issue.parentId });
+      cursor = issue.parentId;
+    }
+
+    if (cursor) return null;
+    return ancestry;
+  }
+
+  async function hasIssueGraphCleanupMutationOverride(input: {
+    req: Request;
+    issue: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId" | "assigneeAgentId" | "status">;
+    boundaryDecision: Awaited<ReturnType<typeof decideIssueAccess>>;
+    requestedUpdate: unknown;
+  }) {
+    if (input.req.actor.type !== "agent") return null;
+    if (input.boundaryDecision.reason !== "deny_missing_grant") return null;
+    if (!isIssueGraphCleanupUpdateRequest(input.requestedUpdate)) return null;
+
+    const actorAgentId = input.req.actor.agentId;
+    if (!actorAgentId || !input.issue.assigneeAgentId || input.issue.assigneeAgentId === actorAgentId) {
+      return null;
+    }
+    if (!(await hasActiveCheckoutManagementOverride(actorAgentId, input.issue.companyId, input.issue.assigneeAgentId))) {
+      return null;
+    }
+
+    const run = await loadActorRunContext(input.req, input.issue.companyId);
+    const sourceIssueId = readRunContextIssueId(run?.contextSnapshot);
+    if (!run || run.status !== "running" || !sourceIssueId || sourceIssueId === input.issue.id) return null;
+
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (
+      !sourceIssue ||
+      sourceIssue.companyId !== input.issue.companyId ||
+      sourceIssue.assigneeAgentId !== actorAgentId ||
+      sourceIssue.status !== "in_progress" ||
+      sourceIssue.originKind !== RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+    ) {
+      return null;
+    }
+    if (sourceIssue.checkoutRunId !== run.id && sourceIssue.executionRunId !== run.id) return null;
+
+    const sourceAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, sourceIssue.id, sourceIssue);
+    const targetAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, input.issue.id, input.issue);
+    if (!sourceAncestry || !targetAncestry || sourceAncestry.length < 2) return null;
+
+    const sourceRootId = sourceAncestry[sourceAncestry.length - 1]?.id ?? null;
+    return sourceRootId && targetAncestry.some((entry) => entry.id === sourceRootId)
+      ? { runId: run.id }
+      : null;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -3876,7 +3965,11 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: {
+      allowVisibleIssueWrite?: boolean;
+      allowIssueGraphCleanupOverride?: boolean;
+      requestedUpdate?: unknown;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3909,6 +4002,17 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
+      const issueGraphCleanupOverride = options.allowIssueGraphCleanupOverride === true
+        ? await hasIssueGraphCleanupMutationOverride({
+          req,
+          issue,
+          boundaryDecision,
+          requestedUpdate: options.requestedUpdate,
+        })
+        : null;
+      if (issueGraphCleanupOverride) {
+        return { issueGraphCleanupRunId: issueGraphCleanupOverride.runId };
+      }
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
     if (issue.assigneeAgentId === null) {
@@ -4486,6 +4590,7 @@ export function issueRoutes(
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -8437,9 +8542,16 @@ export function issueRoutes(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      {
+        allowVisibleIssueWrite: true,
+        allowIssueGraphCleanupOverride: true,
+        requestedUpdate: req.body,
+      },
     );
     if (!issueMutationAccess) return;
+    const issueGraphCleanupRunId = typeof issueMutationAccess === "object"
+      ? issueMutationAccess.issueGraphCleanupRunId
+      : null;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
       : issueWriteAuthorizationReason(req, true);
@@ -8923,40 +9035,85 @@ export function issueRoutes(
         },
       }, postCommitActivityPublications);
     };
+    let issueGraphCleanupComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    let preparedIssueGraphCleanupCancellation: Awaited<
+      ReturnType<typeof heartbeat.prepareRunCancellationInTransaction>
+    > | null = null;
+    const lockRunningIssueGraphCleanupRun = async (tx: NonNullable<Parameters<typeof svc.update>[2]>) => {
+      if (!issueGraphCleanupRunId) return true;
+      const lockedRuns = await tx
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, issueGraphCleanupRunId),
+          eq(heartbeatRuns.companyId, existing.companyId),
+          eq(heartbeatRuns.agentId, actor.agentId!),
+          eq(heartbeatRuns.status, "running"),
+        ))
+        .for("update");
+      return lockedRuns.length > 0;
+    };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
+      if ((transition.decision && decisionId) || shouldRelayStop || issueGraphCleanupRunId) {
         issue = await db.transaction(async (tx) => {
+          if (issueGraphCleanupRunId && !(await lockRunningIssueGraphCleanupRun(tx))) {
+            throw forbidden("Issue graph cleanup run is no longer active", {
+              code: "issue_graph_cleanup_run_not_running",
+              runId: issueGraphCleanupRunId,
+            });
+          }
+          if (issueGraphCleanupRunId && runToCancelForCancelledStatus) {
+            preparedIssueGraphCleanupCancellation = await heartbeat.prepareRunCancellationInTransaction(
+              tx as unknown as Db,
+              runToCancelForCancelledStatus.id,
+            );
+          }
+
           const updated = await updateIssue(tx);
           if (!updated) return null;
 
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: decision.stageId,
-            stageType: decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: decision.outcome,
-            body: decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
+          if (transition.decision && decisionId) {
+            const decision = transition.decision;
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
 
           if (shouldRelayStop) {
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           }
 
-          await persistBoundReviewActivity(tx, updated);
+          // The actor-run lock and the prepared target-run cancellation stay in
+          // this transaction through every mutation granted only by the cleanup
+          // override. A failure rolls all database state back together.
+          if (issueGraphCleanupRunId && commentBody) {
+            issueGraphCleanupComment = await svc.addComment(
+              id,
+              commentBody,
+              {
+                agentId: actor.agentId ?? undefined,
+                userId: actor.actorType === "user" ? actor.actorId : undefined,
+                runId: actor.runId,
+                onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+              },
+              {
+                authorizationReason: issueMutationAuthorizationReason,
+                sourceTrust: await sourceTrustForActorWrite(updated, actor),
+              },
+              tx,
+            );
+          }
 
-          return updated;
-        });
-      } else if (shouldRelayStop) {
-        issue = await db.transaction(async (tx) => {
-          const updated = await updateIssue(tx);
-          if (!updated) return null;
-          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           await persistBoundReviewActivity(tx, updated);
           return updated;
         });
@@ -9021,7 +9178,22 @@ export function issueRoutes(
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        // Assignment happens inside the transaction callback above, which
+        // TypeScript does not include in its outer control-flow analysis.
+        const preparedCleanupCancellation = preparedIssueGraphCleanupCancellation as Awaited<
+          ReturnType<typeof heartbeat.prepareRunCancellationInTransaction>
+        > | null;
+        const cancelled = issueGraphCleanupRunId
+          ? preparedCleanupCancellation
+            ? await heartbeat.finalizePreparedRunCancellation({
+                ...preparedCleanupCancellation,
+                // The database PID/PGID may already have been recycled if the
+                // server-owned child exited before this post-commit finalizer.
+                // Only an entry still owned in runningProcesses is safe to signal.
+                allowPersistedProcessIdentifiers: false,
+              })
+            : null
+          : await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -9053,6 +9225,7 @@ export function issueRoutes(
           issueId: existing.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
+        if (issueGraphCleanupRunId) throw err;
       }
     }
 
@@ -9393,20 +9566,25 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
+    let comment = issueGraphCleanupComment;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-      }, {
-        authorizationReason: issueMutationAuthorizationReason,
-        sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
+      comment ??= await svc.addComment(
+        id,
+        commentBody,
+        {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+          onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+        },
+        {
+          authorizationReason: issueMutationAuthorizationReason,
+          sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        },
+      );
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);

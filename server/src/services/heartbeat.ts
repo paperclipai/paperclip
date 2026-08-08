@@ -18488,6 +18488,302 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  type PreparedRunCancellation = {
+    run: typeof heartbeatRuns.$inferSelect;
+    cancelled: boolean;
+    wasFirstHeartbeat: boolean;
+    eventMessage: string;
+    eventPayload?: Record<string, unknown>;
+    finalizationId?: string;
+    allowPersistedProcessIdentifiers?: boolean;
+  };
+
+  const PENDING_CANCELLATION_FINALIZATION_KEY = "pendingCancellationFinalization";
+  // Give the request path time to finish before the scheduler treats the marker as
+  // abandoned. The marker itself is committed with cancellation, so a crash or an
+  // exhausted immediate retry always leaves durable work for a later sweep.
+  const PENDING_CANCELLATION_FINALIZATION_RETRY_DELAY_MS = 30_000;
+
+  type PendingCancellationFinalization = {
+    id: string;
+    wasFirstHeartbeat: boolean;
+    eventMessage: string;
+    eventPayload?: Record<string, unknown>;
+  };
+
+  function readPendingCancellationFinalization(run: typeof heartbeatRuns.$inferSelect) {
+    const raw = parseObject(parseObject(run.resultJson)[PENDING_CANCELLATION_FINALIZATION_KEY]);
+    const id = readNonEmptyString(raw.id);
+    const eventMessage = readNonEmptyString(raw.eventMessage);
+    if (!id || !eventMessage) return null;
+    const eventPayload = parseObject(raw.eventPayload);
+    return {
+      id,
+      wasFirstHeartbeat: raw.wasFirstHeartbeat === true,
+      eventMessage,
+      ...(Object.keys(eventPayload).length > 0 ? { eventPayload } : {}),
+    } satisfies PendingCancellationFinalization;
+  }
+
+  async function prepareRunCancellationInTransaction(
+    tx: Db,
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: CancelRunOptions = {},
+  ): Promise<PreparedRunCancellation> {
+    const run = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!run) throw notFound("Heartbeat run not found");
+
+    const wasFirstHeartbeat = Boolean(timerClaimWasFirstHeartbeat(run));
+    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) {
+      return {
+        run,
+        cancelled: false,
+        wasFirstHeartbeat,
+        eventMessage: options.eventMessage ?? "run cancelled",
+        ...(options.eventPayload ? { eventPayload: options.eventPayload } : {}),
+      };
+    }
+
+    const agent = await tx
+      .select()
+      .from(agents)
+      .where(eq(agents.id, run.agentId))
+      .then((rows) => rows[0] ?? null);
+    const errorCode = options.errorCode ?? "cancelled";
+    const pendingFinalization = {
+      id: randomUUID(),
+      wasFirstHeartbeat,
+      eventMessage: options.eventMessage ?? "run cancelled",
+      ...(options.eventPayload ? { eventPayload: options.eventPayload } : {}),
+    } satisfies PendingCancellationFinalization;
+    const resultJson = agent
+      ? {
+          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode,
+            errorMessage: reason,
+          }),
+          ...(options.resultJson ?? {}),
+          [PENDING_CANCELLATION_FINALIZATION_KEY]: pendingFinalization,
+        }
+      : {
+          ...(options.resultJson ?? {}),
+          [PENDING_CANCELLATION_FINALIZATION_KEY]: pendingFinalization,
+        };
+    const finishedAt = new Date();
+    const cancelled = await tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson ? { resultJson } : {}),
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, run.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!cancelled) throw notFound("Heartbeat run not found");
+
+    if (run.wakeupRequestId) {
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt,
+          error: reason,
+          updatedAt: finishedAt,
+        })
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+    }
+
+    return {
+      run: cancelled,
+      cancelled: true,
+      wasFirstHeartbeat,
+      eventMessage: pendingFinalization.eventMessage,
+      ...(options.eventPayload ? { eventPayload: options.eventPayload } : {}),
+      finalizationId: pendingFinalization.id,
+    };
+  }
+
+  const activePreparedCancellationFinalizations = new Map<
+    string,
+    Promise<typeof heartbeatRuns.$inferSelect>
+  >();
+
+  async function finalizePreparedRunCancellationInternal(prepared: PreparedRunCancellation) {
+    if (!prepared.cancelled) return prepared.run;
+    const run = prepared.run;
+    const failedSteps: string[] = [];
+    const retryStep = async (step: string, action: () => Promise<unknown>) => {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          await action();
+          return;
+        } catch (err) {
+          logger.warn(
+            { err, runId: run.id, step, attempt, maxAttempts: 3 },
+            "prepared run cancellation finalization step failed",
+          );
+        }
+      }
+      failedSteps.push(step);
+    };
+    const running = runningProcesses.get(run.id);
+    await retryStep("terminate_process", async () => {
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (
+        prepared.allowPersistedProcessIdentifiers !== false &&
+        (run.processPid || run.processGroupId)
+      ) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+    });
+    if (!failedSteps.includes("terminate_process")) {
+      runningProcesses.delete(run.id);
+    } else if (!running) {
+      logger.error(
+        { runId: run.id },
+        "prepared cancellation could not terminate process and has no live process ownership for retry",
+      );
+    }
+
+    clearHeartbeatRunRuntimeStatus(run.id);
+    publishLiveEvent({
+      companyId: run.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(run),
+    });
+    publishRunLifecyclePluginEvent(run);
+    await retryStep("append_lifecycle_event", () =>
+      db
+        .select({ id: heartbeatRunEvents.id })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.runId, run.id),
+            eq(heartbeatRunEvents.eventType, "lifecycle"),
+            eq(heartbeatRunEvents.message, prepared.eventMessage),
+          ),
+        )
+        .limit(1)
+        .then((rows) =>
+          rows.length > 0
+            ? undefined
+            : appendRunEvent(run, 1, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: prepared.eventMessage,
+                ...(prepared.eventPayload ? { payload: prepared.eventPayload } : {}),
+              }),
+        ),
+    );
+    await retryStep("release_issue_execution", () => releaseIssueExecutionAndPromote(run));
+    await retryStep("finalize_agent_status", () =>
+      finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: prepared.wasFirstHeartbeat,
+      }),
+    );
+    await retryStep("start_next_queued_run", () => startNextQueuedRunForAgent(run.agentId));
+    // Clearing the durable marker is the acknowledgement for the whole workflow.
+    // Leave it in place whenever any step failed so a later scheduler pass repeats
+    // the idempotent reconciliation from a fresh service instance.
+    if (failedSteps.length === 0 && prepared.finalizationId) {
+      await retryStep("clear_finalization_marker", () =>
+        db
+          .update(heartbeatRuns)
+          .set({
+            resultJson: sql<Record<string, unknown>>`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - ${PENDING_CANCELLATION_FINALIZATION_KEY}`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, run.id),
+              sql`${heartbeatRuns.resultJson} -> ${PENDING_CANCELLATION_FINALIZATION_KEY} ->> 'id' = ${prepared.finalizationId}`,
+            ),
+          )
+          .then(() => undefined),
+      );
+    }
+    if (failedSteps.length > 0) {
+      throw new Error(`Prepared run cancellation finalization failed: ${failedSteps.join(", ")}`);
+    }
+    return run;
+  }
+
+  async function finalizePreparedRunCancellation(prepared: PreparedRunCancellation) {
+    const active = activePreparedCancellationFinalizations.get(prepared.run.id);
+    if (active) return active;
+    const finalization = finalizePreparedRunCancellationInternal(prepared).finally(() => {
+      activePreparedCancellationFinalizations.delete(prepared.run.id);
+    });
+    activePreparedCancellationFinalizations.set(prepared.run.id, finalization);
+    return finalization;
+  }
+
+  async function reconcilePendingRunCancellations() {
+    const pendingRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`${heartbeatRuns.resultJson} ? ${PENDING_CANCELLATION_FINALIZATION_KEY}`,
+          lt(
+            heartbeatRuns.updatedAt,
+            new Date(Date.now() - PENDING_CANCELLATION_FINALIZATION_RETRY_DELAY_MS),
+          ),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.updatedAt))
+      .limit(50);
+    let reconciled = 0;
+    let failed = 0;
+    for (const run of pendingRuns) {
+      const pending = readPendingCancellationFinalization(run);
+      if (!pending) {
+        failed += 1;
+        logger.error({ runId: run.id }, "invalid pending cancellation finalization marker");
+        continue;
+      }
+      try {
+        await finalizePreparedRunCancellation({
+          run,
+          cancelled: true,
+          wasFirstHeartbeat: pending.wasFirstHeartbeat,
+          eventMessage: pending.eventMessage,
+          ...(pending.eventPayload ? { eventPayload: pending.eventPayload } : {}),
+          finalizationId: pending.id,
+          // Persisted PIDs and process-group IDs may have been recycled by the OS.
+          // A delayed sweep may terminate only a child still owned in memory.
+          allowPersistedProcessIdentifiers: false,
+        });
+        reconciled += 1;
+      } catch (err) {
+        failed += 1;
+        logger.error({ err, runId: run.id }, "pending cancellation finalization retry failed");
+      }
+    }
+    return { checked: pendingRuns.length, reconciled, failed };
+  }
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -19060,6 +19356,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+    prepareRunCancellationInTransaction: (
+      tx: Db,
+      runId: string,
+      reason?: string,
+      options?: CancelRunOptions,
+    ) => prepareRunCancellationInTransaction(tx, runId, reason, options),
+    finalizePreparedRunCancellation,
+    reconcilePendingRunCancellations,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the
