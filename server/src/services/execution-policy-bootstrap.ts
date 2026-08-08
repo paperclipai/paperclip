@@ -104,6 +104,16 @@ export function parseExecutionPolicyBootstrapEnv(
     kubernetesConfig.egressMode = egressMode;
   }
 
+  const egressPolicy = env.PAPERCLIP_K8S_EGRESS_POLICY?.trim();
+  if (egressPolicy) {
+    if (egressPolicy !== "allowlist" && egressPolicy !== "open-internet") {
+      throw new Error(
+        `PAPERCLIP_K8S_EGRESS_POLICY must be "allowlist" or "open-internet" (got "${egressPolicy}").`,
+      );
+    }
+    kubernetesConfig.egressPolicy = egressPolicy;
+  }
+
   const runtimeClassName = env.PAPERCLIP_K8S_RUNTIME_CLASS_NAME?.trim();
   if (runtimeClassName) kubernetesConfig.runtimeClassName = runtimeClassName;
 
@@ -168,6 +178,7 @@ export async function applyExecutionPolicyBootstrap(
       backend: bootstrap.kubernetesConfig.backend,
       runtimeClassName: bootstrap.kubernetesConfig.runtimeClassName,
       egressMode: bootstrap.kubernetesConfig.egressMode,
+      egressPolicy: bootstrap.kubernetesConfig.egressPolicy,
     },
     "applied forced Kubernetes execution policy",
   );
