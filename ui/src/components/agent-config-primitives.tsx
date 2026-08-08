@@ -35,6 +35,10 @@ export const help: Record<string, string> = {
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
   fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-5.6, GPT-5.5, GPT-5.4, and manual Codex model IDs.",
+  goalRuntime: "Use Codex app-server over stdio and enable the experimental goal feature for this agent.",
+  goalTokenBudget: "Optional token budget for Codex goal mode. Leave 0 for Codex's default.",
+  goalCommand:
+    "Allow /goal in this agent's issue threads. Claude Code sets a session goal and keeps working until the condition is met; unmet goals persist across heartbeat resumes. Requires a Claude CLI with the goal command and local execution.",
   workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
   workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
   workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",

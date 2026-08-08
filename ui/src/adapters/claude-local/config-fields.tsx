@@ -27,6 +27,13 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const goalConfig =
+    typeof config.goal === "object" && config.goal !== null && !Array.isArray(config.goal)
+      ? (config.goal as Record<string, unknown>)
+      : null;
+  const goalCommandEnabled = isCreate
+    ? Boolean(values!.goalCommand)
+    : Boolean((eff("adapterConfig", "goal", goalConfig) as Record<string, unknown> | null)?.enabled);
   return (
     <>
       {!hideInstructionsFile && (
@@ -55,6 +62,18 @@ export function ClaudeLocalConfigFields({
           </div>
         </Field>
       )}
+      <ToggleField
+        label="Goal command (/goal)"
+        hint={help.goalCommand}
+        checked={goalCommandEnabled}
+        onChange={(v) => {
+          if (isCreate) {
+            set!({ goalCommand: v });
+            return;
+          }
+          mark("adapterConfig", "goal", v ? { ...(goalConfig ?? {}), enabled: true } : undefined);
+        }}
+      />
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
         values={values}

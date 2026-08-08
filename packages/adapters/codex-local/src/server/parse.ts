@@ -33,6 +33,9 @@ export function parseCodexJsonl(stdout: string) {
   let errorMessage: string | null = null;
   let sawProtocolEvent = false;
   let sawProtocolTerminalEvent = false;
+  let errorCode: string | null = null;
+  let codexGoal: Record<string, unknown> | null = null;
+  let goalCleared = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -56,9 +59,40 @@ export function parseCodexJsonl(stdout: string) {
       continue;
     }
 
+    if (type === "goal.updated") {
+      const goal = parseObject(event.goal);
+      const status = asString(goal.status, "");
+      if (status) {
+        codexGoal = {
+          threadId: asString(goal.threadId, sessionId ?? "") || sessionId,
+          objective: asString(goal.objective, ""),
+          status,
+          tokenBudget:
+            typeof goal.tokenBudget === "number" && Number.isFinite(goal.tokenBudget)
+              ? goal.tokenBudget
+              : null,
+          tokensUsed: asNumber(goal.tokensUsed, 0),
+          timeUsedSeconds: asNumber(goal.timeUsedSeconds, 0),
+          updatedAt:
+            typeof goal.updatedAt === "number" && Number.isFinite(goal.updatedAt)
+              ? new Date(goal.updatedAt * 1000).toISOString()
+              : null,
+        };
+      }
+      continue;
+    }
+
+    if (type === "goal.cleared") {
+      goalCleared = true;
+      if (codexGoal) codexGoal = { ...codexGoal, status: "cleared" };
+      continue;
+    }
+
     if (type === "error") {
       const msg = asString(event.message, "").trim();
       if (msg) errorMessage = msg;
+      const code = asString(event.errorCode, "").trim();
+      if (code) errorCode = code;
       continue;
     }
 
@@ -94,6 +128,9 @@ export function parseCodexJsonl(stdout: string) {
     errorMessage,
     sawProtocolEvent,
     sawProtocolTerminalEvent,
+    errorCode,
+    codexGoal,
+    goalCleared,
   };
 }
 

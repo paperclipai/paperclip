@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Gauge,
   GitCompare,
   TerminalSquare,
   User,
@@ -126,6 +127,17 @@ type TranscriptBlock =
       type: "stdout";
       ts: string;
       text: string;
+    }
+  | {
+      type: "goal";
+      ts: string;
+      phase: "init" | "progress" | "transition" | "final";
+      status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete" | "cleared" | "error";
+      objective?: string;
+      tokensUsed?: number;
+      tokenBudget?: number | null;
+      timeUsedSeconds?: number;
+      reason?: string;
     }
   | {
       type: "event";
@@ -635,6 +647,21 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         label: "init",
         tone: "info",
         text: `model ${entry.model}${entry.sessionId ? ` • session ${entry.sessionId}` : ""}`,
+      });
+      continue;
+    }
+
+    if (entry.kind === "goal_update") {
+      blocks.push({
+        type: "goal",
+        ts: entry.ts,
+        phase: entry.phase,
+        status: entry.status,
+        objective: entry.objective,
+        tokensUsed: entry.tokensUsed,
+        tokenBudget: entry.tokenBudget,
+        timeUsedSeconds: entry.timeUsedSeconds,
+        reason: entry.reason,
       });
       continue;
     }
@@ -1586,6 +1613,63 @@ function TranscriptStdoutRow({
   );
 }
 
+function formatGoalStatus(status: Extract<TranscriptBlock, { type: "goal" }>["status"]): string {
+  if (status === "budgetLimited") return "budget limited";
+  if (status === "usageLimited") return "usage limited";
+  return status;
+}
+
+function TranscriptGoalRow({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "goal" }>;
+  density: TranscriptDensity;
+}) {
+  const compact = density === "compact";
+  const tone =
+    block.status === "active"
+      ? "border-cyan-500/25 bg-cyan-500/[0.06] text-cyan-700 dark:text-cyan-300"
+      : block.status === "paused" || block.status === "budgetLimited" || block.status === "usageLimited" || block.status === "blocked"
+        ? "border-amber-500/25 bg-amber-500/[0.07] text-amber-700 dark:text-amber-300"
+        : block.status === "complete"
+          ? "border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-700 dark:text-emerald-300"
+          : block.status === "error"
+            ? "border-red-500/25 bg-red-500/[0.06] text-red-700 dark:text-red-300"
+            : "border-border/70 bg-muted/[0.35] text-muted-foreground";
+  const usage = [
+    typeof block.tokensUsed === "number" ? `${formatTokens(block.tokensUsed)} used` : null,
+    typeof block.tokenBudget === "number" ? `${formatTokens(block.tokenBudget)} budget` : null,
+    typeof block.timeUsedSeconds === "number" && block.timeUsedSeconds > 0
+      ? `${Math.round(block.timeUsedSeconds)}s`
+      : null,
+  ].filter(Boolean).join(" / ");
+
+  return (
+    <div className={cn("rounded-xl border px-3 py-2.5", tone)}>
+      <div className="flex items-start gap-2">
+        <Gauge className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps)">
+              Goal {formatGoalStatus(block.status)}
+            </span>
+            {usage && <span className="text-(length:--text-micro) text-current/75">{usage}</span>}
+          </div>
+          {block.objective && (
+            <div className={cn("mt-1 break-words text-foreground/85 dark:text-foreground/80", compact ? "text-xs" : "text-sm")}>
+              {block.objective}
+            </div>
+          )}
+          {block.reason && (
+            <div className="mt-1 text-xs text-current/75">{block.reason}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function findScrollParent(element: HTMLElement): HTMLElement | Window {
   let current = element.parentElement;
   while (current) {
@@ -1610,6 +1694,17 @@ function rawEntryContent(entry: TranscriptEntry): string {
   }
   if (entry.kind === "init") {
     return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
+  }
+  if (entry.kind === "goal_update") {
+    return JSON.stringify({
+      phase: entry.phase,
+      status: entry.status,
+      objective: entry.objective,
+      tokensUsed: entry.tokensUsed,
+      tokenBudget: entry.tokenBudget,
+      timeUsedSeconds: entry.timeUsedSeconds,
+      reason: entry.reason,
+    });
   }
   return entry.text;
 }
@@ -1775,6 +1870,7 @@ export function RunTranscriptView({
           {block.type === "stdout" && (
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}
+          {block.type === "goal" && <TranscriptGoalRow block={block} density={density} />}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
           {block.type === "event" && (
             <TranscriptEventRow

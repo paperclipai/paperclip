@@ -2401,6 +2401,35 @@ export function agentRoutes(
     res.json(redactAgentConfiguration(agent));
   });
 
+  router.get("/agents/:id/chat-commands", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    const adapter = findActiveServerAdapter(agent.adapterType);
+    if (!adapter?.listChatCommands) {
+      res.json([]);
+      return;
+    }
+    const commands = await adapter.listChatCommands({
+      adapterConfig: readObject(agent.adapterConfig) ?? {},
+      runtimeConfig: readObject(agent.runtimeConfig),
+      agent: {
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        adapterType: agent.adapterType,
+        adapterConfig: agent.adapterConfig,
+      },
+    });
+    res.json(commands);
+  });
+
   router.get("/agents/:id/config-revisions", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);

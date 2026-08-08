@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type {
+  AdapterChatCommandInvocation,
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  UsageSummary,
+} from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -78,6 +83,13 @@ import {
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import {
+  claudeCommandSupportsGoalCommand,
+  parseClaudeGoalChatCommand,
+  parseClaudeGoalCliReply,
+  readClaudeGoalConfig,
+  type ClaudeGoalSnapshot,
+} from "./goal.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -137,6 +149,22 @@ function buildLoginResult(input: {
     stdout: input.proc.stdout,
     stderr: input.proc.stderr,
     loginUrl: input.loginUrl,
+  };
+}
+
+function readChatCommandInvocation(context: Record<string, unknown>): AdapterChatCommandInvocation | null {
+  const raw = parseObject(context.paperclipChatCommand);
+  const name = asString(raw.name, "").trim().toLowerCase();
+  if (!name) return null;
+  return {
+    name,
+    raw: asString(raw.raw, ""),
+    args: asString(raw.args, ""),
+    sourceCommentId: asString(raw.sourceCommentId, "") || null,
+    sourceAuthorType: (() => {
+      const authorType = asString(raw.sourceAuthorType, "").trim();
+      return authorType === "user" || authorType === "agent" || authorType === "system" ? authorType : null;
+    })(),
   };
 }
 
@@ -392,21 +420,25 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeClaudeAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
-      );
+  const requestedChatCommand = readChatCommandInvocation(ctx.context);
+  const shouldHandleGoalChatCommand = requestedChatCommand?.name === "goal";
+  if (!shouldHandleGoalChatCommand) {
+    const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
+    if (engineSelection.engine === "acp") {
+      try {
+        return await executeClaudeAcp(ctx);
+      } catch (err) {
+        if (engineSelection.explicit) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        await ctx.onLog(
+          "stderr",
+          formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
+        );
+      }
     }
-  }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+    if (!engineSelection.explicit && engineSelection.fallbackReason) {
+      await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+    }
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
@@ -424,6 +456,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
+  const claudeGoalConfig = readClaudeGoalConfig(config);
+  const chatCommand = requestedChatCommand;
+  const claudeGoalChatCommand = chatCommand?.name === "goal" ? parseClaudeGoalChatCommand(chatCommand.args) : null;
+  if (claudeGoalChatCommand && !claudeGoalConfig.enabled) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "The Claude Code /goal command is not enabled in this agent's adapter config (goal.enabled).",
+      errorCode: "claude_goal_not_enabled",
+      provider: "anthropic",
+      biller: null,
+      model,
+      billingType: null,
+      costUsd: null,
+      resultJson: { errorCode: "claude_goal_not_enabled" },
+      summary: "",
+    };
+  }
+  if (claudeGoalChatCommand && executionTargetIsRemote) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "The Claude Code /goal command is only supported for local execution targets.",
+      errorCode: "claude_goal_remote_unsupported",
+      provider: "anthropic",
+      biller: null,
+      model,
+      billingType: null,
+      costUsd: null,
+      resultJson: { errorCode: "claude_goal_remote_unsupported" },
+      summary: "",
+    };
+  }
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
@@ -834,8 +901,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
+    // Slash commands like `/goal` only dispatch when the prompt is passed as a
+    // CLI argument; the stdin transport ("-") delivers them to the model as
+    // plain text. Goal chat-command runs therefore pass the command line here.
+    promptArg = "-",
   ) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    const args = ["--print", promptArg, "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
@@ -863,6 +934,315 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
+
+  if (claudeGoalChatCommand) {
+    const sourceCommentId = chatCommand?.sourceCommentId ?? null;
+    const buildGoalReply = (input: {
+      action: "set" | "status" | "clear" | "invalid";
+      goal: ClaudeGoalSnapshot | null;
+      summary: string;
+      usage?: UsageSummary;
+      costUsd?: number | null;
+      sessionId?: string | null;
+      sessionParams?: Record<string, unknown> | null;
+      exitCode?: number | null;
+      errorMessage?: string | null;
+      errorCode?: string | null;
+      clearSession?: boolean;
+    }): AdapterExecutionResult => ({
+      exitCode: input.exitCode !== undefined ? input.exitCode : 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: input.errorMessage ?? null,
+      errorCode: input.errorCode ?? null,
+      usage: input.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      sessionId: input.sessionId ?? undefined,
+      sessionParams: input.sessionParams ?? undefined,
+      sessionDisplayId: input.sessionId ?? undefined,
+      provider: "anthropic",
+      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+      model,
+      billingType,
+      costUsd: input.costUsd ?? null,
+      resultJson: {
+        chatCommand: { name: "goal", action: input.action, sourceCommentId },
+        ...(input.goal ? { claudeGoal: input.goal } : {}),
+        summary: input.summary,
+        ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+      },
+      summary: input.summary,
+      ...(input.clearSession !== undefined ? { clearSession: input.clearSession } : {}),
+    });
+
+    if (claudeGoalChatCommand.error) {
+      return buildGoalReply({ action: "invalid", goal: null, summary: claudeGoalChatCommand.error });
+    }
+
+    if (
+      (claudeGoalChatCommand.action === "status" || claudeGoalChatCommand.action === "clear") &&
+      !sessionId
+    ) {
+      // No resumable session for this issue means no goal can be active;
+      // answer locally so status/clear never spawn a fresh session or probe.
+      return buildGoalReply({
+        action: claudeGoalChatCommand.action,
+        goal: { objective: null, status: "cleared", tokenBudget: null, tokensUsed: 0 },
+        summary: "No goal set.",
+      });
+    }
+
+    const goalSupport = await claudeCommandSupportsGoalCommand({
+      runId,
+      command,
+      target: runtimeExecutionTarget,
+      cwd,
+      env,
+      timeoutSec: timeoutSec > 0 ? timeoutSec : 60,
+      graceSec,
+      model: model || null,
+    });
+    if (goalSupport !== true) {
+      const summary =
+        goalSupport === false
+          ? "The installed Claude CLI does not dispatch the /goal command (feature-gated or outdated). Update Claude Code (`npm install -g @anthropic-ai/claude-code`) on the agent host, then try again."
+          : "Could not verify /goal support on the installed Claude CLI (capability probe failed). Check the agent host, then try again.";
+      return buildGoalReply({
+        action: claudeGoalChatCommand.action,
+        goal: null,
+        summary,
+        exitCode: null,
+        errorMessage: summary,
+        errorCode: "claude_goal_unsupported_cli",
+      });
+    }
+
+    const goalSessionParams = (goalSessionId: string): Record<string, unknown> => ({
+      sessionId: goalSessionId,
+      cwd,
+      promptBundleKey: promptBundle.bundleKey,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+      ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+    });
+
+    const runGoalCli = async (
+      promptArg: string,
+      resumeSessionId: string | null,
+      opts: { includeInstructions: boolean; emitMeta: boolean },
+    ) => {
+      const args = buildClaudeArgs(
+        resumeSessionId,
+        opts.includeInstructions && !resumeSessionId ? effectiveInstructionsFilePath : undefined,
+        promptArg,
+      );
+      if (onMeta && opts.emitMeta) {
+        await onMeta({
+          adapterType: "claude_local",
+          command: resolvedCommand,
+          cwd: effectiveExecutionCwd,
+          commandArgs: args,
+          commandNotes: [
+            `Handling issue-thread slash command /goal (${claudeGoalChatCommand.action}); the command line is passed as a CLI argument because slash commands do not dispatch from stdin prompts.`,
+          ],
+          env: loggedEnv,
+          prompt: promptArg,
+          promptMetrics: {
+            promptChars: promptArg.length,
+            bootstrapPromptChars: 0,
+            wakePromptChars: 0,
+            sessionHandoffChars: 0,
+            taskContextChars: 0,
+            heartbeatPromptChars: 0,
+          },
+          context,
+        });
+      }
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
+        onLog,
+        terminalResultCleanup: {
+          graceMs: terminalResultCleanupGraceMs,
+          hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
+        },
+      });
+      const parsedStream = parseClaudeStreamJson(proc.stdout);
+      const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+      const replyText = parsedStream.summary || asString(parseObject(parsed).result, "");
+      return { proc, parsedStream, parsed, replyText };
+    };
+
+    const { action, objective } = claudeGoalChatCommand;
+
+    if ((action === "status" || action === "clear") && sessionId) {
+      const attempt = await runGoalCli(action === "clear" ? "/goal clear" : "/goal", sessionId, {
+        includeInstructions: false,
+        emitMeta: true,
+      });
+      if (attempt.proc.timedOut) {
+        return buildGoalReply({
+          action,
+          goal: null,
+          summary: "",
+          exitCode: attempt.proc.exitCode,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: "timeout",
+        });
+      }
+      if (attempt.parsed && isClaudeUnknownSessionError(attempt.parsed)) {
+        return buildGoalReply({
+          action,
+          goal: { objective: null, status: "cleared", tokenBudget: null, tokensUsed: 0 },
+          summary: "No goal set (the saved Claude session is no longer resumable).",
+          clearSession: true,
+        });
+      }
+      const reply = parseClaudeGoalCliReply(attempt.replyText);
+      if (!reply || reply.kind === "rejected") {
+        const message =
+          reply?.kind === "rejected"
+            ? reply.message
+            : `Unexpected Claude /goal reply: ${attempt.replyText || "(empty output)"}`;
+        return buildGoalReply({
+          action,
+          goal: null,
+          summary: message,
+          exitCode: attempt.proc.exitCode,
+          errorMessage: message,
+          errorCode: "claude_goal_unexpected_reply",
+          sessionId,
+          sessionParams: goalSessionParams(sessionId),
+        });
+      }
+      const nextSessionId = attempt.parsedStream.sessionId ?? sessionId;
+      const goal: ClaudeGoalSnapshot =
+        reply.kind === "active"
+          ? {
+              objective: reply.objective,
+              status: "active",
+              tokenBudget: null,
+              tokensUsed: 0,
+              evaluation: reply.evaluation,
+            }
+          : reply.kind === "cleared" || reply.kind === "set"
+            ? { objective: reply.objective, status: "cleared", tokenBudget: null, tokensUsed: 0 }
+            : { objective: null, status: "cleared", tokenBudget: null, tokensUsed: 0 };
+      const summary =
+        reply.kind === "active"
+          ? `Goal active: ${goal.objective}${goal.evaluation ? ` (${goal.evaluation})` : ""}`
+          : reply.kind === "cleared" || reply.kind === "set"
+            ? `Goal cleared: ${goal.objective}`
+            : "No goal set.";
+      return buildGoalReply({
+        action,
+        goal,
+        summary,
+        usage: attempt.parsedStream.usage ?? undefined,
+        costUsd: attempt.parsedStream.costUsd,
+        sessionId: nextSessionId,
+        sessionParams: goalSessionParams(nextSessionId),
+      });
+    }
+
+    // action === "set": setting a goal starts a live run — Claude acknowledges
+    // the objective and keeps working until the condition holds (session-scoped
+    // Stop hook), bounded by the normal run timeout. An unmet goal persists in
+    // the session and keeps driving subsequent heartbeat resumes.
+    let attempt = await runGoalCli(`/goal ${objective}`, sessionId, {
+      includeInstructions: !sessionId,
+      emitMeta: true,
+    });
+    if (sessionId && attempt.parsed && isClaudeUnknownSessionError(attempt.parsed)) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude resume session "${sessionId}" is unavailable for /goal; retrying with a fresh session.\n`,
+      );
+      attempt = await runGoalCli(`/goal ${objective}`, null, { includeInstructions: true, emitMeta: true });
+    }
+    const parsed = parseObject(attempt.parsed);
+    const resolvedSessionId =
+      attempt.parsedStream.sessionId ?? (asString(parsed.session_id, "") || null);
+    if (attempt.proc.timedOut) {
+      return buildGoalReply({
+        action,
+        goal: {
+          objective: objective ?? null,
+          status: "active",
+          tokenBudget: null,
+          tokensUsed: 0,
+        },
+        summary: `Goal set: ${objective}. The run hit the ${timeoutSec}s timeout with the goal still active; the next heartbeat resume continues under it.`,
+        exitCode: attempt.proc.exitCode,
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: "timeout",
+        sessionId: resolvedSessionId,
+        sessionParams: resolvedSessionId ? goalSessionParams(resolvedSessionId) : null,
+      });
+    }
+    // A zero-turn structured reply on a set means the CLI rejected or
+    // short-circuited the command (oversized condition, untrusted workspace,
+    // hooks disabled) instead of starting the goal run.
+    const immediateReply = parseClaudeGoalCliReply(attempt.replyText);
+    if (immediateReply?.kind === "rejected") {
+      return buildGoalReply({
+        action: "invalid",
+        goal: null,
+        summary: immediateReply.message,
+        sessionId: resolvedSessionId,
+        sessionParams: resolvedSessionId ? goalSessionParams(resolvedSessionId) : null,
+      });
+    }
+    const failed = (attempt.proc.exitCode ?? 0) !== 0 || asBoolean(parsed.is_error, false);
+    if (failed) {
+      const message =
+        describeClaudeFailure(parsed) ?? `Claude exited with code ${attempt.proc.exitCode ?? -1}`;
+      return buildGoalReply({
+        action,
+        goal: null,
+        summary: message,
+        exitCode: attempt.proc.exitCode,
+        errorMessage: message,
+        errorCode: "claude_goal_run_failed",
+        sessionId: resolvedSessionId,
+        sessionParams: resolvedSessionId ? goalSessionParams(resolvedSessionId) : null,
+      });
+    }
+    // The goal auto-clears when met, so a zero-cost status probe on the
+    // resulting session distinguishes "worked until complete" from "still
+    // active when the run stopped".
+    const statusProbe = resolvedSessionId
+      ? await runGoalCli("/goal", resolvedSessionId, { includeInstructions: false, emitMeta: false })
+      : null;
+    const statusReply =
+      statusProbe && !statusProbe.proc.timedOut ? parseClaudeGoalCliReply(statusProbe.replyText) : null;
+    const status: ClaudeGoalSnapshot["status"] = statusReply?.kind === "none" ? "complete" : "active";
+    const usage = attempt.parsedStream.usage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    const goal: ClaudeGoalSnapshot = {
+      objective: objective ?? null,
+      status,
+      tokenBudget: null,
+      tokensUsed: usage.inputTokens + usage.outputTokens,
+      ...(statusReply?.kind === "active" ? { evaluation: statusReply.evaluation } : {}),
+    };
+    const runSummary = attempt.replyText.trim();
+    const summary =
+      status === "complete"
+        ? `Goal met: ${objective}${runSummary ? `\n\n${runSummary}` : ""}`
+        : `Goal set: ${objective}. Still active after this run${runSummary ? `:\n\n${runSummary}` : "."}`;
+    return buildGoalReply({
+      action,
+      goal,
+      summary,
+      usage,
+      costUsd: attempt.parsedStream.costUsd,
+      sessionId: resolvedSessionId,
+      sessionParams: resolvedSessionId ? goalSessionParams(resolvedSessionId) : null,
+    });
+  }
 
   const parseFallbackErrorMessage = (proc: RunProcessResult) => {
     const stderrLine =

@@ -11,6 +11,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
+  listClaudeChatCommands,
   listClaudeSkills,
   syncClaudeSkills,
   listClaudeModels,
@@ -27,6 +28,7 @@ import {
 } from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
+  listCodexChatCommands,
   listCodexSkills,
   syncCodexSkills,
   testEnvironment as codexTestEnvironment,
@@ -193,6 +195,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
       packages: ["@agentclientprotocol/claude-agent-acp"],
     },
   },
+  listChatCommands: listClaudeChatCommands,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
   sessionCodec: claudeSessionCodec,
@@ -266,6 +269,7 @@ const codexLocalAdapter: ServerAdapterModule = {
       packages: ["@agentclientprotocol/codex-acp"],
     },
   },
+  listChatCommands: listCodexChatCommands,
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,

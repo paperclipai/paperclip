@@ -97,6 +97,8 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- runtime ("codex_exec" | "app_server_experimental", optional): execution transport. Defaults to codex_exec. app_server_experimental is local-only and currently requires goal.enabled=true.
+- goal (object, optional): app-server goal feature config. { enabled, tokenBudget?, timeoutSec?, stopAfterTurn? }
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -122,6 +124,10 @@ Operational fields:
 Notes:
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Codex approval/sandbox flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
+- Goal runtime spawns \`codex app-server --listen stdio:// --enable goals\` as a per-run child process, initializes experimental app-server APIs, then calls \`thread/goal/set\` for the issue objective. It is not a daemon and opens no port.
+- Goal runtime strips PAPERCLIP_API_KEY from the Codex child environment, refuses remote/sandbox execution with \`codex_goal_remote_unsupported\`, stores sessions with \`protocol: "app_server"\` and \`features: ["goal"]\`, and only resumes when the issue id and objective fingerprint match.
+- Goal status notifications render as \`goal_update\` transcript rows. Budget exhaustion surfaces as \`codex_goal_budget_limited\`; blocked and usage-limited statuses surface as \`codex_goal_blocked\` and \`codex_goal_usage_limited\`.
+- \`thread/goal/set\` method-not-found failures surface as \`codex_goal_unsupported_cli\`; run \`pnpm --filter @paperclipai/adapter-codex-local probe:goal\` to live-probe the installed Codex CLI.
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.

@@ -9,6 +9,19 @@ export {
   resetClaudeCliCapabilitiesCacheForTests,
 } from "./cli-capabilities.js";
 export {
+  claudeCommandSupportsGoalCommand,
+  listClaudeChatCommands,
+  parseClaudeGoalChatCommand,
+  parseClaudeGoalCliReply,
+  readClaudeGoalConfig,
+  resetClaudeGoalCommandSupportCacheForTests,
+  CLAUDE_GOAL_OBJECTIVE_MAX_CHARS,
+  type ClaudeGoalChatCommandAction,
+  type ClaudeGoalCliReply,
+  type ClaudeGoalConfig,
+  type ClaudeGoalSnapshot,
+} from "./goal.js";
+export {
   parseClaudeStreamJson,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,

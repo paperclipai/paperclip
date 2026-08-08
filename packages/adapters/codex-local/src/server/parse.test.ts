@@ -36,6 +36,9 @@ describe("parseCodexJsonl", () => {
       errorMessage: "resume failed",
       sawProtocolEvent: true,
       sawProtocolTerminalEvent: true,
+      errorCode: null,
+      codexGoal: null,
+      goalCleared: false,
     });
   });
 
@@ -72,6 +75,57 @@ describe("parseCodexJsonl", () => {
       errorMessage: null,
       sawProtocolEvent: true,
       sawProtocolTerminalEvent: true,
+      errorCode: null,
+      codexGoal: null,
+      goalCleared: false,
+    });
+  });
+
+  it("captures final goal status snapshots and mapped goal error codes", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_goal" }),
+      JSON.stringify({
+        type: "goal.updated",
+        goal: {
+          threadId: "thread_goal",
+          objective: "Ship the goal",
+          status: "usageLimited",
+          tokenBudget: 1000,
+          tokensUsed: 900,
+          timeUsedSeconds: 60,
+          updatedAt: 1_800_000_000,
+        },
+      }),
+      JSON.stringify({
+        type: "error",
+        message: "Codex goal ended with status usageLimited.",
+        errorCode: "codex_goal_usage_limited",
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout)).toEqual({
+      sessionId: "thread_goal",
+      summary: "",
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+      },
+      usageBasis: "per_run",
+      errorMessage: "Codex goal ended with status usageLimited.",
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
+      errorCode: "codex_goal_usage_limited",
+      codexGoal: {
+        threadId: "thread_goal",
+        objective: "Ship the goal",
+        status: "usageLimited",
+        tokenBudget: 1000,
+        tokensUsed: 900,
+        timeUsedSeconds: 60,
+        updatedAt: "2027-01-15T08:00:00.000Z",
+      },
+      goalCleared: false,
     });
   });
 });

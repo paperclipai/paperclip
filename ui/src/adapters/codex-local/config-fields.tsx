@@ -52,6 +52,18 @@ export function CodexLocalConfigFields({
     : fastModeSupported
       ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
       : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
+  const goalConfig = typeof config.goal === "object" && config.goal !== null && !Array.isArray(config.goal)
+    ? config.goal as Record<string, unknown>
+    : {};
+  const goalRuntimeEnabled = isCreate
+    ? values!.goalRuntime === "app_server_experimental"
+    : (
+        eff("adapterConfig", "runtime", String(config.runtime ?? "")) === "app_server_experimental" ||
+        eff("adapterConfig", "goalRuntime", String(config.goalRuntime ?? "off")) === "app_server_experimental"
+      );
+  const goalTokenBudget = isCreate
+    ? values!.goalTokenBudget ?? 0
+    : Number(goalConfig.tokenBudget ?? config.goalTokenBudget ?? 0);
 
   return (
     <>
@@ -255,6 +267,43 @@ export function CodexLocalConfigFields({
         <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           {fastModeMessage}
         </div>
+      )}
+      <ToggleField
+        label="Goal runtime"
+        hint={help.goalRuntime}
+        checked={goalRuntimeEnabled}
+        onChange={(v) => {
+          if (isCreate) {
+            set!({ goalRuntime: v ? "app_server_experimental" : "off" });
+            return;
+          }
+          mark("adapterConfig", "runtime", v ? "app_server_experimental" : undefined);
+          mark("adapterConfig", "goal", v ? { ...goalConfig, enabled: true } : undefined);
+          mark("adapterConfig", "goalRuntime", undefined);
+        }}
+      />
+      {goalRuntimeEnabled && (
+        <Field label="Goal token budget" hint={help.goalTokenBudget}>
+          <DraftInput
+            value={String(goalTokenBudget)}
+            onCommit={(raw) => {
+              const next = Math.max(0, Math.floor(Number(raw) || 0));
+              if (isCreate) {
+                set!({ goalTokenBudget: next });
+                return;
+              }
+              mark("adapterConfig", "goal", {
+                ...goalConfig,
+                enabled: true,
+                tokenBudget: next > 0 ? next : undefined,
+              });
+              mark("adapterConfig", "goalTokenBudget", undefined);
+            }}
+            immediate
+            className={inputClass}
+            placeholder="0"
+          />
+        </Field>
       )}
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
