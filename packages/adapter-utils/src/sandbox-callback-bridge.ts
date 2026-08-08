@@ -334,7 +334,7 @@ export function sandboxCallbackBridgeDirectories(rootDir: string): SandboxCallba
 
 export function buildSandboxCallbackBridgeEnv(input: {
   queueDir: string;
-  bridgeToken: string;
+  bridgeToken?: string;
   host?: string;
   port?: number | null;
   pollIntervalMs?: number | null;
@@ -345,7 +345,7 @@ export function buildSandboxCallbackBridgeEnv(input: {
   return {
     PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
-    PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
+    ...(input.bridgeToken ? { PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken } : {}),
     PAPERCLIP_BRIDGE_HOST: input.host?.trim() || "127.0.0.1",
     PAPERCLIP_BRIDGE_PORT: String(input.port && input.port > 0 ? Math.trunc(input.port) : 0),
     PAPERCLIP_BRIDGE_POLL_INTERVAL_MS: String(
@@ -1026,7 +1026,6 @@ export async function startSandboxCallbackBridgeServer(input: {
   }
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
-    bridgeToken: input.bridgeToken,
     host: input.host,
     port: input.port,
     pollIntervalMs: input.pollIntervalMs,
@@ -1041,6 +1040,8 @@ export async function startSandboxCallbackBridgeServer(input: {
       [
         `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
         `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
+        "IFS= read -r PAPERCLIP_BRIDGE_TOKEN",
+        "export PAPERCLIP_BRIDGE_TOKEN",
         `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
           `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
         "pid=$!",
@@ -1053,6 +1054,7 @@ export async function startSandboxCallbackBridgeServer(input: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
       ...env,
     },
+    stdin: `${input.bridgeToken}\n`,
     timeoutMs,
   });
   requireSuccessfulResult("start sandbox callback bridge", startResult);
