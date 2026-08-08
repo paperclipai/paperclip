@@ -167,6 +167,51 @@ When authoring migrations or one-time backfills:
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
+## Migration journal consistency guard
+
+`packages/db/src/migrations/meta/_journal.json` is the only list drizzle's
+`migrate()` reads. The migrations *folder* is what folder-enumerating checks
+read. When the two disagree the failure is silent and confusing: an orphaned
+`.sql` (in the folder, not in the journal) is never applied, yet it is counted
+as permanently pending, so `applyPendingMigrations` throws — and because that
+throw happens in a suite's `beforeAll`, Vitest reports the whole suite as
+`skipped` rather than `failed`.
+
+The guard that prevents this lives in `packages/db/src/migration-journal-consistency.ts`
+and is enforced at three points:
+
+| Where | What it enforces |
+|---|---|
+| `applyPendingMigrations()` (runtime/bootstrap) | File↔journal bijection only, so a defect can never degrade into a skipped suite. Deliberately does *not* check `idx`, so pre-existing shipped journal history cannot brick startup. |
+| `pnpm --filter @paperclipai/db check:migrations` (gates build/typecheck/generate/migrate) | Full audit: bijection, `idx` uniqueness, `idx` continuity. |
+| `scripts/run-vitest-stable.mjs` preflight | Same full audit, run once before any embedded-Postgres suite starts. |
+
+Run it directly:
+
+```sh
+pnpm --filter @paperclipai/db check:migration-journal          # baseline honoured
+pnpm --filter @paperclipai/db exec tsx src/check-migration-journal.ts --strict
+```
+
+Rules the guard applies:
+
+- **Bijection violations are always hard errors** and always name the offending filename.
+- **A duplicate `idx` is a hard error**, except for groups recorded in
+  `packages/db/src/migration-journal-idx-baseline.json`, which are reported as
+  warnings so the guard could be adopted without first rewriting shipped
+  history. `origin/master` currently carries one: idx 178 is claimed by both
+  `0177_activity_log_responsible_user` and `0178_summary_slots`.
+- **`idx` gaps are warnings.** `origin/master` currently has gaps at 126, 130
+  and 177 — usually a migration dropped before merge. They are tolerated, but
+  they make "latest idx" an unreliable count of applied migrations.
+
+The baseline file is a ratchet, not an excuse list. A baselined group is
+excused only when its `idx` *and* its exact tag set still match, so a third
+entry joining a baselined group is a fresh error; and a baseline entry that no
+longer matches the journal is itself a hard error, so the file cannot rot. Do
+not add entries to unblock your own change — if your change introduces a
+duplicate `idx`, fix the journal.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
