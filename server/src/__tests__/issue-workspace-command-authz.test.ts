@@ -35,6 +35,7 @@ const mockFeedbackService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  cancelStaleQueuedRunsForIssue: vi.fn(async () => []),
   wakeup: vi.fn(),
   reportRunActivity: vi.fn(),
   getRun: vi.fn(),

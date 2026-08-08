@@ -37,6 +37,7 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
+  cancelStaleQueuedRunsForIssue: vi.fn(async () => []),
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
 }));
