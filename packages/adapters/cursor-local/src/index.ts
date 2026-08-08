@@ -93,6 +93,7 @@ Core fields:
 - command (string, optional): defaults to "agent"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- mcpServers (object, optional): Cursor MCP server map (stdio command/args or url/headers). Materialized into an agent-scoped HOME/.cursor/mcp.json for local runs so binds stay per-agent (not shared host ~/.cursor/mcp.json).
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
@@ -103,6 +104,7 @@ Notes:
 - Prompts are piped to Cursor via stdin.
 - Sessions are resumed with --resume when stored session cwd matches current cwd.
 - Paperclip auto-injects local skills into "~/.cursor/skills" when missing, so Cursor can discover "$paperclip" and related skills on local runs.
+- When mcpServers (or runtime MCP gateways) are present on local runs, Paperclip sets HOME to an agent-scoped cursor-runtime home containing only that agent's mcp.json, then auto-adds --approve-mcps.
 - Paperclip auto-adds --yolo unless one of --trust/--yolo/-f is already present in extraArgs.
 - Remote sandbox runs prepend "~/.cursor/bin" and "~/.local/bin" to PATH and prefer the installed absolute entrypoint from one of those directories when the default Cursor command is requested, so installer-managed sandbox leases do not need hardcoded command paths.
 `;
