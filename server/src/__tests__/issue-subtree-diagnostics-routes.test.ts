@@ -138,6 +138,30 @@ async function blockIssue(db: Db, companyId: string, blockerIssueId: string, blo
   });
 }
 
+async function snapshotIssueRows(db: Db, companyId: string) {
+  return (await db.select({
+    id: issues.id,
+    parentId: issues.parentId,
+    title: issues.title,
+    status: issues.status,
+    assigneeAgentId: issues.assigneeAgentId,
+    assigneeUserId: issues.assigneeUserId,
+    checkoutRunId: issues.checkoutRunId,
+    executionRunId: issues.executionRunId,
+  }).from(issues).where(eq(issues.companyId, companyId)))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+async function snapshotRelationRows(db: Db, companyId: string) {
+  return (await db.select({
+    id: issueRelations.id,
+    issueId: issueRelations.issueId,
+    relatedIssueId: issueRelations.relatedIssueId,
+    type: issueRelations.type,
+  }).from(issueRelations).where(eq(issueRelations.companyId, companyId)))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 async function attachMentionScopedLowTrustRun(db: Db, fixture: {
   company: CompanyRow;
   ownerAgent: AgentRow;
@@ -314,40 +338,241 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(res.body.truncated).toBe(false);
   });
 
-  it("reports advisory continuation, cycle, no-progress, and supersession signals without changing the tree", async () => {
+  it("keeps legitimate parallel deliverables as independent canonical continuations", async () => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);
     const project = await seedProject(db, company.id, "Core");
     const root = await seedIssue(db, {
       companyId: company.id,
       projectId: project.id,
-      title: "Root delivery",
+      title: "Parallel delivery root",
       status: "in_progress",
       assigneeAgentId: agent.id,
     });
-    const earlier = await seedIssue(db, {
+    const execution = await seedIssue(db, {
       companyId: company.id,
       projectId: project.id,
       parentId: root.id,
-      title: "Repeatable delivery",
+      title: "Implement separate API integration",
       status: "in_progress",
       assigneeAgentId: agent.id,
     });
-    const later = await seedIssue(db, {
+    const review = await seedIssue(db, {
       companyId: company.id,
       projectId: project.id,
       parentId: root.id,
-      title: "  repeatable   delivery ",
+      title: "Review independent documentation update",
+      status: "in_review",
+      assigneeAgentId: agent.id,
+    });
+
+    const beforeIssues = await snapshotIssueRows(db, company.id);
+    const beforeRelations = await snapshotRelationRows(db, company.id);
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/subtree`);
+    const afterIssues = await snapshotIssueRows(db, company.id);
+    const afterRelations = await snapshotRelationRows(db, company.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(afterIssues).toEqual(beforeIssues);
+    expect(afterRelations).toEqual(beforeRelations);
+    expect(res.body.treeHealth).toMatchObject({ cycleStatus: "clear", supersessionCandidates: [] });
+    const executionHealth = res.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === execution.id,
+    );
+    const reviewHealth = res.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === review.id,
+    );
+    expect(executionHealth).toMatchObject({
+      canonicalContinuationId: execution.id,
+      continuationCount: 1,
+      continuationWarning: false,
+      unresolvedPathType: "execution",
+    });
+    expect(reviewHealth).toMatchObject({
+      canonicalContinuationId: review.id,
+      continuationCount: 1,
+      continuationWarning: false,
+      unresolvedPathType: "review",
+    });
+  });
+
+  it("keeps completed partial review and its explicit residual survivor independent", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Review delivery root",
       status: "in_progress",
       assigneeAgentId: agent.id,
     });
-    await db.update(issues).set({
-      createdAt: new Date(earlier.createdAt.getTime() + 1_000),
-    }).where(eq(issues.id, later.id));
-    await blockIssue(db, company.id, earlier.id, later.id);
-    await blockIssue(db, company.id, later.id, earlier.id);
+    const completedReview = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "Completed accessibility review",
+      status: "done",
+      assigneeAgentId: agent.id,
+    });
+    const residualReview = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "Residual performance review follow-up",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+
+    const beforeIssues = await snapshotIssueRows(db, company.id);
+    const beforeRelations = await snapshotRelationRows(db, company.id);
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/subtree`);
+    const afterIssues = await snapshotIssueRows(db, company.id);
+    const afterRelations = await snapshotRelationRows(db, company.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(afterIssues).toEqual(beforeIssues);
+    expect(afterRelations).toEqual(beforeRelations);
+    expect(res.body.treeHealth.supersessionCandidates).toEqual([]);
+    const completedHealth = res.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === completedReview.id,
+    );
+    const residualHealth = res.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === residualReview.id,
+    );
+    expect(completedHealth).toMatchObject({
+      canonicalContinuationId: completedReview.id,
+      continuationCount: 1,
+      unresolvedPathType: "none",
+    });
+    expect(residualHealth).toMatchObject({
+      canonicalContinuationId: residualReview.id,
+      continuationCount: 1,
+      unresolvedPathType: "execution",
+    });
+  });
+
+  it("surfaces a blocked leaf with no first-class blocker without inventing one", async () => {
+    const company = await seedCompany(db);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Blocked-state root",
+      status: "in_progress",
+    });
+    const blockedLeaf = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "Legacy blocked leaf without dependency",
+      status: "blocked",
+    });
+
+    const beforeIssues = await snapshotIssueRows(db, company.id);
+    const beforeRelations = await snapshotRelationRows(db, company.id);
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/subtree`);
+    const afterIssues = await snapshotIssueRows(db, company.id);
+    const afterRelations = await snapshotRelationRows(db, company.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(afterIssues).toEqual(beforeIssues);
+    expect(afterRelations).toEqual(beforeRelations);
+    const blockedNode = res.body.nodes.find(
+      (node: { issue: { id: string } }) => node.issue.id === blockedLeaf.id,
+    );
+    const blockedHealth = res.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === blockedLeaf.id,
+    );
+    expect(blockedNode).toMatchObject({
+      blockers: [],
+      blockerReadiness: { unresolvedBlockerCount: 0 },
+      diagnosis: expect.stringContaining("no first-class blocker relations"),
+    });
+    expect(blockedHealth).toMatchObject({
+      canonicalContinuationId: blockedLeaf.id,
+      continuationCount: 1,
+      cycleStatus: "clear",
+      unresolvedPathType: "external",
+    });
+  });
+
+  it("detects a circular blocker chain without fan-out or repair", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Circular blocker root",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    const first = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "First circular blocker",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    const second = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "Second circular blocker",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    await blockIssue(db, company.id, first.id, second.id);
+    await blockIssue(db, company.id, second.id, first.id);
+
+    const beforeIssues = await snapshotIssueRows(db, company.id);
+    const beforeRelations = await snapshotRelationRows(db, company.id);
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/subtree`);
+    const afterIssues = await snapshotIssueRows(db, company.id);
+    const afterRelations = await snapshotRelationRows(db, company.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(afterIssues).toEqual(beforeIssues);
+    expect(afterRelations).toEqual(beforeRelations);
+    expect(res.body.nodeCount).toBe(3);
+    expect(res.body.treeHealth.cycleStatus).toBe("detected");
+    for (const issueId of [first.id, second.id]) {
+      expect(res.body.treeHealth.nodes.find(
+        (node: { issueId: string }) => node.issueId === issueId,
+      )).toMatchObject({
+        canonicalContinuationId: issueId,
+        continuationCount: 1,
+        cycleStatus: "detected",
+        unresolvedPathType: "cycle",
+      });
+    }
+    expect(res.body.edges.filter((edge: { kind: string }) => edge.kind === "blocks")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "blocks", fromIssueId: first.id, toIssueId: second.id }),
+        expect.objectContaining({ kind: "blocks", fromIssueId: second.id, toIssueId: first.id }),
+      ]),
+    );
+    expect(res.body.edges.filter((edge: { kind: string }) => edge.kind === "blocks")).toHaveLength(2);
+  });
+
+  it("warns after repeated successful continuations without durable progress but preserves execution", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Active delivery without durable progress",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
     const progressAt = new Date("2026-08-01T10:00:00.000Z");
-    const noProgressAt = new Date("2026-08-01T11:00:00.000Z");
     await db.insert(heartbeatRuns).values([
       {
         companyId: company.id,
@@ -355,60 +580,49 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
         status: "succeeded",
         lastUsefulActionAt: progressAt,
         finishedAt: progressAt,
-        contextSnapshot: { issueId: earlier.id },
+        contextSnapshot: { issueId: issue.id },
       },
       {
         companyId: company.id,
         agentId: agent.id,
         status: "succeeded",
-        finishedAt: noProgressAt,
-        contextSnapshot: { issueId: earlier.id },
+        finishedAt: new Date("2026-08-01T11:00:00.000Z"),
+        contextSnapshot: { issueId: issue.id },
       },
       {
         companyId: company.id,
         agentId: agent.id,
         status: "succeeded",
         finishedAt: new Date("2026-08-01T12:00:00.000Z"),
-        contextSnapshot: { issueId: earlier.id },
+        contextSnapshot: { issueId: issue.id },
       },
     ]);
 
-    const beforeIssues = await db.select({ id: issues.id, status: issues.status }).from(issues)
-      .where(eq(issues.companyId, company.id));
+    const beforeIssues = await snapshotIssueRows(db, company.id);
+    const beforeRelations = await snapshotRelationRows(db, company.id);
+    const beforeWakeRequests = await db.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, company.id));
     const res = await request(createApp(db, boardActor(company)))
-      .get(`/api/issues/${root.id}/diagnostics/subtree`)
-      .query({ continuationWarning: 1, depthWarning: 1, successfulRunsWithoutProgressWarning: 2 });
-    const afterIssues = await db.select({ id: issues.id, status: issues.status }).from(issues)
-      .where(eq(issues.companyId, company.id));
+      .get(`/api/issues/${issue.id}/diagnostics/subtree`)
+      .query({ successfulRunsWithoutProgressWarning: 2 });
+    const afterIssues = await snapshotIssueRows(db, company.id);
+    const afterRelations = await snapshotRelationRows(db, company.id);
+    const afterWakeRequests = await db.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, company.id));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(afterIssues).toEqual(beforeIssues);
-    expect(res.body.treeHealth).toMatchObject({
-      cycleStatus: "detected",
-      thresholds: {
-        continuationWarning: 1,
-        depthWarning: 1,
-        successfulRunsWithoutProgressWarning: 2,
-      },
-      supersessionCandidates: [
-        expect.objectContaining({
-          predecessorIssueId: earlier.id,
-          successorIssueId: later.id,
-          reason: "same_parent_normalized_title",
-        }),
-      ],
-    });
-    const earlierHealth = res.body.treeHealth.nodes.find((node: { issueId: string }) => node.issueId === earlier.id);
-    expect(earlierHealth).toMatchObject({
-      canonicalContinuationId: earlier.id,
+    expect(afterRelations).toEqual(beforeRelations);
+    expect(afterWakeRequests).toEqual(beforeWakeRequests);
+    expect(res.body.nodeCount).toBe(1);
+    expect(res.body.treeHealth.cycleStatus).toBe("clear");
+    expect(res.body.treeHealth.nodes[0]).toMatchObject({
+      canonicalContinuationId: issue.id,
       continuationCount: 1,
-      continuationWarning: true,
-      cycleStatus: "detected",
-      depth: 1,
-      depthWarning: true,
-      unresolvedPathType: "cycle",
       successfulRunsSinceProgress: 2,
       successfulRunsWithoutProgressWarning: true,
+      unresolvedPathType: "execution",
+      cycleStatus: "clear",
     });
   });
 
