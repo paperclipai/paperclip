@@ -2039,9 +2039,16 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   const effectiveCwd = readNonEmptyString(input.executionWorkspace.cwd);
   const persistedCwd = readNonEmptyString(input.persistedExecutionWorkspace?.cwd);
   const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
+  // A `resolvedWorkspace.workspaceId` only makes an execution-workspace persistence promise
+  // when a project also resolved for this run -- an execution workspace can never be created
+  // for a run with no project (see `executionWorkspacesSvc.create`'s `resolvedProjectId`
+  // guard), so a workspaceId without a project is a stale/orphaned reference, not a real
+  // expectation. Require a project alongside it here as a safety net for any entry point that
+  // sets `resolvedWorkspace.workspaceId` without also resolving a project.
+  const runHasResolvedProject = Boolean(issue.projectId ?? input.resolvedWorkspace.projectId);
   const workspaceExpectation =
     Boolean(issue.projectWorkspaceId) ||
-    Boolean(input.resolvedWorkspace.workspaceId) ||
+    (Boolean(input.resolvedWorkspace.workspaceId) && runHasResolvedProject) ||
     input.executionWorkspace.strategy === "git_worktree";
 
   const fail = (reason: string, message: string, extra: Record<string, unknown> = {}) => {
@@ -2607,6 +2614,27 @@ export function buildAnchorFallbackWorkspaceNotes(input: {
     );
   }
   return warnings;
+}
+
+/**
+ * A prior session's `workspaceId`/`repoUrl`/`repoRef` only describe a real, persistable
+ * workspace when the current run still resolves to a project. Without a project for this
+ * run, `resolveAnchorWorkspaceForRun`'s `task_session` fallback can never persist an
+ * execution workspace (see `executionWorkspacesSvc.create`'s `resolvedProjectId` guard), so
+ * propagating an orphaned reference from an earlier, project-bound session would only make
+ * `assertGitSensitiveAdapterWorkspaceValid` expect a workspace that will never exist
+ * (`missing_persisted_execution_workspace`). Discard the reference in that case instead.
+ */
+export function sanitizeSessionWorkspaceReferenceForRun(input: {
+  resolvedProjectId: string | null;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}): { workspaceId: string | null; repoUrl: string | null; repoRef: string | null } {
+  if (!input.resolvedProjectId) {
+    return { workspaceId: null, repoUrl: null, repoRef: null };
+  }
+  return { workspaceId: input.workspaceId, repoUrl: input.repoUrl, repoRef: input.repoRef };
 }
 
 /**
@@ -8595,13 +8623,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        const sessionWorkspaceReference = sanitizeSessionWorkspaceReferenceForRun({
+          resolvedProjectId,
+          workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
+          repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
+          repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+        });
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
           projectId: resolvedProjectId,
-          workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
-          repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
-          repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+          workspaceId: sessionWorkspaceReference.workspaceId,
+          repoUrl: sessionWorkspaceReference.repoUrl,
+          repoRef: sessionWorkspaceReference.repoRef,
           workspaceHints,
           warnings: [],
           baseCwdFallback: false,
