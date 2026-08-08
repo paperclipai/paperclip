@@ -4,8 +4,15 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Gate WT1 — serving-tree / main-checkout discipline (TSMC-20263 / TSKB0405).
+# Fast path: refuse commits in ~/paperclip-deploy and refuse main ~/paperclip
+# commits when HEAD != live. Worktree feature-branch commits are allowed.
+# Shared across worktrees via core.hooksPath=.githooks on the common git dir.
+echo "[pre-commit] checking Gate WT1 serving-tree / main-checkout discipline"
+sh "$repo_root/scripts/check-wt1-serving-tree-discipline.sh"
+
 # Literal-variable / candidate-PII write-path guard (TSMC-19768). Fast, dependency-free,
-# runs first so an unsafe path is rejected before the slower build/typecheck gates.
+# runs next so an unsafe path is rejected before the slower build/typecheck gates.
 # Rejects staged paths like `$PAPERCLIP_WORK_PRODUCTS_DIR/...` (an unexpanded variable
 # used as a literal write path) and candidate/PII deliverables leaking into the tree.
 echo "[pre-commit] checking staged write paths (literal-var / candidate-PII guard)"

@@ -16,6 +16,20 @@ This skill covers the day-to-day workflows for developing and operating a local 
 
 > **MANDATORY:** Before running any CLI command, building, testing, or managing worktrees, you MUST read `doc/DEVELOPING.md` in the Paperclip repo. It is the canonical reference for all `paperclipai` CLI commands, their options, build/test workflows, database operations, worktree management, and diagnostics. Do NOT guess at flags or options — read the doc first.
 
+## Serving-tree & main-checkout discipline (Gate WT1)
+
+ThinkStack MC (and any host that pins a separate serve tree) keeps **source** and **served** roles distinct. Landing on `live` does **not** deploy; the promote pipeline + deploy-job restart does. Breaking either tree trips fail-closed boot/promote gates and causes fleet outages (TSMC-20221 / TSKB0405).
+
+| Tree | Path (default) | Role | Allowed ops |
+|------|----------------|------|-------------|
+| Serving tree | `~/paperclip-deploy` | Production-served checkout | **READ-ONLY.** Inspect only via `git -C ~/paperclip-deploy …`. Never `cd` in to edit, commit, stash, reset, or move HEAD. |
+| Main source checkout | `~/paperclip` | Promote ancestry base on branch `live` | Stay on `live`. Never `git switch` / `checkout` this checkout onto a feature branch. |
+| Feature work | worktree of `~/paperclip` | All branch work | `git worktree add <path> -b <branch> live` (or `npx paperclipai worktree:make`). Commit/test/iterate there; land on `live` from the worktree. |
+
+**Enforcement:** `.githooks/pre-commit` calls `scripts/check-wt1-serving-tree-discipline.sh` (shared via `core.hooksPath`). It **blocks** commits whose toplevel is the serving tree, and **blocks** commits in the main `~/paperclip` checkout when `HEAD` is not `refs/heads/live`. Worktree feature-branch commits are allowed. Do not bypass the hook to “just ship.”
+
+If you find WIP stranded in the serving tree: preserve it as a repo-global `git stash` and re-apply in a proper `~/paperclip` worktree — never continue in place.
+
 ## Quick Command Reference
 
 These are the most common commands. For full option tables and details, see `doc/DEVELOPING.md`.
