@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
@@ -16,6 +16,7 @@ export function Goals() {
   const { openNewGoal } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [deleteErrorMessage, setDeleteErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Goals" }]);
@@ -30,11 +31,15 @@ export function Goals() {
   const deleteGoal = useMutation({
     mutationFn: (id: string) => goalsApi.remove(id),
     onSuccess: () => {
+      setDeleteErrorMessage(null);
       if (selectedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(selectedCompanyId),
         });
       }
+    },
+    onError: (err) => {
+      setDeleteErrorMessage(err instanceof Error ? err.message : "Failed to delete goal");
     },
   });
 
@@ -49,6 +54,11 @@ export function Goals() {
   return (
     <div className="space-y-4">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {deleteErrorMessage && (
+        <p className="text-sm text-destructive" role="alert">
+          {deleteErrorMessage}
+        </p>
+      )}
 
       {goals && goals.length === 0 && (
         <EmptyState

@@ -55,6 +55,8 @@ export function GoalDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [confirmingDeleteHeader, setConfirmingDeleteHeader] = useState(false);
+  const [deleteErrorMessage, setDeleteErrorMessage] = useState<string | null>(null);
+  const [updateErrorMessage, setUpdateErrorMessage] = useState<string | null>(null);
 
   const {
     data: goal,
@@ -88,6 +90,7 @@ export function GoalDetail() {
     mutationFn: (data: Record<string, unknown>) =>
       goalsApi.update(goalId!, data),
     onSuccess: () => {
+      setUpdateErrorMessage(null);
       queryClient.invalidateQueries({
         queryKey: queryKeys.goals.detail(goalId!)
       });
@@ -96,12 +99,16 @@ export function GoalDetail() {
           queryKey: queryKeys.goals.list(resolvedCompanyId)
         });
       }
+    },
+    onError: (err) => {
+      setUpdateErrorMessage(err instanceof Error ? err.message : "Failed to update goal");
     }
   });
 
   const deleteGoal = useMutation({
     mutationFn: () => goalsApi.remove(goalId!),
     onSuccess: () => {
+      setDeleteErrorMessage(null);
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(resolvedCompanyId),
@@ -112,6 +119,9 @@ export function GoalDetail() {
       });
       closePanel();
       navigate("/goals");
+    },
+    onError: (err) => {
+      setDeleteErrorMessage(err instanceof Error ? err.message : "Failed to delete goal");
     },
   });
 
@@ -149,11 +159,12 @@ export function GoalDetail() {
           onUpdate={(data) => updateGoal.mutate(data)}
           onDelete={() => deleteGoal.mutate()}
           deletePending={deleteGoal.isPending}
+          deleteError={deleteErrorMessage}
         />
       );
     }
     return () => closePanel();
-  }, [goal, deleteGoal.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [goal, deleteGoal.isPending, deleteErrorMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
@@ -171,6 +182,11 @@ export function GoalDetail() {
             {confirmingDeleteHeader ? (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-destructive font-medium">Delete?</span>
+                {deleteErrorMessage && (
+                  <span className="text-xs text-destructive" role="alert">
+                    {deleteErrorMessage}
+                  </span>
+                )}
                 <Button
                   size="xs"
                   variant="destructive"
@@ -183,7 +199,10 @@ export function GoalDetail() {
                   size="xs"
                   variant="outline"
                   disabled={deleteGoal.isPending}
-                  onClick={() => setConfirmingDeleteHeader(false)}
+                  onClick={() => {
+                    setConfirmingDeleteHeader(false);
+                    setDeleteErrorMessage(null);
+                  }}
                 >
                   Cancel
                 </Button>
@@ -193,7 +212,10 @@ export function GoalDetail() {
                 variant="outline"
                 size="xs"
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                onClick={() => setConfirmingDeleteHeader(true)}
+                onClick={() => {
+                  setDeleteErrorMessage(null);
+                  setConfirmingDeleteHeader(true);
+                }}
               >
                 <Trash2 className="h-3.5 w-3.5 mr-1.5" />
                 Delete
@@ -205,6 +227,12 @@ export function GoalDetail() {
             />
           </div>
         </div>
+
+        {updateErrorMessage && (
+          <p className="text-sm text-destructive" role="alert">
+            {updateErrorMessage}
+          </p>
+        )}
 
         <InlineEditor
           value={goal.title}

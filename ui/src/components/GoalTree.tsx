@@ -61,6 +61,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect, onDelet
             onDelete(goal);
           }}
           title="Delete goal"
+          aria-label={`Delete goal "${goal.title}"`}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
