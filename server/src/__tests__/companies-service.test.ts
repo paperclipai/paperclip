@@ -17,6 +17,8 @@ import {
   principalPermissionGrants,
   routines,
   routineTriggers,
+  budgetPolicies,
+  budgetIncidents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -58,6 +60,8 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(budgetIncidents);
+    await db.delete(budgetPolicies);
     await db.delete(companies);
   });
 
@@ -797,6 +801,55 @@ describeEmbeddedPostgres("companyService", () => {
       ));
     expect(archiveActivity).toHaveLength(1);
     expect(archiveActivity[0]).toMatchObject({ details: { agentsPaused: 1, runsCancelled: 0 } });
+  });
+
+  it("successfully removes a company that has budget policies and incidents", async () => {
+    const companyId = randomUUID();
+    const policyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Budget Deletion Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(budgetPolicies).values({
+      id: policyId,
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "monthly",
+      amount: 1000,
+    });
+
+    await db.insert(budgetIncidents).values({
+      id: randomUUID(),
+      companyId,
+      policyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "monthly",
+      windowStart: new Date("2026-06-01T00:00:00Z"),
+      windowEnd: new Date("2026-07-01T00:00:00Z"),
+      thresholdType: "hard_stop",
+      amountLimit: 1000,
+      amountObserved: 1200,
+      status: "open",
+    });
+
+    const policiesBefore = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId));
+    expect(policiesBefore).toHaveLength(1);
+
+    await companyService(db).remove(companyId);
+
+    const companyAfter = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(companyAfter).toHaveLength(0);
+
+    const policiesAfter = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId));
+    expect(policiesAfter).toHaveLength(0);
   });
 
   it("runs the archive cascade when update() transitions a paused company to archived", async () => {
