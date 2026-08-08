@@ -1,7 +1,7 @@
 import type { BindMode, DeploymentExposure, DeploymentMode } from "./constants.js";
 
 export const LOOPBACK_BIND_HOST = "127.0.0.1";
-export const ALL_INTERFACES_BIND_HOST = "0.0.0.0";
+export const ALL_INTERFACES_BIND_HOST = "::";
 
 function normalizeHost(host: string | null | undefined): string | undefined {
   const trimmed = host?.trim();
