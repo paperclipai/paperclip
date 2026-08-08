@@ -237,4 +237,100 @@ describeEmbeddedPostgres("dashboard service", () => {
     // process_lost kills that recovered must not leak into the failed breakdown.
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
+
+  async function seedAuthAlertCompany() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  // Sequential timestamps; higher index = more recent.
+  function minuteAt(index: number): Date {
+    const base = Date.UTC(2026, 3, 20, 12, 0, 0);
+    return new Date(base + index * 60_000);
+  }
+
+  it("flags a systemic auth outage as consecutive auth failures", async () => {
+    const { companyId, agentId } = await seedAuthAlertCompany();
+    const base = { companyId, agentId, invocationSource: "assignment" };
+
+    await db.insert(heartbeatRuns).values([
+      // Older healthy runs, then the credential breaks and every run fails on auth.
+      { ...base, id: randomUUID(), status: "succeeded", createdAt: minuteAt(0) },
+      { ...base, id: randomUUID(), status: "succeeded", createdAt: minuteAt(1) },
+      { ...base, id: randomUUID(), status: "failed", errorCode: "auth_required", createdAt: minuteAt(2) },
+      { ...base, id: randomUUID(), status: "failed", errorCode: "acpx_auth_required", createdAt: minuteAt(3) },
+      { ...base, id: randomUUID(), status: "timed_out", errorCode: "auth_required", createdAt: minuteAt(4) },
+      { ...base, id: randomUUID(), status: "failed", errorCode: "github_token_unavailable", createdAt: minuteAt(5) },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.authFailureAlert).toMatchObject({
+      consecutiveFailures: 4,
+      threshold: 3,
+      triggered: true,
+      errorCode: "github_token_unavailable",
+    });
+    expect(summary.authFailureAlert.latestFailureAt).toBe(minuteAt(5).toISOString());
+  });
+
+  it("does not flag when a later success or non-auth failure breaks the auth streak", async () => {
+    const { companyId, agentId } = await seedAuthAlertCompany();
+    const base = { companyId, agentId, invocationSource: "assignment" };
+
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: randomUUID(), status: "failed", errorCode: "auth_required", createdAt: minuteAt(0) },
+      { ...base, id: randomUUID(), status: "failed", errorCode: "auth_required", createdAt: minuteAt(1) },
+      // Most recent run succeeded — the company recovered, so the streak is zero.
+      { ...base, id: randomUUID(), status: "succeeded", createdAt: minuteAt(2) },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.authFailureAlert).toMatchObject({
+      consecutiveFailures: 0,
+      triggered: false,
+      latestFailureAt: null,
+      errorCode: null,
+    });
+  });
+
+  it("does not count non-auth failures toward the auth streak", async () => {
+    const { companyId, agentId } = await seedAuthAlertCompany();
+    const base = { companyId, agentId, invocationSource: "assignment" };
+
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: randomUUID(), status: "failed", errorCode: "auth_required", createdAt: minuteAt(0) },
+      // Inactivity-monitor pollution is a failure but not an auth failure: it
+      // breaks the streak so ordinary noise never trips the credential alert.
+      { ...base, id: randomUUID(), status: "failed", errorCode: "claude_output_inactivity_monitor", createdAt: minuteAt(1) },
+      { ...base, id: randomUUID(), status: "failed", errorCode: "auth_required", createdAt: minuteAt(2) },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.authFailureAlert).toMatchObject({
+      consecutiveFailures: 1,
+      triggered: false,
+      errorCode: "auth_required",
+    });
+  });
 });
