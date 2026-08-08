@@ -803,6 +803,39 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("rejects an AWS class-3 allowlist key for a non-agent target before binding", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const sentinel = `aws-wrong-target-${randomUUID()}`;
+    const secret = await svc.create(companyId, {
+      name: `aws-wrong-target-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: sentinel,
+    });
+
+    await expect(
+      svc.createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "project",
+        targetId: randomUUID(),
+        configPath: "env.AWS_ACCESS_KEY_ID",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.access_key_id",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "class_3_static_lease_not_allowed" },
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.companyId, companyId));
+    expect(bindings).toHaveLength(0);
+    expect(JSON.stringify(bindings)).not.toContain(sentinel);
+  });
+
   it("denies user secret resolution outside the low-trust declaration allowlist", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

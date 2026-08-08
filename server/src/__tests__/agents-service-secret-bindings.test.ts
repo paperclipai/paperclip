@@ -162,6 +162,93 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     });
   });
 
+  it("persists and reads back the three exact AWS class-3 preflight refs without serializing their sentinels", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const sentinels = [
+      `aws-access-${randomUUID()}`,
+      `aws-secret-${randomUUID()}`,
+      `aws-session-${randomUUID()}`,
+    ];
+    const [accessKey, secretAccessKey, sessionToken] = await Promise.all(
+      sentinels.map((value, index) => secrets.create(companyId, {
+        name: `aws-preflight-${index}-${randomUUID()}`,
+        provider: "local_encrypted",
+        value,
+      })),
+    );
+    const expectedEnv = {
+      AWS_ACCESS_KEY_ID: {
+        type: "secret_ref",
+        secretId: accessKey.id,
+        version: "latest",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.access_key_id",
+      },
+      AWS_SECRET_ACCESS_KEY: {
+        type: "secret_ref",
+        secretId: secretAccessKey.id,
+        version: "latest",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.secret_access_key",
+      },
+      AWS_SESSION_TOKEN: {
+        type: "secret_ref",
+        secretId: sessionToken.id,
+        version: "latest",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.session_token",
+      },
+    };
+
+    const created = await agentService(db).create(companyId, {
+      name: "AWS Games Logging Preflight",
+      role: "operator",
+      adapterType: "codex_local",
+      adapterConfig: { env: expectedEnv },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+    const reloaded = await agentService(db).getById(created.id);
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+
+    expect(reloaded?.adapterConfig).toMatchObject({ env: expectedEnv });
+    expect(bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        secretId: accessKey.id,
+        configPath: "env.AWS_ACCESS_KEY_ID",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.access_key_id",
+      }),
+      expect.objectContaining({
+        secretId: secretAccessKey.id,
+        configPath: "env.AWS_SECRET_ACCESS_KEY",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.secret_access_key",
+      }),
+      expect.objectContaining({
+        secretId: sessionToken.id,
+        configPath: "env.AWS_SESSION_TOKEN",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "aws.games_logging_preflight.session_token",
+      }),
+    ]));
+    expect(bindings).toHaveLength(3);
+
+    const capturedOutput = JSON.stringify({ adapterConfig: reloaded?.adapterConfig, bindings });
+    for (const sentinel of sentinels) {
+      expect(capturedOutput).not.toContain(sentinel);
+    }
+  });
+
   it("rejects class-3 env lease bindings outside the enumerated allowlist", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
@@ -201,6 +288,78 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       .from(agents)
       .where(eq(agents.companyId, companyId));
     expect(persistedAgents).toHaveLength(0);
+  });
+
+  it("rejects missing, swapped, and fourth AWS-looking class-3 env refs before binding", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `aws-rejection-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: `aws-sentinel-${randomUUID()}`,
+    });
+    const cases = [
+      {
+        env: {
+          AWS_ACCESS_KEY_ID: {
+            type: "secret_ref" as const,
+            secretId: secret.id,
+            version: "latest" as const,
+            projectionClass: "class_3_static_lease" as const,
+          },
+        },
+        code: "class_3_static_lease_allowlist_required",
+      },
+      {
+        env: {
+          AWS_ACCESS_KEY_ID: {
+            type: "secret_ref" as const,
+            secretId: secret.id,
+            version: "latest" as const,
+            projectionClass: "class_3_static_lease" as const,
+            projectionAllowlistKey: "aws.games_logging_preflight.secret_access_key",
+          },
+        },
+        code: "class_3_static_lease_not_allowed",
+      },
+      {
+        env: {
+          AWS_REGION: {
+            type: "secret_ref" as const,
+            secretId: secret.id,
+            version: "latest" as const,
+            projectionClass: "class_3_static_lease" as const,
+            projectionAllowlistKey: "aws.games_logging_preflight.access_key_id",
+          },
+        },
+        code: "class_3_static_lease_not_allowed",
+      },
+    ];
+
+    for (const candidate of cases) {
+      await expect(
+        agentService(db).create(companyId, {
+          name: "Rejected AWS Static Lease",
+          role: "operator",
+          adapterType: "codex_local",
+          adapterConfig: { env: candidate.env },
+          runtimeConfig: {},
+          spentMonthlyCents: 0,
+          lastHeartbeatAt: null,
+        }),
+      ).rejects.toMatchObject({ status: 422, details: { code: candidate.code } });
+    }
+
+    const persistedAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const persistedBindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.companyId, companyId));
+    expect(persistedAgents).toHaveLength(0);
+    expect(persistedBindings).toHaveLength(0);
   });
 
   it("converts Hermes gateway apiKey strings into persisted secret refs", async () => {

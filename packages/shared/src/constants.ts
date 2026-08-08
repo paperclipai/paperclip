@@ -750,6 +750,27 @@ export const CLASS3_STATIC_LEASE_ALLOWLIST = [
     configPath: "credentials.bot_token",
     envKey: "DISCORD_BOT_TOKEN",
   },
+  {
+    key: "aws.games_logging_preflight.access_key_id",
+    label: "AWS games logging preflight access key ID",
+    targetType: "agent",
+    configPath: "env.AWS_ACCESS_KEY_ID",
+    envKey: "AWS_ACCESS_KEY_ID",
+  },
+  {
+    key: "aws.games_logging_preflight.secret_access_key",
+    label: "AWS games logging preflight secret access key",
+    targetType: "agent",
+    configPath: "env.AWS_SECRET_ACCESS_KEY",
+    envKey: "AWS_SECRET_ACCESS_KEY",
+  },
+  {
+    key: "aws.games_logging_preflight.session_token",
+    label: "AWS games logging preflight session token",
+    targetType: "agent",
+    configPath: "env.AWS_SESSION_TOKEN",
+    envKey: "AWS_SESSION_TOKEN",
+  },
 ] as const;
 export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
 
