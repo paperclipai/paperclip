@@ -7,6 +7,8 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
+import type { ServingCommit } from "../serving-commit.js";
+import { getCachedServingDrift } from "../serving-drift.js";
 import {
   getCloudStackContext,
   isCloudManagedInstance,
@@ -83,6 +85,12 @@ export function healthRoutes(
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     runtimeEnv?: CloudInstanceEnv;
+    /**
+     * The commit the serving tree is checked out at (LOOA-389). An identity
+     * trace the server can honestly prove, unlike the instance it attached to.
+     * Only exposed with full details, alongside `version`.
+     */
+    servingCommit?: ServingCommit | null;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -91,6 +99,32 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+  const servingCommit = opts.servingCommit ?? null;
+
+  /**
+   * The served commit (LOOA-389) enriched with cached drift (LOOA-412): how far
+   * behind `master` the serving tree is, computed by the background sweep and
+   * read from cache so the request path never fetches. `behindBy`/`stale` are
+   * attached only when the cache was computed against the *currently* served
+   * head — after a deploy reloads the process the startup snapshot advances but
+   * the cache lags one sweep, so a head mismatch means "not yet recomputed" and
+   * we report head/branch alone rather than a stale `behindBy`.
+   */
+  function servingTreeForResponse():
+    | (ServingCommit & { behindBy?: number; stale?: boolean; driftCheckedAtMs?: number })
+    | null {
+    if (!servingCommit) return null;
+    const drift = getCachedServingDrift();
+    if (drift && drift.head && drift.head === servingCommit.head) {
+      return {
+        ...servingCommit,
+        behindBy: drift.behindBy,
+        stale: drift.stale,
+        driftCheckedAtMs: drift.checkedAtMs,
+      };
+    }
+    return servingCommit;
+  }
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
@@ -149,6 +183,7 @@ export function healthRoutes(
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
+      const servingTree = servingTreeForResponse();
       res.json(
         exposeFullDetails
           ? {
@@ -157,6 +192,7 @@ export function healthRoutes(
               serverVersion: serverVersion,
               commit,
               serverInfo,
+              ...(servingTree ? { servingTree } : {}),
               ...(cloud ? { cloud } : {}),
             }
           : {
@@ -259,6 +295,7 @@ export function healthRoutes(
       return;
     }
 
+    const servingTree = servingTreeForResponse();
     res.json({
       status: "ok",
       version: serverVersion,
@@ -275,6 +312,7 @@ export function healthRoutes(
       serverInfo,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
+      ...(servingTree ? { servingTree } : {}),
       ...(devServer ? { devServer } : {}),
       ...(cloud ? { cloud } : {}),
     });

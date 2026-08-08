@@ -90,6 +90,7 @@ export type {
   BackupRetentionPolicy,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
+  ServerSideDriftSweepMode,
 } from "./instance.js";
 export type {
   SmokeLabServiceStatus,
@@ -115,6 +116,7 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
+  DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE,
 } from "./instance.js";
 export {
   TRUST_PRESETS,

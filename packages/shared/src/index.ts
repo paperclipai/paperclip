@@ -778,6 +778,7 @@ export type {
   InstanceSettings,
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
+  ServerSideDriftSweepMode,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
@@ -1498,6 +1499,7 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
+  DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE,
 } from "./types/instance.js";
 
 export type {
