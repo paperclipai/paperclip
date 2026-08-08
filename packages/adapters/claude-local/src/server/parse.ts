@@ -6,7 +6,12 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+// The OAuth branch is deliberately matched as the CLI's whole failure sentence
+// rather than on `OAuth session expired` alone: agents routinely quote that
+// phrase back when they *report on* an outage, and `detectClaudeLoginRequired`
+// reads the run's own result text, so the short form misreads those successful
+// reports as an auth failure.
+const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|failed\s+to\s+authenticate[\s\S]{0,40}oauth\s+session\s+expired\s+and\s+could\s+not\s+be\s+refreshed|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
