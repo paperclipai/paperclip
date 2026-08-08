@@ -755,17 +755,41 @@ export const suggestTasksResultSchema = z.object({
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
 });
 
-export const askUserQuestionsQuestionOptionSchema = z.object({
+// Agents commonly send options as plain strings and omit selectionMode (the
+// shape of Claude's own AskUserQuestion tool). Normalize that intuitive shape
+// to the canonical object form so those requests reach the user instead of 400.
+const slugifyAskUserOptionId = (label: string): string =>
+  label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "option";
+
+export const askUserQuestionsQuestionOptionSchema = z.preprocess((value) => {
+  if (typeof value === "string") {
+    return { id: slugifyAskUserOptionId(value), label: value };
+  }
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { id?: unknown }).id == null &&
+    typeof (value as { label?: unknown }).label === "string"
+  ) {
+    return { ...(value as object), id: slugifyAskUserOptionId((value as { label: string }).label) };
+  }
+  return value;
+}, z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
-});
+}));
 
 export const askUserQuestionsQuestionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(500),
   helpText: z.string().trim().max(1000).nullable().optional(),
-  selectionMode: z.enum(["single", "multi"]),
+  selectionMode: z.enum(["single", "multi"]).optional().default("single"),
   required: z.boolean().optional(),
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
 });
