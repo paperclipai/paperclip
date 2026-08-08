@@ -7,6 +7,7 @@ export const STATUS_ONLY_RECOVERY_GUARD_CONTEXT = {
   allowDeliverableWork: false,
   allowDocumentUpdates: false,
   resumeRequiresNormalModel: true,
+  forceFreshSession: true,
 } as const;
 
 const RECOVERY_MODEL_PROFILE_HINT_KEYS = [
