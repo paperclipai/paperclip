@@ -214,4 +214,98 @@ describe("RunWorkspaceRecoverySurface", () => {
     await flush();
     expect(reconcileMock).toHaveBeenCalledWith("ws-1", { mode: "quarantine_restore" });
   });
+
+  // --- PAP-13568 Phase 4b: clean-divergence "Restore recorded branch" + run-evidence fallback ---
+
+  function cleanDivergenceEvidence(overrides: Record<string, unknown> = {}) {
+    return {
+      reason: "git_worktree_branch_incoherence",
+      expectedBranch: "PAP-12915-recorded",
+      actualBranch: "fix/stable-dry-run-notes-gate",
+      cleanliness: "clean",
+      statusEntryCount: 0,
+      dirtyPathSample: [],
+      sourceIdentifier: "PAP-13359",
+      persistedExecutionWorkspaceId: "ws-1",
+      provenance: {
+        expectedHeadSha: "aaaa1111bbbb",
+        actualHeadSha: "cccc2222dddd",
+        ancestryVerdict: "diverged",
+        aheadCount: 6,
+        behindCount: 59,
+        plainLanguageReason:
+          "This agent couldn't start because its workspace was left on a different branch.",
+        parkedByIdentifier: "PAP-13359",
+        parkedByRunId: "2ef32c67ffff",
+      },
+      ...overrides,
+    };
+  }
+
+  it("offers the restore CTA (not the dirty repair) for a clean divergence recovery action", async () => {
+    const action = buildRecoveryAction();
+    action.evidence = { workspaceValidation: cleanDivergenceEvidence() };
+    issueGetMock.mockResolvedValue(buildIssue(action));
+    boardAccessMock.mockResolvedValue({ source: "local_implicit", companyIds: ["company-1"] });
+    const node = await renderSurface(buildRun());
+    expect(node.querySelector("[data-testid='recovery-action-restore-trigger']")).not.toBeNull();
+    // A clean divergence quarantines nothing, so the dirty repair action is absent.
+    expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).toBeNull();
+    // Ahead/behind + parked-by provenance render.
+    expect(node.querySelector("[data-testid='recovery-ahead-count']")?.textContent).toContain("6");
+    expect(node.querySelector("[data-testid='recovery-behind-count']")?.textContent).toContain("59");
+    expect(node.querySelector("[data-testid='recovery-parked-by']")?.textContent).toContain("PAP-13359");
+  });
+
+  it("wires the restore confirm to reconcile in restore mode against the pinned workspace", async () => {
+    const action = buildRecoveryAction();
+    action.evidence = { workspaceValidation: cleanDivergenceEvidence() };
+    issueGetMock.mockResolvedValue(buildIssue(action));
+    boardAccessMock.mockResolvedValue({ source: "local_implicit", companyIds: ["company-1"] });
+    reconcileMock.mockResolvedValue({ id: "ws-1" });
+    const node = await renderSurface(buildRun());
+    click(node.querySelector("[data-testid='recovery-action-restore-trigger']"));
+    click(document.body.querySelector("[data-testid='recovery-action-restore-confirm']"));
+    await flush();
+    expect(reconcileMock).toHaveBeenCalledWith("ws-1", { mode: "restore" });
+  });
+
+  it("renders a fallback diagnosis card from run evidence when there is no recovery action", async () => {
+    // Source issue is blocked / pending-interaction, so no recovery action was promoted (L3), but the
+    // run stamped branch-incoherence evidence on resultJson.
+    issueGetMock.mockResolvedValue(buildIssue(null));
+    boardAccessMock.mockResolvedValue({ source: "local_implicit", companyIds: ["company-1"] });
+    const node = await renderSurface(
+      buildRun({ resultJson: { workspaceValidation: cleanDivergenceEvidence() } }),
+    );
+    const surface = node.querySelector("[data-testid='run-workspace-recovery-surface']");
+    expect(surface).not.toBeNull();
+    expect(surface?.getAttribute("data-fallback")).toBe("true");
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(node.querySelector("[data-testid='recovery-action-restore-trigger']")).not.toBeNull();
+    // No persisted action to resolve → the resolve menu is intentionally absent on the fallback.
+    expect(node.querySelector("[data-testid='recovery-action-resolve-trigger']")).toBeNull();
+  });
+
+  it("wires the fallback restore confirm to reconcile using the evidence workspace id", async () => {
+    issueGetMock.mockResolvedValue(buildIssue(null));
+    boardAccessMock.mockResolvedValue({ source: "local_implicit", companyIds: ["company-1"] });
+    reconcileMock.mockResolvedValue({ id: "ws-1" });
+    const node = await renderSurface(
+      buildRun({ resultJson: { workspaceValidation: cleanDivergenceEvidence() } }),
+    );
+    click(node.querySelector("[data-testid='recovery-action-restore-trigger']"));
+    click(document.body.querySelector("[data-testid='recovery-action-restore-confirm']"));
+    await flush();
+    expect(reconcileMock).toHaveBeenCalledWith("ws-1", { mode: "restore" });
+  });
+
+  it("renders nothing when a failed run has neither a recovery action nor branch-incoherence evidence", async () => {
+    issueGetMock.mockResolvedValue(buildIssue(null));
+    boardAccessMock.mockResolvedValue(undefined);
+    const node = await renderSurface(
+      buildRun({ resultJson: { workspaceValidation: { reason: "workspace_not_reusable" } } }),
+    );
+    expect(node.querySelector("[data-testid='run-workspace-recovery-surface']")).toBeNull();
+  });
 });

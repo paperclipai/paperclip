@@ -131,9 +131,18 @@ export const executionWorkspacesApi = {
    *   `runtime:manage` permission, and requires a non-empty operator `reason`.
    * - `mode: "quarantine_restore"` — lossless dirty-worktree repair; the server quarantines the
    *   dirty changes onto a rescue branch and restores the recorded branch. No `reason` needed.
+   * - `mode: "restore"` — lossless *clean*-divergence repair (PAP-13568 Contract A). Restores the
+   *   recorded branch in a clean, anchored, uncontended worktree parked on a foreign branch that is
+   *   itself a real local ref; the parked branch keeps its commits (nothing is discarded). No
+   *   `reason` needed. The server side lands in PAP-13568 Phase 2 (PAP-13575); this client is
+   *   additive and forward-compatible with that route.
    */
   reconcile: (
     id: string,
-    body: { mode: "forward" } | { mode: "override"; reason: string } | { mode: "quarantine_restore" },
+    body:
+      | { mode: "forward" }
+      | { mode: "override"; reason: string }
+      | { mode: "quarantine_restore" }
+      | { mode: "restore" },
   ) => api.post<ExecutionWorkspace>(`/execution-workspaces/${id}/reconcile-branch`, body),
 };
