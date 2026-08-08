@@ -9,6 +9,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
+  isClaudeUnknownSessionErrorFromStreams,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
@@ -294,6 +295,50 @@ describe("isClaudeUnknownSessionError", () => {
         result: "Some other failure",
         errors: [{ message: "Network timeout" }],
       }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeUnknownSessionErrorFromStreams", () => {
+  it("detects the silent-recovery stderr warning when parsed result looks successful", () => {
+    expect(
+      isClaudeUnknownSessionErrorFromStreams({
+        parsed: { subtype: "success", is_error: false, result: "ok" },
+        stderr: "No conversation found with session ID: 4da9bae3-bb6f-4e5e-b639-b24a3742724a",
+      }),
+    ).toBe(true);
+  });
+
+  it("delegates to isClaudeUnknownSessionError when the parsed payload carries the message", () => {
+    expect(
+      isClaudeUnknownSessionErrorFromStreams({
+        parsed: { result: "Error: No conversation found with session id 1234" },
+        stderr: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive on stderr", () => {
+    expect(
+      isClaudeUnknownSessionErrorFromStreams({
+        parsed: null,
+        stderr: "no conversation found with session id abc",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated stderr noise", () => {
+    expect(
+      isClaudeUnknownSessionErrorFromStreams({
+        parsed: null,
+        stderr: "Warning: shell exited with signal SIGTERM",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when both parsed and stderr are empty", () => {
+    expect(
+      isClaudeUnknownSessionErrorFromStreams({ parsed: null, stderr: "" }),
     ).toBe(false);
   });
 });
