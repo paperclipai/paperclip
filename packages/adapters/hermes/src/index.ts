@@ -165,6 +165,7 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsLocalAgentJwt: true,
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
+    instructionsSupplementaryFiles: { hermes: "HERMES.md" },
     requiresMaterializedRuntimeSkills: false,
     getRuntimeCommandSpec,
     agentConfigurationDoc,

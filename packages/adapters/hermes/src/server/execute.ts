@@ -53,6 +53,11 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 
+import {
+  resolveFolderInstructions,
+  clearFolderInstructionsCache,
+} from "./folder-instructions.js";
+
 // ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
@@ -70,6 +75,58 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Paperclip API folder resolver for instruction inheritance
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a single agent folder via the Paperclip API.
+ * Returns null for absent/invalid folders (fail-open: no folder instructions).
+ *
+ * Uses the API key from the environment (PAPERCLIP_API_KEY) or the run's
+ * authToken, never from config (keys must never enter commits or config).
+ */
+async function resolveFolderFromApi(
+  companyId: string,
+  folderId: string,
+  apiUrl: string,
+  apiKey: string | null,
+): Promise<{ id: string; parentId: string | null; name: string; slug: string; sortOrder: number } | null> {
+  if (!apiKey) return null;
+
+  const url = `${apiUrl.replace(/\/+$/, "")}/companies/${companyId}/agent-folders/${folderId}`;
+
+  try {
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) return null;
+      return null;
+    }
+
+    const data = await resp.json();
+    if (!data || typeof data !== "object") return null;
+
+    return {
+      id: String(data.id ?? folderId),
+      parentId: data.parentId ? String(data.parentId) : null,
+      name: String(data.name ?? ""),
+      slug: String(data.slug ?? ""),
+      sortOrder: Number(data.sortOrder ?? 0),
+    };
+  } catch {
+    // Non-fatal: fail open — no folder instructions resolved
+    return null;
+  }
 }
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
@@ -404,6 +461,53 @@ export async function execute(
       await ctx.onLog(
         "stdout",
         `[hermes] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+    }
+  }
+
+  // ── Resolve folder-level shared instructions (JAC-4746 hierarchical folders) ──
+  // If the agent has a folderId, walk the folder chain and merge folder-level
+  // AGENTS.md instruction bundles. These are prepended to the agent's own
+  // instructions so that folder-level shared instructions cascade to all agents
+  // in the folder subtree. Fail open — if the API is unreachable or the agent
+  // has no folderId, no folder instructions are resolved.
+  const agentFolderId = (ctx.agent as any)?.folderId as string | undefined;
+  const agentCompanyId = ctx.agent?.companyId ?? "";
+  if (agentFolderId && agentCompanyId) {
+    const apiUrl =
+      cfgString(config.paperclipApiUrl) ||
+      process.env.PAPERCLIP_API_URL ||
+      "http://127.0.0.1:3101/api";
+    const apiKey =
+      (ctx as any).authToken ??
+      process.env.PAPERCLIP_API_KEY;
+
+    try {
+      const folderResult = await resolveFolderInstructions({
+        companyId: agentCompanyId,
+        folderId: agentFolderId,
+        resolveFolder: (id: string) =>
+          resolveFolderFromApi(agentCompanyId, id, apiUrl, apiKey ?? null),
+        agentInstructions: agentInstructions,
+      });
+
+      if (folderResult.mergedInstructions) {
+        const folderInstructions =
+          folderResult.mergedInstructions +
+          `\n\n[Folder instructions resolved from ${folderResult.chain.length} folder(s) in chain, fingerprint: ${folderResult.fingerprint ?? "null"}]`;
+        // Prepend folder instructions before agent instructions
+        agentInstructions = folderInstructions + "\n\n---\n\n" + agentInstructions;
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Loaded folder-level instructions from "${folderResult.chain.length} folder(s)" (${folderResult.mergedInstructions.length} chars)\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Non-fatal: fail open — log a warning but continue execution
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Warning: could not resolve folder instructions (folderId=${agentFolderId}): ${reason}\n`,
       );
     }
   }

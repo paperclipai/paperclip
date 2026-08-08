@@ -490,6 +490,17 @@ export interface ServerAdapterModule {
   instructionsPathKey?: string;
 
   /**
+   * Supplementary instruction files this adapter reads from folder instruction
+   * directories (JAC-4750 Phase 2). Each entry maps an adapter-internal key
+   * to the filename used inside folder instructions/ directories, e.g.
+   * { hermes: "HERMES.md", claude: "CLAUDE.md" }. The inheritance resolver
+   * reads these alongside AGENTS.md for each folder in the chain.
+   *
+   * Only honored when supportsInstructionsBundle is true.
+   */
+  instructionsSupplementaryFiles?: Record<string, string>;
+
+  /**
    * Adapter needs runtime skill entries materialized (written to disk)
    * before being passed via config. Used by adapters that scan a directory
    * rather than reading config.paperclipRuntimeSkills.

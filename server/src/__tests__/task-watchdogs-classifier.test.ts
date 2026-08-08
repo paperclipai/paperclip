@@ -72,13 +72,17 @@ describe("task watchdog subtree classifier", () => {
       expect.objectContaining({
         issueId: childId,
         status: "in_review",
+        // The human-readable leaf still carries the volatile ids for the review UI...
         pendingInteractionIds: ["interaction-1"],
+        // ...but the fingerprint material captures only the stable wait kind.
+        pendingInteractionKinds: ["request_confirmation"],
+        pendingApproval: false,
       }),
     ]);
     expect(result.stopSnapshot.waitsByIssueId).toEqual({
       [childId]: {
-        pendingInteractionIds: ["interaction-1"],
-        pendingApprovalIds: [],
+        pendingInteractionKinds: ["request_confirmation"],
+        pendingApproval: false,
       },
     });
     expect(result.pendingInteractionsByIssueId).toEqual({
@@ -187,12 +191,30 @@ describe("task watchdog subtree classifier", () => {
     if (initial.state !== "stopped") return;
     expect(initial.stopSnapshot.waitsByIssueId).toEqual({
       [sourceId]: {
-        pendingInteractionIds: [],
-        pendingApprovalIds: ["approval-1"],
+        pendingInteractionKinds: [],
+        pendingApproval: true,
       },
     });
+    // The volatile approval id is still surfaced to the woken agent, just not
+    // folded into the fingerprint.
+    expect(initial.pendingApprovalsByIssueId).toEqual({ [sourceId]: ["approval-1"] });
+  });
 
-    const changed = classify({
+  // JAC-3989: an approval being re-requested / revised mints a new approval id.
+  // That id churn must NOT re-wake a leaf that is still, validly, waiting on a
+  // human approval.
+  it("does not re-wake when a pending approval id changes but presence does not", () => {
+    const initial = classify({
+      issues: [
+        issue({ status: "in_review" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+      pendingApprovals: [{ companyId, issueId: sourceId, id: "approval-1", status: "pending" }],
+    });
+    expect(initial.state).toBe("stopped");
+    if (initial.state !== "stopped") return;
+
+    const churned = classify({
       watchdog: {
         companyId,
         issueId: sourceId,
@@ -206,13 +228,11 @@ describe("task watchdog subtree classifier", () => {
       pendingApprovals: [{ companyId, issueId: sourceId, id: "approval-2", status: "pending" }],
     });
 
-    expect(changed.state).toBe("stopped");
+    expect(churned.state).toBe("already_reviewed");
+    expect(churned.stopFingerprint).toBe(initial.stopFingerprint);
   });
 
   it.each([
-    ["wait set", {
-      pendingInteractions: [{ companyId, issueId: childId, id: "interaction-2", status: "pending" }],
-    }],
     ["leaf status", {
       issues: [issue({ status: "in_progress" }), issue({ id: childId, parentId: sourceId, status: "todo" })],
     }],
@@ -254,6 +274,91 @@ describe("task watchdog subtree classifier", () => {
     });
 
     expect(changed.state).toBe("stopped");
+  });
+
+  // JAC-3989 core case: when a watchdog review wakes an agent, the agent commonly
+  // answers by resolving the open question and posting a fresh one of the same
+  // kind. That swaps the interaction id while the leaf stays "waiting on a
+  // human". Keying the fingerprint on the interaction *id* re-woke the agent on
+  // every such self-inflicted swap; keying on the *kind* holds it stable.
+  it("does not re-wake when a pending interaction id changes but its kind does not", () => {
+    const baseIssues = [
+      issue({ status: "in_progress" }),
+      issue({ id: childId, parentId: sourceId, status: "blocked" }),
+    ];
+    const initial = classify({
+      issues: baseIssues,
+      pendingInteractions: [{
+        companyId,
+        issueId: childId,
+        id: "interaction-1",
+        kind: "ask_user_questions",
+        status: "pending",
+      }],
+    });
+    expect(initial.state).toBe("stopped");
+    if (initial.state !== "stopped") return;
+
+    const churned = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: initial.stopFingerprint,
+        lastReviewedStopSnapshot: initial.stopSnapshot,
+      },
+      issues: baseIssues,
+      // Different id, same kind — a self-inflicted follow-up question.
+      pendingInteractions: [{
+        companyId,
+        issueId: childId,
+        id: "interaction-2",
+        kind: "ask_user_questions",
+        status: "pending",
+      }],
+    });
+
+    expect(churned.state).toBe("already_reviewed");
+    expect(churned.stopFingerprint).toBe(initial.stopFingerprint);
+  });
+
+  it("re-wakes once when a materially new interaction kind appears", () => {
+    const baseIssues = [
+      issue({ status: "in_progress" }),
+      issue({ id: childId, parentId: sourceId, status: "blocked" }),
+    ];
+    const initial = classify({
+      issues: baseIssues,
+      pendingInteractions: [{
+        companyId,
+        issueId: childId,
+        id: "interaction-1",
+        kind: "ask_user_questions",
+        status: "pending",
+      }],
+    });
+    expect(initial.state).toBe("stopped");
+    if (initial.state !== "stopped") return;
+
+    const escalated = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: initial.stopFingerprint,
+        lastReviewedStopSnapshot: initial.stopSnapshot,
+      },
+      issues: baseIssues,
+      // A different *kind* of human ask is materially new and warrants a review.
+      pendingInteractions: [{
+        companyId,
+        issueId: childId,
+        id: "interaction-9",
+        kind: "request_confirmation",
+        status: "pending",
+      }],
+    });
+
+    expect(escalated.state).toBe("stopped");
+    expect(escalated.stopFingerprint).not.toBe(initial.stopFingerprint);
   });
 
   it("suppresses an unchanged stopped fingerprint once the watchdog reviewed it", () => {

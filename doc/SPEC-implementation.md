@@ -168,6 +168,7 @@ Invariant: every business record belongs to exactly one company.
 - `permissions` jsonb not null default `{}`
 - `last_heartbeat_at` timestamptz null
 - `metadata` jsonb null
+- `folder_id` uuid fk `agent_folders.id` null ON DELETE SET NULL — hierarchical folder membership for instruction inheritance (see 7.3a)
 
 Invariants:
 
@@ -186,6 +187,28 @@ Invariants:
 - `revoked_at` timestamptz null
 
 Invariant: plaintext key shown once at creation; only hash stored.
+
+## 7.3a `agent_folders`
+
+Hierarchical folder structure for organizing agent instruction inheritance. Each folder lives under a company and may nest under a parent folder (self-referential `parent_id`). `agents.folder_id` (see 7.2) references this table.
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null ON DELETE CASCADE
+- `parent_id` uuid fk `agent_folders.id` null ON DELETE SET NULL
+- `name` text not null
+- `slug` text not null
+- `sort_order` int not null default 0
+- `metadata` jsonb not null default `{}`
+- `created_at` timestamptz not null default now()
+- `updated_at` timestamptz not null default now()
+
+Indexes: unique `(company_id, parent_id, slug)`, unique `(company_id, parent_id, name)`, index on `(company_id, parent_id, sort_order, name)`.
+
+Invariants:
+- slug is unique within a company under a given parent (root or nested)
+- parent_id cannot reference a descendant (no cycles)
+- deleting a folder with child folders is rejected (move/delete children first)
+- deleting a folder with agents sets those agents' folder_id to NULL
 
 ## 7.4 `goals`
 
@@ -456,6 +479,45 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
+## 7.17 Publication Contract — Pointer Projection vs Canonical Ownership
+
+**Normative.** Paperclip and Ringer store **approval/evidence pointers, status summaries, and hashes only**. They do not store canonical full-content documents, raw transcripts, or private payloads as their authoritative copy. Canonical documents remain in Vault/OKF and versioned Agentic OS repositories.
+
+When Paperclip needs to reference a canonical document (a report, transcript, or private payload), it stores:
+- A **pointer**: an identifier or locator (e.g., Vault version ref, OKF document ID, workspace file path relative to a registered workspace).
+- A **hash**: SHA-256 of the referenced content for integrity verification.
+- A **status summary**: structured fields (verdict, pass/fail counts, token counts, timestamps, model/provider attribution) derived from the source.
+
+Paperclip may store full file content **only** as a cached attachment via the `assets`/`issue_attachments` mechanism, and only when:
+1. The attachment is explicitly approved for ingestion into Paperclip via a `publish_full_artifact` approval (see §7.17.2), AND
+2. The content is classified as non-sensitive (not raw prompts, not full private transcripts, not credentials or personal data).
+
+Copying any full report, raw transcript, or private payload into Paperclip or Ringer requires a **separate, explicit approval** — it must not happen implicitly via projection hooks, adapter output processing, or auto-projection. This approval is recorded in the `approvals` table with `type = 'publish_full_artifact'` and carries `artifact_kind`, `artifact_pointer`, `artifact_sha256`, and `redaction_state` columns. Work products created from an approved full-content publication carry `publication_approval_id` referencing the approval record.
+
+Paperclip's `publication_status` field (on `run_events`) tracks whether a run's cost/usage data is safe to publish downstream; the same fail-closed principle applies to full-content publication: `unknown` = blocked until explicit approval.
+
+**What NEVER enters Paperclip or Ringer as content (without explicit approval):**
+- Raw filesystem paths exposing the executor's home directory layout (`/Users/hermes/...`). Use content hashes + receipt references instead.
+- Full run-state `notes` field content (contains raw check output, spec text, missing-file lists).
+- Raw transcript text or full report body content.
+- Credentials, API keys, or personal data.
+- Localhost-bound dashboard URLs (non-portable, misleading to remote readers).
+- Aggregate `total_tokens` without per-agent decomposition (no safe zero per JAC-4530); project as `not_reported` with a pointer to per-agent breakdowns.
+
+### 7.17.1 Approval gate for full-content publication
+
+When a work product with `type = 'artifact'` and `provider = 'paperclip'` is created (i.e., an attachment-backed artifact), or when a full-content attachment (text/markdown, text/plain, text/csv, application/json, application/pdf, Office documents) is uploaded, Paperclip checks for an approved `publish_full_artifact` approval on the issue. If none exists, the request is rejected with `403 publish_full_artifact_approval_required`.
+
+Pointer-only references (`metadata.resourceRef.kind = 'workspace_file'`) and lightweight artifacts (images, zip, video) are exempt from this gate.
+
+### 7.17.2 `publish_full_artifact` approval type
+
+A new approval type `publish_full_artifact` is defined in `packages/shared/src/constants.ts` (`APPROVAL_TYPES`). The `approvals` table carries the following publication contract fields:
+- `artifact_kind`: `"full_report" | "raw_transcript" | "private_payload"`
+- `artifact_pointer`: source identifier (Vault ref, workspace path, etc.)
+- `artifact_sha256`: hash of the content for integrity verification
+- `redaction_state`: `"unredacted" | "partially_redacted" | "fully_redacted"` (reuses JAC-4533 enum)
+
 Decision-desk triage uses company-scoped sidecars rather than adding queue fields to every attention source:
 
 - `decision_queues` stores durable named queues, optional retention overrides, server-derived creator/run provenance, and data-backed seed rules.
@@ -465,6 +527,142 @@ Decision-desk triage uses company-scoped sidecars rather than adding queue field
 - `decision_retention` stores the attention source's last observed activity timestamp, monotonic version, Keep flag, and reversible archive provenance. Queue `retention_days` overrides use the shortest assigned queue threshold; otherwise the shelf threshold is 30 days.
 - `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
 - Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
+
+## 7.18 Hierarchical Agent Folders (JAC-4746)
+
+Agent folders (`agent_folders` table, see §7.3a) provide a hierarchical organization
+layer for agent instruction inheritance. `agents.folder_id` (see §7.2) links an
+agent to a folder. Folder-level shared instructions cascade to all agents in that
+folder's subtree, enabling efficient management of 100+ agent fleets.
+
+### 7.18.1 Disk Layout
+
+Folder-level shared instructions live on disk at:
+
+```
+<instanceRoot>/companies/<companyId>/folders/<folderId>/instructions/
+```
+
+- `<instanceRoot>` is resolved from `PAPERCLIP_INSTANCE_ROOT` env var, or
+  `$HOME/.paperclip/instances/default`.
+- Each folder's instruction directory contains an `AGENTS.md` entry file.
+  Additional `.md` files in the same directory are also included in the
+  fingerprint for cache staleness detection.
+- Agents with folder-specific overrides get a pointer file at:
+  `.../folders/<folderId>/instructions/<agentId>.md`
+  containing the agent-specific instructions (or a zero-override marker).
+- Agents without overrides use a pure-DB pointer (the `folder_id` column on the
+  `agents` table) and need no pointer file.
+
+### 7.18.2 Instruction Resolution
+
+1. The agent's own override file (pointer file at
+   `<instanceRoot>/companies/<companyId>/folders/<folderId>/instructions/<agentId>.md`
+   containing override content) takes highest precedence and is appended last.
+2. Resolve the parent folder chain (agent → leaf folder → parent → root)
+   and read `AGENTS.md` from each folder's instructions directory. The chain is
+   walked root→leaf, so parent-folder instructions are emitted first and
+   leaf (more specific) folder instructions last.
+3. Instructions are pre-merged in root→leaf order as a sequence of
+   `\`# [Folder: <name>]\`` sections, joined by `\n\n---\n\n`. Leaf-folder
+   content therefore appears closer to the agent overrides and is more specific.
+4. Per-adapter supplementary files are appended after each folder's `AGENTS.md`
+   section: `HERMES.md` for `hermes_local` adapters, `CLAUDE.md` for
+   `claude_local` adapters (see §7.18.4). Adapters may declare an alternative
+   map via `adapterConfig.instructionsSupplementaryFiles`.
+5. The agent's own override file content is appended as a `\`# [Agent: <name>]\``
+   section after all folder sections. Per-agent inline overrides from
+   `adapterConfig.instructionsOverrides` are appended last, as
+   `\`# [Agent: <name> (override)]\``, taking the highest precedence.
+6. Results are cached with a fingerprint covering the folder chain IDs, per-folder
+   content hashes (all `.md` files, not just `AGENTS.md`), the agent's own
+   override-file hash, the adapter type, and the supplementary-files map.
+7. Cache invalidation: when any instruction file in the chain is modified, the
+   fingerprint changes and re-merging is triggered. Folder mutations (rename,
+   move, metadata, assign/unassign agents, delete) call `invalidateCompanyCache`
+   which clears every cached entry for the affected company. The service uses a
+   Postgres advisory lock per company to serialize mutating operations.
+
+### 7.18.3 API Endpoints
+
+Agent folder routes are mounted under `/api/companies/:companyId/agent-folders`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/agent-folders` | List all folders for the company, with agent and descendant counts |
+| GET | `/agent-folders/:folderId` | Get a single folder by ID |
+| POST | `/agent-folders` | Create a new folder (root or nested under `parentId`) |
+| PATCH | `/agent-folders/:folderId` | Update folder name, slug, sort order, or metadata |
+| POST | `/agent-folders/:folderId/move` | Move a folder to a new parent (cycle detection enforced) |
+| DELETE | `/agent-folders/:folderId` | Delete an empty folder; nullifies agent folder_id on delete |
+| POST | `/agent-folders/:folderId/agents` | Assign agents to a folder |
+| GET | `/agent-folders/:folderId/agents` | Recursively list all agents in the folder subtree |
+| POST | `/agent-folders/agents/:agentId/move` | Move a single agent to a folder (or unassign with `folderId: null`) |
+| GET  | `/agent-folders/:folderId/instructions-bundle` | Read the merged instruction bundle for a folder, with `?path=<file>` to read a specific supplementary file |
+
+Folder migration routes (board-only, see §7.18.4):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/folders/migration-preview` | Preview unassigned agents grouped by role |
+| POST | `/folders/migrate-by-role` | Migrate all flat agents into role-based folders (idempotent) |
+| POST | `/folders/migrate-by-metadata` | Migrate flat agents grouped by a metadata key |
+| POST | `/folders/migrate-to-folder` | Migrate a specific list of agents into a named folder |
+| POST | `/folders/validate-inheritance` | Validate the inheritance chain for broken refs, cycles, missing instructions |
+
+### 7.18.4 Inheritance Resolution Behavior
+
+- **Single folder**: agent inherits instructions from its immediate folder's
+  `AGENTS.md`, merged with any override in the pointer file.
+- **Multi-level chain**: instructions are merged root→leaf. Parent-folder
+  sections appear first; leaf (more specific) folder sections appear last, then
+  agent overrides. All content is preserved (concatenation), so the effective
+  precedence is: leaf folder > intermediate folder > root folder > ... , with the
+  agent override section appended after all folder sections.
+- **Adapter-specific supplementary files**: after each folder's `AGENTS.md`
+  section, the engine reads the adapter-specific supplementary file for the
+  agent's `adapterType` if present in that folder's instructions directory.
+  `hermes_local` → `HERMES.md`; `claude_local` → `CLAUDE.md`. An adapter
+  type with no mapping reads no supplementary file. This is how adapter-tuned
+  preamble/system prompts layer onto folder-shared instructions.
+- **Agent overrides**: an agent with a pointer file containing override content
+  gets its own instructions appended as a final `# [Agent: <name>]` section
+  (not a replacement — all folder content is preserved). Per-agent inline
+  overrides from `adapterConfig.instructionsOverrides` are appended even later,
+  as `# [Agent: <name> (override)]`, and take the highest precedence.
+- **Inline overrides**: `adapterConfig.instructionsOverrides` (a string) is
+  merged as the final section. `adapterConfig.instructionsSupplementaryFiles`
+  (a `Record<string,string>` map of adapter type → filename) may override the
+  built-in `HERMES.md`/`CLAUDE.md` mapping or declare that an adapter has no
+  supplementary file.
+- **Backward compat**: agents without a `folder_id` get flat instructions
+  (empty merged bundle, empty chain). No migration is required — the column
+  is nullable and the resolver short-circuits to an empty result.
+- **Cache invalidation**: updating a folder (rename, move, metadata, assign or
+  unassign agents, delete) calls `invalidateCompanyCache(companyId)`, which
+  clears every cached merge for that company. Editing any `.md` file in any
+  folder’s instructions directory changes the per-folder content hash and
+  therefore the fingerprint, forcing a re-merge. The service uses a Postgres
+  advisory lock per company to serialize mutating operations.
+
+### 7.18.5 CLI Commands
+
+The `folder` command group provides:
+
+```
+paperclipai folder list                              — list agent folders
+paperclipai folder migrate-from-flat [--dry-run] [--group-by <key>] — migrate flat agents
+paperclipai folder migrate-to-folder --folder-name <n> --agent-ids <csv> [--dry-run]
+paperclipai folder unassign --agent-ids <csv|all>    — remove agents from folders
+paperclipai folder validate-inheritance              — validate inheritance chain
+```
+
+### 7.18.6 Disk Path Note
+
+The `agent_folders` table (§7.3a) is distinct from the pre-existing `folders`
+table used for routine/skill items. `agent_folders` is specifically for the
+agent instruction hierarchy and uses a separate API route namespace
+(`/agent-folders/`) versus skill/routine folders (`/folders/`).
 
 ## 8. State Machines
 

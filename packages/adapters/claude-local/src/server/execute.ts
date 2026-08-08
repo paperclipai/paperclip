@@ -79,6 +79,10 @@ import {
 } from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
+import {
+  resolveFolderInstructions,
+  clearFolderInstructionsCache,
+} from "./folder-instructions.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
@@ -88,6 +92,58 @@ import {
   formatClaudeAcpFallbackMessage,
   resolveClaudeExecutionEngineForRun,
 } from "./acp.js";
+
+// ---------------------------------------------------------------------------
+// Paperclip API folder resolver for instruction inheritance (JAC-4746)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a single agent folder via the Paperclip API.
+ * Returns null for absent/invalid folders (fail-open: no folder instructions).
+ *
+ * Uses the API key from the environment (PAPERCLIP_API_KEY) or the run's
+ * authToken, never from config (keys must never enter commits or config).
+ */
+async function resolveFolderFromApi(
+  companyId: string,
+  folderId: string,
+  apiUrl: string,
+  apiKey: string | null,
+): Promise<{ id: string; parentId: string | null; name: string; slug: string; sortOrder: number } | null> {
+  if (!apiKey) return null;
+
+  const url = `${apiUrl.replace(/\/+$/, "")}/companies/${companyId}/agent-folders/${folderId}`;
+
+  try {
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) return null;
+      return null;
+    }
+
+    const data = await resp.json();
+    if (!data || typeof data !== "object") return null;
+
+    return {
+      id: String(data.id ?? folderId),
+      parentId: data.parentId ? String(data.parentId) : null,
+      name: String(data.name ?? ""),
+      slug: String(data.slug ?? ""),
+      sortOrder: Number(data.sortOrder ?? 0),
+    };
+  } catch {
+    // Non-fatal: fail open — no folder instructions resolved
+    return null;
+  }
+}
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
@@ -504,6 +560,51 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // ── Resolve folder-level shared instructions (JAC-4746 hierarchical folders) ──
+  // If the agent has a folderId, walk the folder chain and merge folder-level
+  // AGENTS.md instruction bundles. These are prepended to the agent's own
+  // instructions so that folder-level shared instructions cascade to all agents
+  // in the folder subtree. Fail open — if the API is unreachable or the agent
+  // has no folderId, no folder instructions are resolved.
+  const agentFolderId = (agent as any)?.folderId as string | undefined;
+  const agentCompanyId = agent.companyId ?? "";
+  if (agentFolderId && agentCompanyId) {
+    const apiUrl =
+      asString(config.paperclipApiUrl, "") ||
+      process.env.PAPERCLIP_API_URL ||
+      "http://127.0.0.1:3101/api";
+    const apiKey = authToken ?? process.env.PAPERCLIP_API_KEY;
+
+    try {
+      const folderResult = await resolveFolderInstructions({
+        companyId: agentCompanyId,
+        folderId: agentFolderId,
+        resolveFolder: (id: string) =>
+          resolveFolderFromApi(agentCompanyId, id, apiUrl, apiKey ?? null),
+        agentInstructions: combinedInstructionsContents ?? "",
+      });
+
+      if (folderResult.mergedInstructions) {
+        const folderInstructions =
+          folderResult.mergedInstructions +
+          `\n\n[Folder instructions resolved from ${folderResult.chain.length} folder(s) in chain, fingerprint: ${folderResult.fingerprint ?? "null"}]`;
+        // Prepend folder instructions before agent instructions
+        combinedInstructionsContents = folderInstructions + "\n\n---\n\n" + (combinedInstructionsContents ?? "");
+        await onLog(
+          "stdout",
+          `[claude-local] Loaded folder-level instructions from "${folderResult.chain.length} folder(s)" (${folderResult.mergedInstructions.length} chars)\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // Non-fatal: fail open — log a warning but continue execution
+      await onLog(
+        "stderr",
+        `[claude-local] Warning: could not resolve folder instructions (folderId=${agentFolderId}): ${reason}\n`,
+      );
+    }
+  }
+
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),

@@ -11,6 +11,11 @@ export {
   syncHermesSkills as syncSkills,
   resolveHermesDesiredSkillNames as resolveDesiredSkillNames,
 } from "./skills.js";
+export {
+  resolveFolderInstructions,
+  clearFolderInstructionsCache,
+  checkFolderInstructionsFreshness,
+} from "./folder-instructions.js";
 
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 

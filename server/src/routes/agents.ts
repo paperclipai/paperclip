@@ -55,6 +55,8 @@ import {
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
+  writeAgentFolderPointerFile,
+  removeAgentFolderPointerFile,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -110,6 +112,7 @@ import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { logger } from "../middleware/logger.js";
+import { invalidateCompanyCache } from "../services/agent-instructions-inheritance.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -210,6 +213,8 @@ export function agentRoutes(
     "instructionsEntryFile",
     "instructionsFilePath",
     "agentsMdPath",
+    "instructionsFolderId",
+    "instructionsOverrides",
   ] as const;
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
@@ -229,7 +234,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -2589,6 +2594,17 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    
+    // Phase 3 (JAC-4752): Write pointer file if the agent is assigned to a folder
+    if (agent.folderId && agent.name) {
+      await writeAgentFolderPointerFile(
+        { id: agent.id, companyId: agent.companyId, name: agent.name, adapterConfig: agent.adapterConfig ?? {}, adapterType: agent.adapterType, folderId: agent.folderId },
+        agent.folderId,
+      ).catch((err) => {
+        // Fail open: pointer file creation should not block agent creation
+        console.error(`[JAC-4752] Failed to write pointer file for agent ${agent.id}:`, err);
+      });
+    }
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -2775,6 +2791,17 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+
+    // Phase 3 (JAC-4752): Write pointer file if the agent is assigned to a folder
+    if (agent.folderId && agent.name) {
+      await writeAgentFolderPointerFile(
+        { id: agent.id, companyId: agent.companyId, name: agent.name, adapterConfig: agent.adapterConfig ?? {}, adapterType: agent.adapterType, folderId: agent.folderId },
+        agent.folderId,
+      ).catch((err) => {
+        // Fail open: pointer file creation should not block agent creation
+        console.error(`[JAC-4752] Failed to write pointer file for agent ${agent.id}:`, err);
+      });
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2992,6 +3019,9 @@ export function agentRoutes(
         },
       },
     );
+
+    // Invalidate inheritance cache — agent's override instructions changed
+    if (existing.folderId) invalidateCompanyCache(existing.companyId);
 
     await logActivity(db, {
       companyId: existing.companyId,
@@ -3233,6 +3263,12 @@ export function agentRoutes(
       await assertCanUpdateAgent(req, existing);
     }
 
+    // Phase 3 (JAC-4752): Handle folderId changes — manage pointer files
+    const nextFolderId = hasOwn(patchData, "folderId")
+      ? (typeof patchData.folderId === "string" ? patchData.folderId : null)
+      : existing.folderId;
+    const folderIdChanged = nextFolderId !== existing.folderId;
+    
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
@@ -3246,6 +3282,27 @@ export function agentRoutes(
       return;
     }
 
+    // Phase 3 (JAC-4752): Update pointer files when folderId changes
+    if (folderIdChanged && agent.name) {
+      // Remove pointer file from old folder if agent was previously in a folder
+      if (existing.folderId) {
+        await removeAgentFolderPointerFile(
+          existing.companyId,
+          existing.folderId,
+          agent.id,
+        ).catch(() => undefined);
+      }
+      // Write pointer file to new folder if agent is assigned to one
+      if (agent.folderId) {
+        await writeAgentFolderPointerFile(
+          { id: agent.id, companyId: agent.companyId, name: agent.name, adapterConfig: agent.adapterConfig ?? {}, adapterType: agent.adapterType, folderId: agent.folderId },
+          agent.folderId,
+        ).catch((err) => {
+          console.error(`[JAC-4752] Failed to write pointer file for agent ${agent.id}:`, err);
+        });
+      }
+    }
+    
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,

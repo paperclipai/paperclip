@@ -63,6 +63,20 @@ export interface AgentInstructionsBundle {
   legacyPromptTemplateActive: boolean;
   legacyBootstrapPromptTemplateActive: boolean;
   files: AgentInstructionsFileSummary[];
+  /** Inheritance chain metadata (JAC-4750 Phase 2). Present when the agent has a folderId. */
+  inheritanceChain?: InheritanceChainEntry[];
+  /** Fingerprint of the resolved instructions bundle. Present when inheritance is active. */
+  instructionsFingerprint?: string | null;
+}
+
+/** A folder in the inheritance chain, returned in the bundle response (JAC-4750 Phase 2). */
+export interface InheritanceChainEntry {
+  folderId: string;
+  folderName: string;
+  folderSlug: string;
+  hasInstructions: boolean;
+  fileMtime: string | null;
+  contentHash: string | null;
 }
 
 export interface AgentAccessState {
@@ -94,6 +108,7 @@ export interface Agent {
   adapterConfig: Record<string, unknown>;
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
+  folderId?: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;

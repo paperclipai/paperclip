@@ -2,6 +2,11 @@ export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from 
 export * from "./acp.js";
 export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
+export {
+  resolveFolderInstructions,
+  clearFolderInstructionsCache,
+  checkFolderInstructionsFreshness,
+} from "./folder-instructions.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
 export {

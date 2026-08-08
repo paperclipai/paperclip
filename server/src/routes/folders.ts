@@ -11,7 +11,8 @@ import {
 import { validate } from "../middleware/validate.js";
 import { badRequest, forbidden } from "../errors.js";
 import { folderService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { FolderMigrationService } from "../services/folder-migration.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function folderRoutes(db: Db) {
   const router = Router();
@@ -170,6 +171,178 @@ export function folderRoutes(db: Db) {
     });
     res.json({ deleted });
   });
+
+  // ── Folder Migration ────────────────────────────────────────
+
+  /** GET /companies/:companyId/folders/migration-preview — Preview unassigned agents */
+  router.get(
+    "/companies/:companyId/folders/migration-preview",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const migrationService = new FolderMigrationService(db);
+        const summary = await migrationService.getUnassignedSummary(companyId);
+        res.json(summary);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /companies/:companyId/folders/migrate-by-role — Migrate unassigned agents to role folders */
+  router.post(
+    "/companies/:companyId/folders/migrate-by-role",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const actor = getActorInfo(req);
+        const migrationService = new FolderMigrationService(db);
+        const result = await migrationService.migrateByRole(companyId);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "folder.migration_by_role",
+          entityType: "folder",
+          entityId: "",
+          details: { total: result.totalUnassigned, groups: result.groupsCreated },
+        });
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /companies/:companyId/folders/migrate-by-metadata — Migrate unassigned agents grouped by a metadata key */
+  router.post(
+    "/companies/:companyId/folders/migrate-by-metadata",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const key = req.body?.key;
+        if (typeof key !== "string" || key.trim() === "") {
+          res.status(400).json({ error: "metadata key is required in request body" });
+          return;
+        }
+        const actor = getActorInfo(req);
+        const migrationService = new FolderMigrationService(db);
+        const result = await migrationService.migrateByMetadataKey(companyId, key);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "folder.migration_by_metadata",
+          entityType: "folder",
+          entityId: "",
+          details: { key, total: result.totalUnassigned, groups: result.groupsCreated },
+        });
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /companies/:companyId/folders/migrate-to-folder — Migrate a list of agents into a named folder */
+  router.post(
+    "/companies/:companyId/folders/migrate-to-folder",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const folderName = req.body?.folderName;
+        const agentIds = req.body?.agentIds;
+        if (typeof folderName !== "string" || folderName.trim() === "") {
+          res.status(400).json({ error: "folderName is required in request body" });
+          return;
+        }
+        if (!Array.isArray(agentIds) || agentIds.length === 0) {
+          res.status(400).json({ error: "agentIds array is required in request body" });
+          return;
+        }
+        const actor = getActorInfo(req);
+        const migrationService = new FolderMigrationService(db);
+        const result = await migrationService.migrateToCustomFolder(companyId, folderName, agentIds);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "folder.migration_to_folder",
+          entityType: "folder",
+          entityId: "",
+          details: { folderName, total: result.totalUnassigned, foldersCreated: result.foldersCreated },
+        });
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /companies/:companyId/folders/validate-inheritance — Validate folder inheritance chain */
+  router.post(
+    "/companies/:companyId/folders/validate-inheritance",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const actor = getActorInfo(req);
+        const migrationService = new FolderMigrationService(db);
+        const result = await migrationService.validateInheritance(companyId);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "folder.inheritance_validated",
+          entityType: "folder",
+          entityId: "",
+          details: { issueCount: result.issueCount, totalAgents: result.totalAgents },
+        });
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** GET /companies/:companyId/folders/validate-inheritance — Validate folder inheritance chain (GET convenience) */
+  router.get(
+    "/companies/:companyId/folders/validate-inheritance",
+    assertBoard,
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        assertCompanyAccess(req, companyId);
+        const migrationService = new FolderMigrationService(db);
+        const result = await migrationService.validateInheritance(companyId);
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
 
   return router;
 }
