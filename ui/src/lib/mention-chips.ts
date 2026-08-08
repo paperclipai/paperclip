@@ -1,5 +1,12 @@
 import type { CSSProperties } from "react";
-import { parseAgentMentionHref, parseProjectMentionHref } from "@paperclipai/shared";
+import {
+  parseAgentMentionHref,
+  parseIssueReferenceHref,
+  parseProjectMentionHref,
+  parseRoutineMentionHref,
+  parseSkillMentionHref,
+  parseUserMentionHref,
+} from "@paperclipai/shared";
 import { getAgentIcon } from "./agent-icons";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
@@ -10,14 +17,43 @@ export type ParsedMentionChip =
       icon: string | null;
     }
   | {
+      kind: "issue";
+      identifier: string;
+    }
+  | {
       kind: "project";
       projectId: string;
       color: string | null;
+    }
+  | {
+      kind: "user";
+      userId: string;
+    }
+  | {
+      kind: "skill";
+      skillId: string;
+      slug: string | null;
+    }
+  | {
+      kind: "routine";
+      routineId: string;
     };
 
 const iconMaskCache = new Map<string, string>();
 
 export function parseMentionChipHref(href: string): ParsedMentionChip | null {
+  if (/^https?:\/\//i.test(href.trim())) {
+    return null;
+  }
+
+  const issue = parseIssueReferenceHref(href);
+  if (issue) {
+    return {
+      kind: "issue",
+      identifier: issue.identifier,
+    };
+  }
+
   const agent = parseAgentMentionHref(href);
   if (agent) {
     return {
@@ -33,6 +69,31 @@ export function parseMentionChipHref(href: string): ParsedMentionChip | null {
       kind: "project",
       projectId: project.projectId,
       color: project.color,
+    };
+  }
+
+  const user = parseUserMentionHref(href);
+  if (user) {
+    return {
+      kind: "user",
+      userId: user.userId,
+    };
+  }
+
+  const skill = parseSkillMentionHref(href);
+  if (skill) {
+    return {
+      kind: "skill",
+      skillId: skill.skillId,
+      slug: skill.slug,
+    };
+  }
+
+  const routine = parseRoutineMentionHref(href);
+  if (routine) {
+    return {
+      kind: "routine",
+      routineId: routine.routineId,
     };
   }
 
@@ -85,7 +146,11 @@ export function clearMentionChipDecoration(element: HTMLElement) {
   element.classList.remove(
     "paperclip-mention-chip",
     "paperclip-mention-chip--agent",
+    "paperclip-mention-chip--issue",
     "paperclip-mention-chip--project",
+    "paperclip-mention-chip--routine",
+    "paperclip-mention-chip--user",
+    "paperclip-mention-chip--skill",
     "paperclip-project-mention-chip",
   );
   element.removeAttribute("contenteditable");

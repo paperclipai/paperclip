@@ -242,7 +242,7 @@ echo "==> Building onboard smoke image"
 docker build \
   --build-arg PAPERCLIPAI_VERSION="$PAPERCLIPAI_VERSION" \
   --build-arg HOST_UID="$HOST_UID" \
-  -f "$REPO_ROOT/Dockerfile.onboard-smoke" \
+  -f "$REPO_ROOT/docker/Dockerfile.onboard-smoke" \
   -t "$IMAGE_NAME" \
   "$REPO_ROOT"
 

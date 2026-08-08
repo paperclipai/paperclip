@@ -1,8 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import {
+  getDevServerRestartRequestFilePath,
+  readPersistedDevServerStatus,
+  toDevServerHealthStatus,
+  writeDevServerRestartRequest,
+} from "../dev-server-status.js";
 
 const tempDirs = [];
 
@@ -61,6 +66,38 @@ describe("dev server status helpers", () => {
       autoRestartEnabled: true,
       activeRunCount: 3,
       waitingForIdle: true,
+    });
+  });
+
+  it("ignores oversized persisted status files", () => {
+    const filePath = createTempStatusFile({
+      dirty: true,
+      changedPathsSample: ["x".repeat(70 * 1024)],
+      pendingMigrations: [],
+    });
+
+    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toBeNull();
+  });
+
+  it("writes restart requests next to the persisted status file", () => {
+    const filePath = createTempStatusFile({
+      dirty: true,
+      changedPathsSample: ["server/src/app.ts"],
+      pendingMigrations: [],
+    });
+
+    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    expect(writeDevServerRestartRequest({
+      requestedAt: "2026-03-20T12:05:00.000Z",
+      reason: "manual_restart_now",
+    }, env)).toBe(true);
+
+    const requestPath = getDevServerRestartRequestFilePath(env);
+    expect(requestPath).toBe(path.join(path.dirname(filePath), "dev-server-restart-request.json"));
+    expect(requestPath && existsSync(requestPath)).toBe(true);
+    expect(JSON.parse(readFileSync(requestPath!, "utf8"))).toEqual({
+      requestedAt: "2026-03-20T12:05:00.000Z",
+      reason: "manual_restart_now",
     });
   });
 });

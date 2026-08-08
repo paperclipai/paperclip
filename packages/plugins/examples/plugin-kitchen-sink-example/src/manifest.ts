@@ -41,6 +41,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "goals.update",
     "activity.log.write",
     "metrics.write",
+    "telemetry.track",
     "plugin.state.read",
     "plugin.state.write",
     "events.subscribe",
@@ -192,6 +193,13 @@ const manifest: PaperclipPluginManifestV1 = {
         id: SLOT_IDS.settingsPage,
         displayName: "Kitchen Sink Settings",
         exportName: EXPORT_NAMES.settingsPage,
+      },
+      {
+        type: "companySettingsPage",
+        id: SLOT_IDS.companySettingsPage,
+        displayName: "Kitchen Sink",
+        exportName: EXPORT_NAMES.companySettingsPage,
+        routePath: "kitchen-sink",
       },
       {
         type: "dashboardWidget",

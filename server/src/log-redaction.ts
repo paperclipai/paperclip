@@ -112,6 +112,7 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
   let result = input;
 
   for (const homeDir of [...homeDirs].sort((a, b) => b.length - a.length)) {
+    if (!result.includes(homeDir)) continue;
     const lastSegment = splitPathSegments(homeDir).pop() ?? "";
     const replacementDir = lastSegment
       ? replaceLastPathSegment(homeDir, maskUserNameForLogs(lastSegment, replacement))
@@ -120,6 +121,7 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
   }
 
   for (const userName of [...userNames].sort((a, b) => b.length - a.length)) {
+    if (!result.includes(userName)) continue;
     const pattern = new RegExp(`(?<![A-Za-z0-9._-])${escapeRegExp(userName)}(?![A-Za-z0-9._-])`, "g");
     result = result.replace(pattern, maskUserNameForLogs(userName, replacement));
   }

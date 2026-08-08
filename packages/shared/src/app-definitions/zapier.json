@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "slug": "zapier",
+  "name": "Zapier",
+  "description": "Reach thousands of apps through your Zapier account.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=zapier.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.zapier.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.zapier.com/api/mcp"
+      },
+      "guidanceMd": "Create a Zapier MCP connection, then paste its token here.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Zapier MCP token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Zapier token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      }
+    }
+  ]
+}

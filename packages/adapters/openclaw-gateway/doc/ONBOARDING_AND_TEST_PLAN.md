@@ -66,7 +66,7 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 
 ### 1) Start Paperclip
 ```bash
-pnpm dev --tailscale-auth
+pnpm dev --bind lan
 curl -fsS http://127.0.0.1:3100/api/health
 ```
 

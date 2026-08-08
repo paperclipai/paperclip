@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "slug": "google-sheets",
+  "name": "Google Sheets",
+  "description": "Read and update selected spreadsheets.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=sheets.google.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://docs.google.com/spreadsheets/*",
+    "https://sheets.google.com/*"
+  ],
+  "methods": [
+    {
+      "key": "local",
+      "transport": "local_stdio",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {
+        "templateKey": "paperclip.google-sheets"
+      },
+      "guidanceMd": "Share each spreadsheet with the Paperclip robot email, then paste the sheet links.",
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "spreadsheet"
+      ]
+    }
+  ]
+}

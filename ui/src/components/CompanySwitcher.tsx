@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { useState } from "react";
 
 function statusDotColor(status?: string): string {
   switch (status) {
@@ -24,12 +25,20 @@ function statusDotColor(status?: string): string {
   }
 }
 
-export function CompanySwitcher() {
+interface CompanySwitcherProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
@@ -46,7 +55,7 @@ export function CompanySwitcher() {
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[220px]">
+      <DropdownMenuContent align="start" className="w-(--sz-220px)">
         <DropdownMenuLabel>Companies</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (
