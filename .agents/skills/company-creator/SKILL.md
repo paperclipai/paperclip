@@ -173,7 +173,38 @@ Ask the user where to write the package. Common options:
 - Org chart as a markdown list or table showing agents, titles, reporting structure, and skills
 - Brief description of each agent's role
 - Citations and references: link to the source repo (if from-repo), link to the Agent Companies spec (https://agentcompanies.io/specification), and link to Paperclip (https://github.com/paperclipai/paperclip)
-- A "Getting Started" section explaining how to import: `paperclipai company import --from <path>`
+- A "Getting Started" section explaining how to import. **Verify the invocation
+  against this checkout before writing it** — never copy it from memory or from an
+  older README. Resolve it, in this order:
+  1. `grep -n 'command("import"' -A 12 cli/src/commands/client/company.ts` — the
+     source of truth for the arguments the CLI actually accepts;
+  2. if no such command exists, fall back to the HTTP route:
+     `grep -n 'companies/import' server/src/routes/openapi.ts`
+     (`POST /api/companies/import/preview`, then `POST /api/companies/import`).
+
+  As of this checkout the source is a POSITIONAL argument, **not** `--from`:
+
+  ```bash
+  paperclipai company import <pathOrUrl> \
+    --include company,agents,projects,issues,tasks,skills \
+    --target new --new-company-name "<Name>"
+  ```
+
+  Always pass `--include` explicitly, listing every part the package actually
+  contains. An under-specified include set imports a SUBSET and still reports
+  success — a package can land with zero projects, tasks and skills and look like
+  it worked.
+
+  This applies to the HTTP fallback too. Omitting `include` there does not mean
+  "import everything". The server fills in `DEFAULT_INCLUDE`
+  (`server/src/services/company-portability.ts`), which is:
+
+  ```
+  company: true, agents: true, projects: false, issues: false, skills: false
+  ```
+
+  The request then succeeds while it drops every project, issue and skill in the
+  package. Send `include` with each part set explicitly.
 
 **LICENSE** — include a LICENSE file. The copyright holder is the user creating the company, not the upstream repo author (they made the skills, the user is making the company). Use the same license type as the source repo (if from-repo) or ask the user (if from-scratch). Default to MIT if unclear.
 
