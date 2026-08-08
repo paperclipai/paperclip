@@ -141,8 +141,11 @@ function healthFor(response: any, issueId: string) {
   return health;
 }
 
-function assertEveryNodeIsSelfCanonical(response: any) {
+function assertEveryNodeIsSelfCanonical(response: any, expectedIssueIds: string[]) {
   expect(response.body.treeHealth.nodes).toHaveLength(response.body.nodes.length);
+  expect(response.body.nodes.map((node: { issue: { id: string } }) => node.issue.id).sort()).toEqual(
+    [...expectedIssueIds].sort(),
+  );
   for (const node of response.body.treeHealth.nodes) {
     expect(node).toMatchObject({
       canonicalContinuationId: node.issueId,
@@ -151,7 +154,13 @@ function assertEveryNodeIsSelfCanonical(response: any) {
   }
 }
 
-async function readDiagnostics(db: Db, company: CompanyRow, root: IssueRow, query?: Record<string, number>) {
+async function readDiagnostics(
+  db: Db,
+  company: CompanyRow,
+  root: IssueRow,
+  expectedIssueIds: string[],
+  query?: Record<string, number>,
+) {
   const before = await snapshotDiagnosticInputs(db, company.id);
   const response = await request(createApp(db, company))
     .get(`/api/issues/${root.id}/diagnostics/subtree`)
@@ -160,7 +169,7 @@ async function readDiagnostics(db: Db, company: CompanyRow, root: IssueRow, quer
 
   expect(response.status, JSON.stringify(response.body)).toBe(200);
   expect(after).toEqual(before);
-  assertEveryNodeIsSelfCanonical(response);
+  assertEveryNodeIsSelfCanonical(response, expectedIssueIds);
   return response;
 }
 
@@ -187,42 +196,37 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
 
   it("keeps legitimate parallel convergence as independent execution continuations", async () => {
     const company = await seedCompany(db, "Parallel convergence");
-    const agent = await seedAgent(db, company.id);
+    const firstAgent = await seedAgent(db, company.id);
+    const secondAgent = await seedAgent(db, company.id);
     const root = await seedIssue(db, {
       companyId: company.id,
       title: "Converge independent work",
       status: "in_progress",
-      assigneeAgentId: agent.id,
+      assigneeAgentId: firstAgent.id,
     });
     const first = await seedIssue(db, {
       companyId: company.id,
       parentId: root.id,
-      title: "Convergent implementation",
+      title: "Implement API convergence",
       status: "in_progress",
-      assigneeAgentId: agent.id,
+      assigneeAgentId: firstAgent.id,
     });
     const second = await seedIssue(db, {
       companyId: company.id,
       parentId: root.id,
-      title: "  convergent   implementation ",
+      title: "Validate UI convergence",
       status: "in_progress",
-      assigneeAgentId: agent.id,
+      assigneeAgentId: secondAgent.id,
     });
-    await db.update(issues).set({
-      createdAt: new Date(first.createdAt.getTime() + 1_000),
-    }).where(eq(issues.id, second.id));
 
-    const response = await readDiagnostics(db, company, root);
+    const response = await readDiagnostics(db, company, root, [root.id, first.id, second.id]);
 
+    expect(response.body.treeHealth.cycleStatus).toBe("clear");
+    expect(response.body.treeHealth.continuationWarning).toBe(false);
+    expect(response.body.treeHealth.supersessionCandidates).toEqual([]);
     expect(healthFor(response, root.id)).toMatchObject({ unresolvedPathType: "execution" });
     expect(healthFor(response, first.id)).toMatchObject({ unresolvedPathType: "execution" });
     expect(healthFor(response, second.id)).toMatchObject({ unresolvedPathType: "execution" });
-    expect(response.body.treeHealth.supersessionCandidates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ predecessorIssueId: first.id, successorIssueId: second.id }),
-    ]));
-    expect(response.body.nodes.map((node: { issue: { id: string } }) => node.issue.id)).toEqual(
-      expect.arrayContaining([root.id, first.id, second.id]),
-    );
     expect(response.body.edges.filter((edge: { kind: string }) => edge.kind === "blocks")).toEqual([]);
   });
 
@@ -249,7 +253,7 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
       assigneeAgentId: agent.id,
     });
 
-    const response = await readDiagnostics(db, company, root);
+    const response = await readDiagnostics(db, company, root, [root.id, completedReview.id, survivor.id]);
 
     expect(healthFor(response, completedReview.id)).toMatchObject({ unresolvedPathType: "none" });
     expect(healthFor(response, survivor.id)).toMatchObject({ unresolvedPathType: "execution" });
@@ -257,6 +261,7 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
       parentId: root.id,
       issue: { status: "in_progress" },
     });
+    expect(response.body.treeHealth.supersessionCandidates).toEqual([]);
     expect(response.body.edges.filter((edge: { kind: string }) => edge.kind === "blocks")).toEqual([]);
   });
 
@@ -268,7 +273,7 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
       status: "blocked",
     });
 
-    const response = await readDiagnostics(db, company, root);
+    const response = await readDiagnostics(db, company, root, [root.id]);
 
     expect(healthFor(response, root.id)).toMatchObject({ unresolvedPathType: "external" });
     expect(response.body.nodes[0]).toMatchObject({
@@ -301,7 +306,7 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
     await blockIssue(db, company.id, left.id, right.id);
     await blockIssue(db, company.id, right.id, left.id);
 
-    const response = await readDiagnostics(db, company, root);
+    const response = await readDiagnostics(db, company, root, [root.id, left.id, right.id]);
 
     expect(response.body.treeHealth.cycleStatus).toBe("detected");
     expect(healthFor(response, left.id)).toMatchObject({ unresolvedPathType: "cycle", cycleStatus: "detected" });
@@ -347,7 +352,7 @@ describeEmbeddedPostgres("canonical-continuation regression fixtures", () => {
       },
     ]);
 
-    const response = await readDiagnostics(db, company, root, {
+    const response = await readDiagnostics(db, company, root, [root.id], {
       successfulRunsWithoutProgressWarning: 2,
     });
 
