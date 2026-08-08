@@ -49,7 +49,8 @@
     "build": "tsc && cp src/server/codex-auth-merge-decision.cjs src/server/codex-auth-merge-extract.sh dist/server/",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json"
+    "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json",
+    "proof:device-login": "pnpm exec tsx src/cli/device-login-proof.ts"
   },
   "dependencies": {
     "@agentclientprotocol/codex-acp": "^1.1.4",
@@ -57,7 +58,9 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
+    "@paperclipai/db": "workspace:*",
     "@types/node": "^22.20.1",
+    "drizzle-orm": "^0.45.2",
     "typescript": "^5.7.3"
   }
 }
