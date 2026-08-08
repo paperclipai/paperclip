@@ -23,6 +23,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   throwOnRender: false,
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
+  insertMarkdownCalls: [] as string[],
 }));
 
 function containsHtmlLikeTag(markdown: string) {
@@ -69,6 +70,10 @@ vi.mock("@mdxeditor/editor", async () => {
     const editableRef = React.useRef<HTMLDivElement>(null);
     const handle = React.useMemo(() => ({
       setMarkdown: (value: string) => setContent(value),
+      insertMarkdown: (value: string) => {
+        mdxEditorMockState.insertMarkdownCalls.push(value);
+        setContent((prev) => `${prev}${value}`);
+      },
       focus: () => editableRef.current?.focus(),
     }), []);
 
@@ -184,6 +189,18 @@ function createFileDragEvent(type: string) {
   return event;
 }
 
+function createPasteEvent(data: Record<string, string>) {
+  const event = new Event("paste", {
+    bubbles: true,
+    cancelable: true,
+  }) as Event & { clipboardData: { types: string[]; getData: (type: string) => string } };
+  event.clipboardData = {
+    types: Object.keys(data),
+    getData: (type: string) => data[type] ?? "",
+  };
+  return event;
+}
+
 describe("issueMentionTitle", () => {
   it("strips the leading identifier from the mention name", () => {
     expect(
@@ -245,6 +262,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
+    mdxEditorMockState.insertMarkdownCalls = [];
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -434,6 +452,71 @@ describe("MarkdownEditor", () => {
     expect(container.querySelector("script, iframe, p[onclick]")).toBeNull();
     expect(container.textContent).toContain('fetch("/api/secrets")');
     expect(container.textContent).toContain("Plain text");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("stops a markdown plain-text paste from also reaching the editor's own handler (FUS-833)", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="" onChange={() => {}} placeholder="Markdown body" />,
+      );
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]');
+    expect(editable).not.toBeNull();
+
+    const pasted = "- item one\n- item two";
+    const event = createPasteEvent({ "text/plain": pasted });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+    const stopPropagation = vi.spyOn(event, "stopPropagation");
+
+    await act(async () => {
+      editable?.dispatchEvent(event);
+    });
+
+    // We take over the paste ourselves...
+    expect(mdxEditorMockState.insertMarkdownCalls).toEqual([pasted]);
+    expect(preventDefault).toHaveBeenCalled();
+    // ...and crucially stop the event so the editor's own (Lexical) paste handler
+    // cannot insert the same text a second time.
+    expect(stopPropagation).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not take over pastes that carry html — the editor handles those (FUS-833)", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="" onChange={() => {}} placeholder="Markdown body" />,
+      );
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]');
+    const event = createPasteEvent({
+      "text/plain": "- item one\n- item two",
+      "text/html": "<ul><li>item one</li><li>item two</li></ul>",
+    });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+    const stopPropagation = vi.spyOn(event, "stopPropagation");
+
+    await act(async () => {
+      editable?.dispatchEvent(event);
+    });
+
+    expect(mdxEditorMockState.insertMarkdownCalls).toEqual([]);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(stopPropagation).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
