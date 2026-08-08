@@ -9650,9 +9650,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
-
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        if (assigneeId && !assigneeChanged && !selfComment && (reopened || !isClosed)) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -11463,8 +11461,7 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !selfComment && (reopened || !isClosedIssueStatus(currentIssue.status))) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",
