@@ -15,6 +15,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  type AgentOwnershipSource,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -35,6 +36,7 @@ import {
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { agentOwnershipService } from "./agent-ownership.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -77,6 +79,22 @@ interface UpdateAgentOptions {
 
 interface CreateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
+  /**
+   * TECH-4929 stage 1: the user who should own the newly created agent
+   * (the acting board user, or the run's responsibleUserId when an
+   * agent creates an agent). Every real creation route MUST pass this --
+   * see `assertResolvedOwnerUserId` in routes/agents.ts, which throws
+   * before `create()` is ever called if no owner can be resolved, so
+   * there is no product path that creates an ownerless agent.
+   *
+   * Left optional here (rather than a required positional param) only so
+   * the many pre-existing test fixtures that call this service directly
+   * to seed agents -- bypassing HTTP entirely -- don't all need updating
+   * in this stage. Omitting it skips the ownership write; passing it
+   * empty/blank is treated as a bug and throws.
+   */
+  ownerUserId?: string | null;
+  ownershipSource?: AgentOwnershipSource;
 }
 
 interface AgentShortnameRow {
@@ -629,6 +647,17 @@ export function agentService(db: Db) {
           .returning()
           .then((rows) => rows[0]);
         await syncAgentSecretBindings(created, txDb);
+        // TECH-4929 stage 1: write-on-create only, no enforcement. See
+        // CreateAgentOptions.ownerUserId for why this is conditional here
+        // but unconditional on every real (HTTP) creation path.
+        if (options?.ownerUserId !== undefined && options.ownerUserId !== null) {
+          await agentOwnershipService(txDb).writeInitialOwnership(txDb, {
+            companyId,
+            agentId: created.id,
+            ownerUserId: options.ownerUserId,
+            source: options.ownershipSource ?? "agent_created_default",
+          });
+        }
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");

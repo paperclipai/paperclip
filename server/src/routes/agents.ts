@@ -2,7 +2,15 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import {
+  agents as agentsTable,
+  companies,
+  heartbeatRuns,
+  issues as issuesTable,
+  projects as projectsTable,
+  AGENT_OWNERSHIP_PRINCIPAL_TYPES,
+  type AgentOwnershipPrincipalType,
+} from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -41,6 +49,7 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentOwnershipService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -780,6 +789,27 @@ export function agentRoutes(
       "tasks:assign",
       true,
       grantedByUserId,
+    );
+  }
+
+  /**
+   * TECH-4929 stage 1: resolve who should own a newly created agent.
+   * Owner = the acting board user, or the run's responsibleUserId when an
+   * agent creates an agent. Throws rather than falling back silently, so
+   * there is no product path that can create an ownerless agent -- a
+   * missing responsible user on an agent-created-agent path is a bug to
+   * surface, not paper over.
+   */
+  function resolveOwnerUserIdOrThrow(req: Request): string {
+    if (req.actor.type === "board") {
+      const userId = req.actor.userId?.trim();
+      if (userId) return userId;
+    } else if (req.actor.type === "agent") {
+      const responsibleUserId = req.actor.onBehalfOfUserId?.trim();
+      if (responsibleUserId) return responsibleUserId;
+    }
+    throw unprocessable(
+      "Cannot create agent: no resolvable owner (no acting board user and no run responsibleUserId).",
     );
   }
 
@@ -2519,6 +2549,7 @@ export function agentRoutes(
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
+    const ownerUserId = resolveOwnerUserIdOrThrow(req);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -2587,7 +2618,7 @@ export function agentRoutes(
       status,
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
-    });
+    }, { ownerUserId, ownershipSource: "agent_hire" });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
@@ -2702,6 +2733,7 @@ export function agentRoutes(
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
+    const ownerUserId = resolveOwnerUserIdOrThrow(req);
 
     const company = await db
       .select()
@@ -2773,7 +2805,7 @@ export function agentRoutes(
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
-    });
+    }, { ownerUserId, ownershipSource: "agent_create" });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
 
     const actor = getActorInfo(req);
@@ -4108,6 +4140,202 @@ export function agentRoutes(
       adapterType: agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // TECH-4929 stage 1: agent ownership/roles. Data model + write-on-create
+  // only -- these routes let a human manage the roles that were written,
+  // but `decide()` does not consult them yet, so behaviour is unchanged
+  // for every existing authorization decision. Every route below is
+  // guarded by `assertBoard` (or `assertInstanceAdmin`, which itself calls
+  // `assertBoard`), so none of it is reachable by an agent-type actor --
+  // an agent with a compromised/injected free-text channel cannot use any
+  // of this to grant itself or anyone else access.
+  // ---------------------------------------------------------------------
+  const ownership = agentOwnershipService(db);
+
+  router.get("/agents/:id/ownership", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const grants = await ownership.listActiveGrants(id);
+    res.json({ isPublic: agent.isPublic, grants });
+  });
+
+  router.post("/agents/:id/ownership/transfers", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const toUserId = typeof req.body?.toUserId === "string" ? req.body.toUserId.trim() : "";
+    if (!toUserId) throw unprocessable("toUserId is required");
+    const transfer = await ownership.proposeTransfer({
+      companyId: agent.companyId,
+      agentId: id,
+      toUserId,
+      proposedByUserId: actor.actorId,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_transfer_proposed",
+      entityType: "agent",
+      entityId: id,
+      details: { transferId: transfer.id, toUserId },
+    });
+    res.status(201).json(transfer);
+  });
+
+  router.post("/agents/:id/ownership/transfers/:transferId/accept", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const grant = await ownership.acceptTransfer({
+      transferId: req.params.transferId as string,
+      acceptingUserId: actor.actorId,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_transfer_accepted",
+      entityType: "agent",
+      entityId: id,
+      details: { transferId: req.params.transferId, newOwnerGrantId: grant.id },
+    });
+    res.json(grant);
+  });
+
+  function registerOwnershipTransferResolutionRoute(action: "decline" | "cancel") {
+    router.post(`/agents/:id/ownership/transfers/:transferId/${action}`, async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+      if (!agent) return;
+      const actor = getActorInfo(req);
+      await ownership.declineOrCancelTransfer({
+        transferId: req.params.transferId as string,
+        byUserId: actor.actorId,
+        action,
+      });
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: actor.actorId,
+        action: action === "cancel" ? "agent.ownership_transfer_cancelled" : "agent.ownership_transfer_declined",
+        entityType: "agent",
+        entityId: id,
+        details: { transferId: req.params.transferId },
+      });
+      res.status(204).end();
+    });
+  }
+  registerOwnershipTransferResolutionRoute("decline");
+  registerOwnershipTransferResolutionRoute("cancel");
+
+  // Mirrors the allowlist backing `agent_ownership_grants_principal_type_check`
+  // (packages/db/src/schema/agent_ownership_grants.ts). Without this, an
+  // invalid :principalType URL segment reaches the service and fails the
+  // DB CHECK constraint with an opaque 500 instead of a 422.
+  function assertValidPrincipalType(principalType: string): asserts principalType is AgentOwnershipPrincipalType {
+    if (!(AGENT_OWNERSHIP_PRINCIPAL_TYPES as readonly string[]).includes(principalType)) {
+      throw unprocessable(`principalType must be one of: ${AGENT_OWNERSHIP_PRINCIPAL_TYPES.join(", ")}`);
+    }
+  }
+
+  router.put("/agents/:id/ownership/roles/:principalType/:principalId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const principalType = req.params.principalType as string;
+    assertValidPrincipalType(principalType);
+    const role = req.body?.role;
+    if (role !== "admin" && role !== "user") {
+      throw unprocessable("role must be 'admin' or 'user' (ownership moves only via the transfer flow)");
+    }
+    const grant = await ownership.setRole({
+      companyId: agent.companyId,
+      agentId: id,
+      principalType,
+      principalId: req.params.principalId as string,
+      role,
+      grantedByUserId: actor.actorId,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_role_set",
+      entityType: "agent",
+      entityId: id,
+      details: { principalType: req.params.principalType, principalId: req.params.principalId, role },
+    });
+    res.json(grant);
+  });
+
+  router.delete("/agents/:id/ownership/roles/:principalType/:principalId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const principalType = req.params.principalType as string;
+    assertValidPrincipalType(principalType);
+    await ownership.revokeRole({
+      agentId: id,
+      principalType,
+      principalId: req.params.principalId as string,
+      revokedByUserId: actor.actorId,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_role_revoked",
+      entityType: "agent",
+      entityId: id,
+      details: { principalType: req.params.principalType, principalId: req.params.principalId },
+    });
+    res.status(204).end();
+  });
+
+  // Instance-admin break-glass: force ownership without acceptance, for
+  // offboarding/recovery. `assertInstanceAdmin` calls `assertBoard`
+  // internally, so this is unreachable by agent-type actors too. Always
+  // logged -- overrides must never be silent.
+  router.post("/agents/:id/ownership/force-transfer", async (req, res) => {
+    assertInstanceAdmin(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const toUserId = typeof req.body?.toUserId === "string" ? req.body.toUserId.trim() : "";
+    if (!toUserId) throw unprocessable("toUserId is required");
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+    const result = await ownership.forceTransferByInstanceAdmin({
+      companyId: agent.companyId,
+      agentId: id,
+      toUserId,
+      instanceAdminUserId: actor.actorId,
+      reason,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_force_transfer",
+      entityType: "agent",
+      entityId: id,
+      details: { toUserId, reason: reason ?? null, isInstanceAdminOverride: true },
+    });
+    res.json(result);
   });
 
   return router;
