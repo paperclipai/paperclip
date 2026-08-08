@@ -5059,6 +5059,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -5073,6 +5074,7 @@ export function issueService(db: Db) {
       if (
         lockedIssue.status !== "in_progress" ||
         lockedIssue.assigneeAgentId !== input.actorAgentId ||
+        lockedIssue.assigneeUserId != null ||
         lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
       ) {
         return { adopted: null, latest: lockedIssue };
@@ -5118,6 +5120,7 @@ export function issueService(db: Db) {
             eq(issues.id, input.issueId),
             eq(issues.status, "in_progress"),
             eq(issues.assigneeAgentId, input.actorAgentId),
+            isNull(issues.assigneeUserId),
             eq(issues.checkoutRunId, input.expectedCheckoutRunId),
           ),
         )
@@ -5125,6 +5128,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -5138,6 +5142,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -5178,6 +5183,7 @@ export function issueService(db: Db) {
             eq(issues.id, input.issueId),
             eq(issues.status, "in_progress"),
             eq(issues.assigneeAgentId, input.actorAgentId),
+            isNull(issues.assigneeUserId),
             isNull(issues.checkoutRunId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
           ),
@@ -5186,6 +5192,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -7974,9 +7981,14 @@ export function issueService(db: Db) {
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
+          isNull(issues.assigneeUserId),
           or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
         )
-        : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
+        : and(
+          eq(issues.assigneeAgentId, agentId),
+          isNull(issues.assigneeUserId),
+          isNull(issues.checkoutRunId),
+        );
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
@@ -7995,7 +8007,10 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            and(
+              isNull(issues.assigneeUserId),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            ),
             executionLockCondition,
           ),
         )
@@ -8012,6 +8027,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -8023,6 +8039,7 @@ export function issueService(db: Db) {
 
       if (
         current.assigneeAgentId === agentId &&
+        current.assigneeUserId == null &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
@@ -8040,6 +8057,7 @@ export function issueService(db: Db) {
               eq(issues.id, id),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
+              isNull(issues.assigneeUserId),
               isNull(issues.checkoutRunId),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
             ),
@@ -8052,6 +8070,7 @@ export function issueService(db: Db) {
       if (
         checkoutRunId &&
         current.assigneeAgentId === agentId &&
+        current.assigneeUserId == null &&
         current.status === "in_progress" &&
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
@@ -8071,13 +8090,14 @@ export function issueService(db: Db) {
       }
 
       // Adopt stale executionRunId — if the execution lock points to a terminal/missing run, clear it and proceed.
-      // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
-      // and preserves the original startedAt when the issue is already in_progress.
+      // Only adopts when the caller's expectedStatuses guard still holds and no human owns the issue;
+      // preserves the original startedAt when the issue is already in_progress.
       if (
         checkoutRunId &&
         current.executionRunId &&
         current.executionRunId !== checkoutRunId &&
-        (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
+        (current.assigneeAgentId === agentId || current.assigneeAgentId == null) &&
+        current.assigneeUserId == null
       ) {
         const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
         if (stale) {
@@ -8103,7 +8123,8 @@ export function issueService(db: Db) {
                 inArray(issues.status, expectedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
-              ),
+                isNull(issues.assigneeUserId),
+              )
             )
             .returning()
             .then((rows) => rows[0] ?? null);
@@ -8144,6 +8165,7 @@ export function issueService(db: Db) {
             id: issues.id,
             status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
             checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
           })
@@ -8158,12 +8180,14 @@ export function issueService(db: Db) {
         id: string;
         status: string;
         assigneeAgentId: string | null;
+        assigneeUserId: string | null;
         checkoutRunId: string | null;
         executionRunId: string | null;
       }) => {
         if (
           candidate.status === "in_progress" &&
           candidate.assigneeAgentId === actorAgentId &&
+          candidate.assigneeUserId == null &&
           sameRunLock(candidate.checkoutRunId, actorRunId)
         ) {
           return { ...candidate, adoptedFromRunId: null as string | null };
@@ -8174,12 +8198,14 @@ export function issueService(db: Db) {
       const canAdoptUnownedCheckout = (candidate: {
         status: string;
         assigneeAgentId: string | null;
+        assigneeUserId: string | null;
         checkoutRunId: string | null;
         executionRunId: string | null;
       }) => (
         actorRunId
         && candidate.status === "in_progress"
         && candidate.assigneeAgentId === actorAgentId
+        && candidate.assigneeUserId == null
         && candidate.checkoutRunId == null
         && (candidate.executionRunId == null || candidate.executionRunId === actorRunId)
       );
@@ -8189,6 +8215,7 @@ export function issueService(db: Db) {
           id: string;
           status: string;
           assigneeAgentId: string | null;
+          assigneeUserId: string | null;
           checkoutRunId: string | null;
           executionRunId: string | null;
         },
@@ -8218,6 +8245,7 @@ export function issueService(db: Db) {
           actorRunId &&
           candidate.status === "in_progress" &&
           candidate.assigneeAgentId === actorAgentId &&
+          candidate.assigneeUserId == null &&
           candidate.checkoutRunId &&
           candidate.checkoutRunId !== actorRunId
         ) {

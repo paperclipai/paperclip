@@ -7,9 +7,21 @@ describe("shouldAutoCheckoutIssueForWake", () => {
       contextSnapshot: { wakeReason: "issue_assigned" },
       issueStatus: "todo",
       issueAssigneeAgentId: "agent-1",
+      issueAssigneeUserId: null,
       isDependencyReady: true,
       agentId: "agent-1",
     })).toBe(true);
+  });
+
+  it("does not auto-checkout an issue carrying a human assignee", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_assigned" },
+      issueStatus: "todo",
+      issueAssigneeAgentId: "agent-1",
+      issueAssigneeUserId: "local-board",
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(false);
   });
 
   it("does not auto-checkout pending execution-review state even if the row status is todo", () => {
@@ -19,6 +31,7 @@ describe("shouldAutoCheckoutIssueForWake", () => {
       contextSnapshot: { wakeReason: "issue_recovery_action_restored" },
       issueStatus: "todo",
       issueAssigneeAgentId: reviewerAgentId,
+      issueAssigneeUserId: null,
       issueExecutionState: {
         status: "pending",
         currentStageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
