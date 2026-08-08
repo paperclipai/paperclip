@@ -3272,7 +3272,8 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
     // Each boundary span parents to the sandbox bring-up span, not to the run
-    // root or the turn span.
+    // root or the turn span. The `stage.sync` step also opens one host `pack`
+    // span around the workspace tarball build, so it nests one level deeper.
     const childNames = spans
       .filter((span) => span !== runRootSpan && span !== startupSpan && span !== turnSpan)
       .map((span) => span.name)
@@ -3283,15 +3284,28 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
         "bridge.paperclip",
         "bridge.process-session",
         "codex-home.seed",
+        "pack",
         "skills.reconcile",
         "stage.sync",
         "workspace.resolve",
       ],
     );
 
-    // Every boundary span parents to the sandbox bring-up span and ends.
+    // The host `pack` span nests under the `stage.sync` step span (the host
+    // tarball build runs inside that step), not directly under the bring-up
+    // span.
+    const stageSyncSpan = spans.find((span) => span.name === "stage.sync");
+    const packSpan = spans.find((span) => span.name === "pack");
+    expect(stageSyncSpan).toBeTruthy();
+    expect(packSpan).toBeTruthy();
+    expect(packSpan!.parent).toBe(stageSyncSpan);
+    expect(packSpan!.ended).toBe(true);
+
+    // Every boundary step span parents to the sandbox bring-up span and ends.
+    // The `pack` span is the one exception: it parents to `stage.sync` above.
     for (const span of spans) {
       if (span === runRootSpan || span === startupSpan || span === turnSpan) continue;
+      if (span === packSpan) continue;
       expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }

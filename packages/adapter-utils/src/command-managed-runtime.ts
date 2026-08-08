@@ -16,6 +16,7 @@ import {
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 
 export interface CommandManagedRuntimeRunner {
   /**
@@ -478,6 +479,10 @@ export async function prepareCommandManagedRuntime(input: {
   // task wires it into the byte-counting writeFile/readFile transport.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  // Optional host span runner for the workspace tarball build. Forwarded to
+  // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
+  // under the `stage.sync` step. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -529,6 +534,7 @@ export async function prepareCommandManagedRuntime(input: {
           additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
+          runtimeSpan: input.runtimeSpan,
         });
       }
     }
@@ -567,5 +573,6 @@ export async function prepareCommandManagedRuntime(input: {
     additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
 }

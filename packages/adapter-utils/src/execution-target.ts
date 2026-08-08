@@ -1150,6 +1150,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // counters without further changes here.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  // Optional host span runner for the workspace tarball build. Only the confined
+  // sandbox lane uses it: it forwards the runner to prepareCommandManagedRuntime
+  // so the host pack time rides one `pack` span under the `stage.sync` step. The
+  // SSH and local lanes ignore it. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -1213,6 +1218,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
   return {
     target,

@@ -86,6 +86,7 @@ import {
 import {
   createRuntimeSpanRunner,
   emitSkippedStartupStep,
+  getActiveStepContext,
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
@@ -1332,6 +1333,11 @@ async function stageAcpRemoteRuntime(input: {
   additionalSources?: SandboxAdditionalSource[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
+  // Optional host span runner for the workspace tarball build. It rides down to
+  // prepareSandboxManagedRuntime so the host pack time shows as one `pack` span.
+  // The caller passes a runner that parents to the active `stage.sync` step, so
+  // the `pack` span nests under `stage.sync`. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   await input.onLog(
     "stdout",
@@ -1350,6 +1356,7 @@ async function stageAcpRemoteRuntime(input: {
       : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
 }
 
@@ -1375,6 +1382,12 @@ async function buildRuntime(input: {
   // span per unit of work. The run closure passes the run-scoped runner here;
   // when it is absent, each bridge site opens no wrapper span.
   runtimeSpan?: RuntimeSpanRunner;
+  // Wrap the host workspace tarball build in one `pack` span. Unlike
+  // `runtimeSpan`, this runner parents each span to the active startup step, so
+  // the `pack` span nests under the `stage.sync` step that runs the staging
+  // seam. `buildRuntime` threads it into the staging seam. When it is absent, the
+  // staging seam opens no `pack` span.
+  stageRuntimeSpan?: RuntimeSpanRunner;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1865,6 +1878,7 @@ async function buildRuntime(input: {
           additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
+          runtimeSpan: input.stageRuntimeSpan,
         });
       // Snapshot env before the seam so we can capture exactly which keys it
       // repointed onto the in-sandbox home (e.g. `CODEX_HOME`) and replay them
@@ -3155,6 +3169,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // `getRuntimeParentContext`, so a wrapper span always parents to the current
     // run span. On a no-op trace context the runner opens no real span.
     const runRuntimeSpan = createRuntimeSpanRunner(tracing, getRuntimeParentContext);
+    // Wrap the host workspace tarball build in one `pack` span. This runner
+    // parents each span to the ACTIVE startup step (not the run span), so the
+    // `pack` span nests under the `stage.sync` step that runs the staging seam.
+    // The staging seam runs inside `stage.sync`'s measured step, so
+    // `getActiveStepContext()` returns that step's child context at pack time.
+    // On a no-op trace context the runner opens no real span.
+    const runStageSpan = createRuntimeSpanRunner(
+      tracing,
+      () => getActiveStepContext()?.parentContext,
+    );
     // `runFailed` marks the run root span status at end time. It stays `true`
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
@@ -3214,7 +3238,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // parents to its step span. On a local or SSH target
         // `spanParent.parentContext` is a no-op token, so the wrap is inert.
         prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
-          buildRuntime({ ctx, engine, deps, spanParent, getRuntimeParentContext, runtimeSpan: runRuntimeSpan }),
+          buildRuntime({ ctx, engine, deps, spanParent, getRuntimeParentContext, runtimeSpan: runRuntimeSpan, stageRuntimeSpan: runStageSpan }),
         );
       } catch (err) {
         rootSpan.end(true);
