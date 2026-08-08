@@ -2574,6 +2574,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure summary",
+      value: "Authorization: Bearer [REDACTED]",
+    });
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",

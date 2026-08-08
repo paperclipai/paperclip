@@ -108,6 +108,8 @@ export interface TaskChatMessageItem {
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;
+  /** Agent that owns the source run, used to build run-detail links in metadata rows. */
+  runAgentId?: string | null;
   /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
   createdAtIso?: string;
 }

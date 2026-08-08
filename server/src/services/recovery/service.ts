@@ -3372,7 +3372,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? { id: recoveryOwner.id, name: recoveryOwner.name }
         : null,
       sourceRun: input.latestRun
-        ? { id: input.latestRun.id, status: input.latestRun.status, errorCode: input.latestRun.errorCode }
+        ? {
+            id: input.latestRun.id,
+            status: input.latestRun.status,
+            errorCode: input.latestRun.errorCode,
+            errorSummary: input.latestRun.error ? redactSensitiveText(input.latestRun.error) : null,
+          }
         : null,
     });
 

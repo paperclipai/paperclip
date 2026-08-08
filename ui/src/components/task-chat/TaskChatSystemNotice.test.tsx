@@ -88,6 +88,21 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     ).toBeNull();
   });
 
+  it("links source-run metadata when the comment carries its run agent", () => {
+    renderNotice({
+      runAgentId: "agent-1",
+      metadata: {
+        version: 1,
+        sections: [
+          { title: "Run", rows: [{ type: "run_link", label: "Source run", runId: "run-1", title: "failed" }] },
+        ],
+      },
+    });
+    flushSync(() => toggleButton().click());
+
+    expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).not.toBeNull();
+  });
+
   it("respects presentation.detailsDefaultOpen", () => {
     renderNotice({
       presentation: {

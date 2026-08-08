@@ -28,10 +28,10 @@ const TONE_ICON: Record<SystemNoticeTone, LucideIcon> = {
 
 const TONE_ICON_CLASS: Record<SystemNoticeTone, string> = {
   neutral: "text-muted-foreground",
-  info: "text-sky-600 dark:text-sky-400",
-  success: "text-emerald-600 dark:text-emerald-400",
-  warning: "text-amber-600 dark:text-amber-400",
-  danger: "text-red-600 dark:text-red-400",
+  info: "text-(--status-task-icon-in_progress)",
+  success: "text-(--status-task-icon-done)",
+  warning: "text-(--status-task-icon-todo)",
+  danger: "text-(--status-task-icon-blocked)",
 };
 
 /**
@@ -49,7 +49,9 @@ export function TaskChatSystemNotice({ item }: { item: TaskChatMessageItem }) {
     body: item.text,
     presentation: item.presentation,
   });
-  const sections = mapCommentMetadataToSystemNoticeSections(item.metadata);
+  const sections = mapCommentMetadataToSystemNoticeSections(item.metadata, {
+    runAgentId: item.runAgentId,
+  });
   const ToneIcon = TONE_ICON[tone];
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
 
@@ -71,7 +73,7 @@ export function TaskChatSystemNotice({ item }: { item: TaskChatMessageItem }) {
         {detail ? <span className="hidden truncate sm:inline">· {detail}</span> : null}
         {relative ? <span className="shrink-0 text-muted-foreground/70">· {relative}</span> : null}
         <ChevronDown
-          className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-150", open && "rotate-180")}
+          className={cn("tc-notice-chevron h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")}
           aria-hidden
         />
       </button>

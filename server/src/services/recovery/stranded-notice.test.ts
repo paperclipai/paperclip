@@ -46,6 +46,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     id: "0c1d2e3f-4a5b-4c6d-8e7f-333333333333",
     status: "failed",
     errorCode: "workspace_validation_failed",
+    errorSummary: "Expected project worktree but resolved the agent fallback directory.",
   };
 
   it("emits system_notice presentation and the required metadata rows", () => {
@@ -74,6 +75,11 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       type: "key_value",
       label: "Failure code",
       value: "workspace_validation_failed",
+    });
+    expect(rows).toContainEqual({
+      type: "key_value",
+      label: "Failure summary",
+      value: sourceRun.errorSummary,
     });
     expect(rows.some((row) => row.label === "Next action")).toBe(true);
   });
@@ -122,12 +128,13 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
       recoveryActionId: actionId,
       recoveryOwner: owner,
-      sourceRun: { id: sourceRun.id, status: "cancelled", errorCode: null },
+      sourceRun: { id: sourceRun.id, status: "cancelled", errorCode: null, errorSummary: null },
     });
 
     const rows = allRows(notice.metadata);
     expect(rows).toContainEqual({ type: "run_link", label: "Source run", runId: sourceRun.id, title: "cancelled" });
     expect(rows.some((row) => row.label === "Failure code")).toBe(false);
+    expect(rows.some((row) => row.label === "Failure summary")).toBe(false);
   });
 
   it("is matched by the metadata-based escalation dedupe matcher", () => {

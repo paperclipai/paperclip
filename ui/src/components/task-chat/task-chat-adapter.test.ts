@@ -59,6 +59,7 @@ describe("commentsToTaskChatItems", () => {
         authorType: "system",
         presentation,
         metadata,
+        runAgentId: "agent-1",
         createdAt: new Date("2026-08-07T09:00:00.000Z"),
       } as unknown as IssueChatComment,
       {
@@ -76,10 +77,12 @@ describe("commentsToTaskChatItems", () => {
     if (sys.kind !== "message" || agent.kind !== "message") throw new Error("expected messages");
     expect(sys.presentation).toEqual(presentation);
     expect(sys.metadata).toEqual(metadata);
+    expect(sys.runAgentId).toBe("agent-1");
     expect(sys.createdAtIso).toBe("2026-08-07T09:00:00.000Z");
     // Non-system authors keep the item lean — no structured notice fields.
     expect(agent.presentation).toBeUndefined();
     expect(agent.metadata).toBeUndefined();
+    expect(agent.runAgentId).toBeUndefined();
     expect(agent.createdAtIso).toBeUndefined();
   });
 });

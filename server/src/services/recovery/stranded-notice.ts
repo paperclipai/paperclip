@@ -102,7 +102,12 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   recoveryCause?: string | null;
   recoveryActionId: string;
   recoveryOwner: { id: string; name: string | null } | null | undefined;
-  sourceRun: { id: string; status: string; errorCode?: string | null } | null | undefined;
+  sourceRun: {
+    id: string;
+    status: string;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+  } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
   const fallbackBody = input.fallbackBody?.trim();
   const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
@@ -131,6 +136,8 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     runRows.push(runLinkRow("Source run", input.sourceRun));
     const failureCode = input.sourceRun.errorCode?.trim();
     if (failureCode) runRows.push(keyValueRow("Failure code", failureCode));
+    const failureSummary = input.sourceRun.errorSummary?.trim();
+    if (failureSummary) runRows.push(keyValueRow("Failure summary", failureSummary));
   }
 
   const sections: NoticeMetadataSection[] = [

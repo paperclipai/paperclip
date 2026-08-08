@@ -103,6 +103,7 @@ export function commentsToTaskChatItems(
       // layer (PAP-443); other authors keep the item lean.
       presentation: kind === "system" ? comment.presentation ?? null : undefined,
       metadata: kind === "system" ? comment.metadata ?? null : undefined,
+      runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
       createdAtIso: kind === "system" ? createdAtIso : undefined,
     });
   }
