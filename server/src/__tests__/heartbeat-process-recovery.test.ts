@@ -122,6 +122,11 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+} from "../services/restart-batch-stagger.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -6885,5 +6890,197 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  describe("restart-batch thundering-herd damping for stranded-issue reconciliation (RENA-54203)", () => {
+    // Mirrors seedStrandedIssueFixture's todo+failed shape (which drives the
+    // "issue_assignment_recovery" dispatchRequeued path), but seeds `count`
+    // stranded todo issues under ONE shared agent so reconcileStrandedAssignedIssues
+    // sees a restart-scale batch for that single agent in one sweep.
+    async function seedRestartBatchStrandedTodoFixture(count: number) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const now = new Date("2026-03-19T00:00:00.000Z");
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        defaultResponsibleUserId: "responsible-user",
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: count + 1,
+          },
+        },
+        permissions: {},
+      });
+
+      const issueIds: string[] = [];
+      const runIds: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const runId = randomUUID();
+        const wakeupRequestId = randomUUID();
+        const issueId = randomUUID();
+        issueIds.push(issueId);
+        runIds.push(runId);
+
+        await db.insert(agentWakeupRequests).values({
+          id: wakeupRequestId,
+          companyId,
+          agentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId },
+          status: "failed",
+          runId,
+          claimedAt: now,
+          finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+          error: "run failed before issue advanced",
+        });
+
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          status: "failed",
+          wakeupRequestId,
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            wakeReason: "issue_assigned",
+          },
+          startedAt: now,
+          finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+          updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+          errorCode: "process_lost",
+          error: "run failed before issue advanced",
+        });
+
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          title: `Recover stranded assigned work ${i}`,
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          checkoutRunId: null,
+          executionRunId: null,
+          responsibleUserId: "responsible-user",
+          issueNumber: i + 1,
+          identifier: `${issuePrefix}-${i + 1}`,
+        });
+      }
+
+      return { companyId, agentId, issueIds, runIds };
+    }
+
+    it("keeps a small immediate burst and staggers the remaining tail once an agent's actually-enqueued recovery count for the sweep reaches the restart-batch threshold", async () => {
+      // The stagger decision is driven by the count of recoveries actually
+      // enqueued so far in this sweep (not a raw candidate-count prediction,
+      // which Greptile flagged as overcounting and unnecessarily delaying
+      // small batches -- RENA-54203 review fix). That means the first
+      // `threshold - 1` recoveries in a sweep queue immediately, and only
+      // once an agent's real count reaches the threshold does the remaining
+      // tail get staggered. Use a batch comfortably above the threshold so
+      // both the immediate burst and the staggered tail are non-empty.
+      const threshold = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD;
+      const batchSize = threshold + 2;
+      const { runIds } = await seedRestartBatchStrandedTodoFixture(batchSize);
+      const heartbeat = heartbeatService(db);
+
+      const before = new Date();
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.dispatchRequeued).toBe(batchSize);
+
+      const retryRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.retryOfRunId, runIds));
+      expect(retryRuns).toHaveLength(batchSize);
+
+      const immediateRuns = retryRuns.filter((retryRun) => retryRun.scheduledRetryReason === null);
+      const staggeredRuns = retryRuns.filter(
+        (retryRun) => retryRun.scheduledRetryReason === RESTART_BATCH_STAGGER_RETRY_REASON,
+      );
+      expect(immediateRuns).toHaveLength(threshold - 1);
+      expect(staggeredRuns).toHaveLength(batchSize - (threshold - 1));
+
+      for (const retryRun of immediateRuns) {
+        expect(["queued", "running", "succeeded"]).toContain(retryRun.status);
+        expect(retryRun.scheduledRetryAt).toBeNull();
+      }
+
+      for (const retryRun of staggeredRuns) {
+        expect(retryRun.status).toBe("scheduled_retry");
+        expect(retryRun.scheduledRetryAttempt).toBe(1);
+        expect(retryRun.scheduledRetryAt).not.toBeNull();
+
+        const dueAtMs = new Date(retryRun.scheduledRetryAt as unknown as string).getTime();
+        expect(dueAtMs).toBeGreaterThanOrEqual(before.getTime());
+        expect(dueAtMs).toBeLessThanOrEqual(before.getTime() + RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS + 5_000);
+
+        const contextSnapshot = retryRun.contextSnapshot as Record<string, unknown>;
+        expect(contextSnapshot.retryReason).toBe("assignment_recovery");
+      }
+    });
+
+    it.skipIf(RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD <= 1)(
+      "keeps immediate queueing for stranded-issue recovery when a reconcile sweep finds only a few stranded issues for one agent (below the restart-batch threshold)",
+      async () => {
+        const belowThresholdCount = RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD - 1;
+        const { runIds } = await seedRestartBatchStrandedTodoFixture(belowThresholdCount);
+        const heartbeat = heartbeatService(db);
+
+        const result = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(result.dispatchRequeued).toBe(belowThresholdCount);
+
+        const retryRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(inArray(heartbeatRuns.retryOfRunId, runIds));
+        expect(retryRuns).toHaveLength(belowThresholdCount);
+        for (const retryRun of retryRuns) {
+          expect(["queued", "running", "succeeded"]).toContain(retryRun.status);
+          expect(retryRun.scheduledRetryReason).toBeNull();
+          expect(retryRun.scheduledRetryAt).toBeNull();
+        }
+      },
+    );
+
+    it("does not stagger stranded-issue recovery across different agents even if the combined sweep total crosses the threshold", async () => {
+      const perAgentCount = Math.max(1, RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD - 1);
+      const first = await seedRestartBatchStrandedTodoFixture(perAgentCount);
+      const second = await seedRestartBatchStrandedTodoFixture(perAgentCount);
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.dispatchRequeued).toBe(perAgentCount * 2);
+
+      const retryRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.retryOfRunId, [...first.runIds, ...second.runIds]));
+      expect(retryRuns).toHaveLength(perAgentCount * 2);
+      for (const retryRun of retryRuns) {
+        expect(retryRun.scheduledRetryReason).toBeNull();
+        expect(retryRun.scheduledRetryAt).toBeNull();
+      }
+    });
   });
 });
