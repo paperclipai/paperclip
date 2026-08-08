@@ -11,6 +11,7 @@ import {
 } from "react";
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
+import { getModKeyLabel } from "@/components/ui/kbd";
 
 /**
  * Shared chat composer (PAP-95a / PAP-96).
@@ -364,7 +365,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           }}
           disabled={!canSend}
           aria-label={sendLabel}
-          title={sendLabel}
+          aria-keyshortcuts={submitKey === "mod-enter" ? "Meta+Enter Control+Enter" : undefined}
+          title={submitKey === "mod-enter" ? `${sendLabel} (${getModKeyLabel()}+Enter)` : sendLabel}
           className={cn(
             "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 disabled:cursor-not-allowed",
             canSend

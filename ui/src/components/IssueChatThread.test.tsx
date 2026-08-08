@@ -3274,8 +3274,8 @@ describe("IssueChatThread", () => {
     expect(container.textContent).not.toContain("Re-open");
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Send",
+    const submitButton = container.querySelector(
+      '[data-testid="issue-chat-send-button"]',
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
     expect(submitButton).toBeDefined();
@@ -3335,8 +3335,8 @@ describe("IssueChatThread", () => {
     });
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Send",
+    const submitButton = container.querySelector(
+      '[data-testid="issue-chat-send-button"]',
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
     expect(submitButton).toBeDefined();
@@ -3408,8 +3408,8 @@ describe("IssueChatThread", () => {
     });
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Send",
+    const submitButton = container.querySelector(
+      '[data-testid="issue-chat-send-button"]',
     ) as HTMLButtonElement | undefined;
 
     act(() => {
@@ -3473,8 +3473,8 @@ describe("IssueChatThread", () => {
     });
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
-    const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Send",
+    const submitButton = container.querySelector(
+      '[data-testid="issue-chat-send-button"]',
     ) as HTMLButtonElement | undefined;
 
     act(() => {
