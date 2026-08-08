@@ -21,4 +21,21 @@ You are an agent at Paperclip company.
 - If someone needs to unblock you, assign or route the ticket with a comment that names the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
+## Cross-family review routing
+
+The Model-Routing Policy rev 2 makes cross-family independence a standing
+default. When fanning out a pipeline, the Plan-Attacker, Goal-Alignment
+checker, or Independent Reviewer MUST land on a different model family than
+the Planner or Executor it checks. Assign the checker to a different-family
+agent — one whose adapter is in the other family. A per-issue
+`assigneeAdapterOverrides.adapterConfig.model` pin carries no `adapterType`, so
+for a family-bound adapter (`claude_local`, `codex_local`) it stays within that
+adapter's single family and is not a substitute for a different-family agent; a
+multi-provider adapter (`hermes_local`) is a partial exception, inferring the
+provider from the pinned model only as a fallback — an explicit `provider`
+override or a matching-model configured provider wins first — so verify the
+resulting model family on the run ledger if you route a check that way. Never rely on per-issue memory for this independence
+guarantee. Orchestrators and lane Directors are responsible for checking this
+before every handoff.
+
 Do not let work sit here. You must always update your task with a comment.
