@@ -1345,6 +1345,21 @@ async function getProjectDefaultGoalId(
   return row?.goalId ?? null;
 }
 
+async function assertIssueParentInCompany(
+  db: DbReader,
+  companyId: string,
+  parentId: string,
+) {
+  const parent = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.id, parentId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!parent) {
+    throw unprocessable("Parent issue not found in company");
+  }
+}
+
 async function getWorkspaceInheritanceIssue(
   db: DbReader,
   companyId: string,
@@ -6905,6 +6920,9 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId) {
+          await assertIssueParentInCompany(tx, companyId, issueData.parentId);
+        }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -7473,6 +7491,9 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+      if (issueData.parentId) {
+        await assertIssueParentInCompany(dbOrTx, existing.companyId, issueData.parentId);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -8890,8 +8911,14 @@ export function issueService(db: Db) {
         assigneeAgentId: string | null; projectId: string | null; goalId: string | null;
       }> = [];
       const visited = new Set<string>([issueId]);
-      const start = await db.select().from(issues).where(eq(issues.id, issueId)).then(r => r[0] ?? null);
-      let currentId = start?.parentId ?? null;
+      const start = await db
+        .select({ companyId: issues.companyId, parentId: issues.parentId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then(r => r[0] ?? null);
+      if (!start) return [];
+      const companyId = start.companyId;
+      let currentId = start.parentId ?? null;
       while (currentId && !visited.has(currentId) && raw.length < 50) {
         visited.add(currentId);
         const parent = await db.select({
@@ -8899,7 +8926,9 @@ export function issueService(db: Db) {
           status: issues.status, priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId, projectId: issues.projectId,
           goalId: issues.goalId, parentId: issues.parentId,
-        }).from(issues).where(eq(issues.id, currentId)).then(r => r[0] ?? null);
+        }).from(issues).where(
+          and(eq(issues.id, currentId), eq(issues.companyId, companyId)),
+        ).then(r => r[0] ?? null);
         if (!parent) break;
         raw.push({
           id: parent.id, identifier: parent.identifier ?? null, title: parent.title, description: parent.description ?? null,
@@ -8953,7 +8982,10 @@ export function issueService(db: Db) {
         const workspaceRows = await db
           .select()
           .from(projectWorkspaces)
-          .where(inArray(projectWorkspaces.projectId, projectIds))
+          .where(and(
+            eq(projectWorkspaces.companyId, companyId),
+            inArray(projectWorkspaces.projectId, projectIds),
+          ))
           .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
         const workspaceMap = new Map<string, Array<(typeof workspaceRows)[number]>>();
         for (const workspace of workspaceRows) {
@@ -8965,7 +8997,10 @@ export function issueService(db: Db) {
         const rows = await db.select({
           id: projects.id, name: projects.name, description: projects.description,
           status: projects.status, goalId: projects.goalId,
-        }).from(projects).where(inArray(projects.id, projectIds));
+        }).from(projects).where(and(
+          eq(projects.companyId, companyId),
+          inArray(projects.id, projectIds),
+        ));
         for (const r of rows) {
           const projectWorkspaceRows = workspaceMap.get(r.id) ?? [];
           const workspaces = projectWorkspaceRows.map((workspace) => ({
@@ -8996,7 +9031,10 @@ export function issueService(db: Db) {
         const rows = await db.select({
           id: goals.id, title: goals.title, description: goals.description,
           level: goals.level, status: goals.status,
-        }).from(goals).where(inArray(goals.id, goalIds));
+        }).from(goals).where(and(
+          eq(goals.companyId, companyId),
+          inArray(goals.id, goalIds),
+        ));
         for (const r of rows) goalMap.set(r.id, r);
       }
 
