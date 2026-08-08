@@ -18,6 +18,21 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+export function shouldQueueIssueAssignmentWakeup(input: {
+  issue: { assigneeAgentId: string | null; status: string };
+  mutation: string;
+  requestedByActorType?: "user" | "agent" | "system";
+  requestedByActorId?: string | null;
+}) {
+  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return false;
+
+  return !(
+    input.mutation === "create" &&
+    input.requestedByActorType === "agent" &&
+    input.requestedByActorId === input.issue.assigneeAgentId
+  );
+}
+
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: { id: string; assigneeAgentId: string | null; status: string };
@@ -29,10 +44,11 @@ export function queueIssueAssignmentWakeup(input: {
   taskKey?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  const assigneeAgentId = input.issue.assigneeAgentId;
+  if (!assigneeAgentId || !shouldQueueIssueAssignmentWakeup(input)) return;
 
   return input.heartbeat
-    .wakeup(input.issue.assigneeAgentId, {
+    .wakeup(assigneeAgentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,
