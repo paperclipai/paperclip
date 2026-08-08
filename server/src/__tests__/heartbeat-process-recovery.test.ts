@@ -28,6 +28,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  interruptedRunHandoffs,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -113,6 +114,7 @@ import {
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
 import {
+  LIVENESS_RECONCILIATION_DECISION_ACTION,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -2291,7 +2293,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRuns[0]?.id).toBe(firstRetry?.id);
   });
 
-  it("chains a single retry when restart recovery is interrupted by a second graceful shutdown", async () => {
+  it("escalates instead of chaining another retry when restart recovery is interrupted again", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",
     });
@@ -2328,16 +2330,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(2);
     expect(runs.find((row) => row.id === runId)?.status).toBe("interrupted");
     expect(runs.find((row) => row.id === firstRetry!.id)?.status).toBe("interrupted");
 
     const originalRetries = runs.filter((row) => row.retryOfRunId === runId);
     expect(originalRetries).toHaveLength(1);
     const secondRetry = runs.find((row) => row.retryOfRunId === firstRetry!.id);
-    expect(secondRetry).toMatchObject({
-      status: "queued",
-      processLossRetryCount: 2,
+    expect(secondRetry).toBeUndefined();
+
+    const receipt = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(eq(interruptedRunHandoffs.interruptedRunId, runId))
+      .then((rows) => rows[0]);
+    expect(receipt).toMatchObject({
+      status: "escalated",
+      reason: "automatic_successor_exhausted",
+      successorRunId: firstRetry?.id,
+      recoveryActionId: expect.any(String),
+    });
+    const successorReceipt = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(eq(interruptedRunHandoffs.interruptedRunId, firstRetry!.id))
+      .then((rows) => rows[0]);
+    expect(successorReceipt).toMatchObject({
+      status: "escalated",
+      reason: "automatic_successor_exhausted",
+      successorRunId: null,
+      recoveryActionId: receipt?.recoveryActionId,
     });
 
     const issue = await db
@@ -2346,7 +2368,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBeNull();
-    expect(issue?.executionRunId).toBe(secondRetry?.id);
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -6885,5 +6907,366 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("creates one durable successor receipt in the terminal-run-before-retry shutdown window", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "server_shutdown_interrupted",
+      runError: "Run interrupted during guarded shutdown before retry persistence",
+      livenessState: "needs_followup",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const before = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
+      ));
+    expect(before).toEqual([]);
+
+    const result = await heartbeat.reconcileInterruptedRunHandoffs();
+    expect(result.queued).toBe(1);
+
+    const receipt = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(and(
+        eq(interruptedRunHandoffs.companyId, companyId),
+        eq(interruptedRunHandoffs.issueId, issueId),
+        eq(interruptedRunHandoffs.interruptedRunId, runId),
+      ))
+      .then((rows) => rows[0]);
+    expect(receipt).toMatchObject({
+      kind: "process_loss_handoff",
+      status: "queued",
+      reason: "successor_queued",
+      ownerAgentId: agentId,
+      interruptedRunId: runId,
+      successorRunId: expect.any(String),
+    });
+    expect(String(receipt?.reason).length).toBeLessThanOrEqual(120);
+  });
+
+  it("hands off abrupt process loss before stale-lock cleanup can leave in-progress work pathless", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      runError: "Process disappeared during server restart",
+      livenessState: "needs_followup",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const swept = await heartbeat.sweepStaleIssueLocks();
+    expect(swept.issueIds).not.toContain(issueId);
+    const afterSweep = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(afterSweep).toEqual({ checkoutRunId: null, executionRunId: expect.any(String) });
+
+    const receipts = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(and(
+        eq(interruptedRunHandoffs.companyId, companyId),
+        eq(interruptedRunHandoffs.issueId, issueId),
+      ));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      status: "queued",
+      reason: "successor_queued",
+      interruptedRunId: runId,
+      successorRunId: expect.any(String),
+    });
+    expect(afterSweep.executionRunId).toBe(receipts[0]?.successorRunId);
+  });
+
+  it("deduplicates concurrent startup reconciliation and stale-lock cleanup by interruption fingerprint", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      livenessState: "needs_followup",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await Promise.all([
+      heartbeat.reconcileInterruptedRunHandoffs(),
+      heartbeat.sweepStaleIssueLocks(),
+      heartbeat.reconcileInterruptedRunHandoffs(),
+      heartbeat.sweepStaleIssueLocks(),
+    ]);
+
+    const receipts = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(and(
+        eq(interruptedRunHandoffs.companyId, companyId),
+        eq(interruptedRunHandoffs.issueId, issueId),
+        eq(interruptedRunHandoffs.interruptedRunId, runId),
+      ));
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId),
+      ));
+    expect(receipts).toHaveLength(1);
+    expect(successors).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ status: "queued", successorRunId: successors[0]?.id });
+  });
+
+  it("escalates an exhausted interruption to one bounded recovery action without another retry", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      livenessState: "needs_followup",
+    });
+    await db.update(heartbeatRuns).set({ processLossRetryCount: 1 }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileInterruptedRunHandoffs();
+    await heartbeat.reconcileInterruptedRunHandoffs();
+
+    const receipt = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(eq(interruptedRunHandoffs.interruptedRunId, runId))
+      .then((rows) => rows[0]);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+        eq(issueRecoveryActions.cause, "process_loss_handoff_exhausted"),
+      ));
+    const successors = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(receipt).toMatchObject({
+      status: "escalated",
+      reason: "automatic_retry_exhausted",
+      successorRunId: null,
+      recoveryActionId: expect.any(String),
+    });
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ status: "escalated", attemptCount: 1, maxAttempts: 1 });
+    expect(successors).toEqual([]);
+  });
+
+  it("records pause, budget, and ownership gates without unauthorized successors", async () => {
+    const paused = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      activePauseHold: true,
+    });
+    const budgeted = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+    await db.insert(budgetPolicies).values({
+      companyId: budgeted.companyId,
+      scopeType: "agent",
+      scopeId: budgeted.agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId: budgeted.companyId,
+      agentId: budgeted.agentId,
+      issueId: budgeted.issueId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    const reassigned = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId: reassigned.companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({ assigneeAgentId: replacementAgentId }).where(eq(issues.id, reassigned.issueId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileInterruptedRunHandoffs();
+
+    const receipts = await db.select().from(interruptedRunHandoffs);
+    const byRun = new Map(receipts.map((receipt) => [receipt.interruptedRunId, receipt]));
+    expect(byRun.get(paused.runId)).toMatchObject({ status: "waiting", reason: "pause_hold_active" });
+    expect(byRun.get(budgeted.runId)).toMatchObject({ status: "escalated", reason: "budget_blocked" });
+    expect(byRun.get(reassigned.runId)).toMatchObject({ status: "suppressed", reason: "owner_changed" });
+    expect(receipts.every((receipt) => receipt.successorRunId === null)).toBe(true);
+  });
+
+  it("rejects cross-company issue and run bindings for interruption receipts", async () => {
+    const source = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+    const foreign = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+
+    await expect(db.insert(interruptedRunHandoffs).values({
+      companyId: source.companyId,
+      issueId: foreign.issueId,
+      interruptedRunId: source.runId,
+      status: "suppressed",
+      reason: "cross_company_probe",
+    })).rejects.toThrow();
+  });
+
+  it("records already_exists, waiting, suppressed, and escalated decisions", async () => {
+    const active = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: active.companyId,
+      agentId: active.agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      scheduledRetryAt: new Date(Date.now() + 60_000),
+      contextSnapshot: { issueId: active.issueId, taskId: active.issueId },
+    });
+
+    const waiting = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      monitorNextCheckAt: new Date(Date.now() + 60_000),
+    });
+    const suppressed = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      activePauseHold: true,
+    });
+    const escalated = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "process_lost",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const receipts = await db
+      .select({ issueId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, LIVENESS_RECONCILIATION_DECISION_ACTION))
+      .orderBy(activityLog.createdAt, activityLog.id);
+    const outcomeFor = (issueId: string) => (
+      receipts.find((row) => row.issueId === issueId)?.details as Record<string, unknown>
+    )?.outcome;
+    expect(outcomeFor(active.issueId)).toBe("already_exists");
+    expect(outcomeFor(waiting.issueId)).toBe("waiting");
+    expect(outcomeFor(suppressed.issueId)).toBe("suppressed");
+    expect(outcomeFor(escalated.issueId)).toBe("escalated");
+    for (const receipt of receipts) {
+      expect(String((receipt.details as Record<string, unknown>).reason).length).toBeLessThanOrEqual(120);
+    }
+  });
+
+  it("rejects reconciliation wakes after owner changes and across companies", async () => {
+    const source = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId: source.companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({ assigneeAgentId: replacementAgentId }).where(eq(issues.id, source.issueId));
+
+    const heartbeat = heartbeatService(db);
+    await expect(heartbeat.wakeup(source.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId: source.issueId },
+      contextSnapshot: { issueId: source.issueId, taskId: source.issueId },
+      expectedIssueAssigneeAgentId: source.agentId,
+      expectedIssueStatuses: ["in_progress"],
+    })).resolves.toBeNull();
+
+    const foreignCompanyId = randomUUID();
+    const foreignAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign Company",
+      issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: foreignCompanyId,
+      name: "ForeignCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await expect(heartbeat.wakeup(foreignAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId: source.issueId },
+      contextSnapshot: { issueId: source.issueId, taskId: source.issueId },
+      expectedIssueAssigneeAgentId: foreignAgentId,
+      expectedIssueStatuses: ["in_progress"],
+    })).resolves.toBeNull();
+
+    const recoveryRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        inArray(heartbeatRuns.agentId, [source.agentId, foreignAgentId]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_continuation_needed'`,
+      ));
+    expect(recoveryRuns).toEqual([]);
   });
 });

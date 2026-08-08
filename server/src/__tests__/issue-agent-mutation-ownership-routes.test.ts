@@ -218,6 +218,7 @@ function registerRouteMocks() {
     }),
     issueApprovalService: () => mockIssueApprovalService,
     issueRecoveryActionService: () => mockIssueRecoveryActionService,
+    listInterruptedRunRecoveries: vi.fn(async () => new Map()),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

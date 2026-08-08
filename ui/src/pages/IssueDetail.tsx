@@ -886,6 +886,7 @@ type IssueDetailChatTabProps = {
   blockerAttention: Issue["blockerAttention"] | null;
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
+  interruptedRunRecovery: Issue["interruptedRunRecovery"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
@@ -992,6 +993,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockerAttention,
   successfulRunHandoff,
   scheduledRetry,
+  interruptedRunRecovery,
   recoveryAction,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
@@ -1250,6 +1252,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         blockerAttention={blockerAttention}
         successfulRunHandoff={successfulRunHandoff}
         scheduledRetry={scheduledRetry}
+        interruptedRunRecovery={interruptedRunRecovery}
         recoveryAction={recoveryAction ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
@@ -1530,6 +1533,7 @@ function IssueDetailActivityTab({
           agentMap={agentMap}
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
+          interruptedRunRecovery={issue.interruptedRunRecovery ?? null}
           resolveUserLabel={(userId) => userProfileMap.get(userId)?.label ?? null}
           renderActivityEvent={(evt) => {
             const tone = successfulRunHandoffActivityTone(evt.action);
@@ -1595,7 +1599,13 @@ function IssueDetailActivityTab({
           ))}
         </div>
       )}
-      <IssueScheduledRetryCard issueId={issue.id} scheduledRetry={issue.scheduledRetry ?? null} />
+      <IssueScheduledRetryCard
+        issueId={issue.id}
+        issueStatus={issue.status}
+        scheduledRetry={issue.scheduledRetry ?? null}
+        interruptedRunRecovery={issue.interruptedRunRecovery ?? null}
+        activeRecoveryAction={issue.activeRecoveryAction ?? null}
+      />
       {/* Waiting-monitor state now lives in the pinned top banner (IssueMonitorBanner) — PAP-14557 decision 1. */}
     </>
   );
@@ -4967,6 +4977,7 @@ export function IssueDetail() {
               blockerAttention={issue.blockerAttention ?? null}
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
+              interruptedRunRecovery={issue.interruptedRunRecovery ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}

@@ -5,7 +5,12 @@ import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { IssueRetryNowOutcome, IssueScheduledRetry } from "@paperclipai/shared";
+import type {
+  InterruptedRunRecovery,
+  IssueRecoveryAction,
+  IssueRetryNowOutcome,
+  IssueScheduledRetry,
+} from "@paperclipai/shared";
 import { IssueScheduledRetryCard } from "./IssueScheduledRetryCard";
 import { ToastProvider } from "../context/ToastContext";
 
@@ -235,5 +240,199 @@ describe("IssueScheduledRetryCard", () => {
       expect((band?.textContent ?? "")).toContain("Promotion suppressed");
       expect(getRetryNowButton()!.disabled).toBe(false);
     });
+  });
+});
+
+const interruptedRecovery: InterruptedRunRecovery = {
+  state: "retry_queued",
+  interruptedRunId: "interrupted-run-1234",
+  interruptedAt: "2026-04-18T19:55:13.000Z",
+  errorCode: "server_shutdown_interrupted",
+  successorRunId: null,
+  successorStatus: null,
+  receiptId: "receipt-9876-5432",
+  receiptOutcome: "queued",
+  suppressionReason: null,
+  escalationReason: null,
+  attempt: 1,
+  maxAttempts: 3,
+  recoveryActionId: null,
+  owner: null,
+  nextAction: null,
+};
+
+const openRecoveryAction = {
+  id: "action-1",
+  issueId: "issue-1",
+  kind: "stranded_assigned_issue",
+  status: "active",
+  ownerType: "agent",
+  ownerAgentId: "agent-2",
+  ownerUserId: null,
+  previousOwnerAgentId: "agent-1",
+  returnOwnerAgentId: null,
+  outcome: null,
+  nextAction: "Reassign the task and restart the run.",
+  evidence: {},
+  attemptCount: 1,
+  maxAttempts: 3,
+  timeoutAt: null,
+  resolvedAt: null,
+  createdAt: "2026-04-18T19:56:00.000Z",
+  updatedAt: "2026-04-18T19:56:00.000Z",
+} as unknown as IssueRecoveryAction;
+
+describe("IssueScheduledRetryCard — interrupted-run recovery variants", () => {
+  it("variant A explains the restart and keeps Retry now", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        issueStatus="in_progress"
+        scheduledRetry={{ ...baseRetry, scheduledRetryReason: "process_lost" }}
+        interruptedRunRecovery={interruptedRecovery}
+      />,
+    );
+    const card = getCard()!;
+    expect(card.getAttribute("data-recovery-variant")).toBe("retry_queued");
+    const text = card.textContent ?? "";
+    expect(text).toContain("Retry queued");
+    expect(text).toContain("Attempt 1 of 3");
+    expect(text).toContain(
+      "The last run was interrupted by a server restart. Work resumes automatically",
+    );
+    expect(text).toContain("Replaces run");
+    expect(text).toContain("Receipt");
+    expect(getRetryNowButton()).not.toBeNull();
+  });
+
+  it("variant A links the interrupted run and copies the receipt id", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{ ...baseRetry, scheduledRetryReason: "process_lost" }}
+        interruptedRunRecovery={interruptedRecovery}
+      />,
+    );
+    const runLink = getCard()!.querySelector<HTMLAnchorElement>('a[title="interrupted-run-1234"]');
+    expect(runLink).not.toBeNull();
+    expect(runLink!.getAttribute("href")).toBe("/agents/agent-1/runs/interrupted-run-1234");
+    expect(runLink!.textContent).toBe("interrup");
+    const receipt = getCard()!.querySelector('[data-testid="issue-recovery-receipt-chip"]');
+    expect(receipt).not.toBeNull();
+    expect(receipt!.getAttribute("title")).toBe("receipt-9876-5432 · queued");
+    expect(receipt!.textContent).toBe("receipt-");
+  });
+
+  it("variant B is quiet: no Retry now, no alarm tone, lineage only", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{ ...baseRetry, status: "running", scheduledRetryReason: "process_lost" }}
+        interruptedRunRecovery={{
+          ...interruptedRecovery,
+          state: "recovered",
+          successorRunId: "successor-run-1",
+          successorStatus: "running",
+        }}
+      />,
+    );
+    const card = getCard()!;
+    expect(card.getAttribute("data-recovery-variant")).toBe("recovered");
+    const text = card.textContent ?? "";
+    expect(text).toContain("Recovered");
+    expect(text).toContain("Recovered after restart — run successo is continuing the work.");
+    expect(text).toContain("Continues run");
+    expect(getRetryNowButton()).toBeNull();
+    expect(card.className).not.toContain("amber");
+    expect(card.className).toContain("border-border/60");
+  });
+
+  it("variant C renders the bounded exhaustion reason verbatim without a Retry now", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{
+          ...baseRetry,
+          status: "cancelled",
+          scheduledRetryReason: "process_lost",
+          retryExhaustedReason: "Automatic retries exhausted after 3 attempts.",
+        }}
+        interruptedRunRecovery={{
+          ...interruptedRecovery,
+          state: "retry_exhausted",
+          escalationReason: "Automatic retries exhausted after 3 attempts.",
+        }}
+      />,
+    );
+    const card = getCard()!;
+    expect(card.getAttribute("data-recovery-variant")).toBe("retry_exhausted");
+    const text = card.textContent ?? "";
+    expect(text).toContain("Retry exhausted");
+    expect(text).toContain("Automatic retries are used up. A recovery owner is needed to continue.");
+    expect(text).toContain("Automatic retries exhausted after 3 attempts.");
+    expect(text).toContain("Interrupted run");
+    expect(getRetryNowButton()).toBeNull();
+  });
+
+  it("variant C surfaces the pathless shape the original bug produced", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={null}
+        interruptedRunRecovery={{ ...interruptedRecovery, state: "pathless", receiptId: null }}
+      />,
+    );
+    const text = getCard()!.textContent ?? "";
+    expect(text).toContain("No recovery scheduled");
+    expect(text).toContain("The last run was interrupted and no retry or recovery is scheduled.");
+    expect(text).toContain(
+      "open a typed recovery action or escalate to a recovery owner",
+    );
+  });
+
+  it("stands down entirely when a recovery owner is required (one card per task)", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={baseRetry}
+        interruptedRunRecovery={interruptedRecovery}
+        activeRecoveryAction={openRecoveryAction}
+      />,
+    );
+    expect(getCard()).toBeNull();
+  });
+
+  it("renders nothing on a terminal task", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        issueStatus="done"
+        scheduledRetry={{ ...baseRetry, scheduledRetryReason: "process_lost" }}
+        interruptedRunRecovery={interruptedRecovery}
+      />,
+    );
+    expect(getCard()).toBeNull();
+  });
+
+  it("leaves an ordinary failure retry on today's copy", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    const text = getCard()!.textContent ?? "";
+    expect(text).toContain("Retry scheduled");
+    expect(text).toContain("Transient failure");
+    expect(text).not.toContain("interrupted by a server restart");
+  });
+
+  it("leaves a max-turn continuation on today's copy", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{ ...baseRetry, scheduledRetryReason: "max_turns_continuation" }}
+      />,
+    );
+    const text = getCard()!.textContent ?? "";
+    expect(text).toContain("Continuation scheduled");
+    expect(text).toContain("Automatic continuation");
   });
 });

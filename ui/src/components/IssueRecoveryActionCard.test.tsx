@@ -740,3 +740,79 @@ describe("IssueRecoveryActionCard repair workspace (quarantine_restore)", () => 
     expect(node.querySelector("[data-testid='recovery-action-repair-trigger']")).not.toBeNull();
   });
 });
+
+describe("IssueRecoveryActionCard interrupted-run evidence (PAP-16730 §1 D)", () => {
+  it("shows the interrupted run, receipt and attempt bound for a handoff kind", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "stranded_assigned_issue", evidence: { interruptedRunId: "run-interrupted-1" } })}
+        interruptedRunRecovery={{
+          state: "recovery_owner_required",
+          interruptedRunId: "run-interrupted-1",
+          interruptedAt: "2026-05-09T19:30:00.000Z",
+          errorCode: "server_shutdown_interrupted",
+          successorRunId: null,
+          successorStatus: null,
+          receiptId: "receipt-abcdefgh-1234",
+          receiptOutcome: "escalated",
+          suppressionReason: null,
+          escalationReason: null,
+          attempt: 3,
+          maxAttempts: 3,
+          recoveryActionId: "action-1",
+          owner: null,
+          nextAction: null,
+        }}
+      />,
+    );
+    expect(node.textContent).toContain("Interrupted run");
+    expect(node.textContent).toContain("After 3 automatic retries");
+    const receipt = node.querySelector('[data-testid="recovery-action-receipt"]');
+    expect(receipt).not.toBeNull();
+    expect(receipt!.getAttribute("title")).toBe("receipt-abcdefgh-1234 · escalated");
+  });
+
+  it("singularizes a one-retry bound", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ kind: "issue_graph_liveness", evidence: { interruptedRunId: "run-x" } })}
+        interruptedRunRecovery={{
+          state: "recovery_owner_required",
+          interruptedRunId: "run-x",
+          interruptedAt: null,
+          errorCode: null,
+          successorRunId: null,
+          successorStatus: null,
+          receiptId: null,
+          receiptOutcome: null,
+          suppressionReason: null,
+          escalationReason: null,
+          attempt: 1,
+          maxAttempts: 3,
+          recoveryActionId: null,
+          owner: null,
+          nextAction: null,
+        }}
+      />,
+    );
+    expect(node.textContent).toContain("After 1 automatic retry");
+  });
+
+  it("omits the row for non-interruption kinds and when no evidence exists", () => {
+    const other = render(
+      <IssueRecoveryActionCard action={buildAction({ kind: "missing_disposition" })} />,
+    );
+    expect(other.textContent).not.toContain("Interrupted run");
+    const bare = render(
+      <IssueRecoveryActionCard action={buildAction({ kind: "stranded_assigned_issue", evidence: {} })} />,
+    );
+    expect(bare.textContent).not.toContain("Interrupted run");
+  });
+
+  it("names the system owner as Paperclip recovery", () => {
+    const node = render(
+      <IssueRecoveryActionCard action={buildAction({ ownerType: "system", ownerAgentId: null })} />,
+    );
+    expect(node.textContent).toContain("Paperclip recovery");
+  });
+});

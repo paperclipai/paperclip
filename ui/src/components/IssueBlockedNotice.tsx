@@ -6,7 +6,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import type { ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Circle, Flag, Loader2, RotateCcw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, Clock, Flag, Loader2, RotateCcw } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,55 @@ import {
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
 } from "../lib/recovery-display";
+import {
+  isUnhealthyLeafRecoveryState,
+  leafRecoveryChip,
+  leafRecoveryNeedsOwner,
+} from "../lib/interrupted-run-recovery";
 import { StatusGlyph } from "./StatusGlyph";
+
+/**
+ * Interruption states on a blocker leaf (spec §4.1). Variant D leaves keep the
+ * `Recovery needed` / `Recovery escalated` chips from
+ * {@link BlockerRecoveryIndicator}; this only covers A/C, which have no
+ * recovery action of their own yet.
+ */
+function BlockerInterruptionIndicator({
+  state,
+}: {
+  state: NonNullable<IssueRelationIssueSummary["interruptedRunRecoveryState"]>;
+}) {
+  const chip = leafRecoveryChip(state);
+  if (!chip) return null;
+  const Icon = chip.needsOwner ? AlertTriangle : Clock;
+  return (
+    <Badge variant="outline"
+      data-testid="issue-blocked-notice-interruption-indicator"
+      data-recovery-state={state}
+      role="status"
+      aria-label={chip.label}
+      title={`${chip.label} — open the source task to act.`}
+      className={`[&>svg]:size-2.5 gap-0.5 px-1.5 text-(length:--text-nano) ${chip.className}`}
+    >
+      <Icon className="h-2.5 w-2.5" aria-hidden />
+      {chip.label}
+    </Badge>
+  );
+}
+
+/** Mono, linked leaf identifier for the body sentence (spec §4.2). */
+function UnhealthyLeafIdentifier({ blocker }: { blocker: IssueRelationIssueSummary }) {
+  const issuePathId = blocker.identifier ?? blocker.id;
+  return (
+    <Link
+      to={createIssueDetailPath(issuePathId)}
+      className="font-mono underline-offset-2 hover:underline"
+      title={blocker.title}
+    >
+      {blocker.identifier ?? blocker.id.slice(0, 8)}
+    </Link>
+  );
+}
 
 function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const state = deriveActiveRecoveryDisplayState(action);
@@ -477,6 +525,47 @@ export function IssueBlockedNotice({
     : null;
   const reopenSuppressedOtherCount = Math.max(unresolvedLeafBlockers.length - 1, 0);
 
+  // Spec §4.1 — name the EXACT unhealthy leaf, never the direct blocker when
+  // the problem is deeper. Candidates are the deepest unresolved leaves; a
+  // blocker only speaks for itself when it has no unresolved leaves of its own.
+  // Spec §4.4: absent `interruptedRunRecoveryState` (older server) means we
+  // render today's notice unchanged — health is never inferred from run data
+  // the payload doesn't carry.
+  const unhealthyLeafBlockers = (() => {
+    const seen = new Set<string>();
+    const collected: IssueRelationIssueSummary[] = [];
+    for (const blocker of blockers) {
+      const terminals = (blocker.terminalBlockers ?? []).filter(
+        (leaf) => leaf.status !== "done" && leaf.status !== "cancelled",
+      );
+      const leaves = terminals.length > 0 ? terminals : [blocker];
+      for (const leaf of leaves) {
+        if (seen.has(leaf.id)) continue;
+        if (!isUnhealthyLeafRecoveryState(leaf.interruptedRunRecoveryState)) continue;
+        seen.add(leaf.id);
+        collected.push(leaf);
+      }
+    }
+    const preferredId = blockerAttention?.terminalBlockerIssueId ?? null;
+    return collected.sort((a, b) => {
+      // The server's sampled terminal blocker wins, then owner-required leaves.
+      if (preferredId) {
+        if (a.id === preferredId) return -1;
+        if (b.id === preferredId) return 1;
+      }
+      const aOwner = leafRecoveryNeedsOwner(a.interruptedRunRecoveryState) ? 0 : 1;
+      const bOwner = leafRecoveryNeedsOwner(b.interruptedRunRecoveryState) ? 0 : 1;
+      return aOwner - bOwner;
+    });
+  })();
+  const primaryUnhealthyLeaf = unhealthyLeafBlockers[0] ?? null;
+  const showUnhealthyLeafRow = unhealthyLeafBlockers.length > 0;
+  // The interrupted row already names these leaves with a sharper reason, so
+  // the generic "Ultimately waiting on" row only keeps whatever is left.
+  const remainingTerminalBlockers = terminalBlockers.filter(
+    (blocker) => !unhealthyLeafBlockers.some((leaf) => leaf.id === blocker.id),
+  );
+
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
     const recoveryAction = blocker.activeRecoveryAction ?? null;
@@ -491,7 +580,11 @@ export function IssueBlockedNotice({
         <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        {recoveryAction ? (
+          <BlockerRecoveryIndicator action={recoveryAction} />
+        ) : blocker.interruptedRunRecoveryState ? (
+          <BlockerInterruptionIndicator state={blocker.interruptedRunRecoveryState} />
+        ) : null}
       </IssueLinkQuicklook>
     );
   };
@@ -506,11 +599,15 @@ export function IssueBlockedNotice({
   const hasLiveWaitingBlocker = [...chainBlockers, ...terminalBlockers].some((blocker) => (
     liveIds.has(blocker.id)
   ));
+  // Spec §4.3 — a chain holding an unhealthy leaf never reads as healthy live
+  // work. A `recovered` leaf still counts as live (its successor is running),
+  // which is why it is not in `unhealthyLeafBlockers`.
   const waitingOnLiveWork =
     !showSuccessfulRunHandoff
     && blockerAttention?.state === "covered"
     && chainBlockers.length > 0
-    && hasLiveWaitingBlocker;
+    && hasLiveWaitingBlocker
+    && !showUnhealthyLeafRow;
 
   if (waitingOnLiveWork) {
     return (
@@ -614,6 +711,37 @@ export function IssueBlockedNotice({
                   {blockers.map(renderBlockerChip)}
                 </div>
               ) : null}
+              {showUnhealthyLeafRow && primaryUnhealthyLeaf ? (
+                <>
+                  <div
+                    data-testid="issue-blocked-notice-interrupted-leaf-row"
+                    className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                  >
+                    <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                      {unhealthyLeafBlockers.length === 1
+                        ? "Blocked on an interrupted task"
+                        : "Blocked on interrupted tasks"}
+                    </span>
+                    {unhealthyLeafBlockers.map(renderBlockerChip)}
+                  </div>
+                  <p
+                    data-testid="issue-blocked-notice-interrupted-leaf-body"
+                    className="text-xs leading-5 text-amber-900 dark:text-amber-100"
+                  >
+                    {leafRecoveryNeedsOwner(primaryUnhealthyLeaf.interruptedRunRecoveryState) ? (
+                      <>
+                        <UnhealthyLeafIdentifier blocker={primaryUnhealthyLeaf} /> needs a recovery
+                        owner before this task can continue.
+                      </>
+                    ) : (
+                      <>
+                        Work resumes automatically when{" "}
+                        <UnhealthyLeafIdentifier blocker={primaryUnhealthyLeaf} /> recovers.
+                      </>
+                    )}
+                  </p>
+                </>
+              ) : null}
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
@@ -621,12 +749,12 @@ export function IssueBlockedNotice({
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
-              ) : terminalBlockers.length > 0 ? (
+              ) : remainingTerminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
                     Ultimately waiting on
                   </span>
-                  {terminalBlockers.map(renderBlockerChip)}
+                  {remainingTerminalBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
               {showParkedRow ? (

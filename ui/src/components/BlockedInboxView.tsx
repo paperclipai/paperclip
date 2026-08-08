@@ -17,6 +17,8 @@ import {
   type BlockedInboxIssueRow,
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
+import { Link } from "../lib/router";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { BlockedReasonChip } from "./BlockedReasonChip";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow } from "./IssueRow";
@@ -289,6 +291,28 @@ function resolveOwnerName(
   return { label: null, isAgent: false };
 }
 
+/**
+ * Names the exact task the row is ultimately stuck on (spec §4). The inbox is
+ * where "which task is actually stuck" pays off fastest, and the payload has
+ * carried `leafIssue` for a while without ever rendering it. Omitted when the
+ * leaf IS this row — repeating the row's own identifier is noise.
+ */
+function BlockedLeafFragment({ row }: { row: BlockedInboxIssueRow }) {
+  const leaf = row.attention.leafIssue;
+  if (!leaf || leaf.id === row.issue.id) return null;
+  const label = leaf.identifier ?? leaf.id.slice(0, 8);
+  return (
+    <Link
+      to={createIssueDetailPath(leaf.identifier ?? leaf.id)}
+      data-testid="blocked-row-leaf"
+      title={`${label} — ${leaf.title}`}
+      className="relative z-10 ml-2 whitespace-nowrap align-middle font-mono text-xs text-muted-foreground no-underline hover:underline"
+    >
+      → {label}
+    </Link>
+  );
+}
+
 function BlockedInboxRow({
   row,
   issueLinkState,
@@ -374,11 +398,14 @@ function BlockedInboxRow({
         </span>
       }
       titleSuffix={
-        <BlockedReasonChip
-          reason={row.attention.reason}
-          severity={row.attention.severity}
-          className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
-        />
+        <>
+          <BlockedReasonChip
+            reason={row.attention.reason}
+            severity={row.attention.severity}
+            className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
+          />
+          <BlockedLeafFragment row={row} />
+        </>
       }
       mobileMeta={mobileMeta}
       desktopTrailing={desktopTrailing}

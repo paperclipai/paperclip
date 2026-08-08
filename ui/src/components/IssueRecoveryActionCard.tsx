@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
+  InterruptedRunRecovery,
   IssueRecoveryAction,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
@@ -61,6 +62,12 @@ export interface RecoveryReissueRequest {
 export interface IssueRecoveryActionCardProps {
   action: IssueRecoveryAction;
   agentMap?: ReadonlyMap<string, Agent>;
+  /**
+   * Phase 5A interrupted-run read model. Supplies the receipt id and attempt
+   * bound for handoff kinds; absent on older servers, where the card falls back
+   * to whatever the action's own evidence carries.
+   */
+  interruptedRunRecovery?: InterruptedRunRecovery | null;
   /** Preferred state hint (e.g. observe_only when watchdog tone is requested). Falls back to derived state. */
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
@@ -198,6 +205,12 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-emerald-300/60 dark:border-emerald-500/30",
   },
 };
+
+/** Recovery kinds the Phase 3 interrupted-run handoff raises. */
+const INTERRUPTION_RECOVERY_KINDS: readonly IssueRecoveryActionKind[] = [
+  "stranded_assigned_issue",
+  "issue_graph_liveness",
+];
 
 const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   restored: "restored",
@@ -900,6 +913,7 @@ const RESOLVE_OPTIONS: Array<{
 export function IssueRecoveryActionCard({
   action,
   agentMap,
+  interruptedRunRecovery,
   forcedState,
   onResolve,
   onReissueIsolated,
@@ -923,8 +937,40 @@ export function IssueRecoveryActionCard({
     if (cardState === "resolved" && action.outcome) {
       return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
     }
+    // The spec's §1-D bullet asks the headline to restate `action.nextAction`.
+    // We keep the designed per-kind headline instead: it is the operator
+    // sentence these cards shipped with (and is asserted by their tests), while
+    // `nextAction` renders verbatim in its own row below — so nothing is
+    // synthesized over the server's sentence, it is just not duplicated.
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
   }, [action.kind, action.outcome, cardState]);
+
+  // Interrupted-run evidence (spec §1 D): the handoff kinds raised by the
+  // Phase 3 server liveness pass must show the run they replaced, the receipt
+  // that recorded the decision, and how many automatic retries were spent.
+  const interruptionEvidence = useMemo(() => {
+    if (!INTERRUPTION_RECOVERY_KINDS.includes(action.kind)) return null;
+    const interruptedRunId =
+      readEvidenceString(action.evidence?.interruptedRunId)
+      ?? interruptedRunRecovery?.interruptedRunId
+      ?? null;
+    const receiptId =
+      readEvidenceString(action.evidence?.recoveryReceiptId)
+      ?? interruptedRunRecovery?.receiptId
+      ?? null;
+    if (!interruptedRunId && !receiptId) return null;
+    const attempt = interruptedRunRecovery?.attempt ?? null;
+    return {
+      interruptedRunId,
+      receiptId,
+      receiptTitle: receiptId && interruptedRunRecovery?.receiptOutcome
+        ? `${receiptId} · ${interruptedRunRecovery.receiptOutcome}`
+        : receiptId,
+      attemptBound: attempt && attempt > 0
+        ? `After ${attempt} automatic ${attempt === 1 ? "retry" : "retries"}`
+        : null,
+    };
+  }, [action.evidence, action.kind, interruptedRunRecovery]);
 
   const wakeSummary = readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -1056,7 +1102,8 @@ export function IssueRecoveryActionCard({
             ) : action.ownerType === "user" && action.ownerUserId ? (
               <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              // Copy rule: name the actor Paperclip, never the machine noun.
+              <span className="font-medium">Paperclip recovery</span>
             ) : (
               <span className="text-muted-foreground">unassigned — pick one to wake them</span>
             )}
@@ -1074,6 +1121,30 @@ export function IssueRecoveryActionCard({
         {correctiveRunId ? (
           <MetadataRow label="Corrective run">
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
+          </MetadataRow>
+        ) : null}
+        {interruptionEvidence ? (
+          <MetadataRow label="Interrupted run">
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              <RunChip
+                runId={interruptionEvidence.interruptedRunId}
+                agentId={action.previousOwnerAgentId}
+              />
+              {interruptionEvidence.receiptId ? (
+                <span
+                  className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground"
+                  title={interruptionEvidence.receiptTitle ?? interruptionEvidence.receiptId}
+                  data-testid="recovery-action-receipt"
+                >
+                  Receipt {interruptionEvidence.receiptId.slice(0, 8)}
+                </span>
+              ) : null}
+              {interruptionEvidence.attemptBound ? (
+                <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
+                  {interruptionEvidence.attemptBound}
+                </span>
+              ) : null}
+            </span>
           </MetadataRow>
         ) : null}
         <MetadataRow label="Evidence">

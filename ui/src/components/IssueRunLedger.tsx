@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, Agent, InterruptedRunRecovery } from "@paperclipai/shared";
 import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -31,6 +31,7 @@ type IssueRunLedgerProps = {
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
   resolveUserLabel?: (userId: string) => string | null | undefined;
+  interruptedRunRecovery?: InterruptedRunRecovery | null;
 };
 
 type IssueRunLedgerContentProps = {
@@ -43,6 +44,12 @@ type IssueRunLedgerContentProps = {
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
   resolveUserLabel?: (userId: string) => string | null | undefined;
+  /**
+   * Phase 5A recovery read model. The ledger is the historical record, so the
+   * receipt id is attached to the run rows it actually describes — the
+   * interrupted run and its successor.
+   */
+  interruptedRunRecovery?: InterruptedRunRecovery | null;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
   watchdogDecisionError?: string | null;
@@ -413,6 +420,7 @@ export function IssueRunLedger({
   activityEvents,
   renderActivityEvent,
   resolveUserLabel,
+  interruptedRunRecovery,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -476,6 +484,7 @@ export function IssueRunLedger({
       activityEvents={activityEvents}
       renderActivityEvent={renderActivityEvent}
       resolveUserLabel={resolveUserLabel}
+      interruptedRunRecovery={interruptedRunRecovery}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
       canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
       watchdogDecisionError={watchdogDecisionError}
@@ -494,6 +503,7 @@ export function IssueRunLedgerContent({
   activityEvents,
   renderActivityEvent,
   resolveUserLabel,
+  interruptedRunRecovery,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
   watchdogDecisionError,
@@ -708,6 +718,13 @@ export function IssueRunLedgerContent({
               : null;
             const denialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
             const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
+            // Receipt evidence belongs to the runs the recovery actually names:
+            // the interrupted run and the successor that replaced it.
+            const receiptId = interruptedRunRecovery?.receiptId
+              && (interruptedRunRecovery.interruptedRunId === run.runId
+                || interruptedRunRecovery.successorRunId === run.runId)
+              ? interruptedRunRecovery.receiptId
+              : null;
             return (
               <article
                 key={`run:${run.runId}`}
@@ -816,11 +833,11 @@ export function IssueRunLedgerContent({
                   </div>
                 </div>
 
-                {retryState ? (
+                {retryState || receiptId ? (
                   <div className="rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground">
-                    {retryState.detail ? <p>{retryState.detail}</p> : null}
-                    {retryState.secondary ? <p>{retryState.secondary}</p> : null}
-                    {retryState.retryOfRunId ? (
+                    {retryState?.detail ? <p>{retryState.detail}</p> : null}
+                    {retryState?.secondary ? <p>{retryState.secondary}</p> : null}
+                    {retryState?.retryOfRunId ? (
                       <p>
                         Retry of{" "}
                         <Link
@@ -829,6 +846,21 @@ export function IssueRunLedgerContent({
                         >
                           {retryState.retryOfRunId.slice(0, 8)}
                         </Link>
+                      </p>
+                    ) : null}
+                    {receiptId ? (
+                      <p data-testid="issue-run-ledger-receipt">
+                        Receipt{" "}
+                        <span
+                          className="font-mono text-foreground"
+                          title={
+                            interruptedRunRecovery?.receiptOutcome
+                              ? `${receiptId} · ${interruptedRunRecovery.receiptOutcome}`
+                              : receiptId
+                          }
+                        >
+                          {receiptId.slice(0, 8)}
+                        </span>
                       </p>
                     ) : null}
                   </div>

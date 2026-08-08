@@ -1066,6 +1066,11 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
+        const swept = await heartbeat.sweepStaleIssueLocks();
+        if (swept.cleared > 0) {
+          logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
+        }
+        const interruptedHandoffs = await heartbeat.reconcileInterruptedRunHandoffs();
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
@@ -1077,7 +1082,12 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.escalated > 0
         ) {
           logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            {
+              promotedScheduledRetries: promotion.promoted,
+              promotedScheduledRetryRunIds: promotion.runIds,
+              interruptedHandoffs,
+              ...reconciled,
+            },
             "startup heartbeat recovery changed assigned issue state",
           );
         }
@@ -1101,11 +1111,6 @@ export async function startServer(): Promise<StartedServer> {
         const scanned = await heartbeat.scanSilentActiveRuns();
         if (scanned.created > 0 || scanned.escalated > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
-        }
-
-        const swept = await heartbeat.sweepStaleIssueLocks();
-        if (swept.cleared > 0) {
-          logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
 
         const reviewed = await heartbeat.reconcileProductivityReviews();
@@ -1269,6 +1274,11 @@ export async function startServer(): Promise<StartedServer> {
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
+              const swept = await heartbeat.sweepStaleIssueLocks();
+              if (swept.cleared > 0) {
+                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+              const interruptedHandoffs = await heartbeat.reconcileInterruptedRunHandoffs();
               await heartbeat.resumeQueuedRuns();
               const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
               if (
@@ -1280,7 +1290,12 @@ export async function startServer(): Promise<StartedServer> {
                 reconciled.escalated > 0
               ) {
                 logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                  {
+                    promotedScheduledRetries: promotion.promoted,
+                    promotedScheduledRetryRunIds: promotion.runIds,
+                    interruptedHandoffs,
+                    ...reconciled,
+                  },
                   "periodic heartbeat recovery changed assigned issue state",
                 );
               }
@@ -1301,12 +1316,6 @@ export async function startServer(): Promise<StartedServer> {
               const scanned = await heartbeat.scanSilentActiveRuns();
               if (scanned.created > 0 || scanned.escalated > 0) {
                 logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-              }
-            })
-            .then(async () => {
-              const swept = await heartbeat.sweepStaleIssueLocks();
-              if (swept.cleared > 0) {
-                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
             })
             .then(async () => {

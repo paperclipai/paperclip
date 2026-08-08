@@ -4444,16 +4444,19 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await svc.update(childB, { status: "cancelled" });
 
-    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+    const wakeableParent = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(wakeableParent).toMatchObject({
       id: parentId,
       assigneeAgentId,
-      childIssueIds: [childA, childB],
-      childIssueSummaries: [
+      childIssueIds: expect.arrayContaining([childA, childB]),
+      childIssueSummaries: expect.arrayContaining([
         expect.objectContaining({ id: childA, title: "Child A", status: "done" }),
         expect.objectContaining({ id: childB, title: "Child B", status: "cancelled" }),
-      ],
+      ]),
       childIssueSummaryTruncated: false,
     });
+    expect(wakeableParent?.childIssueIds).toHaveLength(2);
+    expect(wakeableParent?.childIssueSummaries).toHaveLength(2);
   });
 });
 

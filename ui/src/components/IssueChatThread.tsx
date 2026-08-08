@@ -40,6 +40,7 @@ import type {
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
+  InterruptedRunRecovery,
   SuccessfulRunHandoffState,
   IssueWorkMode,
 } from "@paperclipai/shared";
@@ -454,6 +455,7 @@ interface IssueChatThreadProps {
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
+  interruptedRunRecovery?: InterruptedRunRecovery | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
@@ -4349,6 +4351,7 @@ export function IssueChatThread({
   blockerAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
+  interruptedRunRecovery = null,
   recoveryAction = null,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
@@ -5106,6 +5109,7 @@ export function IssueChatThread({
                   {recoveryAction ? (
                     <IssueRecoveryActionCard
                       action={recoveryAction}
+                      interruptedRunRecovery={interruptedRunRecovery}
                       agentMap={agentMap}
                       onResolve={onResolveRecoveryAction}
                       onReissueIsolated={onReissueIsolatedRecoveryAction}

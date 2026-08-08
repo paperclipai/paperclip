@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  HEARTBEAT_RUN_STATUSES,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
   ISSUE_EXECUTION_MONITOR_KINDS,
@@ -322,6 +323,50 @@ export const issueRecoveryActionReadModelSchema = z.object({
 });
 
 export type IssueRecoveryActionReadModel = z.infer<typeof issueRecoveryActionReadModelSchema>;
+
+export const interruptedRunRecoveryStateSchema = z.enum([
+  "retry_queued",
+  "recovered",
+  "retry_exhausted",
+  "suppressed",
+  "recovery_owner_required",
+  "pathless",
+]);
+
+export const interruptedRunRecoveryReceiptOutcomeSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "already_exists",
+  "waiting",
+  "terminal",
+  "suppressed",
+  "escalated",
+]);
+
+export const interruptedRunRecoveryReadModelSchema = z.object({
+  state: interruptedRunRecoveryStateSchema,
+  interruptedRunId: z.string().uuid().nullable(),
+  interruptedAt: z.union([z.date(), z.string().datetime()]).nullable(),
+  errorCode: z.string().max(120).nullable(),
+  successorRunId: z.string().uuid().nullable(),
+  successorStatus: z.enum(HEARTBEAT_RUN_STATUSES).nullable(),
+  receiptId: z.string().uuid().nullable(),
+  receiptOutcome: interruptedRunRecoveryReceiptOutcomeSchema.nullable(),
+  suppressionReason: z.string().max(120).nullable(),
+  escalationReason: z.string().max(120).nullable(),
+  attempt: z.number().int().nonnegative().nullable(),
+  maxAttempts: z.number().int().positive().nullable(),
+  recoveryActionId: z.string().uuid().nullable(),
+  owner: z.object({
+    type: z.enum(ISSUE_RECOVERY_ACTION_OWNER_TYPES),
+    agentId: z.string().uuid().nullable(),
+    userId: z.string().nullable(),
+  }).nullable(),
+  nextAction: z.string().min(1).nullable(),
+});
+
+export type InterruptedRunRecoveryReadModel = z.infer<typeof interruptedRunRecoveryReadModelSchema>;
 
 const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",

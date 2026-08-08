@@ -89,6 +89,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type InterruptedRunRecovery,
   type IssueReviewPolicy,
   type IssueCommentPresentation,
   type IssueWatchdogDiscoveryKind,
@@ -117,6 +118,7 @@ import {
   heartbeatService,
   issueApprovalService,
   issueRecoveryActionService,
+  listInterruptedRunRecoveries,
   issueThreadInteractionService,
   inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
@@ -867,16 +869,85 @@ async function relationRecoveryActionMap(
 function withRecoveryActionsOnRelationSummaries(
   relations: { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
   recoveryActionByIssueId: Map<string, NonNullable<IssueRelationIssueSummary["activeRecoveryAction"]>>,
+  interruptedRunRecoveryByIssueId: Map<string, InterruptedRunRecovery> = new Map(),
 ) {
   const augment = (summary: IssueRelationIssueSummary): IssueRelationIssueSummary => ({
     ...summary,
     activeRecoveryAction: recoveryActionByIssueId.get(summary.id) ?? summary.activeRecoveryAction ?? null,
+    interruptedRunRecoveryState:
+      interruptedRunRecoveryByIssueId.get(summary.id)?.state
+      ?? summary.interruptedRunRecoveryState
+      ?? null,
     terminalBlockers: summary.terminalBlockers?.map(augment),
   });
   return {
     blockedBy: relations.blockedBy.map(augment),
     blocks: relations.blocks.map(augment),
   };
+}
+
+function collectRelationIssueSummaries(
+  relations: { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
+) {
+  const summaries = new Map<string, IssueRelationIssueSummary>();
+  const visit = (summary: IssueRelationIssueSummary) => {
+    if (summaries.has(summary.id)) return;
+    summaries.set(summary.id, summary);
+    for (const terminal of summary.terminalBlockers ?? []) visit(terminal);
+  };
+  for (const blocker of relations.blockedBy) visit(blocker);
+  for (const blocking of relations.blocks) visit(blocking);
+  return [...summaries.values()];
+}
+
+async function listRecoveryAugmentedRelations(
+  db: Db,
+  recoveryActionsSvc: RecoveryActionsLister,
+  companyId: string,
+  issueRows: Array<{
+    id: string;
+    blockedBy?: IssueRelationIssueSummary[];
+    blocks?: IssueRelationIssueSummary[];
+  }>,
+) {
+  const groups = issueRows
+    .filter((issue) => issue.blockedBy !== undefined || issue.blocks !== undefined)
+    .map((issue) => ({
+      issueId: issue.id,
+      relations: {
+        blockedBy: issue.blockedBy ?? [],
+        blocks: issue.blocks ?? [],
+      },
+    }));
+  const summaries = new Map<string, IssueRelationIssueSummary>();
+  for (const group of groups) {
+    for (const summary of collectRelationIssueSummaries(group.relations)) {
+      if (!summaries.has(summary.id)) summaries.set(summary.id, summary);
+    }
+  }
+  if (summaries.size === 0) return new Map<string, ReturnType<typeof withRecoveryActionsOnRelationSummaries>>();
+
+  const recoveryActionByIssueId = await recoveryActionsSvc.listActiveForIssues(
+    companyId,
+    [...summaries.keys()],
+  );
+  const interruptedRunRecoveryByIssueId = await listInterruptedRunRecoveries(
+    db,
+    companyId,
+    [...summaries.values()].map((summary) => ({
+      id: summary.id,
+      status: summary.status,
+      activeRecoveryAction: recoveryActionByIssueId.get(summary.id) ?? null,
+    })),
+  );
+  return new Map(groups.map((group) => [
+    group.issueId,
+    withRecoveryActionsOnRelationSummaries(
+      group.relations,
+      recoveryActionByIssueId,
+      interruptedRunRecoveryByIssueId,
+    ),
+  ]));
 }
 
 type IssueBlockerDiagnosticReadableIssue = {
@@ -2278,6 +2349,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.blockedInboxAttention !== undefined ? { blockedInboxAttention: issue.blockedInboxAttention } : {}),
     ...(issue.productivityReview ? { productivityReview: issue.productivityReview } : {}),
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
+    interruptedRunRecovery: issue.interruptedRunRecovery ?? null,
     ...(issue.liveDescendantCount !== undefined ? { liveDescendantCount: issue.liveDescendantCount } : {}),
     ...(issue.myLastTouchAt !== undefined ? { myLastTouchAt: issue.myLastTouchAt } : {}),
     ...(issue.lastExternalCommentAt !== undefined ? { lastExternalCommentAt: issue.lastExternalCommentAt } : {}),
@@ -5455,10 +5527,27 @@ export function issueRoutes(
             if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
             else recoveryActionByIssue.delete(issue.id);
           }));
+          const interruptedRunRecoveries = await listInterruptedRunRecoveries(
+            db,
+            companyId,
+            result.map((issue) => ({
+              id: issue.id,
+              status: issue.status,
+              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            })),
+          );
+          const recoveryAugmentedRelations = await listRecoveryAugmentedRelations(
+            db,
+            recoveryActionsSvc,
+            companyId,
+            result,
+          );
           const compactResult = result.map((issue) =>
             toCompactIssue({
               ...issue,
+              ...(recoveryAugmentedRelations.get(issue.id) ?? {}),
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+              interruptedRunRecovery: interruptedRunRecoveries.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             }));
           return {
@@ -5485,12 +5574,29 @@ export function issueRoutes(
           if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
           else recoveryActionByIssue.delete(issue.id);
         }));
+        const interruptedRunRecoveries = await listInterruptedRunRecoveries(
+          db,
+          companyId,
+          result.map((issue) => ({
+            id: issue.id,
+            status: issue.status,
+            activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+          })),
+        );
+        const recoveryAugmentedRelations = await listRecoveryAugmentedRelations(
+          db,
+          recoveryActionsSvc,
+          companyId,
+          result,
+        );
         return {
           kind: "full",
           body: result.map((issue) => ({
             ...issue,
+            ...(recoveryAugmentedRelations.get(issue.id) ?? {}),
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            interruptedRunRecovery: interruptedRunRecoveries.get(issue.id) ?? null,
           })),
         };
       },
@@ -5739,21 +5845,39 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
+    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
+      recoveryActionsSvc,
+      issue.companyId,
+      relations,
+    );
+    const relationIssueSummaries = collectRelationIssueSummaries(relations);
+    const interruptedRunRecoveries = await listInterruptedRunRecoveries(
+      db,
+      issue.companyId,
+      [
+        {
+          id: issue.id,
+          status: issue.status,
+          activeRecoveryAction: revalidatedActiveRecoveryAction,
+        },
+        ...relationIssueSummaries.map((summary) => ({
+          id: summary.id,
+          status: summary.status,
+          activeRecoveryAction: recoveryActionsByRelationIssue.get(summary.id) ?? null,
+        })),
+      ],
+    );
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations,
+      recoveryActionsByRelationIssue,
+      interruptedRunRecoveries,
+    );
     const redactLowTrust = await shouldRedactLowTrustForHeartbeatContext(issue, getActorInfo(req));
     const safeWakeComment =
       wakeComment && wakeComment.issueId === issue.id
@@ -5786,6 +5910,7 @@ export function issueRoutes(
         productivityReview,
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
+        interruptedRunRecovery: interruptedRunRecoveries.get(issue.id) ?? null,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -6014,21 +6139,39 @@ export function issueRoutes(
       listIssueLinkedCases(db, issue.companyId, issue.id),
       inboxArchiveFieldsPromise,
     ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
+    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
+      recoveryActionsSvc,
+      issue.companyId,
+      relations,
+    );
+    const relationIssueSummaries = collectRelationIssueSummaries(relations);
+    const interruptedRunRecoveries = await listInterruptedRunRecoveries(
+      db,
+      issue.companyId,
+      [
+        {
+          id: issue.id,
+          status: issue.status,
+          activeRecoveryAction: revalidatedActiveRecoveryAction,
+        },
+        ...relationIssueSummaries.map((summary) => ({
+          id: summary.id,
+          status: summary.status,
+          activeRecoveryAction: recoveryActionsByRelationIssue.get(summary.id) ?? null,
+        })),
+      ],
+    );
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations,
+      recoveryActionsByRelationIssue,
+      interruptedRunRecoveries,
+    );
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
@@ -6047,6 +6190,7 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      interruptedRunRecovery: interruptedRunRecoveries.get(issue.id) ?? null,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,

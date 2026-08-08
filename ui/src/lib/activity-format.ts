@@ -51,6 +51,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.successful_run_handoff_escalated": "escalated missing next step on",
   "issue.accepted_plan_decomposition_updated": "updated accepted-plan decomposition on",
   "issue.recovery_action_opened": "opened a recovery action on",
+  "issue.stale_lock_cleared": "cleared stale run references on",
   "issue.recovery_action_resolved": "resolved the recovery action on",
   "issue.recovery_action_escalated": "escalated the recovery action on",
   "agent.created": "created",
@@ -117,6 +118,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.cross_issue_influence_observed": "made a cross-task write",
   "issue.attribution_spoof_rejected": "tried to choose its own responsible user",
   "issue.recovery_action_opened": "Opened a source-scoped recovery action",
+  // Housekeeping, never progress: neutral wording, no success verb, and no
+  // effect on the recovery slot (PAP-16730 spec §3).
+  "issue.stale_lock_cleared": "Cleared stale run references",
   "issue.recovery_action_resolved": "Resolved the recovery action",
   "issue.recovery_action_escalated": "Escalated the recovery action",
   "issue.accepted_plan_decomposition_updated": "updated the accepted-plan decomposition",
