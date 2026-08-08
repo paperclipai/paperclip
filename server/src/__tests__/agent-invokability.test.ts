@@ -66,4 +66,12 @@ describe("agent invokability", () => {
 
     expect(listInvalidOrgChainDescendantIds("ceo", rows).sort()).toEqual(["coder", "cto"]);
   });
+
+  it("blocks human agents (adapterType === 'human') as non-invokable", () => {
+    const humanCeo = agent({ id: "human-ceo", adapterType: "human" });
+    expect(evaluateAgentInvokability(humanCeo, [humanCeo])).toMatchObject({
+      invokable: false,
+      reason: "human_agent",
+    });
+  });
 });

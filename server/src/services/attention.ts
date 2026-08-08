@@ -1138,6 +1138,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             name: agents.name,
             reportsTo: agents.reportsTo,
             status: agents.status,
+            adapterType: agents.adapterType,
           })
           .from(agents)
           .where(eq(agents.companyId, companyId))
