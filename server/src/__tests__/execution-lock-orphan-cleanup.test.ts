@@ -16,6 +16,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -90,6 +91,32 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
   }
 
   describe("heartbeat run finalization", () => {
+    it("schedules the issue monitor when checkout acquires the execution lock", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "Coder");
+      const issueId = await seedIssue(companyId, {
+        status: "todo",
+        assigneeAgentId: agentId,
+      });
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await issueService(db).checkout(issueId, agentId, ["todo"], runId);
+
+      const [issueAfter] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issueAfter?.executionLockedAt).toBeInstanceOf(Date);
+      expect(issueAfter?.monitorNextCheckAt).toBeInstanceOf(Date);
+      expect(issueAfter!.monitorNextCheckAt!.getTime()).toBeGreaterThan(issueAfter!.executionLockedAt!.getTime());
+    });
+
     it("clears execution_run_id on every issue that references the finalized run, not just the run's contextSnapshot issue", async () => {
       // Regression test for the "stale execution lock" bug:
       //
