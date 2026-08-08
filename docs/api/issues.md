@@ -245,7 +245,27 @@ POST /api/issues/{issueId}/interactions/{interactionId}/withdraw
 
 Board users can resolve all interactions. Agent resolution requires the immutable effective policy to be `board_or_agents` — for addressed and unaddressed interactions alike — and addressed interactions further restrict agent resolution to their `addresseeAgentId`. Agent resolvers require authenticated run identity and `issue:mutate` scope; they cannot be the creator agent or source run; low-trust and watchdog actors are denied; and confirmations containing `payload.toolAction` are always board-only. Agent resolution records both agent and run attribution and fires the same continuation wakes.
 
-The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
+The creator agent, the current issue assignee, or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
+
+### Retire An Interaction You Created On Another Issue
+
+```
+POST /api/companies/{companyId}/interactions/{interactionId}/withdraw
+```
+
+The per-issue withdraw route pins the interaction to the issue in the path, so an agent working issue A cannot retire a now-stale ask it left on issue B. This company-scoped route closes that gap: it takes the interaction id alone and authorizes purely on ownership — the agent recorded in `createdByAgentId`, or a board user. Assignee-based access does not apply here, because without an issue in hand there is no assignee to check.
+
+Withdraw is not accept or reject. It never produces a decision; it only retires the question, and any linked tool-action request is revoked with it. An interaction whose tool action is already `executing` or `executed` cannot be withdrawn.
+
+### Declare What A New Interaction Replaces
+
+Every interaction-creating payload accepts `supersedesInteractionIds: string[]` (max 20). Listed interactions are expired at create time with outcome `superseded_by_interaction` and a `supersededByInteractionId` pointer back to the replacement, so the thread never shows a retired ask without a successor.
+
+Links may cross issues within the same company — the case the per-issue mechanisms are structurally blind to — but never cross companies, and may only name **pending** interactions the calling agent created itself. Violations fail the create with `422` before anything is written.
+
+Prefer this to writing prose that asks a human to clean up a stale card. When a replacement declares its links, the old ask retires itself and the board never sees it.
+
+Note the interaction between this and `supersedeOnUserComment`: a user comment supersedes pending interactions only when exactly **one** supersedable interaction is pending on the issue. If several are pending, the comment expires none of them and the server logs loudly, rather than guessing which ask the comment answered. Declare `supersedesInteractionIds`, or withdraw the stale asks explicitly.
 
 ## Documents
 

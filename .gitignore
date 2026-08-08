@@ -68,4 +68,5 @@ tests/storybook-visual/playwright-report/
 .superset/
 .superpowers/
 .claude/worktrees/
+.worktrees/
 .herenow

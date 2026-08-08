@@ -10670,6 +10670,104 @@ export function issueRoutes(
     },
   );
 
+  /**
+   * RBR-852 AC2 + finding 3 — company-scoped, author-owned withdraw.
+   *
+   * Why a second route instead of widening the per-issue one: the per-issue path resolves the
+   * issue first and pins the interaction to it, so an agent can only ever retire asks on the issue
+   * it is currently working. In production that forced two separate CEO asks (RBR-730, RBR-398) to
+   * embed prose begging a human to dismiss a stale confirmation on a *different* issue, because the
+   * API refused. Retirement, not volume, is the defect; this route is the fix.
+   *
+   * Authorization is ownership, not a role grant: only the agent recorded in `createdByAgentId`
+   * may withdraw through this route, and board users go through the normal board check. That is
+   * deliberately narrower than the per-issue route (which also allows the current assignee) —
+   * without an issue in hand, "assignee" has no meaning here, and ownership is the only claim that
+   * is safe to honour across issue boundaries.
+   *
+   * The issue-level authorization boundary is intentionally *not* applied to the interaction's own
+   * issue. Withdraw is not accept/reject: it produces no decision and discloses nothing beyond an
+   * ask the actor already authored. Requiring `issue:mutate` on the far issue would reinstate
+   * exactly the wall this issue exists to remove.
+   */
+  router.post(
+    "/companies/:companyId/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const interactionId = req.params.interactionId as string;
+      assertCompanyAccess(req, companyId);
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForCompany({ companyId }, interactionId);
+
+      if (req.actor.type === "agent") {
+        const actorAgentId = req.actor.agentId;
+        if (!actorAgentId || !requireAgentRunId(req, res)) return;
+        const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+        if (watchdogScope.kind !== "none") {
+          res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
+          return;
+        }
+        if (await assertLowTrustControlPlaneDenied(req, res, companyId)) return;
+        if (current.createdByAgentId !== actorAgentId) {
+          res.status(403).json({
+            error: "Only the agent that created this interaction may withdraw it through the company route",
+          });
+          return;
+        }
+      } else {
+        assertBoard(req);
+      }
+
+      const actor = getActorInfo(req);
+      const interaction = await interactionSvc.withdrawCompanyInteraction(
+        { companyId },
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: interaction.issueId,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          crossIssueWithdraw: true,
+          reason: interaction.result && "reason" in interaction.result ? interaction.result.reason ?? null : null,
+        },
+      });
+
+      // The interaction's own issue may have a different assignee mid-run waiting on this card;
+      // retiring it without a wake would strand that agent on a question that no longer exists.
+      const hostIssue = await svc.getById(interaction.issueId);
+      if (hostIssue && actor.agentId !== hostIssue.assigneeAgentId) {
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue: hostIssue,
+          interaction,
+          actor,
+          source: "issue.interaction.withdraw",
+        });
+      }
+
+      res.json(interaction);
+    },
+  );
+
   router.post(
     "/issues/:id/interactions/:interactionId/cancel",
     validate(cancelIssueThreadInteractionSchema),
