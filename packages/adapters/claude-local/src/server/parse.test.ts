@@ -4,6 +4,7 @@ import {
   parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeExpiredCredentialError,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -171,6 +172,69 @@ describe("isClaudeTransientUpstreamError", () => {
         },
       }),
     ).toBe(false);
+  });
+
+  it("classifies an expired Bedrock/STS security token 403 as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        stderr:
+          "An error occurred (ExpiredTokenException) when calling the Converse operation: The security token included in the request is expired",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "403 The security token included in the request is expired",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify a permanent AccessDenied (no expiry signal) as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        stderr:
+          "An error occurred (AccessDenied) when calling the Converse operation: User is not authorized to perform bedrock:InvokeModel",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudeExpiredCredentialError", () => {
+  it("detects ExpiredToken / ExpiredTokenException phrasing", () => {
+    expect(isClaudeExpiredCredentialError({ stderr: "ExpiredToken: token has expired" })).toBe(true);
+    expect(
+      isClaudeExpiredCredentialError({
+        stderr: "An error occurred (ExpiredTokenException) when calling GetCallerIdentity",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the STS 'security token ... is expired' phrasing", () => {
+    expect(
+      isClaudeExpiredCredentialError({
+        stdout: "The security token included in the request is expired",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects generic 'session/credentials expired' phrasing", () => {
+    expect(isClaudeExpiredCredentialError({ stderr: "Your SSO session has expired." })).toBe(true);
+    expect(isClaudeExpiredCredentialError({ stderr: "Error: credentials have expired" })).toBe(true);
+  });
+
+  it("does not match a bare AccessDenied / permanent authz failure", () => {
+    expect(
+      isClaudeExpiredCredentialError({
+        stderr: "An error occurred (AccessDenied) when calling the Converse operation",
+      }),
+    ).toBe(false);
+    expect(isClaudeExpiredCredentialError({ stderr: "403 Forbidden" })).toBe(false);
+  });
+
+  it("returns false for empty input", () => {
+    expect(isClaudeExpiredCredentialError({})).toBe(false);
   });
 });
 
