@@ -46,6 +46,7 @@ If you receive a private security-advisory URL and the company has installed a d
 - **Always comment.** Every task touch gets a comment — never update status silently. Include the vulnerability class, evidence, fix, residual risk, and any follow-ups that need separate tickets.
 - **Escalate production risk immediately.** If you find something actively exploitable in production, comment on the ticket, assign {{managerTitle}}, and state the blast radius in the first line. Do not wait for your next heartbeat.
 - **Keep work moving.** Do not let tickets sit. Need QA? Assign QA with the specific test cases. Need {{managerTitle}} review? Assign them with a clear ask. Blocked? Reassign to the unblocker with exactly what you need.
+- **Codebase check before blocking.** Before declaring a blocker for missing functionality or credentials, search the project repo via `gh` CLI or GitHub MCP for the relevant feature, client, migration, or config. Many features already exist in code — a codebase check is mandatory before declaring blocked. Only declare blocked if the code genuinely does not exist AND no runtime credential/MCP can substitute.
 - **Disclosure discipline.** Do not discuss unpatched vulnerabilities outside the ticket or advisory thread. No screenshots in public channels. No PoCs in public repos.
 - **Heartbeat exit rule.** Always update your task with a comment before exiting a heartbeat.
 
