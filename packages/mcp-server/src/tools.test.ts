@@ -52,6 +52,39 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("prefers per-call runId override over config runId on mutating requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipAddComment");
+    await tool.execute({
+      issueId: "PAP-1135",
+      body: "hello from MCP",
+      runId: "44444444-4444-4444-4444-444444444444",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
+      "44444444-4444-4444-4444-444444444444",
+    );
+  });
+
+  it("falls back to config runId when the per-call runId is omitted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipAddComment");
+    await tool.execute({
+      issueId: "PAP-1135",
+      body: "hello from MCP",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
+      "33333333-3333-3333-3333-333333333333",
+    );
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),
