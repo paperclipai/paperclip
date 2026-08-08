@@ -436,6 +436,37 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
+  it.each(["done", "cancelled"] as const)(
+    "does not create a recovery run when the locked source issue is terminal (%s)",
+    async (terminalStatus) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Terminal recovery source",
+        status: terminalStatus,
+        priority: "high",
+        assigneeAgentId: agentId,
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId },
+        contextSnapshot: { issueId, retryReason: "issue_continuation_needed" },
+        requestedByActorType: "system",
+        suppressIfIssueTerminal: true,
+      });
+
+      expect(run).toBeNull();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+      await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(0);
+    },
+  );
+
   it("allows legacy generic timer wakes by default when no skip policy is set", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
