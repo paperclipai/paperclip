@@ -761,6 +761,100 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("rolls up a new leaf into the existing root-cause escalation instead of minting a duplicate (TSMC-20489)", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId: firstBlockerId } = await seedBlockedChain();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const secondBlockerId = randomUUID();
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
+    await db.insert(issues).values({
+      id: secondBlockerId,
+      companyId,
+      title: "Second missing unblock owner",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+      createdAt: issueTimestamp,
+      updatedAt: issueTimestamp,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: secondBlockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.findings).toBe(1);
+    expect(first.escalationsCreated).toBe(1);
+
+    const firstEscalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(firstEscalations).toHaveLength(1);
+    const escalationId = firstEscalations[0]!.id;
+    const rootCauseFingerprint = [
+      "harness_liveness_root",
+      companyId,
+      "blocked_by_unassigned_issue",
+      blockedIssueId,
+    ].join(":");
+    expect(firstEscalations[0]?.executionState).toMatchObject({
+      livenessRootCauseFingerprint: rootCauseFingerprint,
+      livenessAttachedLeafFingerprints: [],
+    });
+
+    // Resolve the first blocker so the next reconcile tick's chain walk finds
+    // the SECOND blocker instead — a different leaf, same source + state, the
+    // exact TSMC-20489 fan-out pattern (one paused/stuck root, N discovered
+    // leaves over time).
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, firstBlockerId));
+
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.findings).toBe(1);
+    expect(second.escalationsCreated).toBe(0);
+    expect(second.existingEscalations).toBe(1);
+
+    const escalationsAfterSecond = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalationsAfterSecond).toHaveLength(1);
+    expect(escalationsAfterSecond[0]!.id).toBe(escalationId);
+    const secondLeafFingerprint = [
+      "harness_liveness_leaf",
+      companyId,
+      "blocked_by_unassigned_issue",
+      secondBlockerId,
+    ].join(":");
+    expect(escalationsAfterSecond[0]?.executionState).toMatchObject({
+      livenessRootCauseFingerprint: rootCauseFingerprint,
+      livenessAttachedLeafFingerprints: [secondLeafFingerprint],
+    });
+
+    const commentsAfterSecond = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, escalationId));
+    expect(commentsAfterSecond).toHaveLength(1);
+    expect(commentsAfterSecond[0]?.body).toContain("Linked dependent");
+
+    // A third tick discovers nothing new (same leaf as tick 2) — must not
+    // repost the comment or mint another ticket.
+    const third = await heartbeat.reconcileIssueGraphLiveness();
+    expect(third.escalationsCreated).toBe(0);
+    expect(third.existingEscalations).toBe(1);
+
+    const commentsAfterThird = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, escalationId));
+    expect(commentsAfterThird).toHaveLength(1);
+  });
+
   it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

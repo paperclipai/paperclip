@@ -12,6 +12,8 @@ export const RECOVERY_REASON_KINDS = {
 export const RECOVERY_KEY_PREFIXES = {
   issueGraphLivenessIncident: "harness_liveness",
   issueGraphLivenessLeaf: "harness_liveness_leaf",
+  /** Coarser than leaf: one open escalation per (company, source issue, state). TSMC-20489 */
+  issueGraphLivenessRootCause: "harness_liveness_root",
 } as const;
 
 export type RecoveryOriginKind = typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS];
@@ -78,5 +80,25 @@ export function buildIssueGraphLivenessLeafKey(input: {
     input.companyId,
     input.state,
     input.leafIssueId,
+  ].join(":");
+}
+
+// TSMC-20489: one open escalation per (company, source issue, state), coarser
+// than both the incident key and the leaf key above. A single uninvokable
+// assignee can leave N downstream dependents each discovering a DIFFERENT
+// deepest blocker over time (as the blocker chain evolves between reconcile
+// ticks) even though the SOURCE issue being examined never changes — the leaf
+// key alone lets each of those N discoveries mint its own top-level ticket.
+// This key rolls all of them up under the shared source+state instead.
+export function buildIssueGraphLivenessRootCauseKey(input: {
+  companyId: string;
+  state: string;
+  sourceIssueId: string;
+}) {
+  return [
+    RECOVERY_KEY_PREFIXES.issueGraphLivenessRootCause,
+    input.companyId,
+    input.state,
+    input.sourceIssueId,
   ].join(":");
 }

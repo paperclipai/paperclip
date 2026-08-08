@@ -16007,12 +16007,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceConfig: {
         requestedMode: requestedExecutionWorkspaceMode,
         effectiveMode: effectiveExecutionWorkspaceMode,
-        issueConfigRevisionAt: issueContext?.updatedAt instanceof Date
-          ? issueContext.updatedAt.toISOString()
-          : issueContext?.updatedAt ?? null,
-        projectConfigRevisionAt: projectContext?.updatedAt instanceof Date
-          ? projectContext.updatedAt.toISOString()
-          : projectContext?.updatedAt ?? null,
+        // issueContext.updatedAt/projectContext.updatedAt were dropped from this
+        // fingerprint (TSMC-20533 / TSKB0430): both are generic row timestamps
+        // bumped by unrelated bookkeeping writes (e.g. claimQueuedRun's lazy-lock
+        // stamp on every run claim), not config-revision signals, so they changed
+        // on every run and forced a full session reset ~100% of the time. The
+        // fields below already carry the actual workspace-relevant config, so real
+        // changes are still detected without the false-positive churn.
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,

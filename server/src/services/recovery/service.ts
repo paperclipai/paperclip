@@ -78,6 +78,7 @@ import {
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  buildIssueGraphLivenessRootCauseKey,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -846,6 +847,21 @@ function livenessRecoveryLeafFingerprint(finding: IssueLivenessFinding) {
 
 function livenessRecoveryLeafKey(companyId: string, state: string, leafIssueId: string) {
   return buildIssueGraphLivenessLeafKey({ companyId, state, leafIssueId });
+}
+
+// TSMC-20489: `finding.issueId` is the top-level "source" issue the classifier
+// is examining (== dependencyPath[0] — see `finding()` in issue-graph-liveness.ts,
+// which seeds dependencyPath with `source` and stamps `issueId: source.id`). It
+// stays constant across reconcile ticks for as long as the source issue remains
+// in this state, even when the deepest blocker found (the "leaf"/recoveryIssueId)
+// changes tick to tick as the blocker chain evolves. That makes it the right key
+// for a coarser, source-scoped rollup above the existing per-leaf dedup.
+function livenessRecoveryRootCauseFingerprint(finding: IssueLivenessFinding) {
+  return buildIssueGraphLivenessRootCauseKey({
+    companyId: finding.companyId,
+    state: finding.state,
+    sourceIssueId: finding.issueId,
+  });
 }
 
 function isUniqueLivenessRecoveryConflict(error: unknown) {
@@ -6516,6 +6532,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
+  async function findOpenLivenessEscalationByRootCauseFingerprint(
+    companyId: string,
+    rootCauseFingerprint: string,
+  ) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          sql`${issues.executionState} ->> 'livenessRootCauseFingerprint' = ${rootCauseFingerprint}`,
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  // TSMC-20489: when a NEW leaf is discovered for a (company, source issue,
+  // state) that already has an open root-cause escalation, attach it as a
+  // linked dependent (a comment + recorded leaf fingerprint) instead of
+  // minting another top-level ticket. Idempotent — each leaf fingerprint is
+  // recorded once in the escalation's executionState, so repeat reconcile
+  // ticks for the SAME leaf don't repost the comment.
+  async function findOrAttachLivenessRootCauseEscalation(finding: IssueLivenessFinding) {
+    const rootCauseFingerprint = livenessRecoveryRootCauseFingerprint(finding);
+    const existing = await findOpenLivenessEscalationByRootCauseFingerprint(
+      finding.companyId,
+      rootCauseFingerprint,
+    );
+    if (!existing) return null;
+
+    const leafFingerprint = livenessRecoveryLeafFingerprint(finding);
+    const existingState = parseObject(existing.executionState);
+    const attachedLeafFingerprints = Array.isArray(existingState.livenessAttachedLeafFingerprints)
+      ? existingState.livenessAttachedLeafFingerprints.filter((value): value is string => typeof value === "string")
+      : [];
+    if (attachedLeafFingerprints.includes(leafFingerprint)) return existing;
+
+    const leafEntry = finding.dependencyPath.find((entry) => entry.issueId === finding.recoveryIssueId);
+    await db.insert(issueComments).values({
+      companyId: finding.companyId,
+      issueId: existing.id,
+      body: [
+        "Linked dependent — same root cause, rolled up here instead of opening a new top-level ticket (TSMC-20489).",
+        "",
+        `- New leaf: ${leafEntry?.identifier ?? leafEntry?.issueId ?? finding.recoveryIssueId}`,
+        `- Detected invariant: \`${finding.state}\``,
+        `- Dependency path: ${formatDependencyPath(finding)}`,
+        `- Reason: ${finding.reason}`,
+      ].join("\n"),
+    });
+
+    await issuesSvc.update(existing.id, {
+      executionState: {
+        ...existingState,
+        livenessRootCauseFingerprint: rootCauseFingerprint,
+        livenessAttachedLeafFingerprints: [...attachedLeafFingerprints, leafFingerprint],
+      },
+    });
+
+    return existing;
+  }
+
   function livenessRecoveryActionCause(finding: IssueLivenessFinding) {
     return `issue_graph_liveness:${finding.state}`;
   }
@@ -7044,7 +7126,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const existing =
       await findOpenLivenessEscalation(input.issue.companyId, input.finding.incidentKey) ??
-      await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+      await findOpenLivenessRecoveryIssueForLeaf(input.finding) ??
+      await findOrAttachLivenessRootCauseEscalation(input.finding);
     if (existing) return existing;
 
     try {
@@ -7067,6 +7150,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
         originId: input.finding.incidentKey,
         originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
+        executionState: {
+          livenessRootCauseFingerprint: livenessRecoveryRootCauseFingerprint(input.finding),
+          livenessAttachedLeafFingerprints: [],
+        },
         billingCode: input.recoveryIssue.billingCode,
         executionWorkspaceId: null,
         executionWorkspacePreference: null,
@@ -7076,7 +7163,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!isUniqueLivenessRecoveryConflict(error)) throw error;
       const raced =
         await findOpenLivenessEscalation(input.issue.companyId, input.finding.incidentKey) ??
-        await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+        await findOpenLivenessRecoveryIssueForLeaf(input.finding) ??
+        await findOrAttachLivenessRootCauseEscalation(input.finding);
       if (!raced) throw error;
       return raced;
     }
@@ -7117,7 +7205,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing =
       await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
-      await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+      await findOpenLivenessRecoveryIssueForLeaf(input.finding) ??
+      await findOrAttachLivenessRootCauseEscalation(input.finding);
     if (existing) {
       if (!activeRecoveryAction) {
         await recoveryActionsSvc.upsertSourceScoped({
@@ -7250,6 +7339,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
         originId: input.finding.incidentKey,
         originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
+        executionState: {
+          livenessRootCauseFingerprint: livenessRecoveryRootCauseFingerprint(input.finding),
+          livenessAttachedLeafFingerprints: [],
+        },
         billingCode: recoveryIssue.billingCode,
         ...(reuseRecoveryExecutionWorkspace
           ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
@@ -7263,7 +7356,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!isUniqueLivenessRecoveryConflict(error)) throw error;
       const raced =
         await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
-        await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+        await findOpenLivenessRecoveryIssueForLeaf(input.finding) ??
+        await findOrAttachLivenessRootCauseEscalation(input.finding);
       if (!raced) throw error;
       await ensureIssueBlockedByEscalation({
         issue,
@@ -8335,13 +8429,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           state,
           leafIssueId,
         });
-        // Dedup on BOTH keys the platform's two partial-unique liveness indexes
-        // enforce: the exact incidentKey AND the coarser leaf fingerprint
-        // (company+state+leaf). A different incident sharing the same leaf already
-        // has an open escalation; reuse it rather than colliding on the leaf index.
+        // action.sourceIssueId is finding.issueId from the original upsertSourceScoped
+        // call (see createIssueGraphLivenessEscalation above) — the same source/state
+        // key the live root-cause rollup uses (TSMC-20489).
+        const rootCauseFingerprint = buildIssueGraphLivenessRootCauseKey({
+          companyId: action.companyId,
+          state,
+          sourceIssueId: sourceIssue.id,
+        });
+        // Dedup on all three keys the platform's liveness indexes/rollup use: the
+        // exact incidentKey, the coarser leaf fingerprint (company+state+leaf), and
+        // the coarsest root-cause fingerprint (company+state+source). A different
+        // incident sharing the same leaf or the same root cause already has an open
+        // escalation; reuse it rather than colliding on the leaf index or minting a
+        // duplicate top-level ticket for a source already rolled up elsewhere.
         const findOpenReceipt = async () =>
           (await findOpenLivenessEscalation(action.companyId, incidentKey)) ??
-          (await findOpenLivenessEscalationByLeafFingerprint(action.companyId, leafFingerprint));
+          (await findOpenLivenessEscalationByLeafFingerprint(action.companyId, leafFingerprint)) ??
+          (await findOpenLivenessEscalationByRootCauseFingerprint(action.companyId, rootCauseFingerprint));
         const existing = await findOpenReceipt();
         if (existing) {
           receiptId = existing.id;
@@ -8375,6 +8480,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 state,
                 leafIssueId,
               }),
+              executionState: {
+                livenessRootCauseFingerprint: rootCauseFingerprint,
+                livenessAttachedLeafFingerprints: [],
+              },
               billingCode: sourceIssue.billingCode,
               executionWorkspaceId: null,
               executionWorkspacePreference: null,
