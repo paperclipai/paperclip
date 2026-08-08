@@ -390,31 +390,139 @@ Copy this section into a connector proposal or implementation issue.
 
 ## Appendix: Linear Dry Run
 
-This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/PAP-2432) Batch A providers.
+This dry run applies the template to Linear, one of the
+[PAP-2432](/PAP/issues/PAP-2432) Batch A providers. Endpoint and scope facts
+below come from live, non-mutating probes on 2026-08-07. DCR redirect behavior
+and token lifetime remain for real-account QA because registration and consent
+mutate provider state.
 
 ### Vendor
 
 - App key: `linear`
 - App name: Linear
-- First-30 classification: MCP-direct with a thin GraphQL/resource-filter wrapper if the hosted MCP server cannot enforce all filters itself.
-- Reason for classification: Linear has a hosted MCP endpoint shape in the current gallery, and the first-30 matrix calls Linear a direct MCP/GraphQL thin-wrapper provider.
-- Security tier: S2, because it exposes product planning data and narrow issue mutations but not payments, tenant admin, or production infrastructure.
-- Plugin needed: No. The default gallery card, OAuth connect, resource filters, action catalog, profiles, policies, and audit cover the required UX. A plugin would only be warranted later for custom Linear dashboards or background sync workers.
+- First-30 classification: MCP-direct. Linear's official hosted server exposes
+  issue, project, and comment tools directly over Streamable HTTP.
+- Reason for classification: no shim or plugin is needed for the initial
+  catalog. Resource filters and per-tool governance remain Paperclip policy.
+- Security tier: S2. Read access covers product-planning data; write risk is
+  Medium because tools can create and update issues and projects, but do not
+  administer tenants, payments, or production infrastructure.
+- Plugin needed: No. The gallery card, OAuth broker, filters, catalog,
+  profiles, policies, and audit cover the connection.
 
 ### Transport And Auth
 
 - Transport: `mcp_remote`
 - Endpoint: `https://mcp.linear.app/mcp`
-- Auth mode: OAuth
-- OAuth scopes: `read` and `write` initially, with writes governed by profiles and ask-first policies.
-- Credential owner: company connection backed by user/workspace consent.
-- Secret storage: OAuth token material stored as `company_secrets` refs; no token in agent env, project env, comments, logs, or screenshots.
-- Revocation behavior: disabling or revoking the connection immediately removes Linear tools from agent sessions and denies brokered execution on the next gateway check.
+- Auth mode: OAuth 2.1, endpoints resolved by RFC 9728 protected-resource
+  metadata followed by RFC 8414 authorization-server metadata. The AS supports
+  PKCE S256 and RFC 7591 DCR for public clients.
+- Ownership modes: `dcr` for zero-setup instance-local registration and
+  `customer` when an operator supplies a pre-registered client through the
+  broker's provider environment variables.
+- OAuth scopes: `read` and `write`. At the provider, an authorization request
+  for only `read` produces a read-only connection.
+  `https://mcp.linear.app/mcp/readonly` is the equivalent protected resource,
+  not a second gallery method. The initial gallery wizard currently sends the
+  manifest's `read write` scope hints; it does not yet expose a scope selector.
+- Token behavior: the MCP authorization server advertises refresh tokens, but
+  token TTL and refresh rotation are undocumented. QA records the real token
+  response's `expires_in` and rotation behavior. The advertised
+  `revocation_endpoint` is `https://mcp.linear.app/token`, the same URL as the
+  token endpoint; preserve this provider quirk in test fixtures.
+- Secret storage: access and refresh tokens plus any issued DCR client secret
+  are `company_secrets` refs. The DCR `client_id` persists on the connection
+  and is reused.
+- Revocation behavior: disabling or revoking the connection removes Linear
+  tools from agent sessions and denies brokered execution on the next gateway
+  check.
+
+### Connection Flow (mandatory)
+
+Paperclip ID / Paperclip Connect involvement: **none — DCR is
+instance-local**; cloud-hosted and self-hosted instances use the same path.
+The only per-instance difference is the hostname in that instance's callback
+URI.
+
+Auth endpoints (exact paths, from the live discovery chain):
+
+| Role | Endpoint |
+| --- | --- |
+| MCP server | `https://mcp.linear.app/mcp` |
+| Read-only protected resource | `https://mcp.linear.app/mcp/readonly` |
+| Protected-resource metadata (RFC 9728) | `https://mcp.linear.app/.well-known/oauth-protected-resource/mcp` |
+| Read-only resource metadata | `https://mcp.linear.app/.well-known/oauth-protected-resource/mcp/readonly` |
+| AS metadata (RFC 8414) | `https://mcp.linear.app/.well-known/oauth-authorization-server` |
+| Authorize | `https://mcp.linear.app/authorize` |
+| Token (exchange + refresh) | `https://mcp.linear.app/token` |
+| Revocation (provider quirk) | `https://mcp.linear.app/token` |
+| Registration (RFC 7591 DCR) | `https://mcp.linear.app/register` |
+| Paperclip connect (wizard) | `POST /api/companies/:companyId/tools/apps/connect` |
+| Paperclip OAuth start | `POST /api/tools/oauth/:connectionId/start` |
+| Paperclip callback | `GET /api/tools/oauth/callback` |
+
+Redirect constraints: not yet verified against a real `/register` response.
+Do not add `redirectConstraints` to `linear.json` until QA records the
+provider's behavior.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User's browser
+    participant UI as Paperclip UI<br/>/PAP/apps/connect?source=linear
+    participant S as Paperclip instance server<br/>(cloud or self-hosted — same path)
+    participant M as mcp.linear.app<br/>(MCP server + OAuth AS)
+    participant L as Linear web
+
+    U->>UI: Click Connect
+    UI->>S: POST /companies/:id/tools/apps/connect { appKey: "linear" }
+    S->>M: GET /.well-known/oauth-protected-resource/mcp
+    M-->>S: authorization_servers → mcp.linear.app and read/write scopes
+    S->>M: GET /.well-known/oauth-authorization-server
+    M-->>S: authorize, token, registration, and revocation endpoints
+    alt First connect on this instance with no env client
+        S->>M: POST /register with instance callback and public-client metadata
+        M-->>S: client_id persisted for reuse
+    else Client already known
+        S->>S: Reuse stored DCR client or configured customer client
+    end
+    S-->>UI: Authorization URL with PKCE S256 challenge and state
+    UI->>U: Redirect browser
+    U->>M: GET /authorize
+    M->>L: Linear login and consent
+    L-->>U: Approve requested read or read/write scopes
+    U->>S: GET /api/tools/oauth/callback?code&state
+    S->>M: POST /token with code and PKCE verifier
+    M-->>S: access token, optional refresh token, and expires_in when supplied
+    S->>S: Store token material as company_secrets refs
+    S-->>U: Redirect to wizard actions and review step
+```
+
+### Administrator Setup (mandatory)
+
+- What the admin must register: **nothing** for the normal path. Linear's MCP
+  authorization server supports RFC 7591 DCR, so each Paperclip instance
+  registers its own public client during first connect. No manual Linear OAuth
+  application, Paperclip ID configuration, or Paperclip Connect setup is
+  required.
+- Where to register it: nowhere manually. The broker calls
+  `https://mcp.linear.app/register` after discovery.
+- Instance prerequisites: Apps must be enabled and the instance callback must
+  be browser-reachable. The exact Linear redirect-URI constraint remains
+  pending QA, so do not assume Notion's rule or configure a manifest
+  constraint without evidence.
+- How to verify: open `/PAP/apps/connect?source=linear`, complete Linear
+  consent, and confirm the wizard reaches the actions step with Linear tools.
+  Then run an allowed read, an ask-first write, a denied or quarantined call,
+  revoke the connection, and inspect the resulting audit events. To test the
+  provider's read-only mode before the wizard has a scope selector, start
+  authorization through the scoped connection endpoint with `scopes: ["read"]`;
+  do not create a second gallery method.
 
 ### Resource Filters
 
-- Required filters: workspace, team.
-- Optional filters: project, label, cycle, issue status.
+- Required filters: workspace, team, project.
+- Optional filters: label, cycle, issue status.
 - Write-enabling filters: team plus project or label/cycle filter for create/update; comment-only writes may allow team-only with explicit policy.
 - Enforced by: gateway policy selectors, wrapper-side argument validation, and vendor request construction. UI filter pickers are convenience only, not the enforcement boundary.
 
@@ -422,28 +530,29 @@ This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/P
 
 ```json
 {
-  "key": "linear",
+  "schemaVersion": 1,
+  "slug": "linear",
   "name": "Linear",
-  "tagline": "Create, update and read tickets.",
-  "authKind": "oauth",
-  "transportTemplate": {
-    "transport": "mcp_remote",
-    "url": "https://mcp.linear.app/mcp"
-  },
-  "credentialFields": [],
-  "oauth": {
-    "provider": "linear",
-    "scopes": ["read", "write"],
-    "authorizationUrl": "https://linear.app/oauth/authorize",
-    "tokenUrl": "https://api.linear.app/oauth/token"
-  },
+  "description": "Create, update, and read Linear issues.",
   "urlPatterns": ["https://mcp.linear.app/*"],
-  "recommendedDefaults": {
-    "access": "all_agents",
-    "askFirstRiskLevels": ["write", "destructive"]
-  }
+  "methods": [{
+    "key": "mcp-oauth",
+    "transport": "mcp_remote",
+    "auth": "oauth",
+    "ownershipModes": ["customer", "dcr"],
+    "defaults": {
+      "serverUrl": "https://mcp.linear.app/mcp",
+      "scopesHint": ["read", "write"]
+    },
+    "riskTier": "S2",
+    "requiredResourceFilters": ["workspace", "team", "project"]
+  }]
 }
 ```
+
+The manifest intentionally omits `authorizationEndpoint`, `tokenEndpoint`,
+and `redirectConstraints`. A complete endpoint pair is authoritative in the
+broker and would skip discovery; the redirect rule is unverified.
 
 ### Actions
 
@@ -459,7 +568,8 @@ No destructive Linear action should ship in the first pass. If a future delete/a
 
 ### Wizard Path
 
-1. Operator opens Apps and selects Linear.
+1. Operator opens `/PAP/apps/connect?source=linear` from the Linear gallery
+   card.
 2. Operator clicks Connect and completes Linear OAuth.
 3. Paperclip stores OAuth material in `company_secrets` and shows redacted workspace/account metadata.
 4. Operator selects workspace/team/project filters and confirms default ask-first writes.
@@ -477,15 +587,21 @@ No destructive Linear action should ship in the first pass. If a future delete/a
 
 ### Validation Hook
 
-Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The smoke pass should prove:
+Linear's real-vendor evidence belongs in
+[PAP-12373](/PAP/issues/PAP-12373). The smoke pass should prove:
 
-- OAuth connect succeeds with Paperclip-owned Linear app registration once [PAP-12372](/PAP/issues/PAP-12372) provides credentials.
+- Discovery resolves `mcp.linear.app`, DCR succeeds without manual app
+  registration, and QA records the redirect rule plus token `expires_in`.
 - Catalog discovery returns the expected Linear issue actions.
 - A read call against an allowed team succeeds.
+- A start-authorization request with only the `read` scope remains read-only
+  without creating a second `/mcp/readonly` gallery method. The initial wizard
+  still requests the manifest's `read write` hints until a scope selector ships.
 - `linear.create_issue` opens ask-first review and only executes after approval.
 - A call against a disallowed team/project is denied.
 - Revocation removes Linear tools and blocks execution.
 - Audit rows include company, connection, run/issue, agent/user actor, tool, decision, reason code, and outcome.
+
 ### AppDefinition catalog authoring
 
 Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. FIRST-30 remains authoritative for `riskTier` and `requiredResourceFilters`; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
@@ -750,4 +866,3 @@ End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
 - Revocation removes Notion tools and blocks execution.
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
-
