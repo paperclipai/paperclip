@@ -64,7 +64,9 @@ export function createServerAdapter(): ServerAdapterModule {
     sessionCodec,
     sessionManagement,
     models,
-    supportsLocalAgentJwt: false,
+    // The gateway forwards the run-scoped token through Hermes' trusted
+    // runtime environment, never through the model-visible prompt.
+    supportsLocalAgentJwt: true,
     supportsInstructionsBundle: false,
     requiresMaterializedRuntimeSkills: false,
     agentConfigurationDoc,

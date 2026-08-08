@@ -94,6 +94,56 @@ describe("execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("injects the scoped Paperclip run credential into the remote Hermes runtime", async () => {
+    const scopedToken = "paperclip-run-jwt";
+    let createBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        createBody = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ run_id: "run-hermes-auth", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              `data: ${JSON.stringify({ status: "completed", output: scopedToken })}`,
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: ***
+      paperclipApiUrl: "https://paperclip.example/api",
+      timeoutSec: 5,
+    });
+    ctx.authToken = scopedToken;
+
+    const result = await execute(ctx);
+
+    expect(createBody).toMatchObject({
+      runtime_env: {
+        PAPERCLIP_API_KEY: scopedToken,
+        PAPERCLIP_RUN_ID: "pc-run-1",
+        PAPERCLIP_AGENT_ID: "agent-1",
+        PAPERCLIP_COMPANY_ID: "company-1",
+        PAPERCLIP_API_URL: "https://paperclip.example/api",
+        PAPERCLIP_TASK_ID: "issue-1",
+      },
+    });
+    expect(String(createBody?.input)).not.toContain(scopedToken);
+    expect(String(createBody?.instructions)).not.toContain(scopedToken);
+    expect(result.summary).not.toContain(scopedToken);
+  });
+
   it("constructs POST /v1/runs with auth, idempotency, and Hermes session headers", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
