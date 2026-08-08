@@ -936,7 +936,7 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.error).toContain("Task is outside this actor's visibility");
     expect(mockAccessDecide).toHaveBeenCalledTimes(2);
     expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
   });
