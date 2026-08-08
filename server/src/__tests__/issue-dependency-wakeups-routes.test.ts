@@ -29,6 +29,10 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+}));
 
 vi.mock("../services/image-reference-guardrails.js", () => ({
   resolveIssueImageReferenceGuardrail: vi.fn(async () => ({
@@ -91,9 +95,7 @@ vi.mock("../services/index.js", () => ({
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
   issueService: () => mockIssueService,
-  issueThreadInteractionService: () => ({
-    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-  }),
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueVisibilityService: () => ({
     canSeeIssue: vi.fn(async () => true),
     filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
@@ -167,6 +169,8 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueThreadInteractionService.cancelPendingForTerminalIssue.mockResolvedValue([]);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(false);

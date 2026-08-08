@@ -16,6 +16,9 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -75,6 +78,7 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
@@ -143,6 +147,7 @@ describe("issue telemetry routes", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueThreadInteractionService.cancelPendingForTerminalIssue.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("todo"),
       ...patch,

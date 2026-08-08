@@ -38,6 +38,7 @@ const mockValidateDelegatedIssueExecutionContract = vi.hoisted(() => vi.fn(() =>
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
@@ -187,6 +188,7 @@ describe("issue execution policy routes", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
+    mockIssueThreadInteractionService.cancelPendingForTerminalIssue.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
