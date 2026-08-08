@@ -2319,7 +2319,7 @@ describe("IssueProperties", () => {
       instructions: "Watch the deploy",
     });
     mockIssuesApi.upsertWatchdog.mockResolvedValueOnce(savedWatchdog);
-    const issue = createIssue({ watchdog: null });
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", watchdog: null });
     const { root, queryClient } = renderPropertiesWithQueryClient(container, {
       issue,
       childIssues: [],
@@ -2327,6 +2327,7 @@ describe("IssueProperties", () => {
       inline: true,
     });
     queryClient.setQueryData(queryKeys.issues.detail(issue.id), issue);
+    queryClient.setQueryData(queryKeys.issues.detail(issue.identifier!), issue);
     await flush();
 
     let trigger: HTMLButtonElement | undefined;
@@ -2361,6 +2362,8 @@ describe("IssueProperties", () => {
 
     expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail(issue.id))?.watchdog)
       .toEqual(savedWatchdog);
+    expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail(issue.identifier!))?.watchdog)
+      .toEqual(savedWatchdog);
 
     act(() => root.unmount());
   });
@@ -2371,7 +2374,7 @@ describe("IssueProperties", () => {
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
-    const issue = createIssue({ watchdog: createWatchdogSummary() });
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", watchdog: createWatchdogSummary() });
     const { root, queryClient } = renderPropertiesWithQueryClient(container, {
       issue,
       childIssues: [],
@@ -2379,6 +2382,7 @@ describe("IssueProperties", () => {
       inline: true,
     });
     queryClient.setQueryData(queryKeys.issues.detail(issue.id), issue);
+    queryClient.setQueryData(queryKeys.issues.detail(issue.identifier!), issue);
     await flush();
 
     await waitForAssertion(() => {
@@ -2402,6 +2406,8 @@ describe("IssueProperties", () => {
 
     expect(mockIssuesApi.deleteWatchdog).toHaveBeenCalledWith("issue-1");
     expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail(issue.id))?.watchdog)
+      .toBeNull();
+    expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail(issue.identifier!))?.watchdog)
       .toBeNull();
 
     act(() => root.unmount());
