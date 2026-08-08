@@ -16,6 +16,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { applyCompanyPrefix } from "@/lib/company-routes";
 import { PLUGIN_LAUNCHER_BOUNDS } from "@paperclipai/shared";
 import type {
   PluginLauncherBounds,
@@ -158,12 +159,37 @@ function focusFirstElement(container: HTMLElement | null): void {
   container.focus();
 }
 
-function resolveLauncherNavigationTarget(target: string, hostContext: PluginLauncherContext): string {
-  if (/^https?:\/\//.test(target) || target.startsWith("/") || target.startsWith("#") || target.startsWith(".") || target.startsWith("?")) {
+function resolveLauncherNavigationTarget(
+  target: string,
+  hostContext: PluginLauncherContext,
+  launcher?: ResolvedPluginLauncher,
+): string {
+  if (/^https?:\/\//.test(target) || target.startsWith("#") || target.startsWith(".") || target.startsWith("?")) {
     return target;
   }
-  const companyPrefix = hostContext.companyPrefix?.trim();
-  return companyPrefix ? `/${companyPrefix}/${target}` : target;
+  const companyPrefix = hostContext.companyPrefix?.trim() || null;
+  // Plugin authors write `/plugins/<pluginKey>` but the React route binds
+  // `:pluginId` to the UUID — rewrite key -> UUID so PluginPage can resolve it.
+  let rewritten = target;
+  if (launcher && launcher.pluginKey && launcher.pluginId) {
+    rewritten = rewritten.replace(
+      new RegExp(`^/plugins/${launcher.pluginKey}(?=/|$)`),
+      `/plugins/${launcher.pluginId}`,
+    );
+  }
+  if (rewritten.startsWith("/")) {
+    // `applyCompanyPrefix` is reliable for /instance/*, /auth/*, etc. (known
+    // global roots) AND for known board roots (/issues, /agents, ...), but it
+    // treats any other first segment as an existing company prefix. That
+    // mis-classifies `/plugins/<id>` as already-prefixed, so we force the
+    // company prefix for plugin paths here when the target isn't already
+    // company-prefixed.
+    if (companyPrefix && /^\/plugins(\/|$)/.test(rewritten) && !rewritten.startsWith(`/${companyPrefix}/`)) {
+      return `/${companyPrefix}${rewritten}`;
+    }
+    return applyCompanyPrefix(rewritten, companyPrefix);
+  }
+  return companyPrefix ? `/${companyPrefix}/${rewritten}` : rewritten;
 }
 
 function launcherRoutePath(launcher: ResolvedPluginLauncher): string | null {
@@ -678,13 +704,13 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
     ) => {
       switch (launcher.action.type) {
         case "navigate":
-          navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
+          navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext, launcher));
           return;
         case "deepLink":
           if (/^https?:\/\//.test(launcher.action.target)) {
             window.open(launcher.action.target, "_blank", "noopener,noreferrer");
           } else {
-            navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
+            navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext, launcher));
           }
           return;
         case "performAction":
