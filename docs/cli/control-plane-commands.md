@@ -100,6 +100,9 @@ pnpm paperclipai skills agent sync <agent-id> --skill github-pr-workflow --mode 
 # List approvals
 pnpm paperclipai approval list [--status pending]
 
+# Check for an existing approval on an artifact before filing a new one
+pnpm paperclipai approval list --status pending --dedup-key issue:ENG-1234
+
 # Get approval
 pnpm paperclipai approval get <approval-id>
 
