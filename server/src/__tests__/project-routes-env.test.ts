@@ -16,6 +16,7 @@ const mockProjectService = vi.hoisted(() => ({
 }));
 const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -163,6 +164,7 @@ describe("project env routes", () => {
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
   });
 
   it("normalizes env bindings on create and logs only env keys", async () => {
@@ -204,6 +206,33 @@ describe("project env routes", () => {
     );
   });
 
+  it("allows create env null without normalizing project env bindings", async () => {
+    mockProjectService.create.mockResolvedValue(buildProject({ env: null }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        env: null,
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).not.toHaveBeenCalled();
+    expect(mockProjectService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ env: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          envKeys: [],
+        }),
+      }),
+    );
+  });
+
   it("normalizes env bindings on update and avoids logging raw values", async () => {
     const normalizedEnv = {
       PLAIN_KEY: { type: "plain", value: "top-secret" },
@@ -226,6 +255,42 @@ describe("project env routes", () => {
         details: {
           changedKeys: ["env"],
           envKeys: ["PLAIN_KEY"],
+        },
+      }),
+    );
+  });
+
+  it("allows update env null to clear project env bindings", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      env: {
+        API_KEY: {
+          type: "secret_ref",
+          secretId: "11111111-1111-4111-8111-111111111111",
+          version: "latest",
+        },
+      },
+    }));
+    mockProjectService.update.mockResolvedValue(buildProject({ env: null }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .patch("/api/projects/project-1")
+      .send({ env: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).not.toHaveBeenCalled();
+    expect(mockProjectService.update).toHaveBeenCalledWith("project-1", { env: null });
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "project", targetId: "project-1" },
+      null,
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: {
+          changedKeys: ["env"],
+          envKeys: undefined,
         },
       }),
     );
