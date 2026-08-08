@@ -19,6 +19,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_RUNTIME_API_URL` | (auto-derived) | Internal Paperclip API base URL for managed runtime bridges and agent processes. An explicit value takes precedence over the auto-derived URL. Set this when the server can reach a different URL than users or remote agents. For example, a container can use `http://127.0.0.1:3100` internally while `PAPERCLIP_API_URL` uses a public reverse-proxy URL. |
 
 ## Secrets
 
