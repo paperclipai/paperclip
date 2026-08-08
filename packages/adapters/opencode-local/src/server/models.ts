@@ -21,6 +21,7 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+const discoveryInFlight = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -167,12 +168,24 @@ export async function discoverOpenCodeModelsCached(input: {
   const key = discoveryCacheKey(command, cwd, env);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
+
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  const inFlight = discoveryInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const pending = discoverOpenCodeModels({ command, cwd, env })
+    .then((models) => {
+      discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });
+      return models;
+    })
+    .finally(() => {
+      discoveryInFlight.delete(key);
+    });
+
+  discoveryInFlight.set(key, pending);
+  return pending;
 }
 
 export function isTruthyEnvFlag(value: string | undefined): boolean {
@@ -229,4 +242,5 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  discoveryInFlight.clear();
 }
