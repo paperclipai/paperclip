@@ -83,6 +83,20 @@ describe("paperclip-task-bridge helper", () => {
         return;
       }
       if (req.method === "POST" && req.url === "/api/companies/22222222-2222-4222-8222-222222222222/issues") {
+        if ((body as { title?: string } | null)?.title === "Empty success") {
+          res.statusCode = 200;
+          res.end("");
+          return;
+        }
+        if ((body as { title?: string } | null)?.title === "Missing id success") {
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            identifier: "PAP-125",
+            title: (body as { title?: string } | null)?.title,
+            authorization: "Bearer should-redact",
+          }));
+          return;
+        }
         res.statusCode = 201;
         res.end(JSON.stringify({
           id: "44444444-4444-4444-8444-444444444444",
@@ -180,5 +194,27 @@ describe("paperclip-task-bridge helper", () => {
     expect(commentRequest?.body).toMatchObject({ body: "Progress from Hermes" });
     expect(patchRequest?.body).toMatchObject({ status: "in_review", comment: "Ready" });
     expect(comment.stdout + update.stdout).not.toContain(apiKey);
+  });
+
+  it("fails create-task when a 2xx response body is empty", async () => {
+    const result = await runHelper(["create-task", "--title", "Empty success"], env());
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("Malformed Paperclip API success response for create-task");
+    expect(result.stdout).toContain("expected JSON object response");
+    expect(result.stdout).not.toContain(apiKey);
+    expect(result.stderr).not.toContain(apiKey);
+  });
+
+  it("fails create-task when a 2xx response is missing a non-empty issue id", async () => {
+    const result = await runHelper(["create-task", "--title", "Missing id success"], env());
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("Malformed Paperclip API success response for create-task");
+    expect(result.stdout).toContain("expected non-empty id");
+    expect(result.stdout).toContain("[redacted]");
+    expect(result.stdout).not.toContain("Bearer should-redact");
+    expect(result.stdout).not.toContain(apiKey);
+    expect(result.stderr).not.toContain(apiKey);
   });
 });
