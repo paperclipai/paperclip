@@ -112,6 +112,7 @@ import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody"
 import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
+import { ScrollToBottom } from "./ScrollToBottom";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
@@ -5212,6 +5213,7 @@ export function IssueChatThread({
               issueWorkMode={issueWorkMode}
               onWorkModeChange={onWorkModeChange}
             />
+            <ScrollToBottom placement="composer" />
           </div>
         ) : null}
       </div>
