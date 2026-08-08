@@ -5443,6 +5443,23 @@ export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
+  agentContext?:
+    | {
+        id: string;
+        name: string;
+        role: string;
+        chainOfCommand: Array<{
+          id: string;
+          name: string;
+          role: string;
+          title: string | null;
+        }>;
+        budget: {
+          monthlyCents: number;
+          spentCents: number;
+        };
+      }
+    | null;
   continuationSummary?:
     | {
         key: string;
@@ -5499,6 +5516,7 @@ export async function buildPaperclipWakePayload(input: {
     && Object.keys(executionStage).length === 0
     && !issueSummary
     && !agentMessageText
+    && !input.agentContext
   ) return null;
 
   const commentRows =
@@ -5715,6 +5733,7 @@ export async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    agentContext: input.agentContext ?? null,
     agentMessage: agentMessageText
       ? {
           text: agentMessageText,
@@ -5786,6 +5805,67 @@ export async function buildPaperclipWakePayload(input: {
   return issueId
     ? createRunSecretRedactionRegistry(input.db).redactForIssue(input.companyId, issueId, payload)
     : payload;
+}
+
+export async function buildAgentChainOfCommandSnapshot(input: {
+  db: Pick<Db, "execute">;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "reportsTo">;
+  runId?: string | null;
+}): Promise<Array<{ id: string; name: string; role: string; title: string | null }>> {
+  if (!input.agent.reportsTo) return [];
+  try {
+    const rows = await input.db.execute(sql`
+      WITH RECURSIVE command_chain(id, name, role, title, reports_to, depth, path) AS (
+        SELECT id, name, role, title, reports_to, 1, ARRAY[id]
+        FROM agents
+        WHERE company_id = ${input.agent.companyId}
+          AND id = ${input.agent.reportsTo}
+        UNION ALL
+        SELECT manager.id,
+               manager.name,
+               manager.role,
+               manager.title,
+               manager.reports_to,
+               command_chain.depth + 1,
+               command_chain.path || manager.id
+        FROM agents manager
+        JOIN command_chain ON manager.id = command_chain.reports_to
+        WHERE manager.company_id = ${input.agent.companyId}
+          AND command_chain.depth < 50
+          AND NOT manager.id = ANY(command_chain.path)
+      )
+      SELECT id, name, role, title
+      FROM command_chain
+      ORDER BY depth
+    `);
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((row) => {
+      if (!row || typeof row !== "object") return [];
+      const manager = row as Record<string, unknown>;
+      if (
+        typeof manager.id !== "string" ||
+        typeof manager.name !== "string" ||
+        typeof manager.role !== "string"
+      ) return [];
+      return [{
+        id: manager.id,
+        name: manager.name,
+        role: manager.role,
+        title: typeof manager.title === "string" ? manager.title : null,
+      }];
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        err: error,
+        runId: input.runId ?? null,
+        agentId: input.agent.id,
+        companyId: input.agent.companyId,
+      },
+      "Failed to build wake reporting-chain context; continuing without it",
+    );
+    return [];
+  }
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -13849,10 +13929,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSkillTest;
     }
+    const chainOfCommand = await buildAgentChainOfCommandSnapshot({
+      db,
+      agent,
+      runId: run.id,
+    });
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
       contextSnapshot: context,
+      agentContext: {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        chainOfCommand,
+        budget: {
+          monthlyCents: agent.budgetMonthlyCents,
+          spentCents: agent.spentMonthlyCents,
+        },
+      },
       continuationSummary,
       issueSummary: issueRef
         ? {
