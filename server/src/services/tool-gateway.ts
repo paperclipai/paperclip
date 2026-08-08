@@ -269,6 +269,28 @@ const BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES: Record<string, Omit<LocalStdioRunti
       "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS",
     ],
   },
+  // memlawb — zero-knowledge, end-to-end-encrypted agent memory (pilot).
+  // Runs the memlawb stdio MCP wrapper; requires `bun` + `@gitlawb/memlawb` on
+  // the server/trusted-runtime host (installed in the Dockerfile). The wrapper
+  // holds MEMLAWB_PASSPHRASE and encrypts/decrypts locally, so the remote
+  // memlawb storage server stays crypto-blind. NOTE: because this stdio process
+  // is spawned on the paperclip-server host (not the agent sandbox), plaintext
+  // memory transits Paperclip — zero-knowledge holds relative to the storage
+  // backend, not relative to Paperclip. Env (incl. the passphrase) is sourced by
+  // localStdioEnvironment from the connection's config.env; supply the passphrase
+  // via encrypted connection config or the host env — never commit it. See
+  // docs/integrations/memlawb-memory-pilot.md.
+  "paperclip.memlawb-memory": {
+    command: "memlawb",
+    args: ["mcp"],
+    envKeys: [
+      "MEMLAWB_URL",
+      "MEMLAWB_API_KEY",
+      "MEMLAWB_PASSPHRASE",
+      "MEMLAWB_NAMESPACE",
+      "MEMLAWB_SCAN",
+    ],
+  },
   "paperclip.echo-calculator-time": {
     command: null,
     args: [],
