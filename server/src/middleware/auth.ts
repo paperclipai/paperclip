@@ -19,7 +19,7 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -31,13 +31,19 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-async function resolveLegacyRunResponsibleUserId(
+async function resolveActiveAgentRun(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
 ) {
   if (!isUuidLike(input.runId)) return null;
   const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      status: heartbeatRuns.status,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -47,7 +53,12 @@ async function resolveLegacyRunResponsibleUserId(
       ),
     )
     .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
+  return run?.id === input.runId &&
+    run.companyId === input.companyId &&
+    run.agentId === input.agentId &&
+    run.status === "running"
+    ? run
+    : null;
 }
 
 async function loadResponsibleUserMemberships(
@@ -281,12 +292,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 
@@ -310,13 +321,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const activeRun = await resolveActiveAgentRun(db, {
+        companyId: claims.company_id,
+        agentId: claims.sub,
+        runId: claims.run_id,
+      });
+      if (!activeRun) {
+        next(unauthorized("Agent JWT is not authorized for an active run"));
+        return;
+      }
+
       const onBehalfOfUserId = claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : normalizeOptionalString(activeRun.responsibleUserId);
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
