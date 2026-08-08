@@ -4,10 +4,21 @@ on:
   push:
     branches:
       - master
+  schedule:
+    # Nightly cut at 09:00 UTC, after the workday's merges have settled.
+    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
+      channel:
+        description: Release channel to publish
+        required: true
+        type: choice
+        options:
+          - stable
+          - nightly
+        default: stable
       source_ref:
-        description: Commit SHA, branch, or tag to publish as stable
+        description: (stable) Commit SHA, branch, or tag to publish as stable
         required: true
         type: string
         default: master
@@ -15,8 +26,12 @@ on:
         description: Enter a UTC date in YYYY-MM-DD format, for example 2026-03-18. Do not enter a version string. The workflow will resolve that date to a stable version such as 2026.318.0, then 2026.318.1 for the next same-day stable.
         required: false
         type: string
+      source_version:
+        description: (nightly) Explicit canary version to promote, for example 2026.806.0-canary.7. Leave empty to select the newest canary on master.
+        required: false
+        type: string
       dry_run:
-        description: Preview the stable release without publishing
+        description: Preview the release without publishing
         required: true
         type: boolean
         default: false
@@ -97,14 +112,218 @@ jobs:
           fi
           git push origin "refs/tags/${tag}"
 
+  # ----- Nightly lane -----------------------------------------------------
+  # Once a night (or on a forced nightly dispatch), promote the newest master
+  # commit that already shipped a green canary: smoke-test that exact
+  # published canary first, then republish the same commit under the nightly
+  # identity. The candidate commit already passed release-verify during its
+  # canary publish, so the nightly publish skips re-verification.
+
+  select_nightly:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.select.outputs.proceed }}
+      sha: ${{ steps.select.outputs.sha }}
+      canary_version: ${{ steps.select.outputs.canary_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Select nightly candidate
+        id: select
+        env:
+          EXPLICIT_CANARY_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.source_version || '' }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin --tags --prune --quiet
+
+          skip() {
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Nightly skipped"
+              echo ""
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Nightly skipped: $1"
+          }
+
+          if [ -n "${EXPLICIT_CANARY_VERSION:-}" ]; then
+            tag="canary/v${EXPLICIT_CANARY_VERSION}"
+            sha="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+            if [ -z "$sha" ]; then
+              echo "Error: tag $tag does not exist." >&2
+              exit 1
+            fi
+          else
+            # Newest canary-tagged commit on master. Canary tags are pushed
+            # only after a successful canary publish, so tag presence is the
+            # green-publish signal. Walk master newest-first and stop at the
+            # first commit that carries a canary tag.
+            sha="$(grep -m1 -F \
+              -f <(git for-each-ref 'refs/tags/canary/v*' --format='%(objectname)') \
+              <(git rev-list origin/master -n 500) || true)"
+
+            if [ -z "$sha" ]; then
+              skip "No canary/v* tag found on the last 500 commits of master."
+              exit 0
+            fi
+
+            tag="$(git tag --points-at "$sha" | grep '^canary/v' | sort -V | tail -1)"
+          fi
+
+          canary_version="${tag#canary/v}"
+
+          existing_nightly="$(git tag --points-at "$sha" | grep '^nightly/v' | head -1 || true)"
+          if [ -n "$existing_nightly" ]; then
+            skip "Candidate \`$sha\` (canary \`$canary_version\`) already shipped as \`$existing_nightly\`."
+            exit 0
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "canary_version=$canary_version" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Nightly candidate"
+            echo ""
+            echo "- Source SHA: \`$sha\`"
+            echo "- Source canary: \`$canary_version\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Gate the promotion on the release smoke suite, run against the exact
+  # published canary artifact that would become tonight's nightly. Red smoke
+  # means no nightly tonight. Skipped for dry-run dispatches.
+  smoke_nightly:
+    needs: select_nightly
+    if: needs.select_nightly.outputs.proceed == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      paperclip_version: ${{ needs.select_nightly.outputs.canary_version }}
+      artifact_name: nightly-release-smoke
+
+  publish_nightly:
+    needs: [select_nightly, smoke_nightly]
+    # Publish when smoke passed, or when smoke was deliberately skipped by a
+    # dry-run dispatch (the publish itself is a dry-run in that case).
+    if: >-
+      !cancelled() &&
+      needs.select_nightly.outputs.proceed == 'true' &&
+      (needs.smoke_nightly.result == 'success' ||
+       (needs.smoke_nightly.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.dry_run))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-canary
+    # The workflow-level concurrency group is per event, so a forced dispatch
+    # nightly could otherwise overlap the scheduled one and race it to the
+    # same next -nightly.N version. Serialize actual nightly publishes across
+    # events here; release.sh additionally refuses to double-publish a commit
+    # that already carries a nightly tag.
+    concurrency:
+      group: release-publish-nightly
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.select_nightly.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Restore tracked install-time changes
+        run: git checkout -- pnpm-lock.yaml
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish nightly
+        env:
+          GITHUB_ACTIONS: "true"
+        run: |
+          args=(nightly --skip-verify)
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          ./scripts/release.sh "${args[@]}"
+
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
+          done
+
+      - name: Push nightly tag
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^nightly/v' | head -1)"
+          if [ -z "$tag" ]; then
+            echo "Error: no nightly tag points at HEAD after release." >&2
+            exit 1
+          fi
+          git push origin "refs/tags/${tag}"
+
+      # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
+      # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
+      # pushes), so dispatch the image build at the new tag explicitly.
+      - name: Build Docker images for the nightly tag
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^nightly/v' | head -1)"
+          {
+            echo "## Nightly published"
+            echo ""
+            echo "- Source SHA: \`${{ needs.select_nightly.outputs.sha }}\`"
+            echo "- Source canary: \`${{ needs.select_nightly.outputs.canary_version }}\`"
+            echo "- Published nightly: \`${tag#nightly/v}\`"
+            echo "- Docker build dispatched at \`${tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run docker.yml --ref "refs/tags/${tag}" --repo "$GITHUB_REPOSITORY"
+
+  # ----- Stable lane ------------------------------------------------------
+
   verify_stable:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ inputs.source_ref }}
 
   preview_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -146,7 +365,7 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -154,6 +373,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      actions: write
 
     steps:
       - name: Checkout repository
@@ -212,6 +432,25 @@ jobs:
             exit 1
           fi
           git push origin "refs/tags/${tag}"
+
+      # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
+      # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
+      # pushes), so dispatch the image build at the new tag explicitly. This
+      # is what moves Docker `:latest` and publishes the versioned stable
+      # image tags.
+      - name: Build Docker images for the stable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^v' | head -1)"
+          if gh workflow run docker.yml --ref "refs/tags/${tag}" --repo "$GITHUB_REPOSITORY"; then
+            echo "Dispatched docker.yml at ${tag}."
+          else
+            # Older source commits may predate docker.yml's workflow_dispatch
+            # trigger; the dispatch then fails while the npm release is
+            # already complete and correct.
+            echo "::warning::Could not dispatch docker.yml at ${tag}. Run docker.yml manually at that tag to publish the stable images."
+          fi
 
       - name: Create GitHub Release
         env:

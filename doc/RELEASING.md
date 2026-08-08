@@ -5,9 +5,13 @@ Maintainer runbook for shipping Paperclip across npm, GitHub, and the website-fa
 The release model is now commit-driven:
 
 1. Every push to `master` publishes a canary automatically.
-2. Stable releases are manually promoted from a chosen tested commit or canary tag.
-3. Stable release notes live in `releases/vYYYY.MDD.P.md`.
-4. Only stable releases get GitHub Releases.
+2. Once a night, the newest master commit with a green canary publish is
+   smoke-tested and republished as the nightly.
+3. Stable releases are manually promoted from a chosen tested commit or canary tag.
+4. Stable release notes live in `releases/vYYYY.MDD.P.md`.
+5. Only stable releases get GitHub Releases.
+
+The user-facing guide to the channels is [`CHANNELS.md`](CHANNELS.md).
 
 ## Versioning Model
 
@@ -15,12 +19,18 @@ Paperclip uses calendar versions that still fit semver syntax:
 
 - stable: `YYYY.MDD.P`
 - canary: `YYYY.MDD.P-canary.N`
+- nightly: `YYYY.MDD.P-nightly.N`
 
 Examples:
 
 - first stable on March 18, 2026: `2026.318.0`
 - second stable on March 18, 2026: `2026.318.1`
 - fourth canary for the `2026.318.1` line: `2026.318.1-canary.3`
+- first nightly cut on March 18, 2026: `2026.318.1-nightly.0`
+
+A nightly republishes the exact source commit of an existing canary; its
+version dates the nightly cut (the scheduled run's UTC date), not the source
+canary.
 
 Important constraints:
 
@@ -41,16 +51,22 @@ Every stable release has four separate surfaces:
 
 A stable release is done only when all four surfaces are handled.
 
-Canaries only cover the first two surfaces plus an internal traceability tag.
+Canaries and nightlies only cover the first two surfaces plus an internal
+traceability tag.
 
 ## Core Invariants
 
 - canaries publish from `master`
+- nightlies republish a commit that already shipped a canary (the commit must
+  carry a `canary/v*` tag), and only after the release smoke suite passes
+  against that exact published canary
 - stables publish from an explicitly chosen source ref
 - tags point at the original source commit, not a generated release commit
 - stable notes are always `releases/vYYYY.MDD.P.md`
-- canaries never create GitHub Releases
-- canaries never require changelog generation
+- canaries and nightlies never create GitHub Releases
+- canaries and nightlies never require changelog generation
+- Docker `:latest` moves only on stable releases; master builds publish
+  `:canary` and nightly builds publish `:nightly`
 
 ## TL;DR
 
@@ -78,6 +94,40 @@ npx paperclipai@canary onboard
 npx paperclipai@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
 ```
 
+### Nightly
+
+A scheduled job in [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+runs once a night at 09:00 UTC.
+
+It:
+
+- selects the newest commit on `master` that carries a `canary/v*` tag (the
+  tag is pushed only after a successful canary publish, so it is the
+  green-publish signal)
+- skips with a job-summary reason when there is no new candidate or the
+  candidate already shipped as a nightly
+- runs the release smoke suite ([`release-smoke.yml`](../.github/workflows/release-smoke.yml))
+  against that exact published canary version — red smoke means no nightly
+  tonight
+- republishes the same source commit as `YYYY.MDD.P-nightly.N` under the npm
+  dist-tag `nightly` (the commit was already verified by its canary run, so
+  verification is not repeated)
+- creates and pushes the git tag `nightly/vYYYY.MDD.P-nightly.N`
+- dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
+  publish the `:nightly` images
+
+To force a nightly outside the schedule (recovery, or promoting a specific
+canary), dispatch `release.yml` with `channel: nightly`. Leave
+`source_version` empty for automatic selection, or set it to an exact
+canary version. `dry_run: true` previews the publish and skips smoke, the tag
+push, and the Docker dispatch.
+
+Users install nightlies with:
+
+```bash
+npx paperclipai@nightly onboard
+```
+
 ### Stable
 
 Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
@@ -86,6 +136,9 @@ Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the
 
 Inputs:
 
+- `channel`
+  - `stable` (the default) for a stable release; `nightly` forces a nightly
+    run (see above)
 - `source_ref`
   - commit SHA, branch, or tag
 - `stable_date`
@@ -113,7 +166,25 @@ The workflow:
 - computes the next stable patch slot for the chosen UTC date
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
+- dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
+  publish `:latest` and the versioned stable images
 - creates or updates the GitHub Release from `releases/vYYYY.MDD.P.md`
+
+## Docker Image Tags
+
+[`docker.yml`](../.github/workflows/docker.yml) publishes both the self-hosted
+image and the `-cloud` variant with the same lane mapping:
+
+| Build ref | Tags |
+| --- | --- |
+| `master` push | `:canary`, `:sha-<short>` |
+| `nightly/v*` tag | `:nightly`, `:sha-<short>` |
+| `v*` tag (stable) | `:latest`, `:YYYY.MDD.P`, `:YYYY.MDD`, `:sha-<short>` |
+
+Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
+suppresses push-triggered workflow runs for those pushes. The release jobs
+therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
+mapping keys off `github.ref` either way.
 
 ## Local Commands
 
@@ -121,6 +192,15 @@ The workflow:
 
 ```bash
 ./scripts/release.sh canary --dry-run
+```
+
+### Preview a nightly locally
+
+Requires HEAD to be a commit that already shipped a canary (it must carry a
+`canary/v*` tag):
+
+```bash
+./scripts/release.sh nightly --dry-run
 ```
 
 ### Preview a stable locally
@@ -185,8 +265,12 @@ Automated browser smoke is also available:
 
 ```bash
 gh workflow run release-smoke.yml -f paperclip_version=canary
+gh workflow run release-smoke.yml -f paperclip_version=nightly
 gh workflow run release-smoke.yml -f paperclip_version=latest
 ```
+
+The nightly lane runs this same suite automatically against its candidate
+before publishing.
 
 Minimum checks:
 
@@ -223,6 +307,19 @@ Instead:
 2. merge the fix
 3. wait for the next automatic canary
 4. rerun smoke testing
+
+### If the nightly skipped or failed
+
+A skipped nightly is working as designed — the job summary names the reason
+(no new green candidate, candidate already shipped, or red smoke). Nothing was
+published, so there is nothing to clean up.
+
+To recover after fixing the cause, either wait for the next scheduled run or
+force one: dispatch `release.yml` with `channel: nightly` (optionally pinning
+`source_version` to a specific canary).
+
+If the nightly published to npm but the tag push or Docker dispatch failed,
+push the `nightly/v*` tag manually and run `docker.yml` at that tag.
 
 ### If stable npm publish succeeds but tag push or GitHub release creation fails
 

@@ -38,10 +38,24 @@ get_current_stable_version() { printf '2026.709.0\\n'; }
 utc_date_iso() { printf '2026-07-10\\n'; }
 list_public_package_info() { printf 'cli\\tpaperclipai\\t0.0.0\\n'; }
 next_stable_version() { printf '2026.710.0\\n'; }
-next_canary_version() { printf '2026.710.0-canary.0\\n'; }
+next_prerelease_version() { printf '2026.710.0-%s.0\\n' "$1"; }
 release_notes_file() { printf '%s/releases/v%s.md\\n' "$REPO_ROOT" "$1"; }
 stable_tag_name() { printf 'v%s\\n' "$1"; }
-canary_tag_name() { printf 'canary/v%s\\n' "$1"; }
+prerelease_tag_name() { printf '%s/v%s\\n' "$1" "$2"; }
+require_channel_tag_at_head() {
+  if [ "\${FAKE_MISSING_CHANNEL_TAG:-}" = "$1" ]; then
+    echo "Error: HEAD has no $1/v* tag; this channel only publishes commits that already shipped a $1 release." >&2
+    exit 1
+  fi
+  echo "[fixture] require_channel_tag_at_head $1"
+}
+require_channel_tag_absent_at_head() {
+  if [ "\${FAKE_PRESENT_CHANNEL_TAG:-}" = "$1" ]; then
+    echo "Error: HEAD already shipped as $1/v2026.710.0-$1.0; delete that tag first if you really want to republish this commit on the $1 channel." >&2
+    exit 1
+  fi
+  echo "[fixture] require_channel_tag_absent_at_head $1"
+}
 require_clean_worktree() { :; }
 require_npm_publish_auth() { :; }
 git_local_tag_exists() { return 1; }
@@ -108,7 +122,7 @@ exit 0
   return { binDir, callLog, fixtureDir, script: join(scriptsDir, "release.sh") };
 }
 
-function runRelease(args) {
+function runRelease(args, extraEnv = {}) {
   const fixture = createReleaseFixture();
   const result = spawnSync(fixture.script, args, {
     cwd: fixture.fixtureDir,
@@ -117,6 +131,7 @@ function runRelease(args) {
       ...process.env,
       PATH: `${fixture.binDir}:${process.env.PATH}`,
       FAKE_CALL_LOG: fixture.callLog,
+      ...extraEnv,
     },
   });
 
@@ -146,5 +161,37 @@ test("stable publish still requires release notes before publish work starts", (
   assert.equal(result.status, 1);
   assert.match(result.output, /stable release notes file is required/);
   assert.doesNotMatch(result.output, /==> Step 2\/7: Building workspace artifacts/);
+  assert.doesNotMatch(result.calls, /^pnpm /m);
+});
+
+test("nightly dry-run publishes under the nightly identity without release notes", () => {
+  const result = runRelease(["nightly", "--skip-verify", "--dry-run"]);
+
+  assert.equal(result.status, 42);
+  assert.match(result.output, /\[fixture\] require_channel_tag_at_head canary/);
+  assert.match(result.output, /Nightly version: 2026\.710\.0-nightly\.0/);
+  assert.match(result.output, /Dist-tag: nightly/);
+  assert.match(result.output, /Git tag: nightly\/v2026\.710\.0-nightly\.0/);
+  assert.doesNotMatch(result.output, /stable release notes file is required/);
+  assert.match(result.calls, /^pnpm build$/m);
+});
+
+test("nightly refuses commits that never shipped a canary", () => {
+  const result = runRelease(["nightly", "--skip-verify", "--dry-run"], {
+    FAKE_MISSING_CHANNEL_TAG: "canary",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /HEAD has no canary\/v\* tag/);
+  assert.doesNotMatch(result.calls, /^pnpm /m);
+});
+
+test("nightly refuses commits that already shipped as a nightly", () => {
+  const result = runRelease(["nightly", "--skip-verify", "--dry-run"], {
+    FAKE_PRESENT_CHANNEL_TAG: "nightly",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /HEAD already shipped as nightly\/v/);
   assert.doesNotMatch(result.calls, /^pnpm /m);
 });

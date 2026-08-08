@@ -195,3 +195,43 @@ test("next_stable_version falls back to npm view without a versions file", () =>
   assert.equal(result.output, "2026.707.2");
   assert.match(result.calls, /^npm view @paperclipai\/present versions --json$/m);
 });
+
+test("next_prerelease_version counts per channel so nightly numbering ignores canaries", () => {
+  const fixture = makeFixture();
+  const versionsFile = join(fixture.fixtureDir, "versions.json");
+  writeFileSync(
+    versionsFile,
+    JSON.stringify({
+      "@paperclipai/a": ["2026.707.1-canary.4", "2026.707.1-nightly.0", "2026.707.1-nightly.1"],
+    }),
+  );
+
+  const result = runReleaseLibHelper(
+    'next_prerelease_version nightly 2026.707.1 "@paperclipai/a"',
+    fixture,
+    { RELEASE_PACKAGE_VERSIONS_FILE: versionsFile },
+  );
+
+  assert.equal(result.status, 0);
+  assert.equal(result.output, "2026.707.1-nightly.2");
+  assert.doesNotMatch(result.calls, /npm view/);
+});
+
+test("next_prerelease_version rejects unknown channels", () => {
+  const fixture = makeFixture();
+  const result = runReleaseLibHelper(
+    'next_prerelease_version weekly 2026.707.1 "@paperclipai/a"',
+    fixture,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /unknown prerelease channel: weekly/);
+});
+
+test("prerelease_tag_name namespaces tags by channel", () => {
+  const fixture = makeFixture();
+  const result = runReleaseLibHelper("prerelease_tag_name nightly 2026.707.1-nightly.2", fixture);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.output.trim(), "nightly/v2026.707.1-nightly.2");
+});

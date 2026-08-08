@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - canary
+          - nightly
           - latest
       host_port:
         description: Host port for the Docker smoke container
