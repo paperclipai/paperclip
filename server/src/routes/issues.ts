@@ -335,18 +335,38 @@ type SuccessfulRunHandoffActivityRow = {
 type TaskWatchdogService = ReturnType<typeof taskWatchdogService>;
 type TaskWatchdogServiceFactory = typeof taskWatchdogService;
 
+// When a request_confirmation (or related interaction) is rejected with a
+// build-worthy reason, downstream callers spawn a follow-up child issue to
+// action the request. Without explicit status/assignee, those children land
+// in `backlog` and never get picked up. This heuristic flags rejection
+// reasons that imply the assignee should act on them right now.
+function isBuildWorthyRejectionReason(reason: string): boolean {
+  if (typeof reason !== "string" || reason.length === 0) return false;
+  return /\b(?:fix|review|build|implement|developer|address|resolve)\b/i.test(reason);
+}
+
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
     next();
     return;
   }
 
-  const resolution = resolveCreateIssueStatusDefault(req.body as Record<string, unknown>);
+  const body = req.body as Record<string, unknown>;
+  const resolution = resolveCreateIssueStatusDefault(body);
   res.locals.createIssueStatusDefault = resolution;
+  let defaultedStatus: string | null = null;
   if (resolution.defaulted) {
+    const textHaystack = [body.title, body.description]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ");
+    if (resolution.status === "backlog" && isBuildWorthyRejectionReason(textHaystack)) {
+      defaultedStatus = "todo";
+    } else {
+      defaultedStatus = resolution.status;
+    }
     req.body = {
       ...req.body,
-      status: resolution.status,
+      status: defaultedStatus,
     };
   }
   next();
@@ -7893,6 +7913,21 @@ export function issueRoutes(
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
+    // Parent assignee fallback: when a request_confirmation rejection spawns
+    // a follow-up child and the caller didn't pass an assignee, default the
+    // child to the parent's assignee so the build-worthy follow-up surfaces
+    // in their inbox instead of sitting unassigned in backlog.
+    const fallbackAssigneeAgentId =
+      (createBody as { assigneeAgentId?: string | null }).assigneeAgentId == null
+      && (createBody as { assigneeUserId?: string | null }).assigneeUserId == null
+      && parent.assigneeAgentId != null
+      && isBuildWorthyRejectionReason(
+        [createBody.title, createBody.description]
+          .filter((value): value is string => typeof value === "string")
+          .join(" "),
+      )
+        ? parent.assigneeAgentId
+        : null;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
       projectId: createBody.projectId ?? parent.projectId ?? null,
@@ -7926,6 +7961,7 @@ export function issueRoutes(
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
+      ...(fallbackAssigneeAgentId != null ? { assigneeAgentId: fallbackAssigneeAgentId } : {}),
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild
