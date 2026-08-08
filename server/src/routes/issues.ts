@@ -9704,6 +9704,10 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          if (issue.assigneeAgentId !== null && mentionedId !== issue.assigneeAgentId) {
+            logger.info({ issueId: id, mentionedId, assigneeAgentId: issue.assigneeAgentId }, "suppressed mention wake for non-assignee agent");
+            continue;
+          }
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -11543,6 +11547,10 @@ export function issueRoutes(
 
       for (const mentionedId of mentionedIds) {
         if (actorIsAgent && actor.actorId === mentionedId) continue;
+        if (currentIssue.assigneeAgentId !== null && mentionedId !== currentIssue.assigneeAgentId) {
+          logger.info({ issueId: id, mentionedId, assigneeAgentId: currentIssue.assigneeAgentId }, "suppressed mention wake for non-assignee agent");
+          continue;
+        }
         addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",
