@@ -2575,11 +2575,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
-    expect(commentMetadataRows(comments[0])).toContainEqual({
-      type: "key_value",
-      label: "Failure summary",
-      value: "Authorization: Bearer [REDACTED]",
-    });
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",
@@ -5527,6 +5522,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
+    const failureSummary = commentMetadataRows(comments[0]).find((row) =>
+      row.type === "key_value" && row.label === "Failure summary"
+    );
+    expect(failureSummary).toMatchObject({ type: "key_value", label: "Failure summary" });
+    expect(failureSummary?.type === "key_value" ? failureSummary.value : "").toContain("Authorization");
     expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
     expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
     expect(commentMetadataRows(comments[0]).some((row) =>
