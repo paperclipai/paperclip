@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
+  resolveHeartbeatRunErrorCode,
   resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
 
@@ -128,5 +129,48 @@ describe("heartbeat stop metadata", () => {
       timeoutSource: "default",
       timeoutFired: false,
     });
+  });
+});
+
+describe("resolveHeartbeatRunErrorCode", () => {
+  it("honors the adapter's own errorCode for a timed_out outcome", () => {
+    expect(
+      resolveHeartbeatRunErrorCode({
+        outcome: "timed_out",
+        adapterErrorCode: "sandbox_exec_timeout",
+      }),
+    ).toBe("sandbox_exec_timeout");
+  });
+
+  it("defaults a timed_out outcome to 'timeout' when the adapter gave no errorCode", () => {
+    expect(resolveHeartbeatRunErrorCode({ outcome: "timed_out" })).toBe("timeout");
+    expect(
+      resolveHeartbeatRunErrorCode({ outcome: "timed_out", adapterErrorCode: null }),
+    ).toBe("timeout");
+  });
+
+  it("keeps cancelled outcome resolution unchanged", () => {
+    expect(
+      resolveHeartbeatRunErrorCode({ outcome: "cancelled", cancelledErrorCode: "budget_paused" }),
+    ).toBe("budget_paused");
+    expect(resolveHeartbeatRunErrorCode({ outcome: "cancelled" })).toBe("cancelled");
+  });
+
+  it("keeps failed outcome resolution unchanged", () => {
+    expect(
+      resolveHeartbeatRunErrorCode({ outcome: "failed", adapterErrorCode: "model_not_found" }),
+    ).toBe("model_not_found");
+    expect(
+      resolveHeartbeatRunErrorCode({
+        outcome: "failed",
+        responsibleUserDenialCode: "responsible_user_denied",
+      }),
+    ).toBe("responsible_user_denied");
+    expect(resolveHeartbeatRunErrorCode({ outcome: "failed" })).toBe("adapter_failed");
+  });
+
+  it("returns null for succeeded and interrupted outcomes", () => {
+    expect(resolveHeartbeatRunErrorCode({ outcome: "succeeded" })).toBeNull();
+    expect(resolveHeartbeatRunErrorCode({ outcome: "interrupted" })).toBeNull();
   });
 });
