@@ -44,6 +44,18 @@ describe("buildNetworkPolicyManifests", () => {
     expect(cidrRule).toBeDefined();
   });
 
+  it("allows the configured repository proxy only on its explicit TCP port", () => {
+    const [, egress] = buildNetworkPolicyManifests({
+      ...baseInput,
+      repositoryProxy: { cidr: "192.168.0.63/32", port: 3129 },
+    });
+    const proxyRule = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>
+      r.to.some((target) => target.ipBlock?.cidr === "192.168.0.63/32"),
+    );
+    expect(proxyRule).toBeDefined();
+    expect(proxyRule.ports).toEqual([{ protocol: "TCP", port: 3129 }]);
+  });
+
   it("uses paperclip-server pod label selector for callback ingress to paperclip ns", () => {
     const [, egress] = buildNetworkPolicyManifests(baseInput);
     const callbackRule = egress.spec.egress.find((r: { to: { podSelector?: { matchLabels?: Record<string, string> } }[] }) =>

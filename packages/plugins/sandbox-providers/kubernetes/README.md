@@ -67,6 +67,7 @@ Common optional fields:
 | `imageRegistry` | (none) | Override the default registry for agent runtime images. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
+| `gitReadOnlySecretName` | unset | Optional tenant-namespace Secret binding for explicitly credential-required repositories. It is never injected into the agent. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
 | `egressAllowCidrs` | `[]` | Additional CIDRs to allow egress to. |
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs) or `cilium` (CiliumNetworkPolicy + FQDN allow-list). |
@@ -133,10 +134,22 @@ Every agent pod is:
 - non-root (`runAsUser: 1000`, `runAsGroup: 1000`, `runAsNonRoot: true`)
 - drops ALL Linux capabilities, `allowPrivilegeEscalation: false`
 - `readOnlyRootFilesystem: true` with explicit `emptyDir` mounts for `/workspace`, `/home/paperclip`, `/home/paperclip/.cache`, `/tmp`
+
 - `seccompProfile: RuntimeDefault`
 - Tini as PID 1 (reaps zombies, forwards signals)
 - `fsGroupChangePolicy: OnRootMismatch` (fast PVC startup; openclaw-operator lesson)
-- `automountServiceAccountToken: true` (for the agent shim's paperclip-server callback)
+
+### Repository loader credentials
+
+Sandbox-native repository realization carries an explicit `source.credentialRequired` flag. Public repositories leave it false and are cloned without credentials. When it is true, `gitReadOnlySecretName` is mandatory; realization fails closed before clone if the binding is absent, with Git output and credential values redacted.
+
+The bound Kubernetes Secret has exactly these required read-only keys:
+
+- `GIT_USERNAME` — the Git HTTP username (often `x-access-token` for token-based providers)
+- `GIT_TOKEN` — a short-lived, read-only Git token
+
+The `repo-loader` container receives only those two keys through individual `secretKeyRef` entries. `envFrom` is not used for the Git Secret, and the agent container never receives either key.
+- `automountServiceAccountToken: false` at pod scope. The agent shim calls back to paperclip-server with its per-run bootstrap/API credentials; it does not need Kubernetes API credentials, so no ServiceAccount token volume is mounted into either container.
 
 Plus per-namespace `pod-security.kubernetes.io/enforce: restricted` and a deny-all NetworkPolicy baseline with explicit egress allow-list (DNS, paperclip-server, configured FQDNs/CIDRs).
 

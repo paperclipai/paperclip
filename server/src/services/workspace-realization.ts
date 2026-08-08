@@ -90,7 +90,14 @@ export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealiz
       projectWorkspaceId: readString(source.projectWorkspaceId),
       repoUrl: readString(source.repoUrl),
       repoRef: readString(source.repoRef),
-      strategy: source.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+      credentialRequired: source.credentialRequired === true,
+      credentialSecretName: readString(source.credentialSecretName),
+      strategy:
+        source.strategy === "git_worktree"
+          ? "git_worktree"
+          : source.strategy === "sandbox_repository"
+            ? "sandbox_repository"
+            : "project_primary",
       branchName: readString(source.branchName),
       worktreePath: readString(source.worktreePath),
     },
@@ -117,6 +124,9 @@ export function buildWorkspaceRealizationRequest(input: {
   requestedMode: string | null;
   workspace: RealizedExecutionWorkspace;
   workspaceConfig: ExecutionWorkspaceConfig | null;
+  repositoryStrategy?: "sandbox_repository" | null;
+  repositoryCredentialsRequired?: boolean;
+  repositoryCredentialSecretName?: string | null;
 }): WorkspaceRealizationRequest {
   return {
     version: 1,
@@ -134,7 +144,9 @@ export function buildWorkspaceRealizationRequest(input: {
       projectWorkspaceId: input.workspace.workspaceId,
       repoUrl: input.workspace.repoUrl,
       repoRef: input.workspace.repoRef,
-      strategy: input.workspace.strategy,
+      credentialRequired: input.repositoryCredentialsRequired === true,
+      credentialSecretName: input.repositoryCredentialsRequired ? input.repositoryCredentialSecretName ?? null : null,
+      strategy: input.repositoryStrategy ?? input.workspace.strategy,
       branchName: input.workspace.branchName,
       worktreePath: input.workspace.worktreePath,
     },

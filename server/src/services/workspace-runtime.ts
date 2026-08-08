@@ -76,6 +76,7 @@ export interface ExecutionWorkspaceInput {
   repoUrl: string | null;
   repoRef: string | null;
   additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
+  repositoryCredentialsRequired?: boolean;
 }
 
 /**
@@ -107,7 +108,7 @@ export interface ExecutionWorkspaceAgentRef {
 }
 
 export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
-  strategy: "project_primary" | "git_worktree";
+  strategy: "project_primary" | "git_worktree" | "sandbox_repository";
   cwd: string;
   branchName: string | null;
   worktreePath: string | null;

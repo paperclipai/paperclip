@@ -213,6 +213,21 @@ describe("deleteSandboxCr", () => {
 });
 
 describe("waitForSandboxReady", () => {
+  it("waits for the pod to be Running/Ready before the caller can exec", async () => {
+    const get = vi.fn()
+      .mockResolvedValueOnce(makeCr("Pending"))
+      .mockResolvedValueOnce(makeCr("Ready", "pc-ready"));
+    const clients = { custom: { getNamespacedCustomObject: get } };
+    const status = await waitForSandboxReady(
+      clients as never,
+      "ns",
+      "pc-abc",
+      { timeoutMs: 100, pollMs: 0 },
+    );
+    expect(status.phase).toBe("Running");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves immediately when Sandbox is already Ready", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready"));
     const clients = { custom: { getNamespacedCustomObject: get } };

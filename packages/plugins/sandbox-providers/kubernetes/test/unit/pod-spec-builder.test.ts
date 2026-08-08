@@ -86,6 +86,15 @@ describe("buildJobManifest", () => {
     expect(job.spec.template.spec.automountServiceAccountToken).toBe(false);
   });
 
+  it("does not declare a ServiceAccount token volume or mount", () => {
+    const job = buildJobManifest(baseInput);
+    expect(job.spec.template.spec.volumes.map((volume: { name: string }) => volume.name)).not.toContain("kube-api-access");
+    expect(job.spec.template.spec.volumes.map((volume: { name: string }) => volume.name)).not.toContain("service-account-token");
+    expect(job.spec.template.spec.containers[0].volumeMounts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ mountPath: "/var/run/secrets/kubernetes.io/serviceaccount" }),
+    ]));
+  });
+
   it("applies the provided labels to both Job metadata and pod template", () => {
     const job = buildJobManifest(baseInput);
     expect(job.metadata.labels["paperclip.io/run-id"]).toBe("r1");

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { kubernetesProviderConfigSchema, parseKubernetesProviderConfig } from "../../src/types.js";
+import { parseKubernetesProviderConfig, parseRepositoryProxyUrl } from "../../src/types.js";
 
 describe("kubernetesProviderConfigSchema", () => {
   it("accepts inCluster=true with no kubeconfig", () => {
@@ -35,5 +35,17 @@ describe("kubernetesProviderConfigSchema", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
+  });
+
+  it("accepts only a credential-free HTTP IPv4 repository proxy with an explicit port", () => {
+    expect(parseRepositoryProxyUrl("http://192.168.0.63:3129")).toEqual({
+      url: "http://192.168.0.63:3129/",
+      cidr: "192.168.0.63/32",
+      port: 3129,
+    });
+    expect(() => parseRepositoryProxyUrl("https://192.168.0.63:3129")).toThrow(/repositoryProxyUrl/);
+    expect(() => parseRepositoryProxyUrl("http://user:pass@192.168.0.63:3129")).toThrow(/repositoryProxyUrl/);
+    expect(() => parseRepositoryProxyUrl("http://proxy.example.test:3129")).toThrow(/repositoryProxyUrl/);
+    expect(() => parseRepositoryProxyUrl("http://192.168.0.63")).toThrow(/repositoryProxyUrl/);
   });
 });
