@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -120,7 +120,14 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
   async function runTeardown(input: {
     sandboxAuth: string;
     hostAuth: string;
-  }): Promise<{ finalHostAuth: string; finalHostMode: number }> {
+    externalHostAuth?: string;
+    externalAuthViaSymlink?: boolean;
+  }): Promise<{
+    finalHostAuth: string;
+    finalHostMode: number;
+    finalSharedHostAuth: string;
+    configuredAuthIsSymlink: boolean;
+  }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -132,6 +139,20 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     await mkdir(sharedHostHome, { recursive: true });
     const hostAuthPath = path.join(sharedHostHome, "auth.json");
     await writeFile(hostAuthPath, input.hostAuth, { mode: 0o600 });
+    const configuredHome = input.externalHostAuth == null
+      ? sharedHostHome
+      : path.join(rootDir, "external-codex-home");
+    if (input.externalHostAuth != null) {
+      await mkdir(configuredHome, { recursive: true });
+      const configuredAuthPath = path.join(configuredHome, "auth.json");
+      if (input.externalAuthViaSymlink) {
+        const externalAuthSource = path.join(rootDir, "external-auth-source.json");
+        await writeFile(externalAuthSource, input.externalHostAuth, { mode: 0o600 });
+        await symlink(externalAuthSource, configuredAuthPath);
+      } else {
+        await writeFile(configuredAuthPath, input.externalHostAuth, { mode: 0o600 });
+      }
+    }
 
     savedCodexHomeEnv = process.env.CODEX_HOME;
     process.env.CODEX_HOME = sharedHostHome;
@@ -151,8 +172,9 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         command: "codex",
         engine: "cli",
         // External CODEX_HOME (outside the managed company tree) so no managed
-        // seeding rewrites auth.json before teardown; equals the shared host home.
-        env: { CODEX_HOME: sharedHostHome },
+        // seeding rewrites auth.json before teardown. Most cases use the shared
+        // home; multi-subscription coverage supplies a distinct external home.
+        env: { CODEX_HOME: configuredHome },
       },
       context: {
         paperclipWorkspace: {
@@ -176,8 +198,10 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     });
 
     return {
-      finalHostAuth: await readFile(hostAuthPath, "utf8"),
-      finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
+      finalHostAuth: await readFile(path.join(configuredHome, "auth.json"), "utf8"),
+      finalHostMode: (await stat(path.join(configuredHome, "auth.json"))).mode & 0o777,
+      finalSharedHostAuth: await readFile(hostAuthPath, "utf8"),
+      configuredAuthIsSymlink: (await lstat(path.join(configuredHome, "auth.json"))).isSymbolicLink(),
     };
   }
 
@@ -210,6 +234,42 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     expect(result.finalHostAuth).toBe(sandboxAuth);
     expect(result.finalHostMode).toBe(0o600);
   });
+
+  it.each([
+    { authStorage: "regular file", externalAuthViaSymlink: false },
+    { authStorage: "symlink source", externalAuthViaSymlink: true },
+  ])(
+    "round-trips an external CODEX_HOME identity from a $authStorage without overwriting the shared subscription",
+    async ({ externalAuthViaSymlink }) => {
+      const sharedHostAuth = subscriptionAuth({
+        accountId: "acct-primary",
+        lastRefresh: "2026-07-09T03:00:00Z",
+        marker: "shared-primary",
+      });
+      const externalHostAuth = subscriptionAuth({
+        accountId: "acct-secondary",
+        lastRefresh: "2026-07-09T01:00:00Z",
+        marker: "external-older",
+      });
+      const sandboxAuth = subscriptionAuth({
+        accountId: "acct-secondary",
+        lastRefresh: "2026-07-09T02:00:00Z",
+        marker: "external-refreshed",
+      });
+
+      const result = await runTeardown({
+        sandboxAuth,
+        hostAuth: sharedHostAuth,
+        externalHostAuth,
+        externalAuthViaSymlink,
+      });
+
+      expect(result.finalHostAuth).toBe(sandboxAuth);
+      expect(result.finalHostMode).toBe(0o600);
+      expect(result.finalSharedHostAuth).toBe(sharedHostAuth);
+      expect(result.configuredAuthIsSymlink).toBe(externalAuthViaSymlink);
+    },
+  );
 
   it("keeps the host auth.json when the sandbox copy is a tie or older on teardown", async () => {
     const cases = [

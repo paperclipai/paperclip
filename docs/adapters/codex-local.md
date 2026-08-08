@@ -75,7 +75,10 @@ A managed home is created empty, so the adapter must provision auth into it befo
    instead of copying a stale token into the managed home.
 3. **External `CODEX_HOME`:** if adapter env points `CODEX_HOME` outside the
    Paperclip-managed company tree, that home is self-managed. Paperclip does
-   not seed or overwrite it, so its own `auth.json` wins.
+   not seed it, so its own `auth.json` wins. A remote run stages that credential
+   and copies a strictly newer same-account OAuth refresh back to that external
+   source on teardown, matching the mutation a local Codex process would make.
+   Separate external homes can therefore retain separate subscription identities.
 
 For sandbox or SSH execution, Paperclip uploads the effective managed
 `CODEX_HOME` and launches Codex with `CODEX_HOME` pointing at that uploaded
@@ -83,6 +86,11 @@ directory. Any `auth.json` already baked into the sandbox image is shadowed in
 managed-home mode. If the host has no usable `auth.json` and no per-agent
 `OPENAI_API_KEY`, the managed run fails fast instead of falling back to an
 in-sandbox login.
+
+For an external `CODEX_HOME`, the uploaded credential remains bound to that
+external home. Teardown never redirects its refreshed OAuth credential into the
+shared host login, so two agents configured with different external homes cannot
+overwrite each other's subscription identity.
 
 Worked example: a worker runs in a sandbox image that already has
 `$HOME/.codex/auth.json`, and the Paperclip host is logged in with a ChatGPT
