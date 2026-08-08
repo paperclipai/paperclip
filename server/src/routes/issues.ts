@@ -7838,7 +7838,7 @@ export function issueRoutes(
             continuationFingerprint: result.link.continuationFingerprint,
           },
         });
-        void queueIssueAssignmentWakeup({
+        await queueIssueAssignmentWakeup({
           heartbeat,
           issue: result.successor,
           reason: "issue_assigned",
