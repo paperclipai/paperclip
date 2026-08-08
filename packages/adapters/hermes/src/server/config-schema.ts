@@ -21,6 +21,14 @@ export function getConfigSchema(): AdapterConfigSchema {
   return {
     fields: [
       {
+        key: "profile",
+        label: "Hermes profile",
+        type: "text",
+        default: "default",
+        meta: { pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", maxLength: 64 },
+        hint: "Authoritative Hermes profile (1-64 lowercase letters, numbers, hyphens, or underscores). The adapter passes it before chat; extraArgs cannot override it.",
+      },
+      {
         key: "provider",
         label: "Provider",
         type: "select",

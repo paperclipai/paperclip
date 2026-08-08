@@ -18,8 +18,9 @@
  *   --source           session source tag for filtering
  */
 
-import fs from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterExecutionContext,
@@ -38,6 +39,8 @@ import {
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -52,6 +55,12 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import {
+  HERMES_PROFILE_INVALID_MESSAGE,
+  resolveHermesProfile,
+} from "./profile.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -70,6 +79,69 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+
+const RESERVED_HERMES_PASSTHROUGH_FLAGS = new Set([
+  "--profile",
+  "-p",
+  "--skills",
+  "-s",
+]);
+
+function sanitizeHermesExtraArgs(extraArgs: string[] | undefined): string[] {
+  if (!extraArgs?.length) return [];
+
+  const sanitized: string[] = [];
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index]!;
+    const equalsIndex = arg.indexOf("=");
+    const flag = equalsIndex >= 0 ? arg.slice(0, equalsIndex) : arg;
+    if (RESERVED_HERMES_PASSTHROUGH_FLAGS.has(flag)) {
+      if (equalsIndex < 0) index += 1;
+      continue;
+    }
+    sanitized.push(arg);
+  }
+  return sanitized;
+}
+
+async function buildManagedSkillPromptBundle(
+  config: Record<string, unknown>,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<string> {
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const entriesByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
+  const sections: string[] = [];
+
+  for (const skillKey of desiredSkillNames) {
+    const entry = entriesByKey.get(skillKey);
+    if (!entry) continue;
+
+    try {
+      const content = await readFile(path.join(entry.source, "SKILL.md"), "utf8");
+      if (!content.trim()) continue;
+      sections.push([
+        `### Paperclip managed skill: ${entry.key}`,
+        `<!-- Begin SKILL.md for ${entry.key} -->`,
+        content.trimEnd(),
+        `<!-- End SKILL.md for ${entry.key} -->`,
+      ].join("\n"));
+    } catch {
+      await onLog(
+        "stdout",
+        `[hermes] Warning: managed skill "${entry.key}" source is unavailable for this run.\n`,
+      );
+    }
+  }
+
+  if (sections.length === 0) return "";
+  return [
+    "Paperclip managed skill bundle for this run:",
+    "Use these exact managed SKILL.md contents when the task calls for them.",
+    "",
+    sections.join("\n\n"),
+  ].join("\n");
 }
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
@@ -338,11 +410,23 @@ export async function execute(
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
   const model = cfgString(config.model) || DEFAULT_MODEL;
+  const profile = resolveHermesProfile(config);
+  if (!profile) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_local_profile_invalid",
+      errorMessage: HERMES_PROFILE_INVALID_MESSAGE,
+      model,
+    };
+  }
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
+  const sanitizedExtraArgs = sanitizeHermesExtraArgs(extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -388,7 +472,7 @@ export async function execute(
   let agentInstructions = "";
   if (instructionsFilePath) {
     try {
-      agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
+      agentInstructions = await readFile(instructionsFilePath, "utf-8");
       const loadedInstructionsLength = agentInstructions.length;
       const instructionsFileDir = path.dirname(instructionsFilePath);
       agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
@@ -410,6 +494,10 @@ export async function execute(
 
   // ── Build prompt ───────────────────────────────────────────────────────
   let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
+  const managedSkillPrompt = await buildManagedSkillPromptBundle(config, ctx.onLog);
+  if (managedSkillPrompt) {
+    prompt = managedSkillPrompt + "\n\n---\n\n" + prompt;
+  }
   if (agentInstructions) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
@@ -417,7 +505,7 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  const args: string[] = ["--profile", profile, "chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
   if (model) {
@@ -457,8 +545,8 @@ export async function execute(
     args.push("--resume", prevSessionId);
   }
 
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
+  if (sanitizedExtraArgs.length) {
+    args.push(...sanitizedExtraArgs);
   }
 
   // ── Build environment ──────────────────────────────────────────────────

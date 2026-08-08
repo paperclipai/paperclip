@@ -245,6 +245,7 @@ Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vis
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `profile` | string | `default` | Authoritative Hermes profile passed before `chat`. Safe identifiers only; `extraArgs` cannot override it. |
 | `hermesCommand` | string | `hermes` | Custom CLI binary path |
 | `verbose` | boolean | `false` | Enable verbose output |
 | `quiet` | boolean | `true` | Quiet mode (clean output, no banner/spinner) |
@@ -315,11 +316,26 @@ and migrates session state between runs.
 
 The adapter scans two skill sources and merges them:
 
-- **Paperclip-managed skills** — bundled with the adapter, togglable from the UI
-- **Hermes-native skills** — from `~/.hermes/skills/`, read-only, always loaded
+- **Paperclip-managed skills** — the exact desired manifest is read from the configured source directories and injected as a read-only, per-run prompt bundle containing each selected `SKILL.md` body.
+- **Hermes-native skills** — scanned from the active profile's `skills/` directory as read-only availability only (`desired: false`).
 
 The `listSkills` / `syncSkills` APIs expose a unified snapshot so the
-Paperclip UI can display both managed and native skills in one view.
+Paperclip UI can display both managed and native skills in one view. The adapter
+does not use name-only `--skills` discovery for Paperclip content, and sync is
+side-effect-free: it never installs, deletes, rewrites, or mutates Hermes
+skills, config, or global state.
+
+### Hermes profiles and homes
+
+The stored `profile` is authoritative for each local run and is emitted as
+discrete `--profile <profile> chat` arguments. Reserved profile and skill flags
+in `extraArgs` are removed, including separated and `--flag=value` forms.
+
+For read-only native-skill snapshots, `env.HERMES_HOME` has highest precedence
+and is treated as an already profile-scoped home. It is never nested again. If
+it is absent, the adapter uses `env.HOME`, then the process `HOME`, then the OS
+home and derives `.hermes`: the default profile reads `<base>/skills`, while a
+named profile reads `<base>/profiles/<profile>/skills`.
 
 ## Development
 

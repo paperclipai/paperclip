@@ -10,6 +10,10 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
+const hermesTestState = vi.hoisted(() => ({
+  files: new Map<string, string>(),
+}));
+
 // Mock the adapter-utils server-utils module that execute.ts imports from.
 // We intercept runChildProcess so we can inspect its opts without spawning
 // a real child process.
@@ -29,7 +33,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
 
 // Mock fs and path resolution to avoid real file reads in execute()
 vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(async () => ""),
+  readFile: vi.fn(async (filePath: string) => hermesTestState.files.get(String(filePath)) ?? ""),
   writeFile: vi.fn(async () => undefined),
   mkdir: vi.fn(async () => undefined),
   rm: vi.fn(async () => undefined),
@@ -81,6 +85,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 describe("hermes-local adapter onSpawn forwarding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    hermesTestState.files.clear();
   });
 
   it("forwards ctx.onSpawn to runChildProcess", async () => {
@@ -102,6 +107,81 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
     const opts = lastCall[3] as Record<string, unknown>;
     expect(opts.onSpawn).toBe(onSpawn);
+  });
+
+  it("makes the stored profile authoritative and filters reserved passthrough flags", async () => {
+    const { ctx } = makeCtx({
+      profile: "paperclip-local-v2",
+      extraArgs: [
+        "--profile", "other",
+        "-p", "other-short",
+        "--profile=other-equals",
+        "-p=other-short-equals",
+        "--skills", "other-skill",
+        "-s", "other-short-skill",
+        "--skills=other-equals-skill",
+        "-s=other-short-equals-skill",
+        "--keep", "value",
+      ],
+    });
+
+    await execute(ctx as any);
+
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(args.slice(0, 3)).toEqual(["--profile", "paperclip-local-v2", "chat"]);
+    expect(args).toContain("--keep");
+    expect(args).toContain("value");
+    expect(args).not.toContain("other");
+    expect(args).not.toContain("other-short");
+    expect(args).not.toContain("other-skill");
+    expect(args.slice(3).some((arg) => /^(?:--profile|-p|--skills|-s)(?:=|$)/.test(arg))).toBe(false);
+  });
+
+  it.each(["../outside", "profile/name", "profile;rm", "", " ", " profile ", { name: "profile" }])(
+    "rejects unsafe profile %j before spawning Hermes",
+    async (profile) => {
+      const { ctx } = makeCtx({ profile });
+
+      const result = await execute(ctx as any);
+
+      expect(result).toMatchObject({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "hermes_local_profile_invalid",
+      });
+      if (String(profile).trim().length > 0) {
+        expect(result.errorMessage).not.toContain(String(profile));
+      }
+      expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it("injects exact managed SKILL.md bodies into a source-independent prompt bundle", async () => {
+    hermesTestState.files.set("/paperclip/alpha/SKILL.md", "# Alpha\n\nUse alpha carefully.\n");
+    hermesTestState.files.set("/paperclip/beta/SKILL.md", "# Beta\n\nUse beta carefully.\n");
+
+    const { ctx } = makeCtx({
+      paperclipRuntimeSkills: [
+        { key: "alpha", runtimeName: "alpha", source: "/paperclip/alpha" },
+        { key: "beta", runtimeName: "beta", source: "/paperclip/beta" },
+        { key: "missing", runtimeName: "missing", source: "/paperclip/missing" },
+      ],
+      paperclipSkillSync: { desiredSkills: ["beta", "alpha", "missing"] },
+    });
+
+    await execute(ctx as any);
+
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    const prompt = args[args.indexOf("-q") + 1]!;
+    expect(prompt).toContain("### Paperclip managed skill: beta");
+    expect(prompt).toContain("# Beta\n\nUse beta carefully.");
+    expect(prompt).toContain("### Paperclip managed skill: alpha");
+    expect(prompt).toContain("# Alpha\n\nUse alpha carefully.");
+    expect(prompt.indexOf("managed skill: beta")).toBeLessThan(prompt.indexOf("managed skill: alpha"));
+    expect(prompt).not.toContain("managed skill: missing");
+    expect(prompt).not.toContain("/paperclip/beta");
+    expect(prompt).not.toContain("/paperclip/alpha");
   });
 
   it("runChildProcess opts type includes onSpawn", () => {
