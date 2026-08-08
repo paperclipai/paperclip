@@ -551,6 +551,21 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
     expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).toContain("--fail-with-body");
+    // RBR-919: an example without a status gate teaches agents that a 403 is a
+    // success, because curl exits 0 on 4xx.
+    // Match curl in command position (line start, after a pipe, or inside $( ))
+    // so prose that merely mentions curl is not treated as an example.
+    const curlInvocations = prompt
+      .split("\n")
+      .filter((l) => /(?:^|\||\$\()\s*curl\s+-/.test(l));
+    expect(curlInvocations.length).toBeGreaterThan(0);
+    for (const line of curlInvocations) {
+      expect(
+        /--fail-with-body|--fail|pc-api\.sh|%\{http_code\}/.test(line),
+        `ungated curl in generated prompt: ${line.trim()}`,
+      ).toBe(true);
+    }
     expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");
     expect(prompt).not.toContain("-d '{...}'");
