@@ -86,7 +86,7 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
-import { createErrorThrottler } from "./lib/error-throttler.js";
+import { createErrorThrottler, computeBackoffDelayMs } from "./lib/error-throttler.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -921,7 +921,7 @@ export async function startServer(): Promise<StartedServer> {
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
-  let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let heartbeatSchedulerInterval: ReturnType<typeof setTimeout> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const schedulerThrottler = createErrorThrottler({ minIntervalMs: 5 * 60 * 1000 });
   let consecutiveSchedulerFailures = 0;
@@ -940,6 +940,16 @@ export async function startServer(): Promise<StartedServer> {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  // Note: most sub-task failures inside a heartbeat tick (decision sweeps,
+  // routine ticks, etc.) already catch and throttle their own errors via
+  // schedulerThrottler.logError without rethrowing, so they don't reject the
+  // outer callback promise below. The backoff counter is intentionally driven
+  // by whatever *does* escape the tick uncaught (e.g. a failed
+  // resolveSchedulingSuppression() DB call) - that's the signal a systemic
+  // failure (like a downed database) is affecting the whole tick, which is
+  // the scenario this backoff exists to protect against. Individual,
+  // isolated sub-task failures are throttled but intentionally do not slow
+  // down the overall scheduler cadence.
   const startHeartbeatSchedulerInterval = (callback: () => void | Promise<void>) => {
     const runTick = () => {
       if (heartbeatSchedulerStopped) return;
@@ -963,10 +973,13 @@ export async function startServer(): Promise<StartedServer> {
       if (heartbeatSchedulerStopped) return;
       const baseMs = Math.max(10000, config.heartbeatSchedulerIntervalMs);
       const maxMs = 5 * 60 * 1000;
-      const backoffFactor = Math.pow(2, Math.min(consecutiveSchedulerFailures, 4));
-      const nextIntervalMs = Math.min(maxMs, baseMs * backoffFactor);
+      const nextIntervalMs = computeBackoffDelayMs(consecutiveSchedulerFailures, {
+        baseIntervalMs: baseMs,
+        maxIntervalMs: maxMs,
+        maxBackoffSteps: 4,
+      });
 
-      heartbeatSchedulerInterval = setTimeout(runTick, nextIntervalMs) as any;
+      heartbeatSchedulerInterval = setTimeout(runTick, nextIntervalMs);
       heartbeatSchedulerInterval?.unref?.();
     };
 
@@ -1464,7 +1477,6 @@ export async function startServer(): Promise<StartedServer> {
       await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
         clearTimeout(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }

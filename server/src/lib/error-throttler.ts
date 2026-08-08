@@ -18,6 +18,15 @@ export interface ErrorThrottlerOptions {
    * Custom clock function for testing. Defaults to Date.now.
    */
   clock?: () => number;
+
+  /**
+   * Maximum number of distinct (context, error) keys to track at once.
+   * Prevents unbounded memory growth when errors carry varying detail
+   * (e.g. row ids or query parameters embedded in the message). When the
+   * limit is exceeded, the least-recently-logged key is evicted.
+   * Default: 500.
+   */
+  maxTrackedKeys?: number;
 }
 
 export interface ErrorSummary {
@@ -26,7 +35,7 @@ export interface ErrorSummary {
 }
 
 export function summarizeError(err: unknown, maxLength = 500): ErrorSummary {
-  if (!err) return { message: "Unknown error" };
+  if (err === null || err === undefined) return { message: "Unknown error" };
   let rawMessage = "";
   let code: string | undefined;
 
@@ -57,13 +66,28 @@ export function summarizeError(err: unknown, maxLength = 500): ErrorSummary {
 export class ErrorThrottler {
   private minIntervalMs: number;
   private maxErrorMessageLength: number;
+  private maxTrackedKeys: number;
   private clock: () => number;
+  // Iteration order doubles as recency order: entries are deleted and
+  // re-inserted whenever they're touched, so the first key is always the
+  // least-recently-active one (see touch()).
   private state = new Map<string, { lastLoggedAt: number; suppressedCount: number }>();
 
   constructor(options: ErrorThrottlerOptions = {}) {
     this.minIntervalMs = options.minIntervalMs ?? 5 * 60 * 1000;
     this.maxErrorMessageLength = options.maxErrorMessageLength ?? 500;
+    this.maxTrackedKeys = Math.max(1, options.maxTrackedKeys ?? 500);
     this.clock = options.clock ?? Date.now;
+  }
+
+  private touch(key: string, entry: { lastLoggedAt: number; suppressedCount: number }): void {
+    this.state.delete(key);
+    this.state.set(key, entry);
+    while (this.state.size > this.maxTrackedKeys) {
+      const oldestKey = this.state.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.state.delete(oldestKey);
+    }
   }
 
   logError(
@@ -78,7 +102,7 @@ export class ErrorThrottler {
     const entry = this.state.get(key);
 
     if (!entry) {
-      this.state.set(key, { lastLoggedAt: now, suppressedCount: 0 });
+      this.touch(key, { lastLoggedAt: now, suppressedCount: 0 });
       logger.error({ err, ...extraFields }, contextMessage);
       return;
     }
@@ -86,12 +110,14 @@ export class ErrorThrottler {
     const elapsed = now - entry.lastLoggedAt;
     if (elapsed < this.minIntervalMs) {
       entry.suppressedCount += 1;
+      this.touch(key, entry);
       return;
     }
 
     const suppressed = entry.suppressedCount;
     entry.suppressedCount = 0;
     entry.lastLoggedAt = now;
+    this.touch(key, entry);
 
     if (suppressed > 0) {
       logger.error(
@@ -116,4 +142,26 @@ export class ErrorThrottler {
 
 export function createErrorThrottler(options?: ErrorThrottlerOptions): ErrorThrottler {
   return new ErrorThrottler(options);
+}
+
+export interface BackoffOptions {
+  /** Delay used when there are no consecutive failures. */
+  baseIntervalMs: number;
+  /** Upper bound on the computed delay, regardless of failure streak. */
+  maxIntervalMs: number;
+  /** Consecutive-failure count at which the backoff multiplier stops growing. Default: 4. */
+  maxBackoffSteps?: number;
+}
+
+/**
+ * Computes an exponential backoff delay (doubling per consecutive failure,
+ * capped at `maxBackoffSteps` doublings and `maxIntervalMs` overall).
+ * Pulled out as a pure function so scheduling call sites and tests share the
+ * exact same formula instead of a copy that can silently drift.
+ */
+export function computeBackoffDelayMs(consecutiveFailures: number, options: BackoffOptions): number {
+  const maxBackoffSteps = options.maxBackoffSteps ?? 4;
+  const clampedFailures = Math.min(Math.max(consecutiveFailures, 0), maxBackoffSteps);
+  const backoffFactor = Math.pow(2, clampedFailures);
+  return Math.min(options.maxIntervalMs, options.baseIntervalMs * backoffFactor);
 }

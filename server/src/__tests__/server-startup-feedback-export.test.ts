@@ -475,13 +475,21 @@ describe("startServer feedback export wiring", () => {
       suppressed: true,
       reason: "worktree_instance",
     });
+    // The heartbeat scheduler now drives its loop with a self-rescheduling
+    // setTimeout (see server/src/index.ts's startHeartbeatSchedulerInterval)
+    // rather than setInterval, so the first tick is captured by matching the
+    // configured base interval rather than relying on "the last setTimeout
+    // call wins", which would be fragile against unrelated timers elsewhere
+    // in startup.
     let intervalCallback: (() => void) | null = null;
-    const setIntervalSpy = vi
-      .spyOn(globalThis, "setInterval")
-      .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
-        return 1 as unknown as ReturnType<typeof setInterval>;
-      }) as typeof setInterval);
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((callback: () => void, ms?: number) => {
+        if (ms === 30000) {
+          intervalCallback = callback;
+        }
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout);
 
     try {
       await startServer();
@@ -502,7 +510,7 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
     } finally {
-      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
     }
   });
 
@@ -511,13 +519,17 @@ describe("startServer feedback export wiring", () => {
       heartbeatSchedulerEnabled: false,
       heartbeatSchedulerIntervalMs: 30000,
     }));
+    // See the equivalent comment in the "heartbeat scheduling is suppressed"
+    // test above: the scheduler loop now uses setTimeout, matched by delay.
     let intervalCallback: (() => void) | null = null;
-    const setIntervalSpy = vi
-      .spyOn(globalThis, "setInterval")
-      .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
-        return 1 as unknown as ReturnType<typeof setInterval>;
-      }) as typeof setInterval);
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((callback: () => void, ms?: number) => {
+        if (ms === 30000) {
+          intervalCallback = callback;
+        }
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout);
 
     try {
       await startServer();
@@ -532,7 +544,7 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
     } finally {
-      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
     }
   });
 
