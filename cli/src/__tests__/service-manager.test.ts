@@ -56,12 +56,19 @@ describe("service definition generation", () => {
     expect(() => renderSystemdUnit(input)).toThrow("Systemd service values must not contain line breaks");
   });
 
-  it("generates a launchd agent with keepalive and instance logs", () => {
-    const plist = renderLaunchdPlist({ instanceId: "team-a", shimPath: "/Users/alice/.local/bin/paperclipai", homeDir: "/Users/alice/.paperclip", stdoutPath: "/Users/alice/.paperclip/instances/team-a/logs/service.log", stderrPath: "/Users/alice/.paperclip/instances/team-a/logs/service.err.log" });
+  it("generates a guarded launchd agent with supervisor logs", () => {
+    const plist = renderLaunchdPlist({
+      instanceId: "team-a",
+      shimPath: "/Users/alice/.local/bin/paperclipai",
+      homeDir: "/Users/alice/.paperclip",
+    });
     expect(plist).toContain("ing.paperclip.paperclipai.team-a");
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
-    expect(plist).toContain("<key>KeepAlive</key><true/>");
-    expect(plist).toContain("service.err.log");
+    expect(plist).toContain("<string>_service-run</string>");
+    expect(plist).toContain("<key>SuccessfulExit</key><false/>");
+    expect(plist).toContain("<key>StandardOutPath</key><string>/dev/null</string>");
+    expect(plist).toContain("<key>StandardErrorPath</key><string>/dev/null</string>");
+    expect(plist).not.toContain("service-supervisor.err.log");
   });
 });
 
@@ -122,6 +129,57 @@ describe("service adapter dispatch", () => {
 });
 
 describe("launchd lifecycle", () => {
+  it("reports the child server pid and blocked supervisor message", async () => {
+    const userHome = await temporaryDirectory();
+    const homeDir = path.join(userHome, ".paperclip");
+    const statusPath = path.join(homeDir, "instances", "team-a", "service-supervisor-status.json");
+    const runner: CommandRunner = async (_command, args) => {
+      if (args[0] === "print-disabled") return { stdout: "", stderr: "" };
+      return { stdout: "pid = 41\n", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, homeDir, path.join(userHome, ".local/bin/paperclipai"), userHome);
+    await fs.mkdir(path.dirname(statusPath), { recursive: true });
+    await fs.writeFile(statusPath, JSON.stringify({ state: "running", childPid: 42, message: "Child is healthy." }));
+
+    await expect(manager.status()).resolves.toMatchObject({
+      active: true,
+      pid: 42,
+      supervisorPid: 41,
+      detail: "Child is healthy.",
+    });
+
+    await fs.writeFile(statusPath, JSON.stringify({ state: "blocked", message: "Startup refused for low disk." }));
+    await expect(manager.status()).resolves.toMatchObject({
+      active: true,
+      pid: null,
+      supervisorPid: 41,
+      detail: "Startup refused for low disk.",
+    });
+  });
+
+  it("restarts through a forwarded signal instead of killing the supervisor", async () => {
+    const userHome = await temporaryDirectory();
+    const homeDir = path.join(userHome, ".paperclip");
+    const statusPath = path.join(homeDir, "instances", "team-a", "service-supervisor-status.json");
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args[0] === "print-disabled") return { stdout: "", stderr: "" };
+      if (args[0] === "kill") {
+        await fs.writeFile(statusPath, JSON.stringify({ state: "running", childPid: 43, message: "Replacement is running." }));
+      }
+      return { stdout: "pid = 41\n", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, homeDir, path.join(userHome, ".local/bin/paperclipai"), userHome);
+    await fs.mkdir(path.dirname(statusPath), { recursive: true });
+    await fs.writeFile(statusPath, JSON.stringify({ state: "running", childPid: 42, message: "Original is running." }));
+
+    await manager.restart();
+
+    expect(calls).toContain(`launchctl kill SIGTERM gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
+    expect(calls.some((call) => call.includes("kickstart -k"))).toBe(false);
+  });
+
   it("starts without changing the saved login preference", async () => {
     const userHome = await temporaryDirectory();
     const calls: string[] = [];

@@ -46,6 +46,9 @@ import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
+import { runLaunchdServiceSupervisor } from "./services/launchd-service-supervisor.js";
+import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "./config/home.js";
+import { resolveServiceShimPath } from "./services/service-manager.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
@@ -173,6 +176,18 @@ const run = program
 
 registerRunCommands(run);
 registerServiceCommands(program);
+
+program
+  .command("_service-run", { hidden: true })
+  .requiredOption("-i, --instance <id>", "Local instance id")
+  .action(async (opts) => {
+    const instanceId = resolvePaperclipInstanceId(opts.instance);
+    process.exitCode = await runLaunchdServiceSupervisor({
+      instanceId,
+      homeDir: resolvePaperclipHomeDir(),
+      shimPath: resolveServiceShimPath(),
+    });
+  });
 
 const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
 

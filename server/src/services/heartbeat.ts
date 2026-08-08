@@ -18696,6 +18696,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       limit?: number,
       options: { summary?: boolean } = {},
     ) => {
+      const boundedLimit = Math.max(1, Math.min(1_000, limit ?? 200));
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
       const query = db
@@ -18725,7 +18726,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const rows = await query.limit(boundedLimit);
       return rows.map((row) => {
         const {
           contextIssueId,

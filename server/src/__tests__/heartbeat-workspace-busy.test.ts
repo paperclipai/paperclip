@@ -176,6 +176,24 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     return await heartbeat.getRun(runId);
   }
 
+  async function waitForScheduledRetry(runId: string) {
+    let retryRun: typeof heartbeatRuns.$inferSelect | null = null;
+    await expect
+      .poll(
+        async () => {
+          retryRun = await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, runId))
+            .then((rows) => rows[0] ?? null);
+          return retryRun?.status;
+        },
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("scheduled_retry");
+    return retryRun!;
+  }
+
   interface WorkspaceFixture {
     companyId: string;
     projectId: string;
@@ -491,11 +509,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     // The deferred run's adapter never executed — the whole point of the gate.
     expect(executedRunIds).not.toContain(run!.id);
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForScheduledRetry(run!.id);
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryAttempt: 1,
@@ -560,12 +574,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
-    expect(retryRun?.status).toBe("scheduled_retry");
+    const retryRun = await waitForScheduledRetry(run!.id);
 
     // Holder finishes; the due retry promotes, queues, and executes.
     await db
@@ -606,11 +615,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).not.toContain(run!.id);
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
+    const retryRun = await waitForScheduledRetry(run!.id);
     expect(retryRun).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
@@ -658,12 +663,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");
 
-    const retryRun = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows[0] ?? null);
-    expect(retryRun?.status).toBe("scheduled_retry");
+    const retryRun = await waitForScheduledRetry(run!.id);
     expect(
       (retryRun?.contextSnapshot as Record<string, unknown> | null)?.workspaceBusyDeferredWhileAssignee,
     ).toBe(true);
@@ -849,11 +849,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).not.toContain(retryRunId);
 
-    const nextRetry = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, retryRunId))
-      .then((rows) => rows[0] ?? null);
+    const nextRetry = await waitForScheduledRetry(retryRunId);
     expect(nextRetry).toMatchObject({
       status: "scheduled_retry",
       scheduledRetryAttempt: priorAttempts + 1,

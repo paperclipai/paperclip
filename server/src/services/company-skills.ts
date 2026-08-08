@@ -4852,7 +4852,8 @@ export function companySkillService(db: Db) {
         path: entryPath,
         kind: entry.isDirectory() ? "directory" : "file",
         isSkill: entry.isDirectory()
-          ? Boolean((await statPath(path.join(targetPath, entry.name, "SKILL.md")))?.isFile())
+          ? (await fs.readdir(path.join(targetPath, entry.name), { withFileTypes: true }).catch(() => []))
+              .some((child) => child.name === "SKILL.md" && child.isFile())
           : entry.name === "SKILL.md",
       });
     }

@@ -224,6 +224,49 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
+  it("defaults to 200 rows and projects oversized result json before transfer", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values(Array.from({ length: 205 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+      resultJson: index === 204
+        ? { summary: "bounded", stdout: "x".repeat(1_000_000), nested: { payload: "y".repeat(1_000_000) } }
+        : { summary: `run-${index}` },
+    })));
+
+    const runs = await heartbeatService(db).list(companyId, agentId);
+
+    expect(runs).toHaveLength(200);
+    expect(runs[0]?.resultJson).toEqual({ summary: "bounded" });
+    expect(JSON.stringify(runs[0])).not.toContain("nested");
+    expect(JSON.stringify(runs[0]).length).toBeLessThan(5_000);
+  });
+
   it("bounds oversized legacy result json payloads on getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

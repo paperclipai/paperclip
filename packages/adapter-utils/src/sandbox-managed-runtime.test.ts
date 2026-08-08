@@ -1912,7 +1912,11 @@ describe("sandbox managed runtime", () => {
   });
 
   it("keeps the sandbox runtime core free of Codex-specific string literals", async () => {
-    const coreSource = await readFile(new URL("./sandbox-managed-runtime.ts", import.meta.url), "utf8");
+    const coreSourceUrl = new URL(
+      import.meta.url.endsWith(".js") ? "../src/sandbox-managed-runtime.ts" : "./sandbox-managed-runtime.ts",
+      import.meta.url,
+    );
+    const coreSource = await readFile(coreSourceUrl, "utf8");
     // The seam must be generic: no adapter (Codex) knowledge may live in the core.
     expect(coreSource).not.toMatch(/codex/i);
     expect(coreSource).not.toMatch(/auth\.json/i);

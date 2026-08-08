@@ -2578,3 +2578,66 @@ describe("appendWithByteCap", () => {
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
   });
 });
+
+describe("runChildProcess output streaming", () => {
+  it("backpressures a fast child while asynchronous log persistence is pending", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-output-backpressure-"));
+    const completionMarker = path.join(directory, "child-finished");
+    const chunkBytes = 64 * 1024;
+    const chunkCount = 256;
+    const totalBytes = chunkBytes * chunkCount;
+    let persistedBytes = 0;
+    let childFinishedBeforeHalfWasPersisted = false;
+
+    const childScript = `
+      const fs = require("node:fs");
+      const marker = process.argv[1];
+      const chunk = Buffer.alloc(${chunkBytes}, 120);
+      let remaining = ${chunkCount};
+      function write() {
+        while (remaining > 0) {
+          remaining -= 1;
+          if (!process.stdout.write(chunk)) {
+            process.stdout.once("drain", write);
+            return;
+          }
+        }
+        fs.writeFileSync(marker, "done");
+      }
+      write();
+    `;
+
+    try {
+      const result = await runChildProcess(
+        "backpressure-test",
+        process.execPath,
+        ["-e", childScript, completionMarker],
+        {
+          cwd: directory,
+          env: {},
+          timeoutSec: 30,
+          graceSec: 1,
+          onLog: async (stream, chunk) => {
+            if (stream !== "stdout") return;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            persistedBytes += Buffer.byteLength(chunk, "utf8");
+            if (persistedBytes < totalBytes / 2) {
+              const childFinished = await fs
+                .access(completionMarker)
+                .then(() => true)
+                .catch(() => false);
+              childFinishedBeforeHalfWasPersisted ||= childFinished;
+            }
+          },
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(persistedBytes).toBe(totalBytes);
+      expect(childFinishedBeforeHalfWasPersisted).toBe(false);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});
