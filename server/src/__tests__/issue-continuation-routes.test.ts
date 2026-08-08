@@ -4,6 +4,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -71,5 +72,18 @@ describeEmbedded("issue continuations", () => {
       eq(issueContinuationLinks.companyId, company!.id), eq(issueContinuationLinks.predecessorIssueId, predecessor!.id),
     ));
     expect(links).toHaveLength(1);
+    const assignmentWakes = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, company!.id),
+      eq(agentWakeupRequests.agentId, successorOwner!.id),
+      eq(agentWakeupRequests.reason, "issue_assigned"),
+    ));
+    expect(assignmentWakes).toHaveLength(1);
+    expect(assignmentWakes[0]).toMatchObject({
+      source: "assignment",
+      payload: expect.objectContaining({
+        issueId: created.body.successor.id,
+        mutation: "continuation.create",
+      }),
+    });
   });
 });

@@ -7838,6 +7838,15 @@ export function issueRoutes(
             continuationFingerprint: result.link.continuationFingerprint,
           },
         });
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: result.successor,
+          reason: "issue_assigned",
+          mutation: "continuation.create",
+          contextSource: "issue.continuation_create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
       }
       res.status(result.deduplicated ? 200 : 201).json({ ...result, status: result.deduplicated ? "deduplicated" : "created" });
     } catch (error) {
