@@ -43,6 +43,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { ISSUE_EXECUTION_LOCK_TTL_MS, TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
   applyIssueMonitorPolicyTransition,
+  activeTypedIssueMonitorDeadline,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
@@ -942,7 +943,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasPersistedDurableWaitPath(issue: typeof issues.$inferSelect) {
-    if (issue.monitorNextCheckAt) return true;
+    if (activeTypedIssueMonitorDeadline(issue)) return true;
 
     return db
       .select({ id: issueRelations.issueId })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyIssueGraphLiveness } from "../services/issue-liveness.ts";
+import { hasScheduledIssueMonitorPath } from "../services/recovery/issue-graph-liveness.ts";
 
 const companyId = "company-1";
 const managerId = "manager-1";
@@ -46,6 +47,43 @@ const manager = agent({
 const blocks = [{ companyId, blockerIssueId: blockerId, blockedIssueId: blockedId }];
 
 describe("issue graph liveness classifier", () => {
+  it("counts only validated future typed review monitors, never a raw lock-reaper timestamp", () => {
+    const now = new Date("2026-08-08T03:15:00.000Z");
+    const future = new Date("2026-08-08T03:20:00.000Z").toISOString();
+    const expired = new Date("2026-08-08T03:10:00.000Z").toISOString();
+    const executionState = (monitor: Record<string, unknown>) => ({
+      status: "idle",
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: null,
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor,
+      changesRequestedCount: 0,
+    });
+
+    const scheduled = executionState({
+      status: "scheduled", nextCheckAt: future, lastTriggeredAt: null, attemptCount: 0,
+      notes: null, scheduledBy: "assignee", kind: null, serviceName: null, externalRef: null,
+      timeoutAt: null, maxAttempts: null, recoveryPolicy: null, clearedAt: null, clearReason: null,
+    });
+    const triggered = { ...scheduled, monitor: { ...scheduled.monitor, status: "triggered", nextCheckAt: null, lastTriggeredAt: expired } };
+    const cleared = { ...scheduled, monitor: { ...scheduled.monitor, status: "cleared", nextCheckAt: null, clearedAt: expired, clearReason: "manual" } };
+    const expiredState = { ...scheduled, monitor: { ...scheduled.monitor, timeoutAt: expired } };
+    const exhaustedState = { ...scheduled, monitor: { ...scheduled.monitor, maxAttempts: 1, attemptCount: 1 } };
+    const invalid = { ...scheduled, monitor: { ...scheduled.monitor, nextCheckAt: "not-a-date" } };
+
+    expect(hasScheduledIssueMonitorPath(issue({ status: "in_review", monitorNextCheckAt: future }), now)).toBe(false);
+    expect(hasScheduledIssueMonitorPath(issue({ status: "in_review", monitorNextCheckAt: future, executionState: scheduled }), now)).toBe(true);
+    for (const state of [triggered, cleared, expiredState, exhaustedState, invalid]) {
+      expect(hasScheduledIssueMonitorPath(issue({ status: "in_review", monitorNextCheckAt: future, executionState: state }), now)).toBe(false);
+    }
+  });
+
   it("detects a PAP-1703-style blocked chain with an unassigned blocker and stable incident key", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

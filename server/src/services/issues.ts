@@ -86,7 +86,7 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { activeTypedIssueMonitorDeadline, buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -783,25 +783,18 @@ function issueExecutionLockMonitorNextCheckAt(now: Date) {
 export function executionLockAcquisitionFields(
   runId: string,
   now: Date,
-  options: { scheduleMonitor?: boolean } = {},
+  activeReviewMonitorDeadline: Date | null = null,
 ) {
-  const monitorFields = options.scheduleMonitor
-    ? {
-        monitorNextCheckAt: sql<Date | null>`case
-          when ${issues.monitorNextCheckAt} is null
-            and ${issues.monitorLastTriggeredAt} is null
-            and ${issues.monitorAttemptCount} = 0
-          then ${issueExecutionLockMonitorNextCheckAt(now).toISOString()}::timestamptz
-          else ${issues.monitorNextCheckAt}
-        end`,
-        monitorWakeRequestedAt: null,
-      }
-    : {};
+  const lockDeadline = issueExecutionLockMonitorNextCheckAt(now);
+  const monitorNextCheckAt = activeReviewMonitorDeadline && activeReviewMonitorDeadline.getTime() < lockDeadline.getTime()
+    ? activeReviewMonitorDeadline
+    : lockDeadline;
 
   return {
     executionRunId: runId,
     executionLockedAt: now,
-    ...monitorFields,
+    monitorNextCheckAt,
+    monitorWakeRequestedAt: null,
   };
 }
 
@@ -5111,7 +5104,6 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
-    scheduleMonitor: boolean;
   }) {
     return db.transaction(async (tx) => {
       const lockedIssue = await tx
@@ -5121,6 +5113,8 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, input.issueId))
@@ -5169,7 +5163,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          ...executionLockAcquisitionFields(input.actorRunId, now, { scheduleMonitor: input.scheduleMonitor }),
+          ...executionLockAcquisitionFields(input.actorRunId, now, activeTypedIssueMonitorDeadline(lockedIssue, now)),
           updatedAt: now,
         })
         .where(
@@ -5211,7 +5205,6 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
-    scheduleMonitor: boolean;
   }) {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -5225,11 +5218,16 @@ export function issueService(db: Db) {
       if (!actorRun || heartbeatRunIsDead(actorRun)) return null;
 
       const now = new Date();
+      const issue = await tx
+        .select({ executionPolicy: issues.executionPolicy, executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
       const adopted = await tx
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          ...executionLockAcquisitionFields(input.actorRunId, now, { scheduleMonitor: input.scheduleMonitor }),
+          ...executionLockAcquisitionFields(input.actorRunId, now, activeTypedIssueMonitorDeadline(issue ?? {}, now)),
           updatedAt: now,
         })
         .where(
@@ -7992,10 +7990,9 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
-      options: { scheduleMonitor?: boolean } = {},
     ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, executionPolicy: issues.executionPolicy, executionState: issues.executionState })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -8003,7 +8000,7 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
-      const scheduleMonitor = options.scheduleMonitor ?? true;
+      const initialActiveMonitorDeadline = activeTypedIssueMonitorDeadline(issueCompany, now);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
@@ -8053,7 +8050,7 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           ...(checkoutRunId
-            ? executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor })
+            ? executionLockAcquisitionFields(checkoutRunId, now, initialActiveMonitorDeadline)
             : { executionRunId: null }),
           status: "in_progress",
           startedAt: now,
@@ -8082,6 +8079,8 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -8101,7 +8100,7 @@ export function issueService(db: Db) {
           .set({
             checkoutRunId,
             ...(checkoutRunId
-              ? executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor })
+              ? executionLockAcquisitionFields(checkoutRunId, now, activeTypedIssueMonitorDeadline(current, now))
               : { executionRunId: null }),
             updatedAt: new Date(),
           })
@@ -8131,7 +8130,6 @@ export function issueService(db: Db) {
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
-          scheduleMonitor,
         });
         if (staleAdoption.adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
@@ -8156,7 +8154,7 @@ export function issueService(db: Db) {
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
             checkoutRunId,
-            ...executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor }),
+            ...executionLockAcquisitionFields(checkoutRunId, now, activeTypedIssueMonitorDeadline(current, now)),
             executionAgentNameKey: null,
             status: "in_progress",
             updatedAt: now,
@@ -8271,7 +8269,6 @@ export function issueService(db: Db) {
             issueId: id,
             actorAgentId,
             actorRunId: actorRunId!,
-            scheduleMonitor: true,
           });
 
           if (adopted) {
@@ -8298,7 +8295,6 @@ export function issueService(db: Db) {
             actorAgentId,
             actorRunId,
             expectedCheckoutRunId: previousCheckoutRunId,
-            scheduleMonitor: true,
           });
 
           if (staleAdoption.adopted) {
