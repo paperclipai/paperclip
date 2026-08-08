@@ -4,6 +4,7 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import {
+  UNRESOLVED_FAILING_CHECK_RULE,
   asNumber,
   asString,
   parseObject,
@@ -303,6 +304,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
           "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
           "",
         ]),
+    ...(isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
+      ? []
+      : [`Failure-continuation rule: ${UNRESOLVED_FAILING_CHECK_RULE}`, ""]),
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
@@ -322,7 +326,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const paperclipInput = buildInput(ctx, paperclipApiUrl);
+  const templateInput = nonEmpty(payloadTemplate.input);
+  const input = templateInput ? `${templateInput}\n\n${paperclipInput}` : paperclipInput;
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
