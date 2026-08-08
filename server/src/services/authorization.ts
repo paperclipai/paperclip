@@ -538,6 +538,11 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
 export function authorizationService(db: Db) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
+    // Checkout is deliberately available before issue-mutation authorization.
+    // Once this exact run has checked out its context issue, preserve that
+    // run-scoped ownership grant even if its responsible user is unavailable.
+    // Requiring all three persisted bindings keeps the carve-out from applying
+    // to another issue merely because it has the same assignee.
     if (
       await db
         .select({ id: instanceUserRoles.id })
@@ -2228,6 +2233,30 @@ export function authorizationService(db: Db) {
       !agentDecision.allowed
     ) {
       return agentDecision;
+    }
+
+    if (
+      agentDecision.reason === "allow_self" &&
+      (input.action === "issue:comment" || input.action === "issue:mutate") &&
+      input.resource.type === "issue" &&
+      input.resource.issueId &&
+      input.actor.agentId &&
+      input.actor.runId
+    ) {
+      const runIssueId = await loadRunIssueId(
+        input.actor.runId,
+        input.resource.companyId,
+        input.actor.agentId,
+      );
+      if (runIssueId === input.resource.issueId) {
+        const runIssue = await loadIssue(runIssueId);
+        if (
+          runIssue?.assigneeAgentId === input.actor.agentId &&
+          runIssue.checkoutRunId === input.actor.runId
+        ) {
+          return agentDecision;
+        }
+      }
     }
 
     const companyId = companyIdForResource(input.resource);
