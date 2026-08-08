@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  list: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -43,6 +44,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
 }));
 
 function registerModuleMocks() {
@@ -94,6 +98,7 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({
@@ -106,6 +111,9 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueThreadInteractionService: () => ({
+      cancelPendingForTerminalIssue: vi.fn(async () => []),
     }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
@@ -182,6 +190,7 @@ describe("issue activity event routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -208,6 +217,7 @@ describe("issue activity event routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueThreadInteractionService.cancelPendingForTerminalIssue.mockResolvedValue([]);
   });
 
   it("logs blocker activity with added and removed issue summaries", async () => {
