@@ -79,6 +79,16 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Code,
     recommended: true,
   },
+  eve_local: {
+    label: "Eve",
+    description: "Vercel Eve agent run from a local project",
+    icon: Bot,
+  },
+  eve_gateway: {
+    label: "Eve Gateway",
+    description: "Remote Vercel Eve agent over HTTP",
+    icon: Bot,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",
