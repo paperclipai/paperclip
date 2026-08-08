@@ -77,6 +77,100 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("detects blocked issues with no blocker edge as recovery-owned work", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          identifier: "REA-4459",
+          title: "Blocked by stale recovery state",
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      identifier: "REA-4459",
+      state: "blocked_without_blocker_edge",
+      recoveryIssueId: blockedId,
+      recommendedOwnerAgentId: coderId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId, status: "blocked" }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_without_blocker_edge:${blockedId}`,
+    });
+  });
+
+  it("detects nested blocked blockers with no blocker edge", () => {
+    const parentId = "parent-1";
+    const nestedBlockedId = "nested-blocked-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: parentId,
+          identifier: "REA-4458",
+          title: "Parent blocked by stale blocker",
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+        issue({
+          id: nestedBlockedId,
+          identifier: "REA-4459",
+          title: "Blocked stale recovery state",
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: nestedBlockedId, blockedIssueId: parentId }],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: parentId,
+      identifier: "REA-4458",
+      state: "blocked_without_blocker_edge",
+      recoveryIssueId: nestedBlockedId,
+      recommendedOwnerAgentId: coderId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: parentId, status: "blocked" }),
+        expect.objectContaining({ issueId: nestedBlockedId, status: "blocked" }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${parentId}:blocked_without_blocker_edge:${nestedBlockedId}`,
+    });
+  });
+
+  it("does not flag a blocked issue without blocker edge when an explicit waiting path exists", () => {
+    const baseInput = {
+      issues: [
+        issue({
+          status: "blocked",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      activeRuns: [{ companyId, issueId: blockedId, agentId: coderId, status: "running" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      queuedWakeRequests: [{ companyId, issueId: blockedId, agentId: coderId, status: "queued" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      openRecoveryIssues: [{ companyId, issueId: blockedId, status: "todo" }],
+    })).toEqual([]);
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";
@@ -255,6 +349,7 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Paused", status: "paused" })],
     });
     expect(cancelled[0]?.state).toBe("blocked_by_cancelled_issue");
+    expect(cancelled.some((finding) => finding.state === "blocked_without_blocker_edge")).toBe(false);
 
     const paused = classifyIssueGraphLiveness({
       issues: [
