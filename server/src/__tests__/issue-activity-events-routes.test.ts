@@ -22,6 +22,7 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(async () => false),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
+  cancelStaleQueuedRunsForIssue: vi.fn(async () => []),
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
