@@ -5,6 +5,7 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  ChevronRight,
   ExternalLink,
   Loader2,
   MinusCircle,
@@ -18,6 +19,7 @@ import type {
   DecisionTargetSnapshot,
 } from "../api/decisions";
 import { cn } from "../lib/utils";
+import { buildActionCardLanguage, isActionCardTechnicalText } from "../lib/action-card-language";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
@@ -100,38 +102,6 @@ function cancelTreeEffect(option: DecisionOption): Extract<DecisionEffect, { typ
     | null;
 }
 
-/** One-line feed-forward preview of what an effect will do, before you commit. */
-function effectSummary(
-  effect: DecisionEffect,
-  resolve: (id: string) => DecisionIssueRef | null,
-  snapshots: Record<string, DecisionTargetSnapshot>,
-): string {
-  const target = issueLabel(resolve(effect.targetIssueId), effect.targetIssueId);
-  switch (effect.type) {
-    case "comment_on_issue":
-      return `Comment on ${target}`;
-    case "create_issue": {
-      const parent = effect.draft.parentId
-        ? issueLabel(resolve(effect.draft.parentId), effect.draft.parentId)
-        : target;
-      return `Create issue “${effect.draft.title}” under ${parent}`;
-    }
-    case "update_issue_status":
-      return `Set ${target} to ${humanStatus(effect.status)}`;
-    case "assign_issue":
-      return `Reassign ${target}`;
-    case "resolve_blocker":
-      return `Unblock ${target} — remove ${pluralize(effect.removeBlockedByIssueIds.length, "blocker")}`;
-    case "cancel_issue_tree": {
-      const snapshot = snapshots[effect.targetIssueId];
-      const descendantCount = snapshot?.descendantCount ?? snapshot?.descendantIds?.length ?? snapshot?.childCount ?? 0;
-      return `Cancel ${target} and its sub-tree (${pluralize(descendantCount + 1, "issue")})`;
-    }
-    default:
-      return "Apply effect";
-  }
-}
-
 const FAILURE_CAUSE: Record<string, string> = {
   deny_decision_intersection: "blocked by the permission boundary (fail-closed)",
   invalid_effect_reference: "a referenced issue no longer exists",
@@ -192,6 +162,42 @@ function executionRow(
     default:
       return { key: execution.id, status: "executed", summary: `Applied effect on ${target}`, link: targetRef };
   }
+}
+
+function DecisionLanguageSummary({ decision }: { decision: Decision }) {
+  const language = buildActionCardLanguage({
+    family: "request_confirmation",
+    prompt: decision.title,
+    primaryLabel: decision.options[0]?.label,
+    safetyFacts: decision.options.some((option) => isDestructiveOption(option))
+      ? ["This action can permanently change or cancel work."]
+      : [],
+    technicalDetails: decision.options.flatMap((option) => [
+      option.id,
+      ...option.effects.flatMap((effect) => [effect.type, effect.targetIssueId]),
+    ]),
+  });
+
+  return (
+    <div className="mt-3 space-y-2" data-action-card-language="true">
+      <p className="text-base font-semibold leading-6 text-foreground">{language.decision}</p>
+      <p className="text-sm leading-6 text-muted-foreground">
+        {language.consequence} {language.nonEffect}
+      </p>
+      {language.safetyFacts.map((fact) => <p key={fact} className="text-sm leading-6 text-foreground">{fact}</p>)}
+      <details className="group">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+          <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+          Technical details
+        </summary>
+        <div className="space-y-1 pt-2" data-action-card-technical-details="true">
+          {language.technicalDetails.map((detail) => (
+            <div key={detail} className="font-mono text-(length:--text-compact) text-muted-foreground">{detail}</div>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
 }
 
 // --- shell / badge palette (matches IssueThreadInteractionCard) --------------
@@ -325,6 +331,7 @@ export function DecisionCard({
     >
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
+        <DecisionLanguageSummary decision={decision} />
         <h3 className="min-w-0 flex-1 text-base font-semibold text-foreground">{decision.title}</h3>
         <div className="flex shrink-0 items-center gap-1.5">
           {open && hasCancelTree && (
@@ -423,6 +430,9 @@ export function DecisionCard({
             const disabled = busy || requiredUnmet || blockedStale;
             const cancelTree = cancelTreeEffect(option);
             const confirming = confirmOptionId === option.id;
+            const visibleOptionLabel = isActionCardTechnicalText(option.label)
+              ? buildActionCardLanguage({ family: "request_confirmation", primaryLabel: option.label }).primaryAction
+              : option.label;
             const previewRows = cancelTree && cancelTreePreview ? cancelTreePreview(cancelTree.targetIssueId) : null;
             const confirmRef = cancelTree ? resolveIssue(cancelTree.targetIssueId) : null;
             const confirmToken = confirmRef?.identifier ?? confirmRef?.id ?? cancelTree?.targetIssueId ?? "";
@@ -442,7 +452,7 @@ export function DecisionCard({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className={cn("text-sm font-medium", destructive && "text-rose-700 dark:text-rose-300")}>
-                      {option.label}
+                      {visibleOptionLabel}
                     </span>
                     {blockedStale && (
                       <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">
@@ -450,24 +460,18 @@ export function DecisionCard({
                       </span>
                     )}
                   </div>
-                  {option.description && (
+                  {option.description && !isActionCardTechnicalText(option.description) && (
                     <div className="mt-1 text-sm leading-6 text-muted-foreground">{option.description}</div>
                   )}
                   {option.effects.length > 0 && (
-                    <ul className="mt-2 space-y-0.5">
-                      {option.effects.map((effect, index) => (
-                        <li
-                          key={index}
-                          className={cn(
-                            "flex items-start gap-1.5 text-xs",
-                            effect.type === "cancel_issue_tree" ? "text-rose-700 dark:text-rose-300" : "text-muted-foreground",
-                          )}
-                        >
-                          <ArrowRight className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
-                          {effectSummary(effect, resolveIssue, snapshots)}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className={cn(
+                      "mt-2 text-xs",
+                      destructive ? "text-rose-700 dark:text-rose-300" : "text-muted-foreground",
+                    )}>
+                      {destructive
+                        ? "This option will cancel the selected work and its sub-tasks."
+                        : "This option applies the proposed change."}
+                    </div>
                   )}
                 </button>
 

@@ -30,6 +30,33 @@ describe("ApprovalPayloadRenderer", () => {
     container.remove();
   });
 
+  it("leads a technical board approval with the outcome and keeps raw metadata collapsed", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{
+            title: "POST /api/comments with runId=abc123",
+            summary: "The connector returned error_code=permission_denied.",
+            recommendedAction: "approve_effect_0",
+            nextActionOnApproval: "POST the external comment",
+            risks: ["This sends information outside the company."],
+          }}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-action-card-language="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Approve and continue");
+    expect(container.textContent).toContain("This sends information outside the company.");
+    expect(container.textContent).toContain("Technical details");
+    expect(container.textContent).not.toContain("error_code=permission_denied");
+
+    act(() => root.unmount());
+  });
+
   it("renders request_board_approval payload fields without falling back to raw JSON", () => {
     const root = createRoot(container);
 

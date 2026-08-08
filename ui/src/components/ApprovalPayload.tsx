@@ -1,5 +1,7 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import { buildActionCardLanguage, isActionCardTechnicalText } from "../lib/action-card-language";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -173,33 +175,69 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   const recommendedAction = firstNonEmptyString(payload.recommendedAction);
   const nextActionOnApproval = firstNonEmptyString(payload.nextActionOnApproval);
   const proposedComment = firstNonEmptyString(payload.proposedComment);
+  const language = buildActionCardLanguage({
+    family: "request_confirmation",
+    prompt: title,
+    consequence: nextActionOnApproval,
+    primaryLabel: recommendedAction,
+    safetyFacts: risks,
+    technicalDetails: [title, summary, recommendedAction, nextActionOnApproval].filter(
+      (value): value is string => Boolean(value && isActionCardTechnicalText(value)),
+    ),
+  });
+  const visibleTitle = title && !isActionCardTechnicalText(title) ? title : null;
+  const visibleSummary = summary && !isActionCardTechnicalText(summary) ? summary : null;
+  const visibleRecommendedAction = recommendedAction && !isActionCardTechnicalText(recommendedAction)
+    ? recommendedAction
+    : null;
+  const visibleNextAction = nextActionOnApproval && !isActionCardTechnicalText(nextActionOnApproval)
+    ? nextActionOnApproval
+    : null;
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
-      {title && (
+      <div className="space-y-2" data-action-card-language="true">
+        <p className="text-base font-semibold leading-6 text-foreground">{language.decision}</p>
+        <p className="text-sm leading-6 text-muted-foreground">
+          {language.consequence} {language.nonEffect}
+        </p>
+        <p className="text-sm font-medium text-foreground">Decision: {language.primaryAction}</p>
+        {language.safetyFacts.map((fact) => <p key={fact} className="text-sm leading-6 text-foreground">{fact}</p>)}
+        {language.technicalDetails.length > 0 ? (
+          <Collapsible>
+            <CollapsibleTrigger className="cursor-pointer text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-label) text-muted-foreground">
+              Technical details
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-1 pt-2" data-action-card-technical-details="true">
+              {language.technicalDetails.map((detail) => <div key={detail} className="font-mono text-(length:--text-compact) text-muted-foreground">{detail}</div>)}
+            </CollapsibleContent>
+          </Collapsible>
+        ) : null}
+      </div>
+      {visibleTitle && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Title</p>
-          <p className="font-medium leading-6 text-foreground">{title}</p>
+          <p className="font-medium leading-6 text-foreground">{visibleTitle}</p>
         </div>
       )}
-      {summary && (
+      {visibleSummary && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <p className="leading-6 text-foreground/90">{visibleSummary}</p>
         </div>
       )}
-      {recommendedAction && (
+      {visibleRecommendedAction && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
+          <p className="mt-1 leading-6 text-foreground">{visibleRecommendedAction}</p>
         </div>
       )}
-      {nextActionOnApproval && (
+      {visibleNextAction && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
+          <p className="mt-1 leading-6 text-foreground">{visibleNextAction}</p>
         </div>
       )}
       {risks.length > 0 && (

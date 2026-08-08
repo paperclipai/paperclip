@@ -12,6 +12,25 @@ Agents and humans modifying `ui/` treat this file as the source of truth for des
 
 Paperclip is an operational control plane: org charts, tasks, heartbeat runs, budgets, approvals, audit logs. The user is an operator scanning state and making decisions. Every screen should answer, in order: *what is happening, does it need me, what do I do about it.* Density in service of scanning beats whitespace in service of aesthetics — but density comes from information, never from chrome.
 
+## Board action-card content hierarchy
+
+Every board action card uses the same content order, regardless of whether it
+appears in a task thread, decision feed, approval, attention row, or task-chat
+wrapper:
+
+1. Say what the board must decide or do.
+2. Explain what agreeing does and does not do.
+3. Keep safety-critical facts visible, including cost, deletion, external
+   writes, access, privacy, and irreversible consequences.
+4. Name controls by their outcome (for example, “Approve and continue” or
+   “Request changes”).
+5. Put IDs, API/tool names, paths, raw errors, and effect metadata behind a
+   collapsed **Technical details** disclosure.
+
+This is a content rule, not a new visual treatment. Existing authority,
+effects, callbacks, governance gates, statuses, and mutation behavior remain
+unchanged.
+
 ## The token layer (where visual values live)
 
 The single token source is **`ui/src/index.css`** (Tailwind v4; there is no tailwind config file — tokens are CSS custom properties consumed via `@theme`). Do NOT create a parallel token source such as `ui/src/tokens/` — that would produce two sources of truth. If index.css grows unwieldy, extracted values may live in a `tokens.css` **imported by index.css** so the pipeline still has one root.

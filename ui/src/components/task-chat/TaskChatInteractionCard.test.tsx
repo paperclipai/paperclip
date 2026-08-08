@@ -75,6 +75,31 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).toContain("Approve the plan");
   });
 
+  it("keeps the board action hierarchy and technical disclosure in task chat", () => {
+    const technicalInteraction = createRequestConfirmation({
+      payload: {
+        version: 1,
+        prompt: "Approve POST /api/comments for runId=abc123?",
+        acceptLabel: "execute_effect_0",
+        rejectLabel: "reject_request",
+      },
+    });
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(technicalInteraction)} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-action-card-language="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Choose whether to approve this request.");
+    expect(container.textContent).toContain("Agreeing will let the responsible agent continue");
+    expect(container.textContent).toContain("Technical details");
+  });
+
   it("puts the primary CTA on the right via a reversed action row", () => {
     flushSync(() => {
       root.render(

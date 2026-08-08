@@ -4,6 +4,12 @@ import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronR
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
+  buildActionCardLanguage,
+  isActionCardTechnicalText,
+  type ActionCardLanguage,
+  type ActionCardLanguageInput,
+} from "../lib/action-card-language";
+import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
@@ -229,6 +235,121 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
         badge: "border-sky-500/70 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
       };
   }
+}
+
+function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCardLanguageInput {
+  switch (interaction.kind) {
+    case "suggest_tasks":
+      return {
+        family: interaction.kind,
+        technicalDetails: [
+          interaction.payload.defaultParentId ?? "",
+          ...interaction.payload.tasks.flatMap((task) => [
+            task.clientKey,
+            task.parentClientKey ?? "",
+            task.assigneeAgentId ?? "",
+            task.assigneeUserId ?? "",
+            task.projectId ?? "",
+            task.billingCode ?? "",
+          ]),
+        ],
+      };
+    case "ask_user_questions":
+      return {
+        family: interaction.kind,
+        title: interaction.payload.title,
+        technicalDetails: interaction.payload.questions.flatMap((question) => [
+          question.id,
+          ...question.options.map((option) => option.id),
+        ]),
+        submitLabel: interaction.payload.submitLabel,
+      };
+    case "request_confirmation": {
+      const toolAction = interaction.payload.toolAction;
+      return {
+        family: interaction.kind,
+        prompt: toolAction ? null : interaction.payload.prompt,
+        acceptLabel: toolAction ? "Approve & run" : interaction.payload.acceptLabel,
+        rejectLabel: interaction.payload.rejectLabel,
+        safetyFacts: toolAction
+          ? [toolAction.risk === "destructive"
+            ? "This action can permanently change or delete data."
+            : "This action will write or change data."]
+          : [interaction.payload.detailsMarkdown ?? ""],
+        technicalDetails: toolAction
+          ? []
+          : [
+              interaction.payload.target?.revisionId ?? "",
+              interaction.payload.target?.key ?? "",
+              ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
+                ? [interaction.payload.detailsMarkdown]
+                : []),
+            ],
+      };
+    }
+    case "request_checkbox_confirmation":
+      return {
+        family: interaction.kind,
+        prompt: interaction.payload.prompt,
+        acceptLabel: interaction.payload.acceptLabel,
+        rejectLabel: interaction.payload.rejectLabel,
+        safetyFacts: [interaction.payload.prompt, interaction.payload.detailsMarkdown ?? ""],
+        technicalDetails: [
+          ...interaction.payload.options.flatMap((option) => [option.id]),
+          interaction.payload.target?.revisionId ?? "",
+          ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
+            ? [interaction.payload.detailsMarkdown]
+            : []),
+        ],
+      };
+    case "request_item_verdicts":
+      return {
+        family: interaction.kind,
+        prompt: interaction.payload.prompt,
+        safetyFacts: [interaction.payload.detailsMarkdown ?? ""],
+        technicalDetails: [
+          ...interaction.payload.items.flatMap((item) => [
+            item.id,
+            item.href ?? "",
+            item.attachmentId ?? "",
+          ]),
+          interaction.payload.target?.revisionId ?? "",
+          ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
+            ? [interaction.payload.detailsMarkdown]
+            : []),
+        ],
+        primaryLabel: "Apply decisions",
+      };
+  }
+}
+
+function ActionCardLanguageSummary({ language }: { language: ActionCardLanguage }) {
+  return (
+    <div className="mt-3 space-y-2" data-action-card-language="true">
+      <p className="text-base font-semibold leading-6 text-foreground">{language.decision}</p>
+      <p className="text-sm leading-6 text-muted-foreground">
+        {language.consequence} {language.nonEffect}
+      </p>
+      {language.safetyFacts.length > 0 ? (
+        <div className="space-y-1 text-sm leading-6 text-foreground" data-action-card-safety="true">
+          {language.safetyFacts.map((fact) => <p key={fact}>{fact}</p>)}
+        </div>
+      ) : null}
+      {language.technicalDetails.length > 0 ? (
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1.5 rounded-sm py-1 text-left text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+            <ChevronRight className="h-3.5 w-3.5" />
+            Technical details
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-1 pt-2" data-action-card-technical-details="true">
+            {language.technicalDetails.map((detail) => (
+              <div key={detail} className="font-mono text-(length:--text-compact) text-muted-foreground">{detail}</div>
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -757,9 +878,6 @@ function SuggestTasksCard({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
-        {interaction.payload.defaultParentId ? (
-          <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
-        ) : null}
       </div>
 
       <div className="overflow-hidden border border-border/70">
@@ -984,6 +1102,15 @@ function AskUserQuestionsCard({
   );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const language = buildActionCardLanguage({
+    family: "ask_user_questions",
+    title: interaction.payload.title,
+    submitLabel: interaction.payload.submitLabel,
+    technicalDetails: interaction.payload.questions.flatMap((question) => [question.id]),
+  });
+  const submitLabel = isActionCardTechnicalText(interaction.payload.submitLabel)
+    ? language.primaryAction
+    : interaction.payload.submitLabel ?? language.primaryAction;
 
   useEffect(() => {
     setDraftAnswers(
@@ -1209,7 +1336,7 @@ function AskUserQuestionsCard({
                     Submitting...
                   </>
                 ) : (
-                  interaction.payload.submitLabel ?? "Submit answers"
+                  submitLabel
                 )}
               </Button>
             </div>
@@ -1955,6 +2082,19 @@ function RequestConfirmationCard({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const { acceptWithSyncRetry, syncWaiting, syncRetryExhausted } = useSyncGateAccept();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const language = buildActionCardLanguage({
+    family: "request_confirmation",
+    prompt: interaction.payload.prompt,
+    acceptLabel: interaction.payload.acceptLabel,
+    rejectLabel: interaction.payload.rejectLabel,
+    technicalDetails: [interaction.payload.target?.revisionId ?? ""],
+  });
+  const confirmLabel = isActionCardTechnicalText(interaction.payload.acceptLabel)
+    ? language.primaryAction
+    : interaction.payload.acceptLabel ?? "Confirm";
+  const declineLabel = isActionCardTechnicalText(interaction.payload.rejectLabel)
+    ? language.secondaryAction ?? "Request changes"
+    : interaction.payload.rejectLabel ?? "Decline";
   // Screenshots ride along in the decline reason as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
   const allowScreenshots = isPlan && Boolean(onUploadImage);
@@ -2044,9 +2184,11 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
           <div className="text-sm leading-6 text-foreground">
-            {interaction.payload.prompt}
+            {isActionCardTechnicalText(interaction.payload.prompt)
+              ? "Review the proposed action before deciding."
+              : interaction.payload.prompt}
           </div>
-          {interaction.payload.detailsMarkdown ? (
+          {interaction.payload.detailsMarkdown && !isActionCardTechnicalText(interaction.payload.detailsMarkdown) ? (
             <div className="border-t border-border/60 pt-3 text-sm">
               <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
             </div>
@@ -2085,7 +2227,7 @@ function RequestConfirmationCard({
                   Confirming...
                 </>
               ) : (
-                interaction.payload.acceptLabel ?? "Confirm"
+                confirmLabel
               )}
             </Button>
             <Button
@@ -2101,7 +2243,7 @@ function RequestConfirmationCard({
                 setRejecting((current) => !current);
               }}
             >
-              {interaction.payload.rejectLabel ?? "Decline"}
+              {declineLabel}
             </Button>
           </div>
 
@@ -2396,6 +2538,19 @@ function RequestCheckboxConfirmationCard({
   const [acceptAttempted, setAcceptAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const { acceptWithSyncRetry, syncWaiting, syncRetryExhausted } = useSyncGateAccept();
+  const language = buildActionCardLanguage({
+    family: "request_checkbox_confirmation",
+    prompt: interaction.payload.prompt,
+    acceptLabel: interaction.payload.acceptLabel,
+    rejectLabel: interaction.payload.rejectLabel,
+    technicalDetails: interaction.payload.options.map((option) => option.id),
+  });
+  const confirmLabel = isActionCardTechnicalText(interaction.payload.acceptLabel)
+    ? language.primaryAction
+    : interaction.payload.acceptLabel ?? "Confirm selected";
+  const declineLabel = isActionCardTechnicalText(interaction.payload.rejectLabel)
+    ? language.secondaryAction ?? "Request changes"
+    : interaction.payload.rejectLabel ?? "Request changes";
 
   const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
 
@@ -2510,8 +2665,12 @@ function RequestCheckboxConfirmationCard({
   return (
     <div className="space-y-4">
       <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
-        <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
-        {interaction.payload.detailsMarkdown ? (
+        <div className="text-sm leading-6 text-foreground">
+          {isActionCardTechnicalText(interaction.payload.prompt)
+            ? "Choose which items should be included before confirming."
+            : interaction.payload.prompt}
+        </div>
+        {interaction.payload.detailsMarkdown && !isActionCardTechnicalText(interaction.payload.detailsMarkdown) ? (
           <div className="border-t border-border/60 pt-3 text-sm">
             <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
           </div>
@@ -2593,7 +2752,7 @@ function RequestCheckboxConfirmationCard({
                 Confirming...
               </>
             ) : (
-              interaction.payload.acceptLabel ?? "Confirm selected"
+              confirmLabel
             )}
           </Button>
           <Button
@@ -2609,7 +2768,7 @@ function RequestCheckboxConfirmationCard({
               setRejecting((current) => !current);
             }}
           >
-            {interaction.payload.rejectLabel ?? "Request changes"}
+            {declineLabel}
           </Button>
         </div>
 
@@ -2659,7 +2818,7 @@ function RequestCheckboxConfirmationCard({
                     Saving...
                   </>
                 ) : (
-                  interaction.payload.rejectLabel ?? "Request changes"
+                  declineLabel
                 )}
               </Button>
             </div>
@@ -2938,10 +3097,14 @@ function RequestItemVerdictsCard({
       {/* Prompt + details (S1) */}
       <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm leading-6 text-foreground">{payload.prompt}</div>
+        <div className="text-sm leading-6 text-foreground">
+          {isActionCardTechnicalText(payload.prompt)
+            ? "Review each item and choose an outcome."
+            : payload.prompt}
+        </div>
           <VerdictProgressBadge progress={progress} pendingReason={invalidDraftIds.size > 0} />
         </div>
-        {payload.detailsMarkdown ? (
+        {payload.detailsMarkdown && !isActionCardTechnicalText(payload.detailsMarkdown) ? (
           <div className="border-t border-border/60 pt-3 text-sm">
             <MarkdownBody externalReferences={externalReferences}>{payload.detailsMarkdown}</MarkdownBody>
           </div>
@@ -3200,6 +3363,13 @@ export function IssueThreadInteractionCard({
   const StatusIcon = activeStyles ? activeStyles.Icon : statusIcon(interaction.status);
   const iconSpin = toolActionStyles?.spin ?? false;
   const styles = activeStyles ?? statusClasses(interaction.status);
+  const actionCardLanguage = buildActionCardLanguage(interactionLanguageInput(interaction));
+  const visibleTitle = isActionCardTechnicalText(interaction.title)
+    ? null
+    : interaction.title;
+  const visibleSummary = isActionCardTechnicalText(interaction.summary)
+    ? null
+    : interaction.summary;
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -3231,8 +3401,10 @@ export function IssueThreadInteractionCard({
             </span>
           </div>
 
+          <ActionCardLanguageSummary language={actionCardLanguage} />
+
           <div className="mt-3 text-lg font-bold text-foreground">
-            {interaction.title
+            {visibleTitle
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
@@ -3247,9 +3419,9 @@ export function IssueThreadInteractionCard({
                         ? "Plan review"
                         : "Confirmation requested")}
           </div>
-          {interaction.summary ? (
+          {visibleSummary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-              {interaction.summary}
+              {visibleSummary}
             </p>
           ) : null}
         </div>

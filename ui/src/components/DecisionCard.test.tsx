@@ -126,12 +126,23 @@ afterEach(() => {
 });
 
 describe("DecisionCard", () => {
-  it("renders a pending decision with provenance, effect summary and dismiss", () => {
+  it("leads a technical decision with plain action copy and collapsed effect details", () => {
+    const el = render({});
+
+    expect(el.querySelector('[data-action-card-language="true"]')).not.toBeNull();
+    expect(el.textContent).toContain("Choose whether to approve this request.");
+    expect(el.textContent).toContain("Agreeing will let the responsible agent continue");
+    expect(el.textContent).toContain("Technical details");
+    expect(el.textContent).not.toContain("targetIssueId");
+  });
+
+  it("renders a pending decision with provenance, technical effect details and dismiss", () => {
     const el = render({});
     expect(el.textContent).toContain("Pending");
     expect(el.textContent).toContain("Gardener");
     expect(el.textContent).toContain("PAP-123");
-    expect(el.textContent).toContain("Comment on PAP-456");
+    expect(el.textContent).toContain("Technical details");
+    expect(el.textContent).not.toContain("Comment on PAP-456");
     expect([...el.querySelectorAll("button")].some((b) => b.textContent?.includes("Dismiss"))).toBe(true);
   });
 

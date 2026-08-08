@@ -132,6 +132,26 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
 const noop = () => {};
 
 describe("AttentionQueueRow", () => {
+  it("leads compact and expanded attention rows with the board action", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={buildItem({
+          subject: { ...buildItem().subject, title: "POST /api/approvals/approval-1", metadata: { effectType: "approve" } },
+          whyNow: "Approval is waiting for the board.",
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    expect(el.querySelector('[data-action-card-language="true"]')).not.toBeNull();
+    expect(el.textContent).toContain("Choose whether to approve this request.");
+    expect(el.textContent).toContain("Technical details");
+    expect(el.textContent).not.toContain("effectType");
+  });
+
   it("renders an inline approval resolver when expanded", () => {
     const el = render(
       <AttentionQueueRow

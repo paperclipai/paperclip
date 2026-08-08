@@ -30,11 +30,12 @@ import {
   sourceMeta,
 } from "../lib/attention";
 import { isTrainable } from "../lib/decisionTraining";
+import { buildActionCardLanguage, isActionCardTechnicalText } from "../lib/action-card-language";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
-import { Collapsible, CollapsibleContent } from "./ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
 import {
   DropdownMenu,
@@ -133,6 +134,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const href = item.subject.href;
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
+  const actionCardLanguage = buildActionCardLanguage({
+    family: item.sourceKind === "issue_thread_interaction" ? "request_confirmation" : "request_confirmation",
+    prompt: item.subject.title,
+    consequence: item.whyNow,
+    safetyFacts: [item.whyNow, detailLine],
+    technicalDetails: [
+      item.subject.id,
+      ...Object.entries(item.subject.metadata ?? {}).map(([key, value]) => `${key}=${String(value)}`),
+    ],
+  });
   const images = attentionDetailImages(item);
   const hasImages = images.length > 0;
   // The issue (or source) this row points at — used as the target for the
@@ -355,6 +366,24 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </div>
       </div>
 
+      <div className="space-y-2" data-action-card-language="true">
+        <p className="text-sm font-semibold leading-5 text-foreground">{actionCardLanguage.decision}</p>
+        <p className="text-xs leading-5 text-muted-foreground">
+          {actionCardLanguage.consequence} {actionCardLanguage.nonEffect}
+        </p>
+        {actionCardLanguage.safetyFacts.map((fact) => <p key={fact} className="text-xs leading-5 text-foreground">{fact}</p>)}
+        {actionCardLanguage.technicalDetails.length > 0 ? (
+          <Collapsible>
+            <CollapsibleTrigger className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Technical details
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-1 pt-2" data-action-card-technical-details="true">
+              {actionCardLanguage.technicalDetails.map((detail) => <div key={detail} className="font-mono text-(length:--text-compact) text-muted-foreground">{detail}</div>)}
+            </CollapsibleContent>
+          </Collapsible>
+        ) : null}
+      </div>
+
       {/* Headline — the primary expand target for inline rows. Title wraps to
           two lines instead of truncating to a sliver on narrow screens. */}
       <div
@@ -373,8 +402,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             }
           : {})}
       >
-        <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
-          {item.subject.title ?? meta.label}
+        <span className="line-clamp-2 text-sm font-medium text-foreground" title={isActionCardTechnicalText(item.subject.title) ? undefined : item.subject.title ?? undefined}>
+          {isActionCardTechnicalText(item.subject.title) ? meta.label : item.subject.title ?? meta.label}
         </span>
         <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
       </div>

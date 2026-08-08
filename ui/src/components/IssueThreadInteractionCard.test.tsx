@@ -19,6 +19,7 @@ import {
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
   pendingRequestConfirmationInteraction,
+  pendingRequestCheckboxConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
   planApprovalResumeFailedRequestConfirmationInteraction,
@@ -89,6 +90,21 @@ afterEach(() => {
 });
 
 describe("IssueThreadInteractionCard", () => {
+  it.each([
+    ["suggest_tasks", pendingSuggestedTasksInteraction, "Review the proposed tasks and choose whether to add them."],
+    ["ask_user_questions", pendingAskUserQuestionsInteraction, "Before I wire the persistence layer, which preview behavior do you want?"],
+    ["request_confirmation", pendingRequestConfirmationInteraction, "Approve the plan and let the responsible start implementation?"],
+    ["request_checkbox_confirmation", pendingRequestCheckboxConfirmationInteraction, "Check the draft documents you want me to delete."],
+    ["request_item_verdicts", pendingRequestItemVerdictsInteraction, "Review the 5 blog posts this task drafted."],
+  ] as const)("leads %s with the board decision and consequence", (_family, interaction, decision) => {
+    const host = renderCard({ interaction });
+
+    expect(host.querySelector('[data-action-card-language="true"]')).not.toBeNull();
+    expect(host.textContent).toContain(decision);
+    expect(host.textContent).toMatch(/Agreeing|Your answers|Your choices/);
+    expect(host.textContent).toMatch(/will not|not change|leave every/);
+  });
+
   it("exposes pending question options as selectable radio and checkbox controls", () => {
     const host = renderCard({
       interaction: pendingAskUserQuestionsInteraction,
@@ -882,6 +898,6 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     // Legacy confirmation keeps its own prompt + labels, no tool-action surface.
     expect(host.textContent).toContain("Approve the plan and let the responsible start implementation?");
     expect(host.textContent).not.toContain("Approve & run");
-    expect(host.textContent).not.toContain("Technical details");
+    expect(host.textContent).toContain("Technical details");
   });
 });
