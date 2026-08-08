@@ -1807,7 +1807,14 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  requestAddsExplicitBlockers?: boolean;
 }) {
+  // A request that wires a non-empty blockedByIssueIds list is declaring that
+  // the issue is waiting on other work. The implicit reopen exists for plain
+  // conversational comments ("please continue"), not structured dependency
+  // edits — flipping to todo here would contradict the caller's stated intent
+  // in the same request.
+  if (input.requestAddsExplicitBlockers) return false;
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -8575,6 +8582,8 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
+            requestAddsExplicitBlockers:
+              Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
