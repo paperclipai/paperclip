@@ -720,6 +720,78 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  // `in_review` leaves the shared covered/attention path early and lands in its own
+  // `stalled` branch, so it needs the monitor pinned separately from `in_progress`:
+  // a scheduled monitor is the standard re-review path for a review with no human
+  // reviewer, and without this it reads as a dead chain.
+  it("treats an in_review blocker with a scheduled monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMR");
+    const parentId = await insertIssue({ companyId, identifier: "PBMR-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMR-2",
+      title: "Monitored review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("still flags an in_review blocker whose monitor has elapsed or was never scheduled as stalled", async () => {
+    const { companyId, agentId } = await createCompany("PBMS");
+    const elapsedParentId = await insertIssue({ companyId, identifier: "PBMS-1", title: "Elapsed parent", status: "blocked" });
+    const elapsedLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMS-2",
+      title: "Review leaf whose monitor is already due",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: elapsedLeafId, blockedIssueId: elapsedParentId });
+
+    const unmonitoredParentId = await insertIssue({ companyId, identifier: "PBMS-3", title: "Unmonitored parent", status: "blocked" });
+    const unmonitoredLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMS-4",
+      title: "Review leaf with no monitor at all",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: unmonitoredLeafId, blockedIssueId: unmonitoredParentId });
+
+    const blocked = await svc.list(companyId, { status: "blocked" });
+
+    expect(blocked.find((issue) => issue.id === elapsedParentId)?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBMS-2",
+    });
+    expect(blocked.find((issue) => issue.id === unmonitoredParentId)?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBMS-4",
+    });
+  });
+
   it("does not treat an elapsed or exhausted monitor as a covered waiting path", async () => {
     const { companyId, agentId } = await createCompany("PBME");
     const elapsedParentId = await insertIssue({ companyId, identifier: "PBME-1", title: "Elapsed parent", status: "blocked" });
