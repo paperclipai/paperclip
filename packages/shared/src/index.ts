@@ -1823,6 +1823,8 @@ export {
   updateGoalSchema,
   type CreateGoal,
   type UpdateGoal,
+  applyOnboardingSeedSchema,
+  type ApplyOnboardingSeed,
   createApprovalSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,

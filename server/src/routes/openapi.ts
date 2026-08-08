@@ -912,6 +912,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/approvals/{id}/comments",
   "POST /api/companies/{companyId}/assets/images",
   "POST /api/companies/{companyId}/logo",
+  "POST /api/companies/{companyId}/onboarding-seed",
   "POST /api/cli-auth/challenges",
   "POST /api/board-api-keys",
   "POST /api/companies",
@@ -4623,6 +4624,15 @@ registry.registerPath({
   summary: "Upload company logo",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/onboarding-seed",
+  tags: ["companies"],
+  summary: "Apply the onboarding seed Paperclip Cloud collected at signup",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
