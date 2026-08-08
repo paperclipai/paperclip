@@ -15,6 +15,9 @@ export const approvals = pgTable(
     decisionNote: text("decision_note"),
     decidedByUserId: text("decided_by_user_id"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    // Null until the approved action's execution side-effect actually completes (e.g. hire_agent
+    // activation). status="approved" only means a board actor endorsed it — see SAG-5660/SAG-5765.
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
