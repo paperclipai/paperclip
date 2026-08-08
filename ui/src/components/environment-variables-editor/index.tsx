@@ -135,6 +135,8 @@ export interface EnvironmentVariablesEditorProps {
   footerHint?: ReactNode | null;
   /** Reports editor-local draft changes that are not yet promoted to the parent value. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Exposes the editor-local draft for outer review UI without promoting it. */
+  onDraftChange?: (draft: Record<string, EnvBinding> | null) => void;
 }
 
 export interface EnvironmentVariablesEditorHandle {
@@ -143,6 +145,8 @@ export interface EnvironmentVariablesEditorHandle {
    * action reads parent state. Returns the promoted value when a draft existed.
    */
   flushPendingDraft: () => Record<string, EnvBinding> | null;
+  /** Discard the editor-local draft and restore the last committed value. */
+  discardPendingDraft: () => void;
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -156,6 +160,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
   footerHint,
   onDirtyChange,
+  onDraftChange,
 }: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
@@ -239,6 +244,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     onDirtyChange?.(!disabled && hasUnsavedChanges);
   }, [disabled, hasUnsavedChanges, onDirtyChange]);
 
+  useEffect(() => {
+    onDraftChange?.(!disabled && hasUnsavedChanges ? (draftValue ?? {}) : null);
+  }, [disabled, draftValue, hasUnsavedChanges, onDraftChange]);
+
   // Which variables differ from the committed baseline, so the unsaved-changes
   // banner can say *what* is unsaved instead of a bare label. A rename shows
   // as one addition plus one removal.
@@ -288,7 +297,16 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return draftValue ?? {};
   }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
 
-  useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
+  const discardPendingDraft = useCallback(() => {
+    if (disabled || !hasUnsavedChanges) return;
+    setRows(cloneRows(committedRows));
+  }, [committedRows, disabled, hasUnsavedChanges]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ flushPendingDraft, discardPendingDraft }),
+    [discardPendingDraft, flushPendingDraft],
+  );
 
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");
@@ -454,6 +472,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
           {rows.map((row, index) => {
             const issue = validateName(row.name, duplicateNames, reservedPrefixes);
+            const trimmedName = row.name.trim();
+            const reserved = trimmedName.length > 0 && reservedPrefixes.some((prefix) => prefix && trimmedName.startsWith(prefix));
             const touched = touchedNames.has(row.name.trim());
             return (
               <EnvironmentVariableRow
@@ -464,6 +484,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
+                reserved={reserved}
                 nameIssue={issue}
                 showNameIssue={touched}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}

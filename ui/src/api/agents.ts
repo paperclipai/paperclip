@@ -29,6 +29,7 @@ export interface AgentKey {
   id: string;
   name: string;
   scope: AgentApiKeyScope;
+  lastUsedAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
 }

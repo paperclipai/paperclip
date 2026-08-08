@@ -32,25 +32,12 @@ export function ProcessConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  // The Command field is rendered by the shared Runtime section in
+  // AgentConfigForm for every local adapter (process included), so we only
+  // contribute the process-specific Args field here. Rendering Command here
+  // too would duplicate it in the Runtime tab (PAP-15116).
   return (
     <>
-      <Field label="Command" hint={help.command}>
-        <DraftInput
-          value={
-            isCreate
-              ? values!.command
-              : eff("adapterConfig", "command", String(config.command ?? ""))
-          }
-          onCommit={(v) =>
-            isCreate
-              ? set!({ command: v })
-              : mark("adapterConfig", "command", v || undefined)
-          }
-          immediate
-          className={inputClass}
-          placeholder="e.g. node, python"
-        />
-      </Field>
       <Field label="Args (comma-separated)" hint={help.args}>
         <DraftInput
           value={

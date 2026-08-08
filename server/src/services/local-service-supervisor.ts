@@ -419,9 +419,20 @@ export async function readLocalServicePortOwner(port: number) {
 }
 
 export async function readLocalServiceProcessCwd(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
+  if (!Number.isInteger(pid) || pid <= 0 || process.platform === "win32") return null;
+  if (process.platform === "linux") {
+    try {
+      return await fs.readlink(`/proc/${pid}/cwd`);
+    } catch {
+      // Fall through to lsof. Some Linux hosts mount /proc with restricted access.
+    }
+  }
   try {
-    return await fs.readlink(`/proc/${pid}/cwd`);
+    const { stdout } = await execFileAsync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+    const cwdLine = stdout
+      .split("\n")
+      .find((line) => line.startsWith("n") && line.length > 1);
+    return cwdLine?.slice(1).trim() || null;
   } catch {
     return null;
   }

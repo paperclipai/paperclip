@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
+import type { AgentConfigChange } from "../lib/agent-config-changeset";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModelProfiles: vi.fn(),
@@ -67,10 +68,16 @@ vi.mock("../adapters", () => ({
   getUIAdapter: (type: string) => ({
     type,
     label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    ConfigFields: ({ adapterType }: { adapterType: string }) =>
+    ConfigFields: ({
+      adapterType,
+      configurationSection,
+    }: {
+      adapterType: string;
+      configurationSection?: "runtime" | "danger";
+    }) =>
       adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : null,
+        : <div data-testid={`adapter-fields-${configurationSection ?? "runtime"}`}>{configurationSection ?? "runtime"} adapter fields</div>,
     buildAdapterConfig: (values: { model?: string }) => ({
       model: values.model || undefined,
     }),
@@ -193,7 +200,15 @@ function setInputValue(input: HTMLInputElement, value: string) {
 async function renderForm(
   environments: Environment[],
   agentOverrides: Partial<Agent> = {},
-  options: { showAdapterTestEnvironmentButton?: boolean } = {},
+  options: {
+    showAdapterTestEnvironmentButton?: boolean;
+    configurationShell?: boolean;
+    visibleConfigurationSections?: ReadonlySet<string>;
+    onDirtyChange?: (dirty: boolean) => void;
+    onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
+    onChangesetChange?: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
+    onCancelActionChange?: (cancel: (() => void) | null) => void;
+  } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
@@ -219,6 +234,13 @@ async function renderForm(
               hidePromptTemplate
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+              configurationShell={options.configurationShell}
+              visibleConfigurationSections={options.visibleConfigurationSections}
+              sectionLayout={options.configurationShell ? "cards" : undefined}
+              onDirtyChange={options.onDirtyChange}
+              onDirtyDetailsChange={options.onDirtyDetailsChange}
+              onChangesetChange={options.onChangesetChange}
+              onCancelActionChange={options.onCancelActionChange}
             />
           </TooltipProvider>
         </ToastProvider>
@@ -363,6 +385,79 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
+  it("prunes overlay entries that round-trip back to the saved value (no spurious no-op change)", async () => {
+    const dirtyStates: boolean[] = [];
+    const changesets: AgentConfigChange[][] = [];
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { name: "Cody" },
+      {
+        onDirtyChange: (dirty) => dirtyStates.push(dirty),
+        onChangesetChange: (changes) => changesets.push(changes),
+      },
+    );
+    roots.push(result.root);
+
+    const nameInput = [...result.container.querySelectorAll("input")].find(
+      (input) => input.getAttribute("placeholder") === "Agent name",
+    ) as HTMLInputElement;
+    expect(nameInput).toBeTruthy();
+
+    // Edit away from the saved value: dirty + one change row.
+    await act(async () => setInputValue(nameInput, "Rex"));
+    await flushReact();
+    expect(dirtyStates.at(-1)).toBe(true);
+    expect(changesets.at(-1)?.map((c) => [c.key, c.before, c.after])).toEqual([["name", "Cody", "Rex"]]);
+
+    // Restore the saved value: overlay entry is pruned, so no dirty flag and no
+    // spurious `Cody -> Cody` change survives.
+    await act(async () => setInputValue(nameInput, "Cody"));
+    await flushReact();
+    expect(dirtyStates.at(-1)).toBe(false);
+    expect(changesets.at(-1)).toEqual([]);
+  });
+
+  it("re-parents environment and danger fields outside Runtime in the configuration shell", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({ id: "sandbox-1", name: "E2B", driver: "sandbox", config: { provider: "e2b" } }),
+      ],
+      {
+        adapterConfig: {
+          command: "codex",
+          cwd: "/legacy/path",
+          dangerouslyBypassApprovalsAndSandbox: true,
+          env: { EXAMPLE: "value" },
+        },
+      },
+      {
+        configurationShell: true,
+        visibleConfigurationSections: new Set(["runtime", "environment", "schedule", "danger"]),
+      },
+    );
+    roots.push(result.root);
+
+    const runtime = result.container.querySelector("#config-runtime");
+    const environment = result.container.querySelector("#config-environment");
+    const danger = result.container.querySelector("#config-danger");
+
+    expect(result.container.textContent).toContain("Advanced runtime");
+    expect(result.container.textContent).toContain("runtime adapter fields");
+    expect((runtime?.compareDocumentPosition(environment as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(runtime?.textContent).not.toContain("Environment variables");
+    expect(runtime?.textContent).not.toContain("Working directory (deprecated)");
+    expect(environment?.parentElement?.textContent).toContain("Environment variables");
+    expect(danger?.textContent).toContain("danger adapter fields");
+    expect(danger?.textContent).toContain("Working directory (deprecated)");
+    expect([...result.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).toEqual([
+      "Runtime",
+      "Environment",
+      "Schedule & Runs",
+      "Danger & Legacy",
+    ]);
   });
 
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
@@ -576,6 +671,56 @@ describe("AgentConfigForm environment selector", () => {
     }
   });
 
+  it("previews unpromoted environment edits in the outer changeset and can revert them", async () => {
+    const onDirtyChange = vi.fn();
+    const onDirtyDetailsChange = vi.fn();
+    const onChangesetChange = vi.fn();
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: {
+        env: { API_TOKEN: { type: "plain", value: "old-token" } },
+      },
+    }, {
+      configurationShell: true,
+      visibleConfigurationSections: new Set(["environment"]),
+      onDirtyChange,
+      onDirtyDetailsChange,
+      onChangesetChange,
+    });
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]');
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "draft-token");
+    });
+    await flushReact();
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(onDirtyDetailsChange).toHaveBeenLastCalledWith({ count: 1, sections: ["environment"] });
+    const [changes, revert] = onChangesetChange.mock.calls.at(-1) as [AgentConfigChange[], (key: string) => void];
+    expect(changes).toEqual([
+      expect.objectContaining({
+        key: "adapterConfig.env",
+        section: "Environment",
+        before: { API_TOKEN: { type: "plain", value: "old-token" } },
+        after: { API_TOKEN: { type: "plain", value: "draft-token" } },
+      }),
+    ]);
+
+    await act(async () => {
+      revert("adapterConfig.env");
+    });
+    await flushReact();
+
+    expect(valueInput!.value).toBe("old-token");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(onDirtyDetailsChange).toHaveBeenLastCalledWith({ count: 0, sections: [] });
+    expect(onChangesetChange.mock.calls.at(-1)?.[0]).toEqual([]);
+  });
+
   it("surfaces request failures instead of converting them into model test checks", async () => {
     mockAgentsApi.testEnvironment.mockRejectedValueOnce(new Error("Network unavailable"));
 
@@ -608,5 +753,55 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
     expect(result.container.textContent).toContain("Network unavailable");
+  });
+
+  it("renders thinking effort as a segmented group for adapters with a short effort list", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local" },
+    );
+    roots.push(result.root);
+
+    const group = result.container.querySelector<HTMLElement>(
+      '[role="radiogroup"][aria-label="Thinking effort"]',
+    );
+    expect(group).toBeTruthy();
+
+    const segments = Array.from(group!.querySelectorAll('[role="radio"]'));
+    expect(segments.map((segment) => segment.textContent?.trim())).toEqual([
+      "Auto",
+      "Low",
+      "Medium",
+      "High",
+    ]);
+    // "Auto" (the empty default) is selected when nothing is configured.
+    expect(segments[0]?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      segments
+        .find((segment) => segment.textContent?.trim() === "High")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const updatedSegments = Array.from(
+      result.container.querySelectorAll('[role="radiogroup"][aria-label="Thinking effort"] [role="radio"]'),
+    );
+    const highSegment = updatedSegments.find((segment) => segment.textContent?.trim() === "High");
+    expect(highSegment?.getAttribute("aria-checked")).toBe("true");
+    expect(updatedSegments[0]?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("keeps thinking effort as a dropdown for adapters with a long effort list", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "opencode_local" },
+    );
+    roots.push(result.root);
+
+    expect(
+      result.container.querySelector('[role="radiogroup"][aria-label="Thinking effort"]'),
+    ).toBeNull();
+    expect(result.container.textContent).toContain("Thinking effort");
   });
 });

@@ -3560,6 +3560,29 @@ async function allocatePort(): Promise<number> {
   });
 }
 
+async function allocatePortStartingAt(startPort: number): Promise<number> {
+  for (let port = Math.max(1, Math.trunc(startPort)); port <= 65_535; port += 1) {
+    const available = await new Promise<boolean>((resolve, reject) => {
+      const server = net.createServer();
+      server.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" || err.code === "EACCES") {
+          resolve(false);
+          return;
+        }
+        reject(err);
+      });
+      server.listen(port, "127.0.0.1", () => {
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve(true);
+        });
+      });
+    });
+    if (available) return port;
+  }
+  throw new Error(`Failed to allocate a runtime service port at or above ${startPort}`);
+}
+
 function buildTemplateData(input: {
   workspace: RealizedExecutionWorkspace;
   agent: ExecutionWorkspaceAgentRef;
@@ -4276,17 +4299,32 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     scopeType: input.scopeType,
     scopeId: input.scopeId,
   });
+  const portType = asString(portConfig.type, "");
   let reusableStoppedPort: number | null = null;
-  if (asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port) {
+  if (stoppedReuseCandidate?.port && (portType === "auto" || (explicitPort > 0 && stoppedReuseCandidate.port >= explicitPort))) {
     const ownerPid = await readLocalServicePortOwner(stoppedReuseCandidate.port);
     reusableStoppedPort = ownerPid ? null : stoppedReuseCandidate.port;
   }
-  const port =
-    asString(portConfig.type, "") === "auto"
+  let port =
+    portType === "auto"
       ? (reusableStoppedPort ?? await allocatePort())
-      : explicitPort > 0
-        ? explicitPort
+      : reusableStoppedPort
+        ? reusableStoppedPort
+        : explicitPort > 0
+          ? explicitPort
+          : null;
+  if (port === explicitPort && explicitPort > 0 && input.executionWorkspaceId) {
+    const ownerPid = await readLocalServicePortOwner(explicitPort);
+    if (ownerPid) {
+      const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+      const ownerIsInWorkspace = ownerCwd
+        ? await isLocalServiceProcessInWorkspace(ownerCwd, identity.serviceCwd)
         : null;
+      if (ownerIsInWorkspace === false) {
+        port = await allocatePortStartingAt(explicitPort + 1);
+      }
+    }
+  }
   const templateData = buildTemplateData({
     workspace: input.workspace,
     agent: input.agent,
@@ -4390,8 +4428,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       };
     }
   }
-  if (identityPort) {
-      const ownerPid = await readLocalServicePortOwner(identityPort);
+  if (port) {
+    const ownerPid = await readLocalServicePortOwner(port);
     if (ownerPid) {
       const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
       const ownerIsInWorkspace = ownerCwd
@@ -4400,11 +4438,11 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       const ownerDescription = ownerCwd ? `pid ${ownerPid} (cwd: ${ownerCwd})` : `pid ${ownerPid} (cwd unavailable)`;
       if (ownerIsInWorkspace === false) {
         throw new Error(
-          `Runtime service "${serviceName}" could not start because port ${identityPort} has a cross-workspace port conflict with ${ownerDescription}; requested workspace: ${serviceCwd}. Stop the other service or configure a different port.`,
+          `Runtime service "${serviceName}" could not start because port ${port} has a cross-workspace port conflict with ${ownerDescription}; requested workspace: ${serviceCwd}. Stop the other service or configure a different port.`,
         );
       }
       throw new Error(
-        `Runtime service "${serviceName}" could not start because port ${identityPort} is already in use by ${ownerDescription}`,
+        `Runtime service "${serviceName}" could not start because port ${port} is already in use by ${ownerDescription}`,
       );
     }
   }
