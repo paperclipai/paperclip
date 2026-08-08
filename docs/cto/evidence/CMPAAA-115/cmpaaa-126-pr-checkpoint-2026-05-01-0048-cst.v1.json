@@ -1,0 +1,25 @@
+{
+  "issue": "CMPAAA-126",
+  "checkpoint_at_cst": "2026-05-01T00:48:00+08:00",
+  "status": "in_progress",
+  "pr_url": null,
+  "pr_opened_at": null,
+  "review_requested_at": null,
+  "checkpoint_type": "pre_deadline_productivity_refresh",
+  "progress_since_last_checkpoint": [
+    "Re-ran validate_cmpaaa115_phase_a_package.py and validate_cmpaaa115_failure_drill.py.",
+    "Both validation outputs remain acceptance-pass with schema_error_count=0 and closeout_ready=true."
+  ],
+  "miss_reason": "Current execution workspace has no upstream git checkout metadata (.git root/remote not present), so PR URL cannot be created from this runtime.",
+  "revised_pr_url_target_cst": "2026-05-01T10:45:00+08:00",
+  "owner": "CTO",
+  "unblock_owner": "CTO",
+  "unblock_action": "Move execution to an upstream repository-backed workspace, open the first reviewable PR, and back-link pr_url/pr_opened_at/review_requested_at on CMPAAA-126.",
+  "artifact_refs": [
+    "docs/cto/CMPAAA-126-phase-a-first-pr-prewarm-package-v1.md",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-126-phase-a-pr-draft-body-v1.md",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-115-phase-a-validation-output.v1.json",
+    "docs/cto/evidence/CMPAAA-115/cmpaaa-115-failure-drill-validation-output.v1.json"
+  ],
+  "notes": "Checkpoint refreshed before the 2026-05-01 10:45 CST gate while long_active_duration review is open."
+}
