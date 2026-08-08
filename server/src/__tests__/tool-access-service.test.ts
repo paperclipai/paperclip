@@ -2233,6 +2233,8 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
+    // Cross-company GET now folds the access check into the existence check (404 instead of
+    // 403) to close the cross-tenant existence oracle; see hasCompanyAccess in routes/authz.ts.
     await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(404);
     await request(app)
       .post(`/api/tool-profiles/${profile.id}/duplicate`)
