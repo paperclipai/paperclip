@@ -94,6 +94,28 @@ export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
+export {
+  BLOCKED_ISSUE_ESCALATION_ACTION_KEY,
+  BLOCKED_ISSUE_ESCALATION_ENABLED_ENV,
+  BLOCKED_ISSUE_ESCALATION_MARKER,
+  BLOCKED_ISSUE_ESCALATION_ORIGIN_KIND,
+  buildBlockedIssueEscalationComment,
+  buildBlockedIssueEscalationFingerprint,
+  createBlockedIssueEscalationRunner,
+  disableBlockedIssueEscalationRoutines,
+  ensureBlockedIssueEscalationRoutines,
+  isBlockedIssueEscalationEnabled,
+  isBlockedIssueEscalationSuppressed,
+  parseBlockedIssueEscalationMarker,
+  resolveCompanyDecider,
+  selectBlockedIssueEscalationCandidates,
+} from "./blocked-issue-escalation.js";
+export {
+  activateRecoverySweeperRoutine,
+  RECOVERY_SWEEPER_ACTION_KEY,
+  RECOVERY_SWEEPER_ORIGIN_KIND,
+  recoverySweeperRunner,
+} from "./recovery-sweeper.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";

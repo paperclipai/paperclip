@@ -86,6 +86,17 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import {
+  RECOVERY_SWEEPER_ACTION_KEY,
+  recoverySweeperRunner,
+} from "./services/recovery-sweeper.js";
+import {
+  BLOCKED_ISSUE_ESCALATION_ACTION_KEY,
+  createBlockedIssueEscalationRunner,
+  disableBlockedIssueEscalationRoutines,
+  ensureBlockedIssueEscalationRoutines,
+  isBlockedIssueEscalationEnabled,
+} from "./services/blocked-issue-escalation.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -969,7 +980,49 @@ export async function startServer(): Promise<StartedServer> {
     );
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
-    const routines = routineService(db as any, { pluginWorkerManager });
+    const routines = routineService(db as any, {
+      pluginWorkerManager,
+      internalActionHandlers: {
+        [RECOVERY_SWEEPER_ACTION_KEY]: async ({ companyId, runId }) => {
+          const result = await recoverySweeperRunner.run({
+            mode: "live",
+            companyId,
+            runId,
+          });
+          return {
+            ...result,
+            summary: result.summary
+              ? {
+                errorAgentsCleared: result.summary.errorAgentsCleared,
+                recoveryActionNudged: result.summary.recoveryActionNudged,
+                surfacedOnly: result.summary.surfacedOnly,
+              }
+              : null,
+          };
+        },
+        [BLOCKED_ISSUE_ESCALATION_ACTION_KEY]: async ({ companyId }) => {
+          const result = await createBlockedIssueEscalationRunner(db as any).run(companyId);
+          return {
+            actionKey: BLOCKED_ISSUE_ESCALATION_ACTION_KEY,
+            mode: "live",
+            exitStatus: 0,
+            stdoutSummary: JSON.stringify(result),
+            stderrSummary: "",
+            outcome: "completed",
+            summary: result,
+          };
+        },
+      },
+    });
+    if (isBlockedIssueEscalationEnabled(process.env)) {
+      const registered = await ensureBlockedIssueEscalationRoutines(db as any);
+      logger.info(registered, "No-Dead-Blocks Stage 2b routine register ensured");
+    } else {
+      const disabled = await disableBlockedIssueEscalationRoutines(db as any);
+      if (disabled.routinesPaused > 0 || disabled.triggersDisabled > 0) {
+        logger.info(disabled, "No-Dead-Blocks Stage 2b routine register disabled by feature flag");
+      }
+    }
     const statusCards = statusCardService(db as any);
     const issues = issueService(db as any);
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
