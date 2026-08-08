@@ -28,6 +28,15 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
+import {
+  apiLatencyTracker,
+  evaluateRecoveryLoadGate,
+  readHostLoadSnapshot,
+  resolveRecoveryLoadThresholds,
+  type HostLoadSnapshot,
+  type RecoveryLoadGateDecision,
+  type RecoveryLoadGateReason,
+} from "./load-guard.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
@@ -762,7 +771,25 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: {
+    enqueueWakeup: RecoveryWakeup;
+    /** RBR-1013: injectable host-load reader. Defaults to the real
+     * `os.loadavg()`-backed reader; tests must override this rather than
+     * relying on this host's real, possibly elevated, load average. */
+    readHostLoadSnapshot?: () => HostLoadSnapshot;
+    /** RBR-1013: injectable API p50 (ms) reader. Defaults to the process-wide
+     * `apiLatencyTracker`. Returns null when there is no sample data, which
+     * the gate treats as "unknown" (never deferred on latency alone). */
+    readApiP50Ms?: () => number | null;
+    recoveryLoadThresholdOverrides?: {
+      loadRefusalRatio?: number;
+      apiP50ThresholdMs?: number;
+      apiLatencyWindowMs?: number;
+    };
+  },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -770,6 +797,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
+  const recoveryLoadThresholds = resolveRecoveryLoadThresholds(process.env, deps.recoveryLoadThresholdOverrides);
+
+  /**
+   * RBR-1013 — the load-aware recovery deferral gate. Recovery sweeps that
+   * dispatch new wakeups (the amplifiers RBR-977 measured: 14
+   * `issue_continuation_needed` + 9 `source_scoped_recovery_action` of 34
+   * concurrent runs) call this first and skip dispatching entirely when the
+   * host is degraded. This does not drop work — the sweep is retried on the
+   * next timer tick, so a deferred wake queues (via retry) rather than
+   * spawning into an overload it would only make worse.
+   */
+  function checkRecoveryLoadGate(): RecoveryLoadGateDecision {
+    const hostLoad = (deps.readHostLoadSnapshot ?? readHostLoadSnapshot)();
+    // Bounded to `apiLatencyWindowMs` (default 5m), not the tracker's full
+    // six-hour retention: a sustained degradation that has since recovered
+    // must not keep the sweep deferred until stale samples age out (Greptile
+    // P1 on PR #11028, commit c7bfe48c).
+    const apiP50Ms = (deps.readApiP50Ms ?? (() => apiLatencyTracker.getP50(recoveryLoadThresholds.apiLatencyWindowMs)))();
+    return evaluateRecoveryLoadGate({ hostLoad, apiP50Ms, thresholds: recoveryLoadThresholds });
+  }
 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -3639,6 +3686,36 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    // RBR-1013 — load-aware recovery deferral. This sweep is the primary
+    // source of `issue_continuation_needed` and `source_scoped_recovery_action`
+    // wakes (RBR-977 measured 14 + 9 of 34 concurrent runs from exactly this
+    // path). When the host is degraded, defer the whole sweep rather than
+    // dispatching more work into the overload it is reacting to — the next
+    // timer tick retries it, so deferred work queues instead of spawning.
+    const loadGate = checkRecoveryLoadGate();
+    if (loadGate.deferred) {
+      logger.warn({ reason: loadGate.reason, detail: loadGate.detail }, "recovery sweep deferred by load gate");
+      return {
+        assignmentDispatched: 0,
+        dispatchRequeued: 0,
+        continuationRequeued: 0,
+        productiveContinuationObserved: 0,
+        successfulContinuationObserved: 0,
+        orphanBlockersAssigned: 0,
+        successfulRunHandoffEscalated: 0,
+        reviewParticipantRequeued: 0,
+        escalated: 0,
+        waitingOnReviewResolved: 0,
+        providerQuotaMonitored: 0,
+        recentProgressExempted: 0,
+        operatorCancelExempted: 0,
+        skipped: 0,
+        issueIds: [] as string[],
+        deferredByLoad: true,
+        loadGateReason: loadGate.reason,
+      };
+    }
+
     const candidates = await db
       .select()
       .from(issues)
@@ -3670,7 +3747,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       operatorCancelExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
+      deferredByLoad: false,
+      loadGateReason: null as RecoveryLoadGateReason | null,
     };
+
 
     for (const issue of candidates) {
       const executionState = issue.status === "in_review"

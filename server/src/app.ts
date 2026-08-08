@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { apiLatencySampler } from "./middleware/api-latency-sampler.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -295,6 +296,13 @@ export async function createApp(
   }));
   app.use("/api", apiCompression());
   app.use(httpLogger);
+  // RBR-1013: feed the process-local API latency tracker consulted by the
+  // load-aware recovery gate and the productivity monitor's degraded-window
+  // suppression. Mounted immediately after the request logger so recorded
+  // durations cover the same span the logger reports. Scoped to /api only —
+  // this metric feeds gates that decide whether to defer *API* work, so
+  // slow MCP gateway/plugin UI/static-asset/Vite responses must not count.
+  app.use("/api", apiLatencySampler());
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,

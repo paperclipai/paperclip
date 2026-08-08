@@ -21,6 +21,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  evaluateNoCommentStreakSuppression,
   productivityReviewService,
 } from "../services/productivity-review.ts";
 
@@ -120,11 +121,19 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    /** RBR-1013: override the run's (finishedAt - startedAt) duration to
+     * simulate a run that outlived its agent JWT before it finished. */
+    durationMs?: number;
+    /** RBR-1013: override the spacing between consecutive runs' createdAt.
+     * Defaults to 60s. A wider gap keeps a 10-run streak below the default
+     * high-churn thresholds so a no_comment_streak suppression test isn't
+     * confounded by high_churn also firing. */
+    gapMs?: number;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
       const runId = randomUUID();
-      const createdAt = new Date(input.now.getTime() - index * 60_000);
+      const createdAt = new Date(input.now.getTime() - index * (input.gapMs ?? 60_000));
       runs.push({
         id: runId,
         companyId: input.companyId,
@@ -133,7 +142,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
-        finishedAt: new Date(createdAt.getTime() + 30_000),
+        finishedAt: new Date(createdAt.getTime() + (input.durationMs ?? 30_000)),
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
         livenessState: "advanced",
         nextAction: "Continue processing the next batch.",
@@ -737,4 +746,249 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
+
+  // RBR-1013 (RBR-977 scope item 4) — the no_comment_streak observation must
+  // be suppressed, not turned into a review, when it is unattributable to
+  // the agent.
+  it("suppresses no_comment_streak when the sample window's API p50 exceeded threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      // Wider gap keeps runCountLastHour below the high-churn threshold so
+      // this test isolates the no_comment_streak suppression path.
+      gapMs: 8 * 60_000,
+    });
+    // RBR-977 measured a single POST taking 101.4s under load.
+    const service = productivityReviewService(db, { readApiP50Ms: () => 101_400 });
+
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("suppresses no_comment_streak when a streak run outlived the agent JWT TTL", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // RBR-977's run reached 3813s against a 1h (3600s) JWT TTL.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      durationMs: 3_813_000,
+      gapMs: 8 * 60_000,
+    });
+    const service = productivityReviewService(db);
+
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  // Greptile P1 on PR #11028: the API-latency sample window must be anchored
+  // at the streak's own end (newest streak run's finish), not at "now"/the
+  // reconciliation pass's own wall-clock time. A slow unrelated request that
+  // lands in the gap *after* the streak's last run finished but *before*
+  // reconciliation happens to run must never retroactively explain (and
+  // suppress) a genuine no-comment streak it never overlapped. Asserted via
+  // spy on the exact `at` anchor passed to the latency reader — proving the
+  // call site's anchoring itself, not just an end-to-end outcome a stub
+  // could coincidentally satisfy either way.
+  it("anchors the no_comment_streak latency sample at the streak's own end, not at reconciliation time", async () => {
+    const runsAnchor = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runs = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: runsAnchor,
+      gapMs: 8 * 60_000,
+    });
+    const newestRunFinishedAt = runs[0]!.finishedAt as Date;
+    // Reconciliation runs a full hour after the streak's last run finished —
+    // plenty of room for an unrelated slow request to land in that gap.
+    const reconcileNow = new Date(newestRunFinishedAt.getTime() + 60 * 60_000);
+
+    const calls: Array<{ windowMs?: number; companyId?: string; at?: number }> = [];
+    const service = productivityReviewService(db, {
+      readApiP50Ms: (windowMs, companyId, at) => {
+        calls.push({ windowMs, companyId, at });
+        return 200;
+      },
+    });
+
+    const result = await service.reconcileProductivityReviews({ now: reconcileNow, companyId: seeded.companyId });
+
+    expect(result.created).toBe(1);
+    expect(calls).toHaveLength(1);
+    // The fixed call site must anchor at the streak's own end, not at
+    // reconciliation's wall-clock time — a pre-fix call site either omits
+    // `at` entirely or passes `reconcileNow`, both of which this assertion
+    // rejects.
+    expect(calls[0]!.at).toBe(newestRunFinishedAt.getTime());
+    expect(calls[0]!.at).not.toBe(reconcileNow.getTime());
+  });
+
+  it(
+    "negative control: still creates a no_comment_streak review when neither suppression cause applies",
+    async () => {
+      const now = new Date("2026-04-28T12:00:00.000Z");
+      const seeded = await seedAssignedIssue();
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+        now,
+        gapMs: 8 * 60_000,
+      });
+      // Healthy API latency and short run durations — this is the
+      // no-guard-removed control proving the two suppression tests above
+      // are actually exercising the guard, not a monitor that never fires.
+      const service = productivityReviewService(db, { readApiP50Ms: () => 200 });
+
+      const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      expect(result.created).toBe(1);
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+    },
+  );
+
+  it("does not suppress on latency alone when there is no API sample data (null is unknown, not degraded)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      gapMs: 8 * 60_000,
+    });
+    const service = productivityReviewService(db, { readApiP50Ms: () => null });
+
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(1);
+  });
+
+  it("honors a configurable API p50 threshold for no_comment_streak suppression", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      gapMs: 8 * 60_000,
+    });
+    // 800ms is healthy against the module default (5000ms) but this test
+    // lowers the threshold to 500ms to prove the override is consulted.
+    const service = productivityReviewService(db, { readApiP50Ms: () => 800 });
+
+    const result = await service.reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+      thresholds: { apiP50ThresholdMs: 500 },
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
 });
+
+describe("evaluateNoCommentStreakSuppression", () => {
+  const thresholds = {
+    noCommentStreakRuns: 10,
+    longActiveMs: 1,
+    highChurnHourly: 1,
+    highChurnSixHours: 1,
+    resolvedSnoozeMs: 1,
+    refreshIntervalMs: 1,
+    maxRefreshComments: 1,
+    creationWindowMs: 1,
+    maxCreationsPerWindow: 1,
+    maxConsecutiveNoActionReviews: 1,
+    apiP50ThresholdMs: 5_000,
+    jwtTtlMs: 60 * 60 * 1000,
+  };
+
+  it("is not suppressed when neither cause applies", () => {
+    const decision = evaluateNoCommentStreakSuppression({
+      streakRuns: [{
+        id: "run-1",
+        agentId: "agent-1",
+        status: "succeeded",
+        livenessState: "advanced",
+        createdAt: new Date(0),
+        startedAt: new Date(0),
+        finishedAt: new Date(30_000),
+        nextAction: null,
+        usageJson: null,
+      }] as never,
+      apiP50Ms: 200,
+      thresholds,
+    });
+    expect(decision.reasons).toEqual([]);
+  });
+
+  it("flags degraded_window_api_latency when p50 exceeds threshold", () => {
+    const decision = evaluateNoCommentStreakSuppression({
+      streakRuns: [],
+      apiP50Ms: 101_400,
+      thresholds,
+    });
+    expect(decision.reasons).toEqual(["degraded_window_api_latency"]);
+  });
+
+  it("flags run_credential_expired when a streak run outlived the JWT TTL", () => {
+    const decision = evaluateNoCommentStreakSuppression({
+      streakRuns: [{
+        id: "run-1",
+        agentId: "agent-1",
+        status: "succeeded",
+        livenessState: "advanced",
+        createdAt: new Date(0),
+        startedAt: new Date(0),
+        finishedAt: new Date(3_813_000), // RBR-977's measured run duration
+        nextAction: null,
+        usageJson: null,
+      }] as never,
+      apiP50Ms: null,
+      thresholds,
+    });
+    expect(decision.reasons).toEqual(["run_credential_expired"]);
+    expect(decision.credentialExpiredRunIds).toEqual(["run-1"]);
+  });
+
+  it("does not flag run_credential_expired for a run missing timestamps", () => {
+    const decision = evaluateNoCommentStreakSuppression({
+      streakRuns: [{
+        id: "run-1",
+        agentId: "agent-1",
+        status: "succeeded",
+        livenessState: "advanced",
+        createdAt: new Date(0),
+        startedAt: null,
+        finishedAt: null,
+        nextAction: null,
+        usageJson: null,
+      }] as never,
+      apiP50Ms: null,
+      thresholds,
+    });
+    expect(decision.reasons).toEqual([]);
+  });
+});
+
