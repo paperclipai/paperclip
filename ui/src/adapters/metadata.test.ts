@@ -59,4 +59,27 @@ describe("adapter metadata", () => {
       },
     ]);
   });
+
+  it("shows openai_compatible as an available built-in adapter", () => {
+    expect(isEnabledAdapterType("openai_compatible")).toBe(true);
+    expect(isValidAdapterType("openai_compatible")).toBe(true);
+    expect(isVisualAdapterChoice("openai_compatible")).toBe(true);
+
+    expect(
+      listAdapterOptions((type) => type, [
+        {
+          ...externalAdapter,
+          type: "openai_compatible",
+        },
+      ]),
+    ).toEqual([
+      {
+        value: "openai_compatible",
+        label: "openai_compatible",
+        comingSoon: false,
+        hidden: false,
+        experimental: false,
+      },
+    ]);
+  });
 });
