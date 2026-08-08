@@ -121,7 +121,7 @@ describe("execute", () => {
 
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
-      apiKey: ***
+      apiKey: "gateway-key",
       paperclipApiUrl: "https://paperclip.example/api",
       timeoutSec: 5,
     });
