@@ -190,7 +190,8 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     role: "engineer",
     status: "idle",
     adapterType: "codex_local",
-    adapterConfig: {},
+    // The adapter is mocked below; avoid inheriting host-managed Codex auth.
+    adapterConfig: { env: { CODEX_HOME: path.join(os.tmpdir(), "paperclip-finalize-branch-test-codex-home") } },
     runtimeConfig: {
       heartbeat: {
         wakeOnDemand: true,
@@ -533,6 +534,47 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         expectedBranchName: publishBranch,
         actualBranchName: publishBranch,
       },
+    });
+  }, 20_000);
+
+  it("preserves the realized workspace binding when an adapter throws", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    adapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionParams: { sessionId: "previous-session" },
+      sessionDisplayId: "previous-session",
+      summary: "Persist the first workspace binding.",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    const heartbeat = heartbeatService(db);
+    const firstRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(firstRun).not.toBeNull();
+    expect(await waitForRunToFinish(heartbeat, firstRun!.id)).toMatchObject({ status: "succeeded" });
+
+    adapterExecute.mockImplementationOnce(async () => {
+      throw new Error("adapter failed after workspace realization");
+    });
+
+    const failedRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(failedRun).not.toBeNull();
+
+    const finishedRun = await waitForRunToFinish(heartbeat, failedRun!.id);
+    expect(finishedRun).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    const [taskSession] = await db
+      .select({ sessionParamsJson: agentTaskSessions.sessionParamsJson })
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, issueId)))
+      .limit(1);
+
+    expect(taskSession?.sessionParamsJson).toMatchObject({
+      sessionId: "previous-session",
+      __paperclipExecutionWorkspaceBindingFingerprint: expect.stringMatching(/^v1:sha256:/),
     });
   }, 20_000);
 });

@@ -51,6 +51,10 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   model: "test-model",
 })));
 
+function testCodexAdapterConfig() {
+  return { env: { CODEX_HOME: path.join(os.tmpdir(), "paperclip-test-codex-home") } };
+}
+
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
     type: "codex_local",
@@ -279,6 +283,224 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     return revisionId;
   }
 
+  it("reuses the executor task session after lifecycle-only review approval updates", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const reviewStageId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Execution Resume Session",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Executor",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      // The adapter is mocked below; point Codex at a test-owned non-managed
+      // home so launchability does not depend on host authentication.
+      adapterConfig: testCodexAdapterConfig(),
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: testCodexAdapterConfig(),
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Execute after review",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      identifier: "PAP-RESUME",
+      executionPolicy: {
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          onApprove: "return_to_executor",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        }],
+      },
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+
+    adapterExecute.mockImplementationOnce(async ({ runId }: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        body: "Execution prepared for review.",
+        createdByAgentId: agentId,
+        createdByRunId: runId,
+      });
+      await db.update(issues).set({
+        status: "in_review",
+        assigneeAgentId: reviewerAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+          changesRequestedCount: 0,
+        },
+        updatedAt: new Date("2026-07-28T00:00:01.000Z"),
+      }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "executor-session" },
+        sessionDisplayId: "executor-session",
+        summary: "Execution prepared for review.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    expect(firstRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(firstRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+    await vi.waitFor(async () => {
+      const [taskSession] = await db
+        .select({ sessionParamsJson: agentTaskSessions.sessionParamsJson })
+        .from(agentTaskSessions)
+        .where(eq(agentTaskSessions.agentId, agentId))
+        .limit(1);
+      expect(taskSession?.sessionParamsJson).toMatchObject({ sessionId: "executor-session" });
+    }, { timeout: 10_000 });
+
+    await db.update(issues).set({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "execution_pending",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [reviewStageId],
+        continuationStageIds: [],
+        lastDecisionId: randomUUID(),
+        lastDecisionOutcome: "approved",
+        monitor: null,
+      },
+      updatedAt: new Date("2026-07-28T00:00:02.000Z"),
+    }).where(eq(issues.id, issueId));
+
+    adapterExecute.mockImplementationOnce(async ({ runId }: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        body: "Execution completed after review.",
+        createdByAgentId: agentId,
+        createdByRunId: runId,
+      });
+      await db.update(issues).set({
+        status: "done",
+        updatedAt: new Date("2026-07-28T00:00:03.000Z"),
+      }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "executor-session" },
+        sessionDisplayId: "executor-session",
+        summary: "Execution resumed and completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const resumedRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_resumed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "execution_resumed",
+      },
+    });
+    expect(resumedRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(resumedRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+    const completedResumedRun = await heartbeat.getRun(resumedRun.id);
+
+    expect(adapterExecute).toHaveBeenCalledTimes(2);
+    const resumedInput = adapterExecute.mock.calls[1]?.[0] as {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+    };
+    expect(resumedInput.runtime.sessionId).toBe("executor-session");
+    expect(resumedInput.runtime.sessionParams).toEqual(expect.objectContaining({
+      sessionId: "executor-session",
+    }));
+    expect(completedResumedRun?.resultJson).toMatchObject({
+      configFreshness: {
+        session: {
+          reset: false,
+          taskSessionReused: true,
+        },
+      },
+    });
+  }, 20_000);
+
   it("realizes an isolated workspace and drops stale shared task-session params before executing", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -326,7 +548,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -500,7 +722,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -727,7 +949,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -886,7 +1108,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
@@ -1046,7 +1268,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: testCodexAdapterConfig(),
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
