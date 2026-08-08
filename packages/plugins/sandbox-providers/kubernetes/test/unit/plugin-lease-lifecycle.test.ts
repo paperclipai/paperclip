@@ -4,12 +4,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // fake API clients instead of a real cluster. h.clients is swapped per test.
 const h = vi.hoisted(() => ({ clients: {} as Record<string, unknown> }));
 
-vi.mock("../../src/kube-client.js", () => ({
-  createKubeConfig: vi.fn(() => ({})),
+vi.mock("../../src/kube-client.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/kube-client.js")>()),
+  createKubeConfig: vi.fn(() => ({
+    getCurrentCluster: () => ({ server: "https://test-cluster.example" }),
+  })),
   makeKubeClients: vi.fn(() => h.clients),
 }));
 
 import plugin from "../../src/plugin.js";
+import { __clearSandboxApiVersionCache } from "../../src/sandbox-api-version.js";
+
+/** Discovery stub reporting the sandbox API group with the given versions. */
+function discovery(versions: string[]) {
+  return {
+    getAPIVersions: vi.fn().mockResolvedValue({
+      groups: [
+        { name: "agents.x-k8s.io", versions: versions.map((version) => ({ version })) },
+      ],
+    }),
+  };
+}
 
 const CONFIG = { inCluster: true, backend: "sandbox-cr" };
 
@@ -21,6 +36,7 @@ function leaseMetadata(overrides: Record<string, unknown> = {}): Record<string, 
     secretName: "pc-abc-env",
     phase: "Pending",
     backend: "sandbox-cr",
+    sandboxApiVersion: "v1beta1",
     ...overrides,
   };
 }
@@ -41,6 +57,7 @@ function readySandboxCr(podName: string): Record<string, unknown> {
 
 beforeEach(() => {
   h.clients = {};
+  __clearSandboxApiVersionCache();
 });
 
 describe("onEnvironmentResumeLease", () => {
@@ -261,5 +278,91 @@ describe("onEnvironmentDestroyLease", () => {
       expect.objectContaining({ namespace: "paperclip-acme", name: "pc-job" }),
     );
     expect(deleteCr).not.toHaveBeenCalled();
+  });
+});
+
+describe("Sandbox API version on an existing lease", () => {
+  it("addresses the CR through the version recorded at acquisition, without re-running discovery", async () => {
+    const getCr = vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod"));
+    const apis = discovery(["v1beta1"]);
+    h.clients = {
+      apis,
+      custom: { getNamespacedCustomObject: getCr },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      // A lease taken while the cluster still served only v1alpha1. Discovery
+      // now prefers v1beta1, but this CR must keep being addressed as created.
+      leaseMetadata: leaseMetadata({ sandboxApiVersion: "v1alpha1" }),
+    });
+
+    expect(getCr).toHaveBeenCalledWith(expect.objectContaining({ version: "v1alpha1" }));
+    expect(apis.getAPIVersions).not.toHaveBeenCalled();
+    expect(lease.metadata?.sandboxApiVersion).toBe("v1alpha1");
+  });
+
+  it("rediscovers the served version for a lease taken before the version was recorded", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const apis = discovery(["v1alpha1", "v1beta1"]);
+    h.clients = {
+      apis,
+      custom: { deleteNamespacedCustomObject: deleteCr },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+      batch: { deleteNamespacedJob: vi.fn() },
+    };
+
+    const legacy = leaseMetadata();
+    delete legacy.sandboxApiVersion;
+
+    await plugin.definition.onEnvironmentDestroyLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: legacy,
+    });
+
+    expect(apis.getAPIVersions).toHaveBeenCalledTimes(1);
+    expect(deleteCr).toHaveBeenCalledWith(expect.objectContaining({ version: "v1beta1" }));
+  });
+
+  it("never runs Sandbox discovery for a job-backend lease (the CRD need not be installed)", async () => {
+    const apis = discovery([]);
+    const deleteJob = vi.fn().mockResolvedValue({});
+    h.clients = {
+      apis,
+      custom: { deleteNamespacedCustomObject: vi.fn() },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+      batch: { deleteNamespacedJob: deleteJob },
+    };
+
+    await plugin.definition.onEnvironmentDestroyLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { inCluster: true, backend: "job" },
+      providerLeaseId: "pc-job",
+      leaseMetadata: leaseMetadata({ jobName: "pc-job", backend: "job", sandboxApiVersion: undefined }),
+    });
+
+    expect(apis.getAPIVersions).not.toHaveBeenCalled();
+    expect(deleteJob).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-job" }),
+    );
   });
 });

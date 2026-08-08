@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-kubernetes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Kubernetes sandbox provider plugin for Paperclip environments",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
