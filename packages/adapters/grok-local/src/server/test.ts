@@ -246,7 +246,7 @@ export async function testEnvironment(
       "streaming-json",
       "--always-approve",
       "--permission-mode",
-      "dontAsk",
+      "bypassPermissions",
       "--disable-web-search",
     ];
     if (configuredModel && configuredModel !== DEFAULT_GROK_LOCAL_MODEL) {
