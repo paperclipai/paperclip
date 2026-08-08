@@ -127,3 +127,31 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+export interface CostTimeAllocationRow {
+  minutes: number;
+  hours: number;
+  eventCount: number;
+  costCents: number;
+}
+
+export interface CostTimeAllocationProjectRow extends CostTimeAllocationRow {
+  projectId: string | null;
+  projectName: string | null;
+}
+
+export interface CostTimeAllocationAgentRow extends CostTimeAllocationRow {
+  agentId: string | null;
+  agentName: string | null;
+  agentStatus: string | null;
+}
+
+export interface CostTimeAllocationSummary {
+  companyId: string;
+  totalMinutes: number;
+  totalHours: number;
+  eventCount: number;
+  costCents: number;
+  byProject: CostTimeAllocationProjectRow[];
+  byAgent: CostTimeAllocationAgentRow[];
+}

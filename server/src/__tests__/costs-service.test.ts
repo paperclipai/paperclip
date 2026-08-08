@@ -68,6 +68,15 @@ const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  timeAllocation: vi.fn().mockResolvedValue({
+    companyId: "company-1",
+    totalMinutes: 60,
+    totalHours: 1,
+    eventCount: 2,
+    costCents: 0,
+    byProject: [],
+    byAgent: [],
+  }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -247,6 +256,43 @@ describe("cost routes", () => {
       estimatedDebitCents: 0,
       eventCount: 0,
     });
+  });
+
+  it("returns time allocation rows for valid requests", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/time-allocation")
+      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.timeAllocation).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-02-01T00:00:00.000Z"),
+      to: new Date("2026-02-28T23:59:59.999Z"),
+    });
+    expect(res.body).toEqual({
+      companyId: "company-1",
+      totalMinutes: 60,
+      totalHours: 1,
+      eventCount: 2,
+      costCents: 0,
+      byProject: [],
+      byAgent: [],
+    });
+  });
+
+  it("rejects time allocation requests for board users outside the company", async () => {
+    const app = await createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-2"],
+    });
+
+    const res = await request(app).get("/api/companies/company-1/costs/time-allocation");
+
+    expect(res.status).toBe(403);
+    expect(mockCostService.timeAllocation).not.toHaveBeenCalled();
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {
@@ -551,6 +597,121 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("excludes zero-cent time markers from token-oriented cost aggregates", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Cost Project",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Cost issue",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "COST-1",
+    });
+
+    const occurredAt = new Date();
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        projectId,
+        issueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        billingCode: "metered:api",
+        model: "gpt-5",
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 20,
+        costCents: 125,
+        occurredAt,
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        issueId,
+        provider: "paperclip-time",
+        biller: "paperclip-time",
+        billingType: "unknown",
+        billingCode: "time:operator-active",
+        model: "reviewed-marker",
+        inputTokens: 60,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt,
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        issueId,
+        provider: "manual-meter",
+        biller: "manual-meter",
+        billingType: "metered_api",
+        billingCode: "time:metered",
+        model: "reviewed-charge",
+        inputTokens: 30,
+        cachedInputTokens: 3,
+        outputTokens: 4,
+        costCents: 50,
+        occurredAt,
+      },
+    ]);
+    const [byAgent, byProvider, byBiller, byAgentModel, byProject, windowSpend, issueSummary, timeAllocation] =
+      await Promise.all([
+        costs.byAgent(companyId),
+        costs.byProvider(companyId),
+        costs.byBiller(companyId),
+        costs.byAgentModel(companyId),
+        costs.byProject(companyId),
+        costs.windowSpend(companyId),
+        costs.issueTreeSummary(companyId, issueId),
+        costs.timeAllocation(companyId),
+      ]);
+
+    expect(byAgent).toHaveLength(1);
+    expect(byAgent[0]).toMatchObject({ costCents: 175, inputTokens: 130 });
+    expect(byProvider.find((row) => row.provider === "paperclip-time")).toBeUndefined();
+    expect(byBiller.find((row) => row.biller === "paperclip-time")).toBeUndefined();
+    expect(byAgentModel.find((row) => row.provider === "paperclip-time")).toBeUndefined();
+    expect(byProject).toHaveLength(1);
+    expect(byProject[0]).toMatchObject({ costCents: 175, inputTokens: 130 });
+    expect(windowSpend.find((row) => row.provider === "paperclip-time")).toBeUndefined();
+    expect(issueSummary).toMatchObject({ costCents: 175, inputTokens: 130 });
+    expect(timeAllocation).toMatchObject({ totalMinutes: 60, costCents: 0 });
+  });
+
   it("aggregates issue costs across recursive descendants only", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -701,6 +862,228 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       runCount: 0,
       runtimeMs: 0,
     });
+  });
+
+  it("aggregates only zero-cent time allocation events by project and agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Time Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Recovery Project",
+      status: "active",
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        projectId,
+        billingCode: "time:agent-runtime",
+        provider: "reviewed-time",
+        biller: "internal",
+        billingType: "unknown",
+        model: "minutes",
+        inputTokens: 95,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-07-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        billingCode: "time:operator-active",
+        provider: "reviewed-time",
+        biller: "internal",
+        billingType: "unknown",
+        model: "minutes",
+        inputTokens: 25,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-07-10T00:10:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        billingCode: "time:agent-runtime",
+        provider: "reviewed-time",
+        biller: "internal",
+        billingType: "unknown",
+        model: "minutes",
+        inputTokens: 999,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 1,
+        occurredAt: new Date("2026-07-10T00:15:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        billingCode: "metered:api",
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 10_000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+        costCents: 500,
+        occurredAt: new Date("2026-07-10T00:20:00.000Z"),
+      },
+    ]);
+
+    const outsideMarkerBase = {
+      companyId,
+      agentId,
+      projectId,
+      billingCode: "time:agent-runtime",
+      provider: "reviewed-time",
+      biller: "internal",
+      billingType: "unknown" as const,
+      model: "minutes",
+      inputTokens: 1_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+    };
+    await db.insert(costEvents).values([
+      { ...outsideMarkerBase, occurredAt: new Date("2026-07-09T23:59:59.999Z") },
+      { ...outsideMarkerBase, occurredAt: new Date("2026-07-10T00:10:00.001Z") },
+    ]);
+
+    const allocation = await costs.timeAllocation(companyId, {
+      from: new Date("2026-07-10T00:00:00.000Z"),
+      to: new Date("2026-07-10T00:10:00.000Z"),
+    });
+
+    expect(allocation).toMatchObject({
+      companyId,
+      totalMinutes: 120,
+      totalHours: 2,
+      eventCount: 2,
+      costCents: 0,
+    });
+    expect(allocation.byProject).toEqual([
+      expect.objectContaining({
+        projectId,
+        projectName: "Recovery Project",
+        minutes: 120,
+        hours: 2,
+        eventCount: 2,
+        costCents: 0,
+      }),
+    ]);
+    expect(allocation.byAgent).toEqual([
+      expect.objectContaining({
+        agentId,
+        agentName: "Time Agent",
+        agentStatus: "active",
+        minutes: 120,
+        hours: 2,
+        eventCount: 2,
+        costCents: 0,
+      }),
+    ]);
+  });
+
+  it("does not expose project or agent details from another company in time allocation rows", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherAgentId = randomUUID();
+    const otherProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: otherCompanyId,
+      name: "Other Company Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: otherCompanyId,
+      name: "Other Company Project",
+      status: "active",
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: otherAgentId,
+      projectId: otherProjectId,
+      billingCode: "time:agent-runtime",
+      provider: "reviewed-time",
+      biller: "internal",
+      billingType: "unknown",
+      model: "minutes",
+      inputTokens: 15,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+      occurredAt: new Date("2026-07-10T00:00:00.000Z"),
+    });
+
+    const allocation = await costs.timeAllocation(companyId);
+
+    expect(allocation).toMatchObject({ totalMinutes: 15, eventCount: 1, costCents: 0 });
+    expect(allocation.byProject).toEqual([
+      expect.objectContaining({
+        projectId: null,
+        projectName: null,
+        minutes: 15,
+      }),
+    ]);
+    expect(allocation.byAgent).toEqual([
+      expect.objectContaining({
+        agentId: null,
+        agentName: null,
+        agentStatus: null,
+        minutes: 15,
+        eventCount: 1,
+      }),
+    ]);
+    expect(JSON.stringify(allocation)).not.toContain(otherCompanyId);
+    expect(JSON.stringify(allocation)).not.toContain("Other Company");
   });
 
   it("aggregates run wall-clock duration across the recursive issue tree", async () => {
