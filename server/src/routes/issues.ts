@@ -3628,6 +3628,10 @@ export function issueRoutes(
     return req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyScope?.kind === "task_bridge";
   }
 
+  function isIntakeReceiverKeyActor(req: Request) {
+    return req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyScope?.kind === "intake_receiver";
+  }
+
   function isSkillTestScopedActor(req: Request) {
     return req.actor.type === "agent" && req.actor.keyScope?.kind === "skill_test";
   }
@@ -3635,6 +3639,12 @@ export function issueRoutes(
   function taskBridgeOriginForActor(req: Request) {
     return isTaskBridgeKeyActor(req) && req.actor.keyId
       ? { originKind: "task_bridge", originId: req.actor.keyId }
+      : null;
+  }
+
+  function intakeReceiverOriginForActor(req: Request) {
+    return isIntakeReceiverKeyActor(req) && req.actor.keyId
+      ? { originKind: "intake_receiver", originId: req.actor.keyId }
       : null;
   }
 
@@ -7635,7 +7645,13 @@ export function issueRoutes(
     if (watchdogProductBugFollowUp === false) return;
     const effectiveParentId = watchdogProductBugFollowUp ? null : rawCreateBody.parentId;
     let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-    if (req.actor.type === "agent" && !effectiveParentId && !watchdogProductBugFollowUp && !isTaskBridgeKeyActor(req)) {
+    if (
+      req.actor.type === "agent" &&
+      !effectiveParentId &&
+      !watchdogProductBugFollowUp &&
+      !isTaskBridgeKeyActor(req) &&
+      !isIntakeReceiverKeyActor(req)
+    ) {
       const companyScopeDecision = await access.decide({
         actor: req.actor,
         action: "company_scope:read",
@@ -7733,9 +7749,25 @@ export function issueRoutes(
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    const intakeReceiverOrigin = intakeReceiverOriginForActor(req);
+    const intakeReceiverIdempotencyKey = intakeReceiverOrigin && createBody.idempotencyKey
+      ? [
+          "intake-receiver",
+          intakeReceiverOrigin.originId,
+          createHash("sha256").update(createBody.idempotencyKey).digest("hex"),
+        ].join(":")
+      : null;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
+      ...(intakeReceiverOrigin
+        ? {
+            ...intakeReceiverOrigin,
+            idempotencyKey: intakeReceiverIdempotencyKey,
+            allowDuplicate: true,
+            deduplicationScope: intakeReceiverOrigin,
+          }
+        : {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,

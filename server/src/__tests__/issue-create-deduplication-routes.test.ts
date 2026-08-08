@@ -1,28 +1,39 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentApiKeys,
+  agentRuntimeState,
+  agentWakeupRequests,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { actorMiddleware } from "../middleware/auth.js";
+import { intakeReceiverScopeGuard } from "../middleware/intake-receiver-scope.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import {
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS,
   issueService,
 } from "../services/issues.js";
+
+vi.mock("../services/issue-assignment-wakeup.js", () => ({
+  queueIssueAssignmentWakeup: vi.fn(),
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,15 +53,21 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-create-deduplication-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issues);
+    await db.delete(agentRuntimeState);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentApiKeys);
+    await db.delete(companyMemberships);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -61,6 +78,16 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     const app = express();
     app.use(express.json());
     app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.use("/api", issueRoutes(db, {} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createAuthenticatedApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
+    app.use(intakeReceiverScopeGuard());
     app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
     return app;
@@ -85,6 +112,96 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       priority: "medium",
     }).returning();
     return parent;
+  }
+
+  async function seedReceiverKey(input: {
+    companyId: string;
+    projectId: string;
+    assigneeAgentId: string;
+  }) {
+    const agentId = randomUUID();
+    const keyId = randomUUID();
+    const token = `receiver-${randomUUID()}`;
+    const responsibleUserId = `receiver-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: responsibleUserId,
+      name: "Receiver owner",
+      email: `${responsibleUserId}@example.com`,
+      emailVerified: true,
+      image: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId: input.companyId,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: input.companyId,
+      name: `Receiver ${keyId.slice(0, 8)}`,
+      role: "uptime receiver",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(agentApiKeys).values({
+      id: keyId,
+      companyId: input.companyId,
+      agentId,
+      name: "uptime intake receiver",
+      keyHash: createHash("sha256").update(token).digest("hex"),
+      responsibleUserId,
+      scopeConfig: {
+        kind: "intake_receiver",
+        projectId: input.projectId,
+        assigneeAgentId: input.assigneeAgentId,
+        priority: "medium",
+      },
+    });
+    return { keyId, token };
+  }
+
+  function receiverIssue(projectId: string, assigneeAgentId: string, input: {
+    title: string;
+    idempotencyKey: string;
+  }) {
+    return {
+      title: input.title,
+      description: "Sanitized uptime transition",
+      status: "todo",
+      priority: "medium",
+      projectId,
+      assigneeAgentId,
+      idempotencyKey: input.idempotencyKey,
+    };
+  }
+
+  async function seedReceiverFixture() {
+    const companyId = await seedCompany();
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Intake owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const [project] = await db.insert(projects).values({
+      companyId,
+      name: "Uptime intake",
+      status: "planned",
+    }).returning();
+    return { assigneeAgentId, companyId, project };
   }
 
   it("replays the existing issue for the same company idempotency key", async () => {
@@ -113,6 +230,154 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       deduplicationReason: "idempotency_key",
     });
     expect(await db.select().from(issueCreateIdempotencyKeys)).toHaveLength(1);
+  });
+
+  it("replays a receiver issue only for the same intake key", async () => {
+    const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
+    const receiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const app = createAuthenticatedApp();
+    const body = receiverIssue(project.id, assigneeAgentId, {
+      title: "[Uptime] staging API unavailable",
+      idempotencyKey: "uptime-failure-intake:same-key-replay",
+    });
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(body)
+      .expect(201);
+    const replay = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send({ ...body, title: "[Uptime] retry payload ignored" })
+      .expect(200);
+
+    expect(replay.body).toMatchObject({
+      id: first.body.id,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+      originKind: "intake_receiver",
+      originId: receiver.keyId,
+    });
+  });
+
+  it("replays a receiver issue after board-owned assignment fields change", async () => {
+    const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
+    const receiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const app = createAuthenticatedApp();
+    const body = receiverIssue(project.id, assigneeAgentId, {
+      title: "[Uptime] staging API unavailable",
+      idempotencyKey: "uptime-failure-intake:moved-issue-replay",
+    });
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(body)
+      .expect(201);
+    const [otherProject] = await db.insert(projects).values({
+      companyId,
+      name: "Board triage",
+      status: "planned",
+    }).returning();
+    const otherAssigneeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAssigneeAgentId,
+      companyId,
+      name: "Board-selected owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues)
+      .set({ projectId: otherProject.id, assigneeAgentId: otherAssigneeAgentId })
+      .where(eq(issues.id, first.body.id));
+
+    const replay = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(body)
+      .expect(200);
+
+    expect(replay.body).toMatchObject({
+      id: first.body.id,
+      projectId: otherProject.id,
+      assigneeAgentId: otherAssigneeAgentId,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+      originKind: "intake_receiver",
+      originId: receiver.keyId,
+    });
+  });
+
+  it("does not disclose or bind another receiver issue on a cross-key idempotency collision", async () => {
+    const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
+    const firstReceiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const secondReceiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const app = createAuthenticatedApp();
+    const idempotencyKey = "uptime-failure-intake:cross-key-collision";
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${firstReceiver.token}`)
+      .send(receiverIssue(project.id, assigneeAgentId, {
+        title: "[Uptime] first receiver event",
+        idempotencyKey,
+      }))
+      .expect(201);
+    const second = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${secondReceiver.token}`)
+      .send(receiverIssue(project.id, assigneeAgentId, {
+        title: "[Uptime] second receiver event",
+        idempotencyKey,
+      }))
+      .expect(201);
+
+    expect(second.body.id).not.toBe(first.body.id);
+    expect(second.body).toMatchObject({
+      originKind: "intake_receiver",
+      originId: secondReceiver.keyId,
+    });
+    expect(await db.select().from(issueCreateIdempotencyKeys)).toHaveLength(2);
+  });
+
+  it("does not title-deduplicate a receiver create against another project", async () => {
+    const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
+    const receiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const [otherProject] = await db.insert(projects).values({
+      companyId,
+      name: "Other project",
+      status: "planned",
+    }).returning();
+    const title = "[Uptime] predictable staging outage";
+    const [unrelatedIssue] = await db.insert(issues).values({
+      companyId,
+      projectId: otherProject.id,
+      title,
+      status: "todo",
+      priority: "medium",
+    }).returning();
+    const app = createAuthenticatedApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(receiverIssue(project.id, assigneeAgentId, {
+        title,
+        idempotencyKey: "uptime-failure-intake:title-collision",
+      }))
+      .expect(201);
+
+    expect(created.body.id).not.toBe(unrelatedIssue.id);
+    expect(created.body).toMatchObject({
+      projectId: project.id,
+      assigneeAgentId,
+      originKind: "intake_receiver",
+      originId: receiver.keyId,
+    });
   });
 
   it("expires old idempotency keys before replay lookup", async () => {
