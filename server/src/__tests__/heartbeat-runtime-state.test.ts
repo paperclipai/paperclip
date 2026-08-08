@@ -3,10 +3,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq } from "drizzle-orm";
 import {
   agents,
+  activityLog,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
@@ -20,15 +25,21 @@ import {
   getHeartbeatRunRuntimeStatus,
 } from "../services/heartbeat-run-runtime-status.ts";
 
-vi.doMock("../adapters/index.js", () => ({
-  getServerAdapter: vi.fn(() => ({
+const mockAdapterExecute = vi.hoisted(() => vi.fn());
+
+vi.doMock("../adapters/index.js", () => {
+  const adapter = {
     type: "process",
-    execute: vi.fn(),
+    execute: mockAdapterExecute,
     testEnvironment: vi.fn(),
-  })),
-  listAdapterModelProfiles: vi.fn(() => []),
-  runningProcesses: new Map(),
-}));
+  };
+  return {
+    getServerAdapter: vi.fn(() => adapter),
+    findActiveServerAdapter: vi.fn(() => adapter),
+    listAdapterModelProfiles: vi.fn(() => []),
+    runningProcesses: new Map(),
+  };
+});
 
 const { heartbeatService } = await import("../services/heartbeat.ts");
 
@@ -51,12 +62,18 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockAdapterExecute.mockReset();
     clearAllHeartbeatRunRuntimeStatuses();
+    await db.delete(activityLog);
+    await db.delete(environmentLeases);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(environments);
+    await db.delete(executionWorkspaces);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -101,6 +118,54 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       adapterType: "codex_local",
       stateJson: {},
     });
+  });
+
+  it("aborts the active adapter execution when a run is cancelled", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let releaseExecution!: () => void;
+    let observedSignal: AbortSignal | undefined;
+
+    mockAdapterExecute.mockImplementation(async (ctx: { signal?: AbortSignal }) => {
+      observedSignal = ctx.signal;
+      await new Promise<void>((resolve) => {
+        releaseExecution = resolve;
+        ctx.signal?.addEventListener("abort", resolve, { once: true });
+      });
+      return { exitCode: 1, signal: null, timedOut: false, errorCode: "cancelled" };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RemoteAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId);
+
+    try {
+      await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalledOnce(), { timeout: 10_000 });
+      await heartbeat.cancelRun(run.id, "Cancelled by board");
+      expect(observedSignal?.aborted).toBe(true);
+    } finally {
+      releaseExecution?.();
+      await heartbeat.waitForRunExecutionDrain(run.id, { timeoutMs: 10_000 });
+    }
   });
 
   it("publishes runtime progress without persisting heartbeat run events", async () => {
