@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -48,6 +48,66 @@ async function resolveLegacyRunResponsibleUserId(
     )
     .then((rows) => rows[0] ?? null);
   return normalizeOptionalString(run?.responsibleUserId);
+}
+
+/**
+ * The run id to record for a user actor, or undefined when it names no run.
+ *
+ * A user actor — session, cloud tenant, board key, or the local implicit fallback —
+ * owns no heartbeat run, so there is nothing to bind the header to the way an agent
+ * key binds to its own agent. But dropping it outright would remove real provenance:
+ * a manual create records `originRunId` so the run that prompted it stays visible.
+ *
+ * So the header is checked for existence instead of ownership. That stops an invented
+ * id from being written as attribution, and leaves the remaining reach — naming
+ * another run inside a company the user can already write to — no greater than what
+ * that user can do directly. An unknown id is dropped rather than rejected, so an
+ * existing caller keeps working and simply stops being attributed to a run.
+ */
+async function verifiedRunIdForUserActor(
+  db: Db,
+  runId: string | undefined,
+  scope: { companyIds?: string[]; isInstanceAdmin?: boolean },
+) {
+  const candidate = normalizeOptionalString(runId);
+  if (!candidate || !isUuidLike(candidate)) return undefined;
+  // Scope to the companies this actor reaches. A global lookup would let a user in
+  // one company name a run from another and have it written as originRunId on an
+  // issue in their own — cross-tenant provenance, and an oracle for whether a given
+  // run id exists elsewhere. An instance admin reaches every company, so there is
+  // nothing to narrow.
+  const companyIds = scope.isInstanceAdmin ? undefined : scope.companyIds;
+  if (companyIds && companyIds.length === 0) return undefined;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      companyIds
+        ? and(eq(heartbeatRuns.id, candidate), inArray(heartbeatRuns.companyId, companyIds))
+        : eq(heartbeatRuns.id, candidate),
+    )
+    .then((rows) => rows[0] ?? null);
+  return run ? candidate : undefined;
+}
+
+/** Whether `runId` names a run of this agent in this company. */
+async function runBelongsToAgent(
+  db: Db,
+  input: { runId: string; companyId: string; agentId: string },
+) {
+  if (!isUuidLike(input.runId)) return false;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  return run !== null;
 }
 
 async function loadResponsibleUserMemberships(
@@ -186,7 +246,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            runId: runIdHeader ?? undefined,
+            runId: await verifiedRunIdForUserActor(db, runIdHeader, cloudTenantActor),
           };
           next();
           return;
@@ -220,14 +280,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
+            runId: await verifiedRunIdForUserActor(db, runIdHeader, {
+              companyIds: memberships.map((row) => row.companyId),
+              isInstanceAdmin: Boolean(roleRow),
+            }),
             source: "session",
           };
           next();
           return;
         }
       }
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      req.actor.runId = await verifiedRunIdForUserActor(db, runIdHeader, req.actor);
       next();
       return;
     }
@@ -252,7 +315,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: runIdHeader || undefined,
+          runId: await verifiedRunIdForUserActor(db, runIdHeader, access),
           source: "board_key",
         };
         next();
@@ -364,6 +427,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       });
       next(forbidden("Responsible user is unavailable for this agent key", {
         code: "RESPONSIBLE_USER_UNAVAILABLE",
+      }));
+      return;
+    }
+
+    // A run id on the wire is caller-controlled, so it must be proved before it is
+    // trusted for attribution. Without this, one agent can send another agent's run
+    // id and have its writes recorded against that run — which makes the self-wake
+    // guards (shouldImplicitlyMoveCommentedIssueToTodo, deferredCommentWakeIsSelfAuthored)
+    // treat the comment as self-authored and drop a wake that was owed. The agent JWT
+    // path already proves the claim; this gives the agent-key path the same footing.
+    if (runIdHeader && !(await runBelongsToAgent(db, {
+      runId: runIdHeader,
+      companyId: key.companyId,
+      agentId: key.agentId,
+    }))) {
+      next(unprocessable("X-Paperclip-Run-Id does not belong to this agent key", {
+        code: "AGENT_KEY_RUN_ID_MISMATCH",
       }));
       return;
     }

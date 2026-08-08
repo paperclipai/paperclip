@@ -8620,10 +8620,16 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
-      if (actor.runId && !createdByRunId) {
+      // A user actor never authors as a run: created_by_run_id answers "which run
+      // wrote this", and only an agent runs. A user may still name a run — that is
+      // provenance and originRunId keeps it — but letting it land here would make
+      // the comment read as self-authored to the wake guards and swallow a wake
+      // that was owed.
+      const authorRunId = actor.userId ? null : actor.runId;
+      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, authorRunId);
+      if (authorRunId && !createdByRunId) {
         logger.warn(
-          { issueId, companyId: issue.companyId, runId: actor.runId },
+          { issueId, companyId: issue.companyId, runId: authorRunId },
           "dropping invalid createdByRunId for issue comment insert",
         );
       }

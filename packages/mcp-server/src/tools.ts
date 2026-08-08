@@ -13,7 +13,7 @@ import {
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
-import { PaperclipApiClient } from "./client.js";
+import { PaperclipApiClient, withRunId } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
 
 export interface ToolDefinition {
@@ -25,20 +25,39 @@ export interface ToolDefinition {
   }>;
 }
 
+const runIdField = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe("Heartbeat run this call belongs to; sent as X-Paperclip-Run-Id. Defaults to PAPERCLIP_RUN_ID.");
+
 function makeTool<TSchema extends z.ZodRawShape>(
   name: string,
   description: string,
   schema: z.ZodObject<TSchema>,
   execute: (input: z.infer<typeof schema>) => Promise<unknown>,
 ): ToolDefinition {
+  // Every tool accepts an optional runId. PAPERCLIP_RUN_ID is read once at startup,
+  // which is enough for a server spawned per run but not for a long-lived or shared
+  // one — there the current run is not knowable when the process starts. Without a
+  // run id on the request, writes land with created_by_run_id NULL and the server
+  // cannot tell an agent's own comment from a human's, so a run that closes its issue
+  // and comments on it reopens the issue and wakes itself.
+  const schemaWithRunId = schema.extend({ runId: runIdField });
   return {
     name,
     description,
-    schema,
+    schema: schemaWithRunId,
     execute: async (input) => {
       try {
-        const parsed = schema.parse(input);
-        return formatTextResponse(await execute(parsed));
+        // Strip runId from the RAW input and let the original schema parse exactly
+        // once. Parsing twice would materialise defaults into the payload, turning
+        // an omitted field into an explicitly sent one.
+        const { runId, ...rest } = (input ?? {}) as Record<string, unknown>;
+        const scopedRunId = runIdField.parse(runId);
+        const parsed = schema.parse(rest);
+        return formatTextResponse(await withRunId(scopedRunId, () => execute(parsed)));
       } catch (error) {
         return formatErrorResponse(error);
       }

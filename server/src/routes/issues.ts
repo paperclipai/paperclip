@@ -1829,6 +1829,19 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+/**
+ * The run to record as the AUTHOR of a write, or null.
+ *
+ * created_by_run_id answers "which run wrote this", and only an agent runs. A user
+ * actor may still name a run — that is provenance, and originRunId keeps it — but
+ * letting a user's write claim a run as its author would make the comment read as
+ * self-authored to shouldImplicitlyMoveCommentedIssueToTodo and
+ * deferredCommentWakeIsSelfAuthored, which would swallow a wake that was owed.
+ */
+function runIdForAuthorship(actor: { actorType: "agent" | "user"; runId: string | null }) {
+  return actor.actorType === "agent" ? actor.runId ?? null : null;
+}
+
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   hasComment: boolean;
   issueStatus: string | null | undefined;
@@ -6681,7 +6694,7 @@ export function issueRoutes(
       baseRevisionId: req.body.baseRevisionId ?? null,
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-      createdByRunId: actor.runId ?? null,
+      createdByRunId: runIdForAuthorship(actor),
       sourceTrust,
       lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
@@ -7240,7 +7253,7 @@ export function issueRoutes(
             },
           },
           sourceTrust: promotionTrust,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId: runIdForAuthorship(actor),
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -8941,7 +8954,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: runIdForAuthorship(actor),
           });
 
           if (shouldRelayStop) {
@@ -11246,7 +11259,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: runIdForAuthorship(actor),
             });
           }
 
