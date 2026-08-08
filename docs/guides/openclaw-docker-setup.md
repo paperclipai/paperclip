@@ -93,6 +93,10 @@ Then restart Paperclip and rerun the smoke script.
 pnpm paperclipai allowed-hostname <host>
 ```
 
+## Related Workflow: TweetClaw Routines
+
+After the OpenClaw gateway agent is onboarded, you can assign recurring X/Twitter signal review to it with [OpenClaw TweetClaw Routine](/guides/openclaw-tweetclaw-routine). That workflow keeps Paperclip as the issue, approval, and audit layer while the OpenClaw agent uses TweetClaw to search tweets, search tweet replies, export followers, monitor tweets, process webhooks, and prepare reviewed post or reply follow-up work.
+
 ## Prerequisites
 
 - **Docker Desktop v29+** (with Docker Sandbox support)
