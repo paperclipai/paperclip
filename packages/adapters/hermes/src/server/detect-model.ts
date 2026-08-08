@@ -29,6 +29,45 @@ export interface DetectedModel {
 }
 
 /**
+ * Read a string value from adapter `config.env`, supporting both plain strings
+ * and `{ value: "..." }` resolved-secret refs.
+ */
+export function configEnvString(
+  config: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const env = config.env;
+  if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
+
+  const rawValue = (env as Record<string, unknown>)[key];
+  if (typeof rawValue === "string" && rawValue.length > 0) return rawValue;
+  if (!rawValue || typeof rawValue !== "object" || Array.isArray(rawValue)) return undefined;
+
+  const resolvedValue = (rawValue as { value?: unknown }).value;
+  return typeof resolvedValue === "string" && resolvedValue.length > 0
+    ? resolvedValue
+    : undefined;
+}
+
+/**
+ * Resolve the Hermes profile directory for an agent config.
+ *
+ * `config.env.HERMES_HOME` selects a custom profile; preflight and execution
+ * must both use this so they read the same `config.yaml`.
+ */
+export function resolveHermesHome(config: Record<string, unknown>): string {
+  return configEnvString(config, "HERMES_HOME") ?? join(
+    process.env.HOME || process.env.USERPROFILE || "/root",
+    ".hermes",
+  );
+}
+
+/** Path to the `config.yaml` of the profile selected by the agent config. */
+export function resolveHermesConfigPath(config: Record<string, unknown>): string {
+  return join(resolveHermesHome(config), "config.yaml");
+}
+
+/**
  * Read the Hermes config file and extract the default model config.
  */
 export async function detectModel(

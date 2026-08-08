@@ -11,6 +11,11 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import { serverVersion } from "./version.js";
+import {
+  paperclipVersionFooterMiddleware,
+  paperclipFooterGateMiddleware,
+} from "./services/model-catalog-footer-gate.js";
 import { healthRoutes } from "./routes/health.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -294,6 +299,8 @@ export async function createApp(
     verify: captureRawBody,
   }));
   app.use("/api", apiCompression());
+  // Gate 3 (footer): inject X-Paperclip-Version on every API response before routes
+  app.use("/api", paperclipVersionFooterMiddleware(serverVersion));
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -530,6 +537,8 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
+  // Gate 3 (footer): verify X-Paperclip-Version on all API responses (fail-closed)
+  app.use("/api", paperclipFooterGateMiddleware(serverVersion));
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });

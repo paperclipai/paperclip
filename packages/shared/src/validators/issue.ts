@@ -446,6 +446,10 @@ const createIssueBaseSchema = z.object({
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
+  originKind: z.string().trim().min(1).max(200).optional().nullable(),
+  originId: z.string().trim().min(1).max(200).optional().nullable(),
+  originRunId: z.string().trim().min(1).max(200).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(500).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
@@ -574,6 +578,7 @@ export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
+  breakContinuity: z.boolean().optional().default(false),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;

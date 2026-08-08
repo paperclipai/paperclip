@@ -28,6 +28,9 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
       "utf8",
     );
     await chmod(cliPath, 0o755);
+    const siblingPython = path.join(tempDir, "python3");
+    await writeFile(siblingPython, "#!/bin/sh\necho Python 3.11.15\n", "utf8");
+    await chmod(siblingPython, 0o755);
 
     const result = await testEnvironment({
       companyId: "company-test",

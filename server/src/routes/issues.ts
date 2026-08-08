@@ -150,6 +150,15 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
+import {
+  issueTransitionGateService,
+  type TransitionGateInput,
+  type DeadlineGateInput,
+} from "../services/issue-transition-gate.js";
+import {
+  initialModalCleanupGateService,
+  laneSessionContinuityGateService,
+} from "../services/initial-modal-lane-gate.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -2716,6 +2725,11 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  // Gate 1: transition + deadline-before-mutation gates (fail-closed)
+  const transitionGate = issueTransitionGateService(db);
+  // Gate 2: initial-modal cleanup + lane-session continuity gates (fail-closed)
+  const initialModalGate = initialModalCleanupGateService(db);
+  const laneSessionGate = laneSessionContinuityGateService(db);
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "taskWatchdogService",
@@ -8732,6 +8746,52 @@ export function issueRoutes(
     Object.assign(updateFields, transition.patch);
 
     const nextStatus = updateFields.status ?? existing.status;
+
+    // ── Gate 1: working-transition gate (fail-closed) ──────────────────
+    // Only allow status transitions that are explicitly in the valid map.
+    if (updateFields.status !== undefined && updateFields.status !== existing.status) {
+      const transitionInput: TransitionGateInput = {
+        companyId: existing.companyId,
+        issueId: existing.id,
+        currentStatus: existing.status,
+        targetStatus: updateFields.status as string,
+        actorRunId: actor.runId ?? null,
+      };
+      transitionGate.assertValidTransition(transitionInput);
+    }
+
+    // ── Gate 1: deadline-before-mutation gate (fail-closed) ─────────────
+    // If the issue is overdue, block non-status mutations unless the caller
+    // explicitly acknowledges the overdue state via overrideDeadline=true.
+    const issueDueDate = (existing as unknown as { dueDate?: string | null }).dueDate;
+    if (issueDueDate) {
+      const dueDate = new Date(issueDueDate);
+      if (!isNaN(dueDate.getTime()) && dueDate < new Date()) {
+        const isStatusMutation = updateFields.status !== undefined && updateFields.status !== existing.status;
+        if (!isStatusMutation && !(req.body.overrideDeadline === true)) {
+          // Determine the primary mutation kind for diagnostics
+          let mutationKind = "unknown";
+          if (updateFields.title !== undefined) mutationKind = "title";
+          else if (updateFields.description !== undefined) mutationKind = "description";
+          else if (updateFields.assigneeAgentId !== undefined || updateFields.assigneeUserId !== undefined) mutationKind = "assignee";
+          else if (updateFields.projectId !== undefined) mutationKind = "projectId";
+          else if (updateFields.parentId !== undefined) mutationKind = "parentId";
+          else if (updateFields.blockedByIssueIds !== undefined) mutationKind = "blockedByIssueIds";
+          else if (updateFields.executionPolicy !== undefined) mutationKind = "executionPolicy";
+          else if (updateFields.labels !== undefined) mutationKind = "labels";
+
+          const deadlineInput: DeadlineGateInput = {
+            companyId: existing.companyId,
+            issueId: existing.id,
+            dueDate: issueDueDate,
+            mutationKind,
+            overrideDeadline: false,
+          };
+          transitionGate.assertDeadlineBeforeMutation(deadlineInput);
+        }
+      }
+    }
+
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }
@@ -9983,6 +10043,28 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+
+    // ── Gate 2: initial-modal cleanup gate (fail-closed) ────────────────
+    // Ensure the agent being checked out does not have a stale initial-modal
+    // session that could cause duplicate/conflicting first-step execution.
+    await initialModalGate.assertCleanInitialModal({
+      agentId: req.body.agentId,
+      companyId: issue.companyId,
+      issueId: issue.id,
+    });
+
+    // ── Gate 2: lane-session continuity gate (fail-closed) ──────────────
+    // Ensure the agent's ongoing lane session (if any) is compatible with the
+    // new checkout — prevents context bleed across lane boundaries.
+    await laneSessionGate.assertSessionContinuity({
+      agentId: req.body.agentId,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      currentRunId: checkoutRunId ?? "",
+      priorRunId: issue.checkoutRunId ?? null,
+      breakContinuity: req.body.breakContinuity === true,
+    });
+
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
     if (updated?.harnessKind === "skill_test") {

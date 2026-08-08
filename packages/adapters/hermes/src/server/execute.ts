@@ -51,6 +51,7 @@ import {
 import {
   detectModel,
   resolveProvider,
+  resolveHermesConfigPath,
 } from "./detect-model.js";
 
 // ---------------------------------------------------------------------------
@@ -213,11 +214,47 @@ export function buildPrompt(
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
-const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>"
+ *  Requires the session_id to be the only non-whitespace content on the line
+ *  to avoid matching inline prose like "session_id: this is response text". */
+const SESSION_ID_REGEX = /^session_id:\s*(\S+)\s*$/m;
 
-/** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+/** Global scan variants of the session regexes. `[^\S\n]` is "whitespace except
+ *  newline" so a candidate never spans lines and trailing `\r` is tolerated. */
+const SESSION_ID_SCAN_REGEX = /^session_id:[^\S\n]*(\S+)[^\S\n]*$/gm;
+const SESSION_ID_SCAN_REGEX_LEGACY = /^session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/gim;
+
+/** Placeholder words Hermes (or agent prose) may print where an id belongs.
+ *  Persisting one as session metadata makes the next run attempt
+ *  `--resume unavailable` and silently break session continuity. */
+const SESSION_ID_SENTINELS = new Set([
+  "unavailable",
+  "undefined",
+  "unknown",
+  "missing",
+  "pending",
+  "error",
+  "none",
+  "null",
+  "n/a",
+]);
+
+/** True when a captured token is shaped like a real Hermes session id and is
+ *  safe to persist as resumable session metadata. Exported for tests. */
+export function isResumableSessionId(value: string): boolean {
+  if (SESSION_ID_SENTINELS.has(value.toLowerCase())) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$/.test(value);
+}
+
+/** Scan `text` with a global session regex and return the first candidate that
+ *  passes `isResumableSessionId`. */
+function findResumableSessionId(text: string, regex: RegExp): string | undefined {
+  for (const match of text.matchAll(regex)) {
+    const candidate = match[1];
+    if (candidate && isResumableSessionId(candidate)) return candidate;
+  }
+  return undefined;
+}
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -246,7 +283,9 @@ function cleanResponse(raw: string): string {
       const t = line.trim();
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
-      if (t.startsWith("session_id:")) return false;
+      // Only strip lines that are pure session_id metadata (single token, end of line).
+      // Lines like "session_id: this is response text" are agent prose and must be preserved.
+      if (SESSION_ID_REGEX.test(t)) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -267,34 +306,47 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
-  // In quiet mode, Hermes outputs:
-  //   <response text>
-  //
-  //   session_id: <id>
-  const sessionMatch = stdout.match(SESSION_ID_REGEX);
-  if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
-    if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
+  // Search combined output (stdout + stderr) for session_id.
+  // Hermes 0.18.2 may emit session_id on stderr (cancelled sessions)
+  // or before the response text in quiet mode. cleanResponse()
+  // already strips session_id lines, so we can pass the full stdout
+  // through it regardless of where session_id appears.
+  // Every candidate is validated with isResumableSessionId() so response text
+  // like "session_id: unavailable" is never persisted as resumable metadata.
+  const sessionId =
+    findResumableSessionId(combined, SESSION_ID_SCAN_REGEX) ??
+    // Legacy format (non-quiet mode) — only search stdout, not stderr
+    findResumableSessionId(stdout, SESSION_ID_SCAN_REGEX_LEGACY);
+  if (sessionId) {
+    result.sessionId = sessionId;
+  }
+
+  const cleaned = cleanResponse(stdout);
+  if (cleaned.length > 0) {
+    result.response = cleaned;
+  }
+
+  // Check for error patterns in stderr (after filtering session_id lines)
+  const stderrForErrors = stderr
+    .split("\n")
+    .filter((line) => !SESSION_ID_REGEX.test(line.trim()))
+    .join("\n");
+  if (stderrForErrors.trim()) {
+    const errorLines = stderrForErrors
+      .split("\n")
+      .filter((line) => /error|exception|traceback|failed/i.test(line))
+      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
+    if (errorLines.length > 0) {
+      result.errorMessage = errorLines.slice(0, 5).join("\n");
     }
-  } else {
-    // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
-    }
-    // In non-quiet mode, extract clean response from stdout by
-    // filtering out tool lines, system messages, and noise
-    const cleaned = cleanResponse(stdout);
-    if (cleaned.length > 0) {
-      result.response = cleaned;
-    }
+  }
+  const costMatch = combined.match(COST_REGEX);
+  if (costMatch?.[1]) {
+    result.costUsd = parseFloat(costMatch[1]);
   }
 
   // Extract token usage
@@ -304,23 +356,6 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       inputTokens: parseInt(usageMatch[1], 10) || 0,
       outputTokens: parseInt(usageMatch[2], 10) || 0,
     };
-  }
-
-  // Extract cost
-  const costMatch = combined.match(COST_REGEX);
-  if (costMatch?.[1]) {
-    result.costUsd = parseFloat(costMatch[1]);
-  }
-
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
-    const errorLines = stderr
-      .split("\n")
-      .filter((line) => /error|exception|traceback|failed/i.test(line))
-      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
-    if (errorLines.length > 0) {
-      result.errorMessage = errorLines.slice(0, 5).join("\n");
-    }
   }
 
   return result;
@@ -365,7 +400,9 @@ export async function execute(
 
   if (!explicitProvider) {
     try {
-      detectedConfig = await detectModel();
+      // Read the same Hermes profile that preflight (testEnvironment) checks:
+      // config.env.HERMES_HOME selects a custom profile directory.
+      detectedConfig = await detectModel(resolveHermesConfigPath(config));
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
@@ -390,8 +427,11 @@ export async function execute(
     try {
       agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
       const loadedInstructionsLength = agentInstructions.length;
-      const instructionsFileDir = path.dirname(instructionsFilePath);
-      agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
+      // Hermes runs from the workspace directory, not the bundle directory, so
+      // relative resource references in the instructions only resolve if the
+      // prompt names the bundle's base directory explicitly.
+      const instructionsDir = path.dirname(path.resolve(instructionsFilePath));
+      agentInstructions += `\nThe above agent instructions came from the current Paperclip instruction document. Resolve relative file references against the instruction bundle directory: ${instructionsDir}`;
       await ctx.onLog(
         "stdout",
         `[hermes] Loaded agent instructions from ${instructionsFilePath} (${loadedInstructionsLength} chars)\n`,
@@ -416,11 +456,12 @@ export async function execute(
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  const useQuiet = cfgBoolean(config.quiet) !== false; // schema default true; explicit false is supported
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
+  // `auto` is an adapter sentinel: omitting -m lets Hermes resolve its configured model.
+  if (model !== "auto") {
     args.push("-m", model);
   }
 
@@ -542,11 +583,28 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+  const parsed = parseHermesOutput(stdout, stderr);
+
+  // Older Hermes releases can return 0 after exhausting every provider. Require
+  // the complete terminal envelope so ordinary agent prose mentioning HTTP
+  // errors is not misclassified.
+  const combinedOutput = `${stdout}\n${stderr}`;
+  const terminalProviderExhaustion =
+    /API call failed \(attempt \d+\/\d+\)/i.test(combinedOutput) &&
+    /model [\s\x27"]*auto[\s\x27"]* is not supported[^\n]*Codex provider/i.test(combinedOutput) &&
+    /fallback provider[^\n]*failed[^\n]*(?:HTTP 401 Unauthorized|non-retryable client error)/i.test(combinedOutput) &&
+    /(?:all fallback providers failed|no providers remain)/i.test(combinedOutput) &&
+    /Resume this session with:/i.test(combinedOutput);
+  const effectiveExitCode = result.exitCode === 0 && terminalProviderExhaustion ? 1 : result.exitCode;
+  if (terminalProviderExhaustion) {
+    parsed.errorMessage = "Provider fallback exhaustion prevented Hermes from completing the request.";
+  }
 
   await ctx.onLog(
     "stdout",
-    `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
+    `[hermes] Exit code: ${effectiveExitCode ?? "null"}, timed out: ${result.timedOut}\n`,
   );
   if (parsed.sessionId) {
     await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
@@ -554,7 +612,7 @@ export async function execute(
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
+    exitCode: effectiveExitCode,
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,

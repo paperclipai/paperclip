@@ -1471,6 +1471,13 @@
       "when": 1786129601533,
       "tag": "0211_bright_morg",
       "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "7",
+      "when": 1786129601534,
+      "tag": "0212_ringer_manifest_origin_kind",
+      "breakpoints": true
     }
   ]
 }
