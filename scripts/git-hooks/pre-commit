@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# Paperclip pre-commit hook -- the main worktree is production. (LOOA-371)
+#
+# The server runs from the main worktree under `tsx watch`, so its working
+# files are the deployed bytes. Authoring a commit there means the work was
+# typed there, which means every intermediate save was already deployed. On
+# 2026-07-14 exactly that hot-reloaded a half-written file and 500'd every
+# issues route company-wide.
+#
+# The rule this enforces:
+#
+#   The main worktree may INTEGRATE existing commits (merge, revert,
+#   cherry-pick, rebase). It may never AUTHOR new ones.
+#
+# Develop in a linked worktree:
+#
+#   git worktree add ../paperclip-<ticket> -b paperclip-<ticket>
+#
+# Installed by `pnpm hooks:install` (scripts/install-git-hooks.mjs). This
+# script is deliberately self-contained: it is copied into the git common dir
+# rather than run from the working tree, so switching branches in the live
+# tree cannot delete the guard that catches switching branches in the live
+# tree.
+#
+# Source of truth: scripts/git-hooks/pre-commit
+
+git_dir=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+
+# In a linked worktree these differ; in the main worktree they are the same.
+# Anything that is not the main worktree is a dev tree -- allow it.
+if [ -z "$git_dir" ] || [ "$git_dir" != "$common_dir" ]; then
+  exit 0
+fi
+
+# An integration already in flight is the sanctioned way master advances.
+# (A conflicted merge is finished with a plain `git commit`, which lands here.)
+for marker in MERGE_HEAD REVERT_HEAD CHERRY_PICK_HEAD REBASE_HEAD rebase-merge rebase-apply; do
+  if [ -e "$git_dir/$marker" ]; then
+    exit 0
+  fi
+done
+
+cat >&2 <<'EOF'
+
+  ✋ BLOCKED: this is the live tree -- it is production.
+
+  The server runs from this working tree under `tsx watch`. Its files are the
+  deployed bytes: every save is a deploy, and a half-written file is a
+  half-deployed server. Authoring a commit here means the work was typed here.
+
+  The main worktree may INTEGRATE (merge / revert / cherry-pick). It may never
+  AUTHOR. Move this work to a linked worktree -- your changes are preserved:
+
+      git switch -c paperclip-<ticket>          # keeps your working changes
+      git worktree add ../paperclip-<ticket> paperclip-<ticket>
+      git switch -                              # ...then restore the live tree
+      # (if the branch work was uncommitted, `git stash` first, then
+      #  `git stash pop` inside the new worktree)
+
+  Then commit inside ../paperclip-<ticket> and merge to master when reviewed.
+
+  Check live-tree health any time with:  pnpm check:live-tree
+
+EOF
+
+exit 1
