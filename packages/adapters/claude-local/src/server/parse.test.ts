@@ -267,6 +267,21 @@ describe("isClaudeUnknownSessionError", () => {
     ).toBe(true);
   });
 
+  it("detects the unknown-session signature fed as raw CLI text (unparseable-output fallback)", () => {
+    // execute.ts falls back to this shape when the CLI exits non-zero without
+    // parseable stream-JSON: raw stdout/stderr joined into `result`.
+    expect(
+      isClaudeUnknownSessionError({
+        result: "No conversation found with session ID: 59c33218-29c7-46df-a865-ef835bbe6894",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeUnknownSessionError({
+        result: "API Error: 529 upstream overloaded",
+      }),
+    ).toBe(false);
+  });
+
   it("detects 'session ... not found' style errors", () => {
     expect(
       isClaudeUnknownSessionError({
