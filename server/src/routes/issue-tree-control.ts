@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createIssueTreeHoldSchema,
   isUuidLike,
+  overrideReleaseIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
 } from "@paperclipai/shared";
@@ -388,6 +389,84 @@ export function issueTreeControlRoutes(db: Db) {
       });
 
       res.json(hold);
+    },
+  );
+
+  router.get("/companies/:companyId/tree-control/active-pause-holds", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const holds = await treeControlSvc.listActivePauseHoldsByCompany(companyId);
+    res.json({ holds });
+  });
+
+  router.post(
+    "/companies/:companyId/tree-control/active-pause-holds/:holdId/override-release",
+    validate(overrideReleaseIssueTreeHoldSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const holdId = req.params.holdId as string;
+      if (!isUuidLike(holdId)) {
+        res.status(400).json({ error: "Invalid hold ID" });
+        return;
+      }
+
+      const hold = await treeControlSvc.getHold(companyId, holdId);
+      if (!hold) {
+        res.status(404).json({ error: "Issue tree hold not found" });
+        return;
+      }
+      if (hold.status === "released") {
+        res.status(409).json({ error: "Issue tree hold is already released" });
+        return;
+      }
+      if (hold.mode !== "pause") {
+        res.status(422).json({ error: "Only active pause holds can be override-released" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const releasedHold = await treeControlSvc.releaseHold(companyId, hold.rootIssueId, holdId, {
+        reason: req.body.reason ?? "Override release by board operator",
+        metadata: {
+          override: true,
+          overrideReleasedBy: "board",
+          ...((req.body.metadata as Record<string, unknown>) ?? {}),
+        },
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.tree_hold_override_released",
+        entityType: "issue",
+        entityId: hold.rootIssueId,
+        details: {
+          holdId,
+          rootIssueId: hold.rootIssueId,
+          mode: releasedHold.mode,
+          reason: releasedHold.releaseReason,
+          memberCount: releasedHold.members?.length ?? 0,
+          originalCreatedByActorType: hold.createdByActorType,
+          originalCreatedByUserId: hold.createdByUserId,
+          originalCreatedByAgentId: hold.createdByAgentId,
+        },
+      });
+
+      res.json(releasedHold);
     },
   );
 
