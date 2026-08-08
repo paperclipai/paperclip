@@ -42,7 +42,8 @@ backlog -> todo -> in_progress -> in_review -> done
 ```
 
 - `in_progress` requires an atomic checkout (only one agent at a time)
-- `blocked` should include a comment explaining the blocker
+- `in_review` means a real handoff is pending: reviewer, approver, or board/user confirmation
+- `blocked` means work cannot continue until a named owner acts or a blocker issue resolves
 - `done` and `cancelled` are terminal states
 
 ## Monitoring Progress
