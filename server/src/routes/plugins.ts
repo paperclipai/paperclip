@@ -780,14 +780,6 @@ export function pluginRoutes(
     };
   }
 
-  function actionParamsWithAuthorizedCompanyScope(
-    params: Record<string, unknown> | undefined,
-    companyId: string | undefined,
-  ): Record<string, unknown> {
-    const base = params ?? {};
-    return companyId === undefined ? base : { ...base, companyId };
-  }
-
   async function validateToolRunContextScope(runContext: ToolRunContext): Promise<string | null> {
     const [agent] = await db
       .select({ companyId: agents.companyId })
@@ -1519,7 +1511,7 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
+          params: body.params ?? {},
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1703,7 +1695,7 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
+          params: body?.params ?? {},
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
