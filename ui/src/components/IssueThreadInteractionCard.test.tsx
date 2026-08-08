@@ -116,7 +116,8 @@ describe("IssueThreadInteractionCard", () => {
     };
     const host = renderCard({ interaction });
 
-    expect(host.textContent).toContain("Questions for the operator");
+    expect(host.querySelector(".text-lg")?.textContent).toBe("Questions");
+    expect(host.textContent).not.toContain("Questions for the operator");
     expect(host.textContent).not.toContain("tool_call=ask_user_questions");
     const trigger = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Technical details"),

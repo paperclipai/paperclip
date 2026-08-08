@@ -32,7 +32,7 @@ export interface ActionCardLanguage {
   technicalDetails: string[];
 }
 
-const MACHINE_LANGUAGE = /(?:\/api\/|https?:\/\/|\bAPI\b|\b(?:POST|PUT|PATCH|DELETE|GET)\s+(?:\/|[a-z][a-z0-9_-]*[._][a-z0-9_-]*)|\b(?:UUID|JSON|callback|effect(?:Type| metadata)?|target(?:Issue)?Id|parentId|clientKey|itemId|runId)\b|\b[A-Z]{2,}-\d+\b|\b[0-9a-f]{8,}\b|\b[a-z][a-z0-9]+_[a-z0-9_]+\b)/i;
+const MACHINE_LANGUAGE = /(?:\/api\/|https?:\/\/|(?:^|\s)(?:~\/|\/(?:[\w.-]+\/)+)|\bAPI\b|\b(?:POST|PUT|PATCH|DELETE|GET)\s+(?:\/|[a-z][a-z0-9_-]*[._][a-z0-9_-]*)|\b(?:UUID|JSON|callback|effect(?:Type| metadata)?|target(?:Issue)?Id|parentId|clientKey|itemId|runId)\b|\btool(?:Name|Call)?\b\s*[:=]|\b(?:error|exception|errno)\s*[:=_-]|\b[A-Z]{2,}-\d+\b|\b[0-9a-f]{8,}\b|\b[a-z][a-z0-9]+_[a-z0-9_]+\b)/i;
 const SAFETY_LANGUAGE = /(?:cost|price|budget|token|delete|deletion|remove|external|outside the company|private|privacy|personal|access|permission|send|write|irreversible|cannot be undone|permanent)/i;
 
 const DEFAULTS: Record<ActionCardFamily, Omit<ActionCardLanguage, "safetyFacts" | "technicalDetails">> = {

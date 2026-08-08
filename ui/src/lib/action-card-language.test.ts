@@ -70,6 +70,20 @@ describe("buildActionCardLanguage", () => {
     );
   });
 
+  it("classifies raw paths, tool fields, and error fields as technical details", () => {
+    const language = buildActionCardLanguage({
+      family: "request_confirmation",
+      title: "tool=filesystem_write failed",
+      prompt: "error: permission denied at /var/run/paperclip/result.json",
+    });
+
+    expect(language.decision).toBe("Choose whether to approve this request.");
+    expect(language.technicalDetails).toEqual(expect.arrayContaining([
+      "tool=filesystem_write failed",
+      "error: permission denied at /var/run/paperclip/result.json",
+    ]));
+  });
+
   it.each(technicalSamples)(
     "leads $family with a board decision and keeps machine wording technical",
     (sample) => {

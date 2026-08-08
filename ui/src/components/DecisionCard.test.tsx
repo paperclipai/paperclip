@@ -181,6 +181,35 @@ describe("DecisionCard", () => {
     expect(disclosure?.textContent).toContain("comment_on_issue");
   });
 
+  it("uses a plain target reference when an effect target cannot be resolved", () => {
+    const el = render({
+      resolveIssue: () => null,
+      decision: mkDecision({
+        title: "POST /api/decisions/decision-1",
+        options: [{
+          id: "apply-effects",
+          label: "Apply the changes",
+          effects: [{
+            type: "update_issue_status",
+            targetIssueId: "issue-technical-123",
+            staleness: "lenient",
+            status: "done",
+          }],
+        }],
+      }),
+    });
+
+    const visibleCopy = Array.from(el.querySelectorAll("p, button, span"))
+      .filter((node) => !node.closest("details"))
+      .map((node) => node.textContent)
+      .join(" ");
+
+    expect(visibleCopy).toContain("set the selected task to done");
+    expect(visibleCopy).not.toContain("issue-technical-123");
+    expect(el.querySelector("[data-action-card-technical-details]")?.textContent)
+      .toContain("issue-technical-123");
+  });
+
   it("renders a pending decision with provenance, technical effect details and dismiss", () => {
     const el = render({});
     expect(el.textContent).toContain("Pending");

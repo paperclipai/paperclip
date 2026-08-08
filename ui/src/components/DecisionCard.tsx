@@ -168,7 +168,8 @@ function effectConsequence(
   effect: DecisionEffect,
   resolveIssue: (issueId: string) => DecisionIssueRef | null,
 ): string {
-  const target = issueLabel(resolveIssue(effect.targetIssueId), effect.targetIssueId);
+  const targetRef = resolveIssue(effect.targetIssueId);
+  const target = targetRef ? issueLabel(targetRef, effect.targetIssueId) : "the selected task";
   switch (effect.type) {
     case "comment_on_issue":
       return `This will add a comment to ${target}.`;

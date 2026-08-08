@@ -118,7 +118,8 @@ describe("TaskChatInteractionCard", () => {
       );
     });
 
-    expect(container.textContent).toContain("Questions for the operator");
+    expect(container.querySelector(".text-lg")?.textContent).toBe("Questions");
+    expect(container.textContent).not.toContain("Questions for the operator");
     expect(container.textContent).not.toContain("tool_call=ask_user_questions");
     const trigger = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Technical details"),

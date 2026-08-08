@@ -3415,7 +3415,7 @@ export function IssueThreadInteractionCard({
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
-                  ? visibleQuestionPayloadTitle ?? "Questions for the operator"
+                  ? visibleQuestionPayloadTitle ?? "Questions"
                 : interaction.kind === "request_checkbox_confirmation"
                   ? "Checkbox confirmation requested"
                   : isToolAction
