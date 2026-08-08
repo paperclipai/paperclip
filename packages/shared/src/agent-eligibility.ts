@@ -268,3 +268,25 @@ export function isAgentInvokable(input: {
 }): boolean {
   return getAgentWorkEligibility(input).invokable;
 }
+
+/**
+ * Agent statuses that must never be treated as invokable by automatic
+ * recovery paths (release-path re-queueing, recovery candidate selection,
+ * issue-graph liveness). An agent in one of these statuses is known to be
+ * unable to make progress right now, so re-queuing a run for it on the next
+ * unrelated issue event (a comment, a mention, a wake) would just repeat the
+ * same failure with no cooldown. This is stricter than
+ * `isAgentStatusInvokable`/`INVOKABLE_AGENT_STATUSES`, which still treats
+ * `error` as invokable for general-purpose eligibility (assignability, UI)
+ * where a human may deliberately want to retry an errored agent.
+ */
+export const RECOVERY_NON_INVOKABLE_AGENT_STATUSES = new Set<string>([
+  "paused",
+  "terminated",
+  "pending_approval",
+  "error",
+]);
+
+export function isAgentInvokableForRecovery(status: string | null | undefined): boolean {
+  return status != null && !RECOVERY_NON_INVOKABLE_AGENT_STATUSES.has(status);
+}
