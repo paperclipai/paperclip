@@ -2,6 +2,7 @@ import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { effectiveCostCentsSum } from "./cost-imputation-sql.js";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -115,24 +116,33 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, effectiveTotal }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          effectiveTotal: effectiveCostCentsSum(),
         })
         .from(costEvents)
         .where(and(...conditions));
 
       const spendCents = Number(total);
+      const effectiveSpendCents = Number(effectiveTotal);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
+          : 0;
+      const effectiveUtilization =
+        company.budgetMonthlyCents > 0
+          ? (effectiveSpendCents / company.budgetMonthlyCents) * 100
           : 0;
 
       return {
         companyId,
         spendCents,
+        // Includes imputed cost for subscription runs that report a $0 billed cost.
+        effectiveSpendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        effectiveUtilizationPercent: Number(effectiveUtilization.toFixed(2)),
       };
     },
 
@@ -288,6 +298,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           agentName: agents.name,
           agentStatus: agents.status,
           costCents: sumAsNumber(costEvents.costCents),
+          // Billed cost plus imputed token cost for $0 subscription runs.
+          effectiveCostCents: effectiveCostCentsSum(),
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -440,6 +452,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: costEvents.billingType,
           model: costEvents.model,
           costCents: sumAsNumber(costEvents.costCents),
+          effectiveCostCents: effectiveCostCentsSum(),
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -496,6 +509,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           projectId: effectiveProjectId,
           projectName: projects.name,
           costCents: costCentsExpr,
+          effectiveCostCents: effectiveCostCentsSum(),
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),

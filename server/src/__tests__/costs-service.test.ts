@@ -476,6 +476,54 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(agent?.spentMonthlyCents).toBe(0);
   });
 
+  it("imputes an effective cost for subscription runs that report zero billed cost", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      budgetMonthlyCents: 2500,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Subscription Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // opus: 1M input (1500) + 1M cached (150) + 1M output (7500) = 9150 cents,
+    // all imputed because the subscription run reports costCents=0.
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "anthropic",
+      biller: "claude-max",
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      model: "claude-opus-4-8",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      costCents: 0,
+      occurredAt: new Date("2026-07-13T14:22:54.000Z"),
+    });
+
+    const [byAgentRow] = await costs.byAgent(companyId);
+    expect(byAgentRow?.costCents).toBe(0);
+    expect(byAgentRow?.effectiveCostCents).toBe(9150);
+
+    const summary = await costs.summary(companyId);
+    expect(summary.spendCents).toBe(0);
+    expect(summary.effectiveSpendCents).toBe(9150);
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
