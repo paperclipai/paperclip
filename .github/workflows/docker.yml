@@ -6,6 +6,12 @@ on:
       - "master"
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag or SHA) to build. Required for callers; push events use github.ref.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,9 +29,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Reusable-workflow callers supply an arbitrary `ref`. Only trusted refs
+      # get built and pushed with `packages: write`, so refuse anything that is
+      # not a stable `v*` tag or a full 40-char commit SHA before checkout.
+      - name: Validate ref input
+        if: inputs.ref != ''
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [[ ! "$REF" =~ ^v[0-9] && ! "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Refusing to build from untrusted ref '$REF'. Expected a v* tag or a full commit SHA." >&2
+            exit 1
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
@@ -137,7 +158,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ inputs.ref == '' && github.ref_type == 'branch' }}
+            type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
@@ -183,6 +205,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.ref }}
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
@@ -289,7 +312,9 @@ jobs:
           echo "count=${count}" >> "$GITHUB_OUTPUT"
 
       # Published under the same tag set with a `-cloud` suffix
-      # (sha-<short>-cloud, latest-cloud, <version>-cloud).
+      # (sha-<short>-cloud, latest-cloud, <version>-cloud). Mirrors the
+      # stock job's `inputs.ref` handling so a `workflow_call` release build
+      # publishes `<tag>-cloud` instead of overwriting `latest-cloud`.
       - name: Docker meta (cloud)
         id: meta-cloud
         uses: docker/metadata-action@v6
@@ -298,7 +323,8 @@ jobs:
           flavor: |
             suffix=-cloud,onlatest=true
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ inputs.ref == '' && github.ref_type == 'branch' }}
+            type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
