@@ -132,6 +132,50 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     };
   }
 
+  it("allows PATCH immediately after checkout when the authenticated run is already terminal locally", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const bridgedRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: bridgedRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bridged checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const app = createApp(agentActor(companyId, agentId, bridgedRunId));
+    const checkout = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+    expect(checkout.body).toMatchObject({
+      checkoutRunId: bridgedRunId,
+      executionRunId: bridgedRunId,
+    });
+
+    const patch = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Bridged checkout updated" });
+
+    expect(patch.status, JSON.stringify(patch.body)).toBe(200);
+    expect(patch.body).toMatchObject({
+      title: "Bridged checkout updated",
+      checkoutRunId: bridgedRunId,
+      executionRunId: bridgedRunId,
+    });
+  });
+
   it("allows an assigned agent PATCH to recover a terminal stale executionRunId", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
