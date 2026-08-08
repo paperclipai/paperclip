@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notExists, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -35,11 +36,16 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+const sourceIssues = alias(issues, "source_issues");
+const activeRuns = alias(heartbeatRuns, "active_runs");
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
+export const MAX_OPEN_REVIEWS_PER_RECONCILE = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+export const PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX = "Productivity review resolved automatically.";
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -271,6 +277,92 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(issues.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  // Select on the source status rather than filtering in the loop, so the page
+  // holds only reviews this pass can act on. A page of open-but-not-actionable
+  // reviews would otherwise sit at the head of every scan and starve the rest.
+  async function listTerminalSourceOpenReviews(companyId?: string) {
+    return db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        sourceIssueId: sourceIssues.id,
+        sourceIssueStatus: sourceIssues.status,
+      })
+      .from(issues)
+      .innerJoin(
+        sourceIssues,
+        and(
+          // `origin_id` is text and does not always hold a uuid, so widen the
+          // uuid side rather than casting the column and risking a parse error.
+          sql`${sourceIssues.id}::text = ${issues.originId}`,
+          eq(sourceIssues.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          companyId ? eq(issues.companyId, companyId) : undefined,
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+          inArray(sourceIssues.status, [...TERMINAL_ISSUE_STATUSES]),
+          // A review an agent is judging right now is skipped, so excluding it
+          // here as well keeps it from holding a slot the page owes to a review
+          // the pass can actually resolve.
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(activeRuns)
+              .where(
+                and(
+                  eq(activeRuns.companyId, issues.companyId),
+                  inArray(activeRuns.status, [...ACTIVE_RUN_STATUSES]),
+                  sql`(
+                    ${activeRuns.contextSnapshot}->>'issueId' = ${issues.id}::text
+                    or ${activeRuns.contextSnapshot}->>'taskId' = ${issues.id}::text
+                    or ${activeRuns.contextSnapshot}->>'taskKey' = ${issues.id}::text
+                  )`,
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(asc(issues.createdAt), asc(issues.id))
+      .limit(MAX_OPEN_REVIEWS_PER_RECONCILE);
+  }
+
+  // The status update and the audit comment are separate writes. If the update
+  // fails after the comment lands, the retry must not comment a second time.
+  async function hasAutoResolveComment(companyId: string, reviewIssueId: string) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, reviewIssueId),
+          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX}%`}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
+
+  async function hasActiveRunForIssue(companyId: string, issueId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+          issueRunScopeSql(issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
   }
 
   async function findRecentTerminalProductivityReview(
@@ -838,6 +930,76 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  // A review stays open after its source issue finishes, because only a manager
+  // decision closes it. Close those reviews automatically: there is no work left
+  // to judge once the source reaches a terminal status.
+  //
+  // The pass runs under an advisory lock. Reading a review and writing its audit
+  // comment are separate statements, so two overlapping reconciliations would
+  // both read the review as uncommented and both write the comment. `try` rather
+  // than a blocking acquire: a second pass has nothing to add, so it should skip
+  // and let the next cycle pick the work up instead of queueing behind this one.
+  // The lock is transaction-scoped, so a pass that throws cannot strand it.
+  async function autoResolveTerminalSourceReviews(companyId?: string) {
+    return db.transaction(async (tx) => {
+      const lockKey = `paperclip:productivity-review:auto-resolve:${companyId ?? "all"}`;
+      const acquired = await tx
+        .execute(sql<{ acquired: boolean }>`
+          select pg_try_advisory_xact_lock(hashtextextended(${lockKey}, 0)) as acquired
+        `)
+        .then((rows) => Boolean(Array.from(rows as Iterable<{ acquired: boolean }>)[0]?.acquired));
+      if (!acquired) return [] as string[];
+      return runAutoResolvePass(companyId);
+    });
+  }
+
+  async function runAutoResolvePass(companyId?: string) {
+    const openReviews = await listTerminalSourceOpenReviews(companyId);
+    const autoResolvedIssueIds: string[] = [];
+
+    for (const review of openReviews) {
+      // The scan already excludes reviews with an active run, so this only
+      // catches a run that started since. It cannot starve the page: a row that
+      // reaches this point was actionable when the page was built.
+      if (await hasActiveRunForIssue(review.companyId, review.id)) continue;
+
+      try {
+        if (!(await hasAutoResolveComment(review.companyId, review.id))) {
+          await issuesSvc.addComment(
+            review.id,
+            `${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX} The source issue reached terminal status \`${review.sourceIssueStatus}\`, so no productivity decision is necessary.`,
+            {},
+          );
+        }
+        await issuesSvc.update(review.id, { status: "cancelled" });
+      } catch (err) {
+        logger.warn(
+          { err, companyId: review.companyId, issueId: review.id, sourceIssueId: review.sourceIssueId },
+          "productivity review auto-resolution failed",
+        );
+        continue;
+      }
+
+      await logActivity(db, {
+        companyId: review.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_auto_resolved",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: review.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: review.sourceIssueId,
+          sourceIssueStatus: review.sourceIssueStatus,
+        },
+      });
+      autoResolvedIssueIds.push(review.id);
+    }
+
+    return autoResolvedIssueIds;
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -846,6 +1008,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const autoResolvedIssueIds = await autoResolveTerminalSourceReviews(opts?.companyId);
     const candidates = await db
       .select()
       .from(issues)
@@ -873,8 +1036,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       noActionSuppressed: 0,
       skipped: 0,
       failed: 0,
+      autoResolved: autoResolvedIssueIds.length,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
+      autoResolvedIssueIds,
     };
 
     const prefixCache = new Map<string, string>();
