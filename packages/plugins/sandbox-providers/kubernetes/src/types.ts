@@ -4,6 +4,14 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+function getConfiguredAdapterTypes(adapters?: readonly { adapterType: string }[]): Set<string> {
+  const adapterTypes = new Set(KNOWN_ADAPTER_TYPES);
+  for (const adapter of adapters ?? []) {
+    adapterTypes.add(adapter.adapterType);
+  }
+  return adapterTypes;
+}
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -13,6 +21,7 @@ export const kubernetesProviderConfigSchema = z
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
     imageRegistry: z.string().url().optional(),
+    runtimeImages: z.record(z.string().trim().min(1)).default({}),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
@@ -66,6 +75,19 @@ export const kubernetesProviderConfigSchema = z
      *   installed, or when you need stable (non-alpha) k8s APIs.
      */
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
+  })
+  .superRefine((cfg, ctx) => {
+    const adapterTypes = getConfiguredAdapterTypes(cfg.adapters);
+    for (const adapterType of Object.keys(cfg.runtimeImages)) {
+      if (!adapterTypes.has(adapterType)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["runtimeImages", adapterType],
+          message:
+            "runtimeImages keys must match a known adapter type or an adapter declared in adapters",
+        });
+      }
+    }
   })
   .refine(
     (cfg) => cfg.inCluster || cfg.kubeconfig,
