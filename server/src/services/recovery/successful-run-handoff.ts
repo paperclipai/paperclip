@@ -494,12 +494,12 @@ export function decideSuccessfulRunHandoff(input: {
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
   continuationFingerprint?: string | null;
+  handoffAttempt?: number | null;
   maxCorrectiveAttempts?: number | null;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
-  if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
@@ -538,6 +538,11 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
   }
+  const maxCorrectiveAttempts = input.maxCorrectiveAttempts ?? resolveMaxCorrectiveAttempts(issue.executionPolicy);
+  const nextHandoffAttempt = Math.max(1, (input.handoffAttempt ?? 0) + 1);
+  if (nextHandoffAttempt > maxCorrectiveAttempts) {
+    return { kind: "skip", reason: "corrective handoff attempts exhausted" };
+  }
 
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,
@@ -564,8 +569,8 @@ export function decideSuccessfulRunHandoff(input: {
       unresolvedDependencyIssueIds: [],
       lastUsefulActionAt: issue.updatedAt ?? null,
     }),
-    handoffAttempt: 1,
-    maxHandoffAttempts: input.maxCorrectiveAttempts ?? resolveMaxCorrectiveAttempts(issue.executionPolicy),
+    handoffAttempt: nextHandoffAttempt,
+    maxHandoffAttempts: maxCorrectiveAttempts,
     resumeIntent: true,
     followUpRequested: true,
     resumeFromRunId: run.id,

@@ -26,7 +26,7 @@ export const issueContinuationLinks = pgTable(
   (table) => ({
     companyPredecessorIdx: index("issue_continuation_links_company_predecessor_idx").on(table.companyId, table.predecessorIssueId),
     companySuccessorIdx: index("issue_continuation_links_company_successor_idx").on(table.companyId, table.successorIssueId),
-    predecessorFingerprintUq: uniqueIndex("issue_continuation_links_predecessor_fingerprint_uq")
-      .on(table.companyId, table.predecessorIssueId, table.continuationFingerprint),
+    continuationFingerprintUq: uniqueIndex("issue_continuation_links_fingerprint_uq")
+      .on(table.companyId, table.continuationFingerprint),
   }),
 );

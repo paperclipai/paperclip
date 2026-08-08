@@ -66,7 +66,7 @@ export const issueRecoveryActions = pgTable(
       .on(table.companyId, table.sourceIssueId, table.cause, table.fingerprint)
       .where(sql`${table.status} in ('active', 'escalated')`),
     activeContinuationFingerprintIdx: uniqueIndex("issue_recovery_actions_active_continuation_fingerprint_uq")
-      .on(table.companyId, table.continuationFingerprint, table.cause)
+      .on(table.companyId, table.sourceIssueId, table.continuationFingerprint, table.cause)
       .where(sql`${table.status} in ('active', 'escalated') and ${table.continuationFingerprint} is not null`),
   }),
 );

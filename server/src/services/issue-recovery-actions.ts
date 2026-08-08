@@ -134,7 +134,7 @@ export function issueRecoveryActionService(db: Db) {
       .where(
         and(
           eq(issueRecoveryActions.companyId, companyId),
-          ...(continuationFingerprint ? [] : [eq(issueRecoveryActions.sourceIssueId, sourceIssueId)]),
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
           inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
           ...(continuationFingerprint ? [eq(issueRecoveryActions.continuationFingerprint, continuationFingerprint)] : []),
         ),

@@ -1,0 +1,4 @@
+DROP INDEX "issue_continuation_links_predecessor_fingerprint_uq";--> statement-breakpoint
+DROP INDEX "issue_recovery_actions_active_continuation_fingerprint_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX "issue_continuation_links_fingerprint_uq" ON "issue_continuation_links" USING btree ("company_id","continuation_fingerprint");--> statement-breakpoint
+CREATE UNIQUE INDEX "issue_recovery_actions_active_continuation_fingerprint_uq" ON "issue_recovery_actions" USING btree ("company_id","source_issue_id","continuation_fingerprint","cause") WHERE "issue_recovery_actions"."status" in ('active', 'escalated') and "issue_recovery_actions"."continuation_fingerprint" is not null;

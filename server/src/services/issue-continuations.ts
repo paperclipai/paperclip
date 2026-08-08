@@ -64,6 +64,9 @@ export function issueContinuationService(db: Db) {
     request: CreateIssueContinuation;
   }) {
     return db.transaction(async (tx) => {
+      const [companyLock] = await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, input.companyId)).limit(1).for("update");
+      if (!companyLock) throw new IssueContinuationError("Company not found", 404);
       const [predecessor] = await tx.select().from(issues).where(and(
         eq(issues.id, input.predecessorIssueId), eq(issues.companyId, input.companyId),
       )).limit(1).for("update");
@@ -87,7 +90,6 @@ export function issueContinuationService(db: Db) {
       const continuationFingerprint = fingerprint(rootIssueId, input.request.deliverableKey, dependencyFingerprint);
       const [existing] = await tx.select().from(issueContinuationLinks).where(and(
         eq(issueContinuationLinks.companyId, input.companyId),
-        eq(issueContinuationLinks.predecessorIssueId, predecessor.id),
         eq(issueContinuationLinks.continuationFingerprint, continuationFingerprint),
       )).limit(1);
       if (existing) {

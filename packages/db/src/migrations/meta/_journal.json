@@ -1415,6 +1415,13 @@
       "when": 1786161198914,
       "tag": "0203_plain_prodigy",
       "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1786164711832,
+      "tag": "0204_broad_moon_knight",
+      "breakpoints": true
     }
   ]
 }

@@ -9376,6 +9376,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
       continuationFingerprint,
+      handoffAttempt: asNumber(context.handoffAttempt, 0),
       maxCorrectiveAttempts: issue ? resolveMaxCorrectiveAttempts(issue.executionPolicy) : null,
     });
 

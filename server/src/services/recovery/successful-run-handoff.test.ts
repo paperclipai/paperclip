@@ -145,6 +145,15 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("advances the corrective handoff attempt from its durable context", () => {
+    const decision = decide({ handoffAttempt: 1, maxCorrectiveAttempts: 3 });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({ handoffAttempt: 2, maxHandoffAttempts: 3 });
+    expect(decision.contextSnapshot).toMatchObject({ handoffAttempt: 2, maxHandoffAttempts: 3 });
+  });
+
   it.each([
     "**Blocked** — The benchmark target is not mounted…",
     "coqc … is not installed, so local compilation could not run",
@@ -346,7 +355,7 @@ describe("successful run handoff decision", () => {
     });
   });
 
-  it("does not loop from a corrective handoff run", () => {
+  it("stops after the configured corrective handoff budget", () => {
     expect(decide({
       run: {
         ...run,
@@ -354,12 +363,16 @@ describe("successful run handoff decision", () => {
         contextSnapshot: {
           issueId: "issue-1",
           wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
-          handoffRequired: true,
+        handoffRequired: true,
+        handoffAttempt: 3,
+        maxHandoffAttempts: 3,
         },
       } as any,
+      handoffAttempt: 3,
+      maxCorrectiveAttempts: 3,
     })).toEqual({
       kind: "skip",
-      reason: "source run is already a corrective handoff run",
+      reason: "corrective handoff attempts exhausted",
     });
   });
 
