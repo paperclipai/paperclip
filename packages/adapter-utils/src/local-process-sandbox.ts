@@ -49,11 +49,7 @@ interface NetworkAllowlistProxy {
 }
 
 const SYSTEM_READ_PATHS = [
-  "/bin",
-  "/sbin",
   "/usr",
-  "/lib",
-  "/lib64",
   "/etc/ca-certificates",
   "/etc/ssl",
   "/etc/resolv.conf",
@@ -64,6 +60,13 @@ const SYSTEM_READ_PATHS = [
   "/etc/localtime",
   "/etc/timezone",
   "/etc/gitconfig",
+] as const;
+
+const TOP_LEVEL_SYSTEM_PATH_FALLBACKS = [
+  ["/bin", "usr/bin"],
+  ["/sbin", "usr/sbin"],
+  ["/lib", "usr/lib"],
+  ["/lib64", "usr/lib64"],
 ] as const;
 
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] as const;
@@ -386,22 +389,45 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 
   if (filesystemScope === "workspace") {
     args.push("--tmpfs", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
-    args.push(
-      "--symlink", "usr/bin", "/bin",
-      "--symlink", "usr/sbin", "/sbin",
-      "--symlink", "usr/lib", "/lib",
-      "--symlink", "usr/lib64", "/lib64",
-    );
     const created = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
+    const represented = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
     const mounted = new Set<string>();
+    const addSymlink = (linkPath: string, target: string) => {
+      const normalized = normalizeAbsolutePath(linkPath, "Sandbox path");
+      if (represented.has(normalized)) return;
+      addParentDirectories(args, created, normalized);
+      args.push("--symlink", target, normalized);
+      represented.add(normalized);
+      created.add(normalized);
+    };
     const mount = async (source: string, access: LocalProcessSandboxAccess) => {
       const normalized = normalizeAbsolutePath(source, "Sandbox path");
-      if (mounted.has(normalized) || !(await pathExists(normalized))) return;
+      if (mounted.has(normalized) || represented.has(normalized) || !(await pathExists(normalized))) return;
       addParentDirectories(args, created, normalized);
       args.push(access === "rw" ? "--bind" : "--ro-bind", normalized, normalized);
       mounted.add(normalized);
+      represented.add(normalized);
       created.add(normalized);
     };
+    for (const [systemPath, fallbackTarget] of TOP_LEVEL_SYSTEM_PATH_FALLBACKS) {
+      const normalized = normalizeAbsolutePath(systemPath, "Sandbox path");
+      let stat: Awaited<ReturnType<typeof fs.lstat>> | null = null;
+      try {
+        stat = await fs.lstat(normalized);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (stat?.isSymbolicLink()) {
+        const target = (await fs.readlink(normalized)).trim() || fallbackTarget;
+        addSymlink(normalized, target);
+        continue;
+      }
+      if (stat) {
+        await mount(normalized, "ro");
+        continue;
+      }
+      addSymlink(normalized, fallbackTarget);
+    }
     for (const systemPath of SYSTEM_READ_PATHS) await mount(systemPath, "ro");
     for (const executablePath of await executableReadPaths(input.executable)) await mount(executablePath, "ro");
     if (networkScope === "allowlist") {
