@@ -73,6 +73,9 @@ function overviewItem(overrides: Partial<WorkspaceOverviewItem> = {}): Workspace
     mode: overrides.mode ?? "isolated_workspace",
     strategyType: overrides.strategyType ?? "git_worktree",
     cwd: overrides.cwd ?? "/tmp/workspace-alpha",
+    repoUrl: overrides.repoUrl ?? null,
+    providerType: overrides.providerType ?? "git_worktree",
+    providerRef: overrides.providerRef ?? null,
     branchName: overrides.branchName ?? "PAP-11916-workspaces",
     lastUpdatedAt: overrides.lastUpdatedAt ?? new Date("2026-06-25T01:00:00.000Z"),
     projectWorkspaceId: overrides.projectWorkspaceId ?? null,
@@ -210,6 +213,33 @@ describe("Workspaces", () => {
     expect(mockExecutionWorkspacesApi.listOverview).toHaveBeenLastCalledWith("company-1", { offset: 50 });
     expect(container.textContent).toContain("Workspace Beta");
     expect(container.textContent).toContain("PAP-11917");
+  });
+
+  it("derives repository provenance for non-worktree overview items backed by a repoUrl", async () => {
+    mockExecutionWorkspacesApi.listOverview.mockResolvedValueOnce(overviewResponse({
+      items: [
+        overviewItem({
+          strategyType: "project_primary",
+          repoUrl: "https://github.com/example/paperclip",
+          providerType: "local_fs",
+        }),
+      ],
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Workspaces />
+        </QueryClientProvider>,
+      );
+    });
+    await flushQueries();
+
+    expect(container.textContent).toContain("Repository");
+    expect(container.textContent).not.toContain("Artifact-only");
+    expect(container.textContent).toContain("https://github.com/example/paperclip");
   });
 
   it("keeps the isolated-workspaces feature flag redirect", async () => {
