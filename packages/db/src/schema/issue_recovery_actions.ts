@@ -29,6 +29,7 @@ export const issueRecoveryActions = pgTable(
     returnOwnerAgentId: uuid("return_owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     cause: text("cause").notNull(),
     fingerprint: text("fingerprint").notNull(),
+    continuationFingerprint: text("continuation_fingerprint"),
     evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
     nextAction: text("next_action").notNull(),
     wakePolicy: jsonb("wake_policy").$type<Record<string, unknown>>(),
@@ -64,5 +65,8 @@ export const issueRecoveryActions = pgTable(
     activeFingerprintIdx: uniqueIndex("issue_recovery_actions_active_fingerprint_uq")
       .on(table.companyId, table.sourceIssueId, table.cause, table.fingerprint)
       .where(sql`${table.status} in ('active', 'escalated')`),
+    activeContinuationFingerprintIdx: uniqueIndex("issue_recovery_actions_active_continuation_fingerprint_uq")
+      .on(table.companyId, table.continuationFingerprint, table.cause)
+      .where(sql`${table.status} in ('active', 'escalated') and ${table.continuationFingerprint} is not null`),
   }),
 );

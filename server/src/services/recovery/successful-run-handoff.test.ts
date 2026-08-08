@@ -5,12 +5,14 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
+  buildContinuationRecoveryFingerprint,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
+  resolveMaxCorrectiveAttempts,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -67,6 +69,18 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
+  it("normalizes equivalent continuation recovery fingerprints and policy budgets", () => {
+    const first = buildContinuationRecoveryFingerprint({
+      canonicalContinuationRootId: "root", deliverableKey: "ui.audit", unresolvedDependencyIssueIds: ["b", "a"], lastUsefulActionAt: null,
+    });
+    const second = buildContinuationRecoveryFingerprint({
+      canonicalContinuationRootId: "root", deliverableKey: "ui.audit", unresolvedDependencyIssueIds: ["a", "b", "a"], lastUsefulActionAt: null,
+    });
+    expect(first).toBe(second);
+    expect(resolveMaxCorrectiveAttempts({ continuation: { noProgressEscalation: { maxCorrectiveAttempts: 3 } } })).toBe(3);
+    expect(resolveMaxCorrectiveAttempts({ continuation: { noProgressEscalation: { maxCorrectiveAttempts: 101 } } })).toBe(1);
+  });
+
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 

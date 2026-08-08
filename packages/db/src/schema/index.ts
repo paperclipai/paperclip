@@ -40,6 +40,7 @@ export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
+export { issueContinuationLinks } from "./issue_continuation_links.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";

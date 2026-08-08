@@ -342,6 +342,10 @@ export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
 ] as const;
 export type IssueRecoveryActionOutcome = (typeof ISSUE_RECOVERY_ACTION_OUTCOMES)[number];
 
+export const ISSUE_CONTINUATION_LINK_KINDS = ["replacement", "residual"] as const;
+export type IssueContinuationLinkKind = (typeof ISSUE_CONTINUATION_LINK_KINDS)[number];
+export const DEFAULT_MAX_CONTINUATION_CORRECTIVE_ATTEMPTS = 1;
+
 export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOriginKind {
   return `plugin:${pluginKey}:operation`;
 }

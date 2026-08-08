@@ -57,6 +57,7 @@ import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  buildContinuationRecoveryFingerprint,
   buildSuccessfulRunHandoffExhaustedNotice,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -2905,6 +2906,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue: input.issue,
         recoveryCause,
         latestRun: input.latestRun,
+      }),
+      continuationFingerprint: buildContinuationRecoveryFingerprint({
+        canonicalContinuationRootId: input.issue.id,
+        deliverableKey: input.issue.id,
+        unresolvedDependencyIssueIds: [],
+        lastUsefulActionAt: input.issue.updatedAt,
       }),
       evidence: {
         ...buildStrandedRecoveryActionEvidence({

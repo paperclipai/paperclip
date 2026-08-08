@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueContinuationLinks,
   issueDocuments,
   issueExecutionDecisions,
   issueRelations,
@@ -44,6 +45,7 @@ import {
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
+  createIssueContinuationSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   feedbackTargetTypeSchema,
@@ -132,6 +134,7 @@ import {
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { issueContinuationService, IssueContinuationError } from "../services/issue-continuations.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -1401,6 +1404,7 @@ function buildTreeHealthDiagnostics(input: {
   blockersByIssueId: Map<string, IssueSubtreeDiagnosticBlockerAuthzRow[]>;
   readinessByIssueId: Map<string, { unresolvedBlockerIssueIds: string[] }>;
   successfulRunsSinceProgressByIssueId: Map<string, number>;
+  continuationLinks: Array<{ predecessorIssueId: string; successorIssueId: string }>;
   thresholds: IssueTreeHealthThresholds;
 }): IssueTreeHealthDiagnostics {
   const nodeIds = new Set(input.nodes.map((node) => node.id));
@@ -1440,6 +1444,26 @@ function buildTreeHealthDiagnostics(input: {
     }
   }
 
+  const predecessorBySuccessor = new Map<string, string>();
+  for (const link of input.continuationLinks) {
+    if (!predecessorBySuccessor.has(link.successorIssueId)) {
+      predecessorBySuccessor.set(link.successorIssueId, link.predecessorIssueId);
+    }
+  }
+  const canonicalRootFor = (issueId: string) => {
+    let current = issueId;
+    const seen = new Set<string>();
+    while (predecessorBySuccessor.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = predecessorBySuccessor.get(current)!;
+    }
+    return current;
+  };
+  const continuationCounts = new Map<string, number>();
+  for (const node of input.nodes) {
+    const root = canonicalRootFor(node.id);
+    continuationCounts.set(root, (continuationCounts.get(root) ?? 0) + 1);
+  }
   const nodes = input.nodes.map((node) => {
     const cycleStatus = cycleIssueIds.has(node.id) ? "detected" as const : "clear" as const;
     const unresolvedBlockerCount = input.readinessByIssueId.get(node.id)?.unresolvedBlockerIssueIds.length ?? 0;
@@ -1456,9 +1480,9 @@ function buildTreeHealthDiagnostics(input: {
               : "none" as const;
     return {
       issueId: node.id,
-      canonicalContinuationId: node.id,
-      continuationCount: 1,
-      continuationWarning: 1 >= input.thresholds.continuationWarning,
+      canonicalContinuationId: canonicalRootFor(node.id),
+      continuationCount: continuationCounts.get(canonicalRootFor(node.id)) ?? 1,
+      continuationWarning: (continuationCounts.get(canonicalRootFor(node.id)) ?? 1) >= input.thresholds.continuationWarning,
       cycleStatus,
       depth: node.depth,
       depthWarning: node.depth >= input.thresholds.depthWarning,
@@ -1552,6 +1576,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
   includeInternalIds: boolean;
   caps: IssueSubtreeDiagnosticsResponse["caps"];
   treeHealthThresholds: IssueTreeHealthThresholds;
+  continuationLinks: Array<{ predecessorIssueId: string; successorIssueId: string }>;
 }): IssueSubtreeDiagnosticsResponse {
   const issue = toIssueBlockerDiagnosticSummary(input.issue);
   const visibleNodeIds = new Set(input.visibleNodes.map((node) => node.id));
@@ -1670,6 +1695,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
     blockersByIssueId: visibleBlockerIdsByIssueId,
     readinessByIssueId: input.readinessByIssueId,
     successfulRunsSinceProgressByIssueId: input.successfulRunsSinceProgressByIssueId,
+    continuationLinks: input.continuationLinks,
     thresholds: input.treeHealthThresholds,
   });
 
@@ -5654,6 +5680,17 @@ export function issueRoutes(
       filterIssuesForActor(req, diagnostic.nodes),
       filterIssuesForActor(req, allBlockers),
     ]);
+    const visibleNodeIds = visibleNodes.map((node) => node.id);
+    const continuationLinks = visibleNodeIds.length === 0
+      ? []
+      : await db.select({
+        predecessorIssueId: issueContinuationLinks.predecessorIssueId,
+        successorIssueId: issueContinuationLinks.successorIssueId,
+      }).from(issueContinuationLinks).where(and(
+        eq(issueContinuationLinks.companyId, issue.companyId),
+        inArray(issueContinuationLinks.predecessorIssueId, visibleNodeIds),
+        inArray(issueContinuationLinks.successorIssueId, visibleNodeIds),
+      ));
     const response = buildIssueSubtreeDiagnosticsResponse({
       issue,
       nodes: diagnostic.nodes,
@@ -5672,6 +5709,7 @@ export function issueRoutes(
       includeInternalIds,
       caps: diagnostic.caps,
       treeHealthThresholds: readTreeHealthThresholds(req),
+      continuationLinks,
     });
 
     logger.info(
@@ -7731,6 +7769,84 @@ export function issueRoutes(
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
     res.status(201).json(issue);
+  });
+
+  router.post("/issues/:id/continuations", validate(createIssueContinuationSchema), async (req, res) => {
+    const predecessor = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!predecessor) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, predecessor))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, predecessor))) return;
+    const runId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !runId) return;
+
+    const requestedSuccessor = req.body.successor as { assigneeAgentId?: string | null; assigneeUserId?: string | null };
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      predecessor.companyId,
+      requestedSuccessor.assigneeAgentId,
+      { actorType: req.actor.type },
+    );
+    const successorAssigneeAgentId = normalizedAssigneeAgentId ?? null;
+    const successorAssigneeUserId = requestedSuccessor.assigneeUserId ?? null;
+    if (successorAssigneeAgentId && successorAssigneeUserId) {
+      res.status(422).json({ error: "Continuation successor requires exactly one assignee" });
+      return;
+    }
+    if (!successorAssigneeAgentId && !successorAssigneeUserId) {
+      res.status(422).json({ error: "Continuation successor requires exactly one assignee" });
+      return;
+    }
+    await assertCanAssignTasks(req, predecessor.companyId, {
+      projectId: predecessor.projectId,
+      parentIssueId: predecessor.parentId,
+      assigneeAgentId: successorAssigneeAgentId,
+      assigneeUserId: successorAssigneeUserId,
+    });
+
+    const actor = getActorInfo(req);
+    try {
+      const result = await issueContinuationService(db).create({
+        companyId: predecessor.companyId,
+        predecessorIssueId: predecessor.id,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        runId,
+        request: {
+          ...req.body,
+          successor: {
+            ...req.body.successor,
+            assigneeAgentId: successorAssigneeAgentId,
+            assigneeUserId: successorAssigneeUserId,
+          },
+        },
+      });
+      if (!result.deduplicated) {
+        await logActivity(db, {
+          companyId: predecessor.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.continuation_created",
+          entityType: "issue_continuation_link",
+          entityId: result.link.id,
+          details: {
+            predecessorIssueId: predecessor.id,
+            successorIssueId: result.successor.id,
+            canonicalContinuationId: result.rootIssueId,
+            deliverableKey: result.link.deliverableKey,
+            continuationFingerprint: result.link.continuationFingerprint,
+          },
+        });
+      }
+      res.status(result.deduplicated ? 200 : 201).json({ ...result, status: result.deduplicated ? "deduplicated" : "created" });
+    } catch (error) {
+      if (error instanceof IssueContinuationError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {

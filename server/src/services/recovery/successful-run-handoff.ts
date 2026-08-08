@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
@@ -7,6 +8,32 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+
+/** Stable state identity used by successful-run handoff and recovery action coalescing. */
+export function buildContinuationRecoveryFingerprint(input: {
+  canonicalContinuationRootId: string;
+  deliverableKey: string;
+  unresolvedDependencyIssueIds: string[];
+  lastUsefulActionAt: Date | string | null;
+}) {
+  const dependencies = [...new Set(input.unresolvedDependencyIssueIds)].sort();
+  return createHash("sha256").update([
+    input.canonicalContinuationRootId,
+    input.deliverableKey,
+    ...dependencies,
+    input.lastUsefulActionAt ? new Date(input.lastUsefulActionAt).toISOString() : "null",
+  ].join("\u0000")).digest("hex");
+}
+
+export function resolveMaxCorrectiveAttempts(executionPolicy: unknown) {
+  const parsed = executionPolicy && typeof executionPolicy === "object"
+    ? (executionPolicy as { continuation?: { noProgressEscalation?: { maxCorrectiveAttempts?: unknown } } })
+    : null;
+  const candidate = parsed?.continuation?.noProgressEscalation?.maxCorrectiveAttempts;
+  return typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 1 && candidate <= 100
+    ? candidate
+    : DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS;
+}
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -54,7 +81,10 @@ type IssueRow = Pick<
   | "assigneeAgentId"
   | "assigneeUserId"
   | "executionState"
->;
+> & {
+  executionPolicy?: unknown;
+  updatedAt?: Date | null;
+};
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
 type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">;
@@ -463,6 +493,8 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  continuationFingerprint?: string | null;
+  maxCorrectiveAttempts?: number | null;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -526,8 +558,14 @@ export function decideSuccessfulRunHandoff(input: {
     missingDisposition: "clear_next_step",
     validDispositionOptions: [...SUCCESSFUL_RUN_HANDOFF_OPTIONS],
     detectedProgressSummary: input.detectedProgressSummary,
+    continuationFingerprint: input.continuationFingerprint ?? buildContinuationRecoveryFingerprint({
+      canonicalContinuationRootId: issue.id,
+      deliverableKey: input.taskKey ?? issue.id,
+      unresolvedDependencyIssueIds: [],
+      lastUsefulActionAt: issue.updatedAt ?? null,
+    }),
     handoffAttempt: 1,
-    maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
+    maxHandoffAttempts: input.maxCorrectiveAttempts ?? resolveMaxCorrectiveAttempts(issue.executionPolicy),
     resumeIntent: true,
     followUpRequested: true,
     resumeFromRunId: run.id,

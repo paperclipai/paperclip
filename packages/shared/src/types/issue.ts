@@ -4,6 +4,7 @@ import type {
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
   IssueCommentPresentationDensity,
+  IssueContinuationLinkKind,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -387,8 +388,8 @@ export interface IssueTreeHealthSupersessionCandidate {
 export interface IssueTreeHealthNode {
   issueId: string;
   /**
-   * Phase 1 deliberately uses the issue id until an explicit replacement link
-   * is written by a later workflow.  Matching titles are candidates, not links.
+   * Canonical roots follow durable continuation links only. Matching titles are
+   * candidates, never identity evidence.
    */
   canonicalContinuationId: string;
   continuationCount: number;
@@ -562,6 +563,7 @@ export interface IssueRecoveryAction {
   returnOwnerAgentId: string | null;
   cause: string;
   fingerprint: string;
+  continuationFingerprint: string | null;
   evidence: Record<string, unknown>;
   nextAction: string;
   wakePolicy: Record<string, unknown> | null;
@@ -688,6 +690,26 @@ export interface IssueExecutionPolicy {
    * default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  continuation?: {
+    noProgressEscalation?: { maxCorrectiveAttempts: number };
+  } | null;
+}
+
+export interface IssueContinuationLink {
+  id: string;
+  companyId: string;
+  predecessorIssueId: string;
+  successorIssueId: string;
+  kind: IssueContinuationLinkKind;
+  residualScope: string | null;
+  deliverableKey: string;
+  dependencyFingerprint: string;
+  continuationFingerprint: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 export interface IssueExecutionMonitorState {

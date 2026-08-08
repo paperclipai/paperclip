@@ -13,6 +13,7 @@ import {
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_COMMENT_PRESENTATION_DENSITIES,
+  ISSUE_CONTINUATION_LINK_KINDS,
   ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
@@ -251,7 +252,39 @@ export const issueExecutionPolicySchema = z.object({
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),
+  continuation: z.object({
+    noProgressEscalation: z.object({
+      maxCorrectiveAttempts: z.number().int().min(1).max(100).optional().default(1),
+    }).strict().optional(),
+  }).strict().optional().nullable(),
 });
+
+const continuationSuccessorSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  description: multilineTextSchema.optional().nullable(),
+  assigneeAgentId: z.string().uuid().optional().nullable(),
+  assigneeUserId: z.string().trim().min(1).optional().nullable(),
+}).strict().superRefine((value, ctx) => {
+  const assigneeCount = Number(Boolean(value.assigneeAgentId)) + Number(Boolean(value.assigneeUserId));
+  if (assigneeCount !== 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Successor requires exactly one assignee", path: ["assigneeAgentId"] });
+  }
+});
+
+const continuationBaseSchema = z.object({
+  deliverableKey: z.string().trim().min(1).max(255),
+  dependencyIssueIds: z.array(z.string().uuid()).max(100).optional().default([]),
+  successor: continuationSuccessorSchema,
+});
+
+export const createIssueContinuationSchema = z.discriminatedUnion("kind", [
+  continuationBaseSchema.extend({ kind: z.literal("replacement") }),
+  continuationBaseSchema.extend({
+    kind: z.literal("residual"),
+    residualScope: multilineTextSchema.pipe(z.string().trim().min(1).max(10_000)),
+  }),
+]);
+export type CreateIssueContinuation = z.infer<typeof createIssueContinuationSchema>;
 
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),

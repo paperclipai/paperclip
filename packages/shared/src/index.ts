@@ -1642,6 +1642,8 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  createIssueContinuationSchema,
+  type CreateIssueContinuation,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,

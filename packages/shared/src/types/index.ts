@@ -598,6 +598,7 @@ export type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRecoveryAction,
+  IssueContinuationLink,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
   IssueScheduledRetry,

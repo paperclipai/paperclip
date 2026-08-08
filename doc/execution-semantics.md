@@ -306,13 +306,15 @@ similar existing issues remain two identities unless a later, explicit
 replacement record links them. This makes the Phase 1 rollout read-only for
 legacy trees.
 
-An explicit replacement/supersession record, when the write path is introduced,
-must name both the predecessor and successor in the same company and preserve
-the predecessor for audit. It must state whether the successor takes all
-remaining scope or only a named residual scope. Replacement links are directed
-and must be validated as acyclic together with the affected continuation and
-dependency path. The server must reject a new link that would create a cycle;
-it must not repair, rewrite, or backfill a legacy tree to make the graph fit.
+`POST /api/issues/:id/continuations` is the Phase 2 write path. It atomically
+creates one single-assignee successor and its same-company directed
+`issue_continuation_links` record. Every request supplies an explicit
+`deliverableKey`; a `residual` request also supplies nonempty `residualScope`.
+The predecessor remains intact for audit. The server normalizes dependency ids,
+rejects continuation/blocker graph cycles before writing, and derives the
+continuation fingerprint from canonical root, deliverable key, and normalized
+dependencies. Equivalent retries coalesce to the persisted successor, while
+different deliverable keys remain legitimate parallel work.
 
 Partial delivery does not silently close the original scope. The completing run
 or handoff must leave residual work as an explicit independently owned issue,
@@ -337,11 +339,15 @@ and 2 respectively, and each accepts values from 1 through 100. These values
 control only display/classification. A depth warning is never a universal
 tree-depth cap: the existing endpoint traversal bound is a response-size
 safeguard, and does not reject valid decomposition or parallel work. A
-no-progress budget is also advisory in Phase 1: a successful run that records
-`lastUsefulActionAt` resets the budget; later successful runs without a useful
-action increment it. Reaching the budget surfaces diagnostics for a human or
-recovery owner; it does not auto-close, reassign, supersede, mutate, or retry
-the issue.
+no-progress recovery budget is per issue policy:
+`executionPolicy.continuation.noProgressEscalation.maxCorrectiveAttempts`
+(1–100; compatibility default 1). Recovery derives its equivalent-state
+fingerprint from canonical root, deliverable key, sorted unresolved dependency
+ids, and last useful action. It may queue only the configured number of
+equivalent corrective attempts, then upserts one source-scoped recovery action.
+Durable progress or dependency-state change changes the fingerprint and resets
+eligibility. No legacy trees are backfilled or rewritten, and depth is never
+used to reject, merge, or admit recovery work.
 
 ### Durable external waits and heartbeat finalization
 

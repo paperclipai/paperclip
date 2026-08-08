@@ -28,6 +28,7 @@ export type UpsertIssueRecoveryActionInput = {
   returnOwnerAgentId?: string | null;
   cause: string;
   fingerprint: string;
+  continuationFingerprint?: string | null;
   evidence?: Record<string, unknown>;
   nextAction: string;
   wakePolicy?: Record<string, unknown> | null;
@@ -64,6 +65,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     returnOwnerAgentId: row.returnOwnerAgentId,
     cause: row.cause,
     fingerprint: row.fingerprint,
+    continuationFingerprint: row.continuationFingerprint,
     evidence: row.evidence,
     nextAction: row.nextAction,
     wakePolicy: row.wakePolicy,
@@ -88,9 +90,11 @@ function isUniqueRecoveryActionConflict(error: unknown) {
       (
         maybe.constraint === "issue_recovery_actions_active_source_uq" ||
         maybe.constraint === "issue_recovery_actions_active_fingerprint_uq" ||
+        maybe.constraint === "issue_recovery_actions_active_continuation_fingerprint_uq" ||
         typeof maybe.message === "string" && (
           maybe.message.includes("issue_recovery_actions_active_source_uq") ||
-          maybe.message.includes("issue_recovery_actions_active_fingerprint_uq")
+          maybe.message.includes("issue_recovery_actions_active_fingerprint_uq") ||
+          maybe.message.includes("issue_recovery_actions_active_continuation_fingerprint_uq")
         )
       ),
   );
@@ -123,15 +127,16 @@ export function issueRecoveryActionService(db: Db) {
     }
   }
 
-  async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
+  async function getActiveForIssue(companyId: string, sourceIssueId: string, continuationFingerprint?: string | null): Promise<IssueRecoveryAction | null> {
     const row = await db
       .select()
       .from(issueRecoveryActions)
       .where(
         and(
           eq(issueRecoveryActions.companyId, companyId),
-          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          ...(continuationFingerprint ? [] : [eq(issueRecoveryActions.sourceIssueId, sourceIssueId)]),
           inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+          ...(continuationFingerprint ? [eq(issueRecoveryActions.continuationFingerprint, continuationFingerprint)] : []),
         ),
       )
       .orderBy(desc(issueRecoveryActions.updatedAt))
@@ -178,7 +183,7 @@ export function issueRecoveryActionService(db: Db) {
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
   ): Promise<IssueRecoveryAction> {
-    const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
+    const existing = await getActiveForIssue(input.companyId, input.sourceIssueId, input.continuationFingerprint);
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
@@ -195,6 +200,7 @@ export function issueRecoveryActionService(db: Db) {
           returnOwnerAgentId: input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
           cause: input.cause,
           fingerprint: input.fingerprint,
+          continuationFingerprint: input.continuationFingerprint ?? existing.continuationFingerprint,
           evidence: input.evidence ?? existing.evidence,
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
@@ -237,6 +243,7 @@ export function issueRecoveryActionService(db: Db) {
           returnOwnerAgentId: input.returnOwnerAgentId ?? null,
           cause: input.cause,
           fingerprint: input.fingerprint,
+          continuationFingerprint: input.continuationFingerprint ?? null,
           evidence: input.evidence ?? {},
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,

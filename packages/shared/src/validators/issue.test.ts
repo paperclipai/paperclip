@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  createIssueContinuationSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -13,6 +14,38 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("requires an explicit residual scope and exactly one successor assignee", () => {
+    const successorAgentId = "00000000-0000-4000-8000-000000000001";
+    expect(createIssueContinuationSchema.parse({
+      kind: "residual",
+      deliverableKey: "ui.audit.accessibility",
+      residualScope: "Keyboard navigation defects found after the completed audit.",
+      successor: { title: "Fix residual keyboard navigation", assigneeAgentId: successorAgentId },
+    })).toMatchObject({ kind: "residual", successor: { assigneeAgentId: successorAgentId } });
+    expect(createIssueContinuationSchema.safeParse({
+      kind: "residual", deliverableKey: "ui.audit.accessibility", residualScope: " ",
+      successor: { title: "Fix", assigneeAgentId: successorAgentId },
+    }).success).toBe(false);
+    expect(createIssueContinuationSchema.safeParse({
+      kind: "residual", deliverableKey: "ui.audit.accessibility", residualScope: "Residual work",
+    }).success).toBe(false);
+    expect(createIssueContinuationSchema.safeParse({
+      kind: "replacement", deliverableKey: "ui.audit.accessibility",
+      successor: { title: "Fix", assigneeAgentId: successorAgentId, assigneeUserId: "board-user" },
+    }).success).toBe(false);
+  });
+
+  it("bounds continuation corrective attempts in execution policy", () => {
+    expect(updateIssueSchema.parse({
+      executionPolicy: { continuation: { noProgressEscalation: { maxCorrectiveAttempts: 3 } } },
+    }).executionPolicy?.continuation?.noProgressEscalation?.maxCorrectiveAttempts).toBe(3);
+    for (const maxCorrectiveAttempts of [0, 101]) {
+      expect(updateIssueSchema.safeParse({
+        executionPolicy: { continuation: { noProgressEscalation: { maxCorrectiveAttempts } } },
+      }).success).toBe(false);
+    }
+  });
+
   it("passes real line breaks through unchanged", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",
