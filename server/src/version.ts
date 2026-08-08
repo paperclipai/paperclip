@@ -20,6 +20,7 @@ const pkg = requirePackage("../package.json") as PackageJson;
 
 const GIT_DESCRIBE_RE =
   /^v(?<publicVersion>\d+\.\d+\.\d+)-(?<commitsSinceTag>\d+)-g(?<sha>[0-9a-f]{7,40})(?<dirty>-dirty)?$/i;
+const FORMAL_PACKAGE_VERSION_RE = /^\d{4}\.\d{3,4}\.\d+(?:-canary\.\d+)?$/;
 
 function defaultDebugLog(fields: Record<string, unknown>, message: string): void {
   if (process.env.PAPERCLIP_DEBUG_VERSION_RESOLUTION !== "1") return;
@@ -163,6 +164,10 @@ export function resolveServerVersion(
   const gitDescribeCommand = opts.gitDescribeCommand ?? defaultGitDescribeCommand;
   const debugLog = opts.debugLog ?? defaultDebugLog;
   const resolvedPackageRoot = opts.packageRoot ?? packageRoot;
+  const buildCommit =
+    opts.buildCommit === undefined
+      ? readBuildCommit()
+      : parseBuildCommit(opts.buildCommit);
 
   if (
     isPackagedInstall(resolvedPackageRoot, {
@@ -170,6 +175,10 @@ export function resolveServerVersion(
       realpath: opts.realpath,
     })
   ) {
+    if (buildCommit && !FORMAL_PACKAGE_VERSION_RE.test(packageVersion)) {
+      return `${packageVersion}+0.git.${buildCommit.slice(0, 7)}`;
+    }
+
     debugLog(
       { reason: "packaged_install" },
       "falling back to package version for server version",
@@ -210,10 +219,6 @@ export function resolveServerVersion(
     return parseGitDescribeVersion(buildVersion) ?? buildVersion;
   }
 
-  const buildCommit =
-    opts.buildCommit === undefined
-      ? readBuildCommit()
-      : parseBuildCommit(opts.buildCommit);
   if (buildCommit) {
     return `${packageVersion}+0.git.${buildCommit.slice(0, 7)}`;
   }

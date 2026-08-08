@@ -39,4 +39,28 @@ describe("readBuildCommit", () => {
       }),
     ).toBe("0123456789abcdef0123456789abcdef01234567");
   });
+
+  it("uses the commit embedded in a git archive when no marker exists", () => {
+    expect(
+      readBuildCommit({
+        environmentCommit: null,
+        archiveCommit: "89abcdef0123456789abcdef0123456789abcdef",
+        readTextFile: () => {
+          throw new Error("missing deployment marker");
+        },
+      }),
+    ).toBe("89abcdef0123456789abcdef0123456789abcdef");
+  });
+
+  it("ignores the unsubstituted git archive placeholder", () => {
+    expect(
+      readBuildCommit({
+        environmentCommit: null,
+        archiveCommit: "$Format:%H$",
+        readTextFile: () => {
+          throw new Error("missing deployment marker");
+        },
+      }),
+    ).toBeNull();
+  });
 });
