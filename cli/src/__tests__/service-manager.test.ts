@@ -32,6 +32,7 @@ describe("service definition generation", () => {
     expect(unit).toContain("Type=notify");
     expect(unit).toContain("NotifyAccess=all");
     expect(unit).toContain('ExecStart="/home/alice/.local/bin/paperclipai" run --instance "team-a"');
+    expect(unit).toContain("KillMode=process");
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("TimeoutStopSec=300");
     expect(unit).not.toContain("API_KEY");
@@ -84,6 +85,93 @@ describe("systemd drift regeneration", () => {
     expect(calls).toContain("systemctl --user daemon-reload");
   });
 
+  it("cleans the remaining unit cgroup after an explicit stop", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+    );
+
+    await manager.stop();
+
+    expect(calls).toEqual([
+      "systemctl --user stop paperclipai.service",
+      "systemctl --user kill --kill-whom=all --signal=SIGINT paperclipai.service",
+      "systemctl --user show paperclipai.service --property=ControlGroup --value",
+    ]);
+  });
+
+  it("waits for residual processes and force-kills SIGINT-resistant cgroup members", async () => {
+    const userHome = await temporaryDirectory();
+    const cgroupRoot = await temporaryDirectory();
+    const controlGroup = "/user.slice/paperclipai.service";
+    const cgroupPath = path.join(cgroupRoot, controlGroup, "cgroup.procs");
+    await fs.mkdir(path.dirname(cgroupPath), { recursive: true });
+    await fs.writeFile(cgroupPath, "4242\n", "utf8");
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args.includes("--property=ControlGroup")) return { stdout: `${controlGroup}\n`, stderr: "" };
+      if (args.includes("--signal=SIGKILL")) await fs.writeFile(cgroupPath, "", "utf8");
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+      { cgroupRoot, gracefulKillTimeoutMs: 0, forceKillTimeoutMs: 0 },
+    );
+
+    await manager.stop();
+
+    expect(calls).toContain(
+      "systemctl --user kill --kill-whom=all --signal=SIGKILL paperclipai.service",
+    );
+    expect(await fs.readFile(cgroupPath, "utf8")).toBe("");
+  });
+
+  it("cleans remaining unit processes when uninstalling an inactive service", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args.includes("--property=LoadState,ActiveState,UnitFileState,MainPID")) {
+        return {
+          stdout: "LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\nMainPID=0\n",
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+    );
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, manager.renderDefinition(), "utf8");
+
+    await manager.uninstall();
+
+    expect(calls).toContain("systemctl --user stop paperclipai.service");
+    expect(calls).toContain(
+      "systemctl --user kill --kill-whom=all --signal=SIGINT paperclipai.service",
+    );
+    await expect(fs.access(manager.definitionPath)).rejects.toThrow();
+  });
+
   it("keeps the unit installed when stopping an active service fails", async () => {
     const userHome = await temporaryDirectory();
     const runner: CommandRunner = async (command, args) => {
@@ -96,6 +184,35 @@ describe("systemd drift regeneration", () => {
     await fs.writeFile(manager.definitionPath, manager.renderDefinition(), "utf8");
 
     await expect(manager.uninstall()).rejects.toThrow("stop failed");
+    await expect(fs.access(manager.definitionPath)).resolves.toBeUndefined();
+  });
+
+  it("keeps the unit installed when residual processes survive SIGKILL", async () => {
+    const userHome = await temporaryDirectory();
+    const cgroupRoot = await temporaryDirectory();
+    const controlGroup = "/user.slice/paperclipai.service";
+    const cgroupPath = path.join(cgroupRoot, controlGroup, "cgroup.procs");
+    await fs.mkdir(path.dirname(cgroupPath), { recursive: true });
+    await fs.writeFile(cgroupPath, "4242\n", "utf8");
+    const runner: CommandRunner = async (_command, args) => {
+      if (args.includes("--property=LoadState,ActiveState,UnitFileState,MainPID")) {
+        return { stdout: "LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\nMainPID=0\n", stderr: "" };
+      }
+      if (args.includes("--property=ControlGroup")) return { stdout: `${controlGroup}\n`, stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+      { cgroupRoot, gracefulKillTimeoutMs: 0, forceKillTimeoutMs: 0 },
+    );
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, manager.renderDefinition(), "utf8");
+
+    await expect(manager.uninstall()).rejects.toThrow("Unable to stop all processes");
     await expect(fs.access(manager.definitionPath)).resolves.toBeUndefined();
   });
 });

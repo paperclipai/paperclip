@@ -39,6 +39,13 @@ export interface ServiceManager {
 export type CommandResult = { stdout: string; stderr: string };
 export type CommandRunner = (command: string, args: string[], options?: { inherit?: boolean }) => Promise<CommandResult>;
 
+type SystemdStopOptions = {
+  cgroupRoot?: string;
+  gracefulKillTimeoutMs?: number;
+  forceKillTimeoutMs?: number;
+  pollIntervalMs?: number;
+};
+
 export const defaultCommandRunner: CommandRunner = async (command, args, options) => {
   if (options?.inherit) {
     await new Promise<void>((resolve, reject) => {
@@ -98,6 +105,10 @@ Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
 WorkingDirectory=%h
+# The server owns graceful teardown of embedded Postgres and deliberately leaves
+# eligible local-agent children alive for hot-restart adoption. Signalling the
+# whole cgroup here races both of those shutdown paths.
+KillMode=process
 Restart=always
 RestartSec=5
 TimeoutStopSec=300
@@ -165,7 +176,14 @@ export class SystemdServiceManager implements ServiceManager {
   readonly serviceName: string;
   readonly definitionPath: string;
 
-  constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir()) {
+  constructor(
+    readonly instanceId: string,
+    private readonly runner: CommandRunner = defaultCommandRunner,
+    private readonly homeDir = resolvePaperclipHomeDir(),
+    private readonly shimPath = resolveServiceShimPath(),
+    userHomeDir = os.homedir(),
+    private readonly stopOptions: SystemdStopOptions = {},
+  ) {
     this.serviceName = systemdServiceName(instanceId);
     this.definitionPath = path.join(userHomeDir, ".config", "systemd", "user", this.serviceName);
   }
@@ -190,7 +208,10 @@ export class SystemdServiceManager implements ServiceManager {
 
   async uninstall(): Promise<void> {
     const status = await this.status();
-    if (status.active) await this.stop();
+    // KillMode=process may leave adopted children in the unit cgroup after the
+    // main process has failed or become inactive. Stop every loaded unit so
+    // uninstall always reaches the cgroup cleanup in stop().
+    if (status.installed) await this.stop();
     await this.runner("systemctl", ["--user", "disable", this.serviceName]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
     await this.runner("systemctl", ["--user", "daemon-reload"]);
@@ -198,7 +219,36 @@ export class SystemdServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> { await this.ensureCurrent(); await this.runner("systemctl", ["--user", "start", this.serviceName]); }
-  async stop(): Promise<void> { await this.runner("systemctl", ["--user", "stop", this.serviceName]); }
+  async stop(): Promise<void> {
+    await this.runner("systemctl", ["--user", "stop", this.serviceName]);
+    // KillMode=process deliberately preserves eligible children across a
+    // service restart. An explicit stop is different: after the main server
+    // exits, terminate every process that still belongs to the unit. Let
+    // systemd target its stable cgroup membership instead of trusting a PID
+    // read from disk, which could be reused before a numeric signal is sent.
+    await this.runner("systemctl", [
+      "--user",
+      "kill",
+      "--kill-whom=all",
+      "--signal=SIGINT",
+      this.serviceName,
+    ]);
+    if (await this.waitForCgroupToEmpty(this.stopOptions.gracefulKillTimeoutMs ?? 5_000)) return;
+
+    // A detached runtime may delay or ignore SIGINT. Keep the unit loaded until
+    // every residual process is gone so uninstall cannot orphan it by deleting
+    // the only stable cgroup handle that can still target it safely.
+    await this.runner("systemctl", [
+      "--user",
+      "kill",
+      "--kill-whom=all",
+      "--signal=SIGKILL",
+      this.serviceName,
+    ]);
+    if (!await this.waitForCgroupToEmpty(this.stopOptions.forceKillTimeoutMs ?? 5_000)) {
+      throw new Error(`Unable to stop all processes for ${this.serviceName}; the service definition was left installed.`);
+    }
+  }
   async restart(): Promise<void> { await this.ensureCurrent(); await this.runner("systemctl", ["--user", "restart", this.serviceName]); }
 
   async status(): Promise<ServiceStatus> {
@@ -218,6 +268,37 @@ export class SystemdServiceManager implements ServiceManager {
       const result = await this.runner("loginctl", ["show-user", String(process.getuid?.() ?? os.userInfo().username), "--property=Linger", "--value"]);
       return result.stdout.trim() === "yes";
     } catch { return null; }
+  }
+
+  private async waitForCgroupToEmpty(timeoutMs: number): Promise<boolean> {
+    const controlGroup = (
+      await this.runner("systemctl", [
+        "--user",
+        "show",
+        this.serviceName,
+        "--property=ControlGroup",
+        "--value",
+      ])
+    ).stdout.trim();
+    if (!controlGroup) return true;
+
+    const cgroupRoot = path.resolve(this.stopOptions.cgroupRoot ?? "/sys/fs/cgroup");
+    const processesPath = path.resolve(cgroupRoot, controlGroup.replace(/^\/+/, ""), "cgroup.procs");
+    if (!processesPath.startsWith(`${cgroupRoot}${path.sep}`)) {
+      throw new Error(`Refusing to inspect unsafe systemd control group ${controlGroup}.`);
+    }
+
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (true) {
+      try {
+        if (!(await fs.readFile(processesPath, "utf8")).trim()) return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, this.stopOptions.pollIntervalMs ?? 100));
+    }
   }
 
   async enableLinger(): Promise<void> { await this.runner("loginctl", ["enable-linger", os.userInfo().username]); }

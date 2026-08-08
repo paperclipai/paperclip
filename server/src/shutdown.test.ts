@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { loadEmbeddedPostgresCtor } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   coordinateHeartbeatSchedulerShutdown,
@@ -11,9 +12,7 @@ describe("loadWithoutCoordinatedShutdownSignalHooks", () => {
       SIGINT: process.rawListeners("SIGINT"),
       SIGTERM: process.rawListeners("SIGTERM"),
     };
-    const moduleName = "embedded-postgres";
-
-    await loadWithoutCoordinatedShutdownSignalHooks(() => import(moduleName));
+    await loadWithoutCoordinatedShutdownSignalHooks(() => loadEmbeddedPostgresCtor());
 
     expect(process.rawListeners("SIGINT")).toEqual(before.SIGINT);
     expect(process.rawListeners("SIGTERM")).toEqual(before.SIGTERM);

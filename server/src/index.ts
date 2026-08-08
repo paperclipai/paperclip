@@ -20,6 +20,7 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  loadEmbeddedPostgresCtor,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
@@ -334,7 +335,6 @@ export async function startServer(): Promise<StartedServer> {
   let db;
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
-  let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
@@ -352,17 +352,18 @@ export async function startServer(): Promise<StartedServer> {
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
-    const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
       // embedded-postgres registers async-exit-hook handlers as an import side
       // effect. Those handlers stop PostgreSQL immediately on SIGINT/SIGTERM,
       // racing Paperclip's later heartbeat snapshot query. Paperclip explicitly
       // stops the managed cluster in its own ordered shutdown path instead.
-      const mod = await loadWithoutCoordinatedShutdownSignalHooks(
-        () => import(moduleName),
+      // Load through @paperclipai/db, whose npm package deliberately bundles
+      // the repository-patched embedded-postgres runtime. A direct server
+      // dependency would resolve an unpatched registry copy after packaging.
+      EmbeddedPostgres = await loadWithoutCoordinatedShutdownSignalHooks(
+        () => loadEmbeddedPostgresCtor(),
       );
-      EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
       throw new Error(
         "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
@@ -433,7 +434,6 @@ export async function startServer(): Promise<StartedServer> {
         return null;
       }
     };
-  
     const runningPid = getRunningPid();
     if (runningPid) {
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
@@ -496,7 +496,6 @@ export async function startServer(): Promise<StartedServer> {
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        embeddedPostgresStartedByThisProcess = true;
       }
     }
   
@@ -1485,10 +1484,10 @@ export async function startServer(): Promise<StartedServer> {
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
 
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      if (embeddedPostgres) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
-          await embeddedPostgres?.stop();
+          await embeddedPostgres.stop();
         } catch (err) {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }

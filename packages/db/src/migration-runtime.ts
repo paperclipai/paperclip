@@ -6,13 +6,13 @@ import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
-type EmbeddedPostgresInstance = {
+export type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
 };
 
-type EmbeddedPostgresCtor = new (opts: {
+export type EmbeddedPostgresCtor = new (opts: {
   databaseDir: string;
   user: string;
   password: string;
@@ -77,7 +77,7 @@ async function findAvailablePort(startPort: number): Promise<number> {
   );
 }
 
-async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
+export async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   try {
     const mod = await import("embedded-postgres");
     return mod.default as EmbeddedPostgresCtor;
