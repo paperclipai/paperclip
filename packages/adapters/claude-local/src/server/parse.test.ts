@@ -87,6 +87,28 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies the real-world session-limit message (middle-dot separator) as provider quota and resolves the reset time", () => {
+    const now = new Date("2026-04-22T09:00:00.000Z");
+    const errorMessage = "You've hit your session limit · resets 1:40pm (Africa/Johannesburg)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-22T11:40:00.000Z",
+    );
+  });
+
+  it("classifies the same session-limit message with a plain hyphen separator the same way", () => {
+    const now = new Date("2026-04-22T09:00:00.000Z");
+    const errorMessage = "You've hit your session limit - resets 1:40pm (Africa/Johannesburg)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-22T11:40:00.000Z",
+    );
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
