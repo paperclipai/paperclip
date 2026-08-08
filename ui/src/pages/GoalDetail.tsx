@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useParams } from "@/lib/router";
+import { useEffect, useState } from "react";
+import { useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
@@ -18,7 +18,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, SlidersHorizontal } from "lucide-react";
+import { Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 interface GoalPropertiesToggleButtonProps {
@@ -48,11 +48,13 @@ export function GoalPropertiesToggleButton({
 
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
+  const navigate = useNavigate();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [confirmingDeleteHeader, setConfirmingDeleteHeader] = useState(false);
 
   const {
     data: goal,
@@ -97,6 +99,22 @@ export function GoalDetail() {
     }
   });
 
+  const deleteGoal = useMutation({
+    mutationFn: () => goalsApi.remove(goalId!),
+    onSuccess: () => {
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(resolvedCompanyId),
+        });
+      }
+      queryClient.removeQueries({
+        queryKey: queryKeys.goals.detail(goalId!),
+      });
+      closePanel();
+      navigate("/goals");
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
@@ -129,11 +147,13 @@ export function GoalDetail() {
         <GoalProperties
           goal={goal}
           onUpdate={(data) => updateGoal.mutate(data)}
+          onDelete={() => deleteGoal.mutate()}
+          deletePending={deleteGoal.isPending}
         />
       );
     }
     return () => closePanel();
-  }, [goal]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [goal, deleteGoal.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
@@ -147,7 +167,38 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            {confirmingDeleteHeader ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-destructive font-medium">Delete?</span>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  disabled={deleteGoal.isPending}
+                  onClick={() => deleteGoal.mutate()}
+                >
+                  {deleteGoal.isPending ? "Deleting..." : "Confirm"}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={deleteGoal.isPending}
+                  onClick={() => setConfirmingDeleteHeader(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="xs"
+                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => setConfirmingDeleteHeader(true)}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Delete
+              </Button>
+            )}
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
               onShowProperties={() => setPanelVisible(true)}
