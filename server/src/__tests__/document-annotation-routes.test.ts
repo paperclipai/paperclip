@@ -23,6 +23,11 @@ const mockAnnotationService = vi.hoisted(() => ({
   updateThread: vi.fn(),
   remapOpenThreadsForDocument: vi.fn(),
 }));
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  decide: vi.fn(),
+  hasPermission: vi.fn(),
+}));
 const mockIssueReferenceService = vi.hoisted(() => ({
   diffIssueReferenceSummary: vi.fn(() => ({
     addedReferencedIssues: [],
@@ -114,16 +119,7 @@ const annotationComment = {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
-    accessService: () => ({
-      canUser: vi.fn(),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_test",
-        explanation: "Allowed by test mock.",
-      })),
-      hasPermission: vi.fn(async () => false),
-    }),
+    accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
@@ -157,7 +153,11 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
+async function createApp(
+  actor: "board" | "agent" = "board",
+  actorCompanyId = companyId,
+  actorOverrides: Record<string, unknown> = {},
+) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -171,6 +171,8 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
         agentId: "77777777-7777-4777-8777-777777777777",
         companyId: actorCompanyId,
         runId: "88888888-8888-4888-8888-888888888888",
+        source: "agent_key",
+        ...actorOverrides,
       }
       : {
         type: "board",
@@ -178,6 +180,7 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
         companyIds: [actorCompanyId],
         source: "local_implicit",
         isInstanceAdmin: false,
+        ...actorOverrides,
       };
     next();
   });
@@ -193,6 +196,16 @@ describe("document annotation routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    }));
+    mockAccessService.hasPermission.mockReset();
+    mockAccessService.hasPermission.mockResolvedValue(false);
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -364,6 +377,35 @@ describe("document annotation routes", () => {
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
       .expect(404);
+  });
+
+  it("denies out-of-scope task_bridge annotation reads before querying annotations", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "deny_scope" : "allow_test",
+      explanation: input.action === "issue:read"
+        ? "Task bridge key is outside its approved boundary."
+        : "Allowed by test mock.",
+    }));
+
+    const app = await createApp("agent", companyId, {
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        allowedAssigneeAgentIds: ["77777777-7777-4777-8777-777777777777"],
+      },
+    });
+
+    const listResponse = await request(app).get(`/api/issues/${issueId}/documents/plan/annotations`);
+    const threadResponse = await request(app)
+      .get(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}`);
+
+    expect(listResponse.status, JSON.stringify(listResponse.body)).toBe(403);
+    expect(threadResponse.status, JSON.stringify(threadResponse.body)).toBe(403);
+    expect(mockAnnotationService.listThreadsForIssueDocument).not.toHaveBeenCalled();
+    expect(mockAnnotationService.getThreadForIssueDocument).not.toHaveBeenCalled();
   });
 
   it("adds annotation comments without waking the assignee and resolves threads", async () => {

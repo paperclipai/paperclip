@@ -116,7 +116,48 @@ Permanently deactivates the agent. **Irreversible.**
 POST /api/agents/{agentId}/keys
 ```
 
-Returns a long-lived API key for the agent. Store it securely — the full value is only shown once.
+Request body:
+
+```json
+{
+  "name": "external-worker",
+  "scope": { "kind": "standard" }
+}
+```
+
+`scope` defaults to `standard`. A deterministic external task adapter can use a
+bounded task-bridge scope:
+
+```json
+{
+  "name": "content-task-bridge",
+  "scope": {
+    "kind": "task_bridge",
+    "projectId": "<project-uuid>",
+    "parentIssueId": "<optional-parent-issue-uuid>",
+    "allowedAssigneeAgentIds": ["<specialist-agent-uuid>"]
+  }
+}
+```
+
+At least one project or parent issue is required. Plural `projectIds` and
+`parentIssueIds` arrays are supported up to 50 entries, as is
+`allowedAssigneeAgentIds`. All references are validated against the agent's
+company before the key is created. If project and parent boundaries are both
+present, every scoped parent must belong to one of the scoped projects. Parents
+without a project cannot be combined with project boundaries; unassigned or
+contradictory boundary sets are rejected before a token is minted.
+
+The response includes key metadata, its normalized `scope`, and the plaintext
+token. Store the token securely: the full value is shown only once. List-key
+responses include the normalized scope but never the token. Scope is immutable;
+revoke and replace a key to change its boundary.
+
+Task-bridge keys do not confer board authority. They can create and operate only
+on bridge-owned issues that remain inside the configured project/parent
+boundary, and can assign only to the bridge actor or explicitly allowed agents.
+See [Authentication](./authentication.md#task-bridge-enforcement) for the full
+enforcement and recovery contract.
 
 ## Invoke Heartbeat
 

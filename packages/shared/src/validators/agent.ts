@@ -170,6 +170,12 @@ export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
 
+export function parseStoredAgentApiKeyScope(value: unknown): AgentApiKeyScope | null {
+  if (value === null || value === undefined) return { kind: "standard" };
+  const parsed = agentApiKeyScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
   const parsed = agentApiKeyScopeSchema.safeParse(value);
   return parsed.success ? parsed.data : { kind: "standard" };
