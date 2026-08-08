@@ -9,6 +9,11 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
+const OPENROUTER_DEFAULT_PROVIDER_ID = "openrouter";
+const OPENROUTER_DEFAULT_PROVIDER_NAME = "OpenRouter";
+const OPENROUTER_DEFAULT_PROVIDER_BASE_URL = "https://openrouter.ai/api/v1";
+const OPENROUTER_DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible";
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
@@ -82,6 +87,54 @@ function parseProviderConfig(
     );
   }
   return Object.keys(providers).length > 0 ? providers : null;
+}
+
+function ensureOpenRouterProviderInConfig(
+  providers: Record<string, unknown>,
+  openRouterApiKey: string,
+): { providers: Record<string, unknown>; changed: boolean } {
+  const hasOpenRouterProvider = isPlainObject(providers[OPENROUTER_DEFAULT_PROVIDER_ID]);
+  const provider = hasOpenRouterProvider
+    ? { ...(providers[OPENROUTER_DEFAULT_PROVIDER_ID] as Record<string, unknown>) }
+    : {};
+  let changed = !hasOpenRouterProvider;
+
+  if (!("npm" in provider)) {
+    provider.npm = OPENROUTER_DEFAULT_PROVIDER_NPM;
+    changed = true;
+  }
+  if (!("name" in provider)) {
+    provider.name = OPENROUTER_DEFAULT_PROVIDER_NAME;
+    changed = true;
+  }
+
+  const providerOptions = isPlainObject(provider.options)
+    ? { ...(provider.options as Record<string, unknown>) }
+    : {};
+  if (!("baseURL" in providerOptions)) {
+    providerOptions.baseURL = OPENROUTER_DEFAULT_PROVIDER_BASE_URL;
+    changed = true;
+  }
+  // Treat a blank/whitespace (or non-string) existing apiKey as absent so the
+  // resolved OPENROUTER_API_KEY still wins. A mere presence check would keep an
+  // explicit `apiKey: ""` from PAPERCLIP_OPENCODE_PROVIDERS, leaving OpenRouter
+  // models discoverable (discovery reads process.env) but unrunnable — the same
+  // "selectable but unauthenticated" failure the run-env key resolution guards
+  // against above.
+  const existingApiKey = providerOptions.apiKey;
+  if (typeof existingApiKey !== "string" || existingApiKey.trim().length === 0) {
+    providerOptions.apiKey = openRouterApiKey;
+    changed = true;
+  }
+  provider.options = providerOptions;
+
+  return {
+    providers: {
+      ...providers,
+      [OPENROUTER_DEFAULT_PROVIDER_ID]: provider,
+    },
+    changed,
+  };
 }
 
 function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
@@ -177,6 +230,26 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes.push(
       `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
     );
+  }
+
+  // Prefer the run-env key, but treat a blank/whitespace value as absent so a
+  // valid process-level key still wins. Using `??` here would let an empty
+  // `OPENROUTER_API_KEY=""` in the run env mask a real process key, skipping
+  // provider injection even though model discovery (which reads process.env)
+  // still surfaces OpenRouter models — leaving them selectable but unrunnable.
+  const openRouterApiKey =
+    input.env.OPENROUTER_API_KEY?.trim() || process.env.OPENROUTER_API_KEY?.trim() || undefined;
+  if (openRouterApiKey) {
+    const { providers: providersWithOpenRouter, changed } = ensureOpenRouterProviderInConfig(
+      nextProvider,
+      openRouterApiKey,
+    );
+    nextProvider = providersWithOpenRouter;
+    if (changed) {
+      notes.push(
+        "Injected default OpenRouter provider from OPENROUTER_API_KEY into the runtime OpenCode config.",
+      );
+    }
   }
 
   // Register the configured model on its provider's models map. OpenCode resolves

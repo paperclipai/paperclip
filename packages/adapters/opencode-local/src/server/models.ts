@@ -10,11 +10,21 @@ import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const OPENROUTER_MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models";
+const OPENROUTER_MODELS_TIMEOUT_MS = 5_000;
+const OPENROUTER_MODELS_CACHE_TTL_MS = 60_000;
+const OPENROUTER_ALLOWLIST_DEFAULT: readonly string[] = [
+  "openai/",
+  "anthropic/",
+  "qwen/",
+  "deepseek/",
+  "google/",
+];
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
     typeof process.env.PAPERCLIP_OPENCODE_COMMAND === "string" &&
-    process.env.PAPERCLIP_OPENCODE_COMMAND.trim().length > 0
+      process.env.PAPERCLIP_OPENCODE_COMMAND.trim().length > 0
       ? process.env.PAPERCLIP_OPENCODE_COMMAND.trim()
       : "opencode";
   return asString(input, envOverride);
@@ -23,6 +33,12 @@ function resolveOpenCodeCommand(input: unknown): string {
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
+
+let openRouterModelsCache: {
+  keyFingerprint: string;
+  expiresAt: number;
+  models: AdapterModel[];
+} | null = null;
 
 export function requireOpenCodeModelId(input: unknown): string {
   const model = asString(input, "").trim();
@@ -92,6 +108,146 @@ function isVolatileEnvKey(key: string): boolean {
 
 function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function fingerprint(apiKey: string): string {
+  const digest = createHash("sha256").update(apiKey).digest("base64url").slice(0, 16);
+  return `${apiKey.length}:${digest}`;
+}
+
+function resolveOpenRouterApiKey(): string | null {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  return apiKey && apiKey.length > 0 ? apiKey : null;
+}
+
+function parseOpenRouterAllowlist(): string[] {
+  const raw = process.env.PAPERCLIP_OPENROUTER_MODEL_ALLOWLIST?.trim();
+  if (!raw) return [...OPENROUTER_ALLOWLIST_DEFAULT];
+
+  if (raw === "*") return ["*"];
+
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      if (entry === "*") return "*";
+      return entry.endsWith("/") ? entry : `${entry}/`;
+    });
+
+  if (entries.length === 0) return [...OPENROUTER_ALLOWLIST_DEFAULT];
+
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
+function normalizeOpenRouterModelId(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith("openrouter/") ? trimmed.slice("openrouter/".length) : trimmed;
+}
+
+function hasOpenRouterModelAllowlistMatch(modelId: string, allowlist: string[]): boolean {
+  const lowerId = modelId.toLowerCase();
+  if (allowlist.includes("*")) return true;
+  return allowlist.some((entry) => {
+    const normalized = entry.endsWith("/") ? entry : `${entry}/`;
+    return lowerId.startsWith(normalized);
+  });
+}
+
+function filterAndPrefixOpenRouterModels(input: AdapterModel[]): AdapterModel[] {
+  const allowlist = parseOpenRouterAllowlist();
+  const filtered: AdapterModel[] = [];
+
+  for (const model of input) {
+    const rawId = normalizeOpenRouterModelId(model.id);
+    if (!rawId) continue;
+    if (!hasOpenRouterModelAllowlistMatch(rawId, allowlist)) continue;
+    filtered.push({ id: `openrouter/${rawId}`, label: model.label || rawId });
+  }
+
+  return dedupeModels(filtered);
+}
+
+function pruneExpiredOpenRouterModelsCache(now: number) {
+  if (!openRouterModelsCache) return;
+  if (openRouterModelsCache.expiresAt > now) return;
+  openRouterModelsCache = null;
+}
+
+async function fetchOpenRouterModels(apiKey: string): Promise<AdapterModel[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENROUTER_MODELS_TIMEOUT_MS);
+  try {
+    const response = await fetch(OPENROUTER_MODELS_ENDPOINT, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+
+    const payload = (await response.json()) as { data?: unknown };
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    const parsed: AdapterModel[] = [];
+    for (const item of data) {
+      if (typeof item !== "object" || item === null) continue;
+      const record = item as { id?: unknown; name?: unknown };
+      if (typeof record.id !== "string" || record.id.trim().length === 0) continue;
+      const normalized = normalizeOpenRouterModelId(record.id);
+      if (!normalized) continue;
+      const label =
+        typeof record.name === "string" && record.name.trim().length > 0 ? record.name.trim() : normalized;
+      parsed.push({ id: normalized, label });
+    }
+    return dedupeModels(parsed);
+  } catch (error) {
+    console.warn("[paperclip] OpenRouter model discovery failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function discoverOpenRouterModelsCached(): Promise<AdapterModel[]> {
+  const apiKey = resolveOpenRouterApiKey();
+  if (!apiKey) return [];
+
+  const now = Date.now();
+  const keyFingerprint = fingerprint(apiKey);
+  pruneExpiredOpenRouterModelsCache(now);
+  if (openRouterModelsCache && openRouterModelsCache.keyFingerprint === keyFingerprint) {
+    return openRouterModelsCache.models;
+  }
+
+  const fetched = await fetchOpenRouterModels(apiKey);
+  if (fetched.length > 0) {
+    openRouterModelsCache = {
+      keyFingerprint,
+      expiresAt: now + OPENROUTER_MODELS_CACHE_TTL_MS,
+      models: fetched,
+    };
+    return fetched;
+  }
+
+  if (
+    openRouterModelsCache &&
+    openRouterModelsCache.keyFingerprint === keyFingerprint &&
+    openRouterModelsCache.models.length > 0
+  ) {
+    return openRouterModelsCache.models;
+  }
+
+  return [];
 }
 
 function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
@@ -220,13 +376,18 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
-  try {
-    return await discoverOpenCodeModelsCached();
-  } catch {
-    return [];
-  }
+  const [discovered, openRouterRaw] = await Promise.all([
+    discoverOpenCodeModelsCached().catch(() => []),
+    discoverOpenRouterModelsCached().catch(() => []),
+  ]);
+  const openRouterModels = filterAndPrefixOpenRouterModels(openRouterRaw);
+  // OpenRouter entries first so their curated catalog labels win over the raw
+  // `openrouter/<id>` labels that `opencode models` echoes for the same ids
+  // (dedupeModels keeps the first occurrence of each id).
+  return sortModels(dedupeModels([...openRouterModels, ...discovered]));
 }
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  openRouterModelsCache = null;
 }
