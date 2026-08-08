@@ -46,8 +46,8 @@ def fixture(path: Path) -> None:
     ])
     connection.executemany("INSERT INTO ORD_ROProduct VALUES (?,?,?,?)", [(1, 1, 200, 10), (2, 2, 202, 7)])
     connection.executemany("INSERT INTO ORD_MaterialOrder VALUES (?,?,?,?)", [(2, "2024-01-01", 1, 1), (3, "2024-01-01", 1, 2)])
-    connection.executemany("INSERT INTO ORD_MOProduct VALUES (?,?,?,?)", [(2, 2, 100, 2), (3, 3, 100, 1)])
-    connection.executemany("INSERT INTO ORD_PurchaseOrder VALUES (?,?,?,?)", [(3, 2, "2024-01-01", 1)])
+    connection.executemany("INSERT INTO ORD_MOProduct VALUES (?,?,?,?)", [(2, 2, 100, 2)])
+    connection.executemany("INSERT INTO ORD_PurchaseOrder VALUES (?,?,?,?)", [(3, 3, "2024-01-01", 1)])
     connection.execute("INSERT INTO ORD_POProduct VALUES (?,?,?,?)", (3, 3, 100, 3))
     connection.commit()
     connection.close()
@@ -60,7 +60,7 @@ def main() -> None:
         detail, annual, lineage, crossover, manufacturer, coverage = collect(database)
 
     totals = {lane: sum((row["calculated_measure"] for row in annual if row["lane"] == lane), Decimal(0)) for lane in ("RO", "MO", "PO")}
-    assert totals == {"RO": Decimal("10"), "MO": Decimal("15"), "PO": Decimal("15")}, totals
+    assert totals == {"RO": Decimal("10"), "MO": Decimal("10"), "PO": Decimal("15")}, totals
     assert any(row["lane"] == "RO" and row["exclusion_reason"] == "Non-positive DealerQty or reportability SquareFootage" and row["source_native_quantity"] == Decimal("7") for row in coverage)
     assert all(row["parent_company_id"] == 10 and row["parent_company_name"] == "Parent company" for row in detail if row["source_company_id"] == 1)
     assert any(row["source_company_id"] == 2 and row["parent_company_id"] == 2 and row["parent_is_source_company"] for row in lineage)

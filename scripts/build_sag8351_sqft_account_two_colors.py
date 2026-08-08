@@ -290,6 +290,8 @@ WITH ro_cohort AS (
 -- Parent key: COALESCE(source_company.ParentCompanyID, source_company.CompanyID).
 -- Crossover grain: (material_product_id, retail_product_id, retail_catalog_id, exact_consumer_description).
 -- Manufacturer mapping: CAT_Product.MFRID LEFT JOIN COM_Company.
+-- ZIP contract: validation.json is the generator checksum manifest packaged with the artifact.
+-- The independent verifier leaves the supplied ZIP unchanged and writes its separate receipt to independent_validation.json beside the output directory.
 """
 
 
@@ -317,7 +319,7 @@ def main() -> None:
     write_csv(args.output_dir / "house_po_sku_manufacturer.csv", MANUFACTURER_FIELDS, manufacturer)
     write_csv(args.output_dir / "coverage.csv", COVERAGE_FIELDS, coverage)
     (args.output_dir / "query_receipt.sql").write_text(receipt_sql(), encoding="utf-8")
-    (args.output_dir / "README.md").write_text("# Sage Quartz corrected parent/color/lane analysis\n\nRO is `Decimal(ORD_ROProduct.DealerQty)` only. MO is `Decimal(Quantity) * Decimal(CAT_Product.SquareFootage)` and PO is `Decimal(QtyOrdered) * Decimal(CAT_Product.SquareFootage)`. These lanes are separate business measures and must not be added together. The RO coverage sheet retains both cohort and excluded controls; reportability requires positive DealerQty and positive resolved source-or-house SquareFootage.\n", encoding="utf-8")
+    (args.output_dir / "README.md").write_text("# Sage Quartz corrected parent/color/lane analysis\n\nRO is `Decimal(ORD_ROProduct.DealerQty)` only. MO is `Decimal(Quantity) * Decimal(CAT_Product.SquareFootage)` and PO is `Decimal(QtyOrdered) * Decimal(CAT_Product.SquareFootage)`. These lanes are separate business measures and must not be added together. The RO coverage sheet retains both cohort and excluded controls; reportability requires positive DealerQty and positive resolved source-or-house SquareFootage.\n\n`validation.json` is the generator's packaged checksum manifest. The independent verifier treats the ZIP as immutable and writes its separate, inspectable receipt to the sibling `independent_validation.json`; that receipt includes the verified package SHA-256 and replay evidence.\n", encoding="utf-8")
     producer_validation = {
         "status": "generator checksum manifest awaiting independent verifier",
         "source_path": str(args.db_path.relative_to(ROOT)),

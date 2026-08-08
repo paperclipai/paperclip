@@ -23,6 +23,7 @@ EXPECTED_CONTROLS = {
     "PO": {"cohort_count": 40298, "cohort_total": Decimal("1893200.390"), "reportable_count": 25767, "reportable_total": Decimal("1893200.390"), "excluded_count": 14531, "excluded_total": Decimal("0")},
 }
 PACKAGE_FILES = {"Sage_Quartz_Corrected_Parent_Color_Lane.xlsx", "annual_parent_year_color_lane.csv", "parent_company_lineage.csv", "retail_catalog_color_crossover.csv", "house_po_sku_manufacturer.csv", "coverage.csv", "query_receipt.sql", "validation.json", "README.md"}
+INDEPENDENT_VALIDATION_FILE = "independent_validation.json"
 SHEETS = ["Parent Color Year Detail", "Annual Parent Rollup", "Parent Company Lineage", "Retail Catalog Crossover", "House PO SKU Manufacturer", "Coverage", "Methodology"]
 
 
@@ -298,14 +299,28 @@ def verify(args: argparse.Namespace) -> dict:
     emitted_candidates = sorted((int(row["material_product_id"]), int(row["retail_product_id"]), int(row["retail_catalog_id"]), row["exact_consumer_description"]) for row in crossover if int(row["candidate_count"]) > 0)
     if emitted_candidates != source_candidates:
         raise SystemExit("lossless retail candidate relation differs from independent source replay")
-    counts = Counter(material for material, *_ in source_candidates)
+    source_candidate_counts = Counter(material for material, *_ in source_candidates)
+    rows_by_material: dict[int, list[dict[str, str]]] = defaultdict(list)
     for row in crossover:
-        count = int(row["candidate_count"])
-        expected_status = "Unmatched" if count == 0 else "Matched" if count == 1 else "Ambiguous"
-        if row["mapping_status"] != expected_status or (count == 0 and (row["retail_product_id"] or row["exact_consumer_description"])):
-            raise SystemExit("crossover cardinality/status contract failed")
+        rows_by_material[int(row["material_product_id"])].append(row)
+    if set(rows_by_material) != materials:
+        raise SystemExit("crossover material set differs from independent source replay")
+    candidate_fields = ("retail_product_id", "retail_sku", "retail_catalog_id", "retail_catalog_code", "retail_catalog_name", "exact_consumer_description", "normalized_comparison_key")
+    for material_product_id in materials:
+        expected_count = source_candidate_counts[material_product_id]
+        rows = rows_by_material[material_product_id]
+        expected_rows = expected_count or 1
+        if len(rows) != expected_rows:
+            raise SystemExit("crossover row cardinality differs from independent source replay")
+        for row in rows:
+            count = int(row["candidate_count"])
+            expected_status = "Unmatched" if expected_count == 0 else "Matched" if expected_count == 1 else "Ambiguous"
+            if count != expected_count or row["mapping_status"] != expected_status:
+                raise SystemExit("crossover cardinality/status contract failed")
+            if expected_count == 0 and any(row[field] for field in candidate_fields):
+                raise SystemExit("crossover zero-candidate sentinel contains retail candidate data")
     unmatched_materials = {int(row["material_product_id"]) for row in crossover if int(row["candidate_count"]) == 0}
-    if unmatched_materials != materials - set(counts):
+    if unmatched_materials != materials - set(source_candidate_counts):
         raise SystemExit("crossover unmatched material sentinel relation differs from source")
     manufacturer = read_csv(output_dir / "house_po_sku_manufacturer.csv")
     actual_manufacturer = {(nullable_int(row["source_product_id"]), row["source_sku"], nullable_int(row["mfr_id"]), nullable_int(row["manufacturer_company_id"]), row["manufacturer_company_name"] or None, row["mapping_status"]): (int(row["affected_po_line_count"]), decimal(row["calculated_po_measure"])) for row in manufacturer}
@@ -328,6 +343,8 @@ def verify(args: argparse.Namespace) -> dict:
         "package_member_names": sorted(PACKAGE_FILES), "verification_command": "python3 scripts/verify_sag8351_sqft_account_two_colors.py --output-dir artifacts/2026-08-07/sag-8742 --package-path artifacts/SAG-8742_quartz_analysis_corrected_deliverable.zip",
     }
     validation["package_sha256"] = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    validation["verification_manifest"] = INDEPENDENT_VALIDATION_FILE
+    (output_dir / INDEPENDENT_VALIDATION_FILE).write_text(json.dumps(validation, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(validation, sort_keys=True))
     return validation
 
