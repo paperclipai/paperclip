@@ -30,17 +30,20 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteInputTokens = 0;
   let sawEntry = false;
   for (const value of Object.values(byModel)) {
     const entry = parseObject(value);
     if (Object.keys(entry).length === 0) continue;
     sawEntry = true;
-    inputTokens += asNumber(entry.inputTokens, 0) + asNumber(entry.cacheCreationInputTokens, 0);
+    const creationTokens = asNumber(entry.cacheCreationInputTokens, 0);
+    inputTokens += asNumber(entry.inputTokens, 0) + creationTokens;
     outputTokens += asNumber(entry.outputTokens, 0);
     cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
+    cacheWriteInputTokens += creationTokens;
   }
   if (!sawEntry) return null;
-  return { inputTokens, outputTokens, cachedInputTokens };
+  return { inputTokens, outputTokens, cachedInputTokens, ...(cacheWriteInputTokens > 0 ? { cacheWriteInputTokens } : {}) };
 }
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -97,10 +100,12 @@ export function parseClaudeStreamJson(stdout: string) {
 
   const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
   const usageObj = parseObject(finalResult.usage);
+  const fallbackCacheWrite = asNumber(usageObj.cache_creation_input_tokens, 0);
   const usage: UsageSummary = modelUsageTotals ?? {
-    inputTokens: asNumber(usageObj.input_tokens, 0),
+    inputTokens: asNumber(usageObj.input_tokens, 0) + fallbackCacheWrite,
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
+    ...(fallbackCacheWrite > 0 ? { cacheWriteInputTokens: fallbackCacheWrite } : {}),
   };
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
