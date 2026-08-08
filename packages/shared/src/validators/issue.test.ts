@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  askUserQuestionsPayloadSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -536,6 +537,74 @@ describe("issue validators", () => {
           },
         },
       },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe("askUserQuestionsPayloadSchema", () => {
+  it("normalizes the intuitive string-option / no-selectionMode shape agents send", () => {
+    // The exact shape that previously returned 400 and never reached the user:
+    // options as plain strings, selectionMode omitted (Claude's own tool shape).
+    const parsed = askUserQuestionsPayloadSchema.safeParse({
+      version: 1,
+      questions: [
+        {
+          id: "deploy-approval",
+          prompt: "Approve the staging deploy?",
+          options: ["Yes, ship it", "No, hold"],
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const question = parsed.data.questions[0]!;
+    expect(question.selectionMode).toBe("single");
+    expect(question.options).toEqual([
+      { id: "yes-ship-it", label: "Yes, ship it" },
+      { id: "no-hold", label: "No, hold" },
+    ]);
+  });
+
+  it("accepts the canonical object-shaped payload unchanged", () => {
+    const parsed = askUserQuestionsPayloadSchema.safeParse({
+      version: 1,
+      questions: [
+        {
+          id: "q1",
+          prompt: "Pick one",
+          selectionMode: "multi",
+          options: [
+            { id: "a", label: "Option A" },
+            { id: "b", label: "Option B" },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const question = parsed.data.questions[0]!;
+    expect(question.selectionMode).toBe("multi");
+    expect(question.options).toEqual([
+      { id: "a", label: "Option A" },
+      { id: "b", label: "Option B" },
+    ]);
+  });
+
+  it("still rejects duplicate option ids after normalization", () => {
+    const parsed = askUserQuestionsPayloadSchema.safeParse({
+      version: 1,
+      questions: [
+        {
+          id: "q1",
+          prompt: "Pick one",
+          // Both string options slugify to the same id.
+          options: ["Ship it", "Ship it"],
+        },
+      ],
     });
 
     expect(parsed.success).toBe(false);
