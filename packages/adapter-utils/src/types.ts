@@ -107,6 +107,10 @@ export interface AdapterExecutionResult {
    * provider-reported `costUsd` as the cache-adjusted billed amount.
    */
   cacheAdjustedCostUsd?: number | null;
+  /**
+   * Adapter-owned structured result metadata. A top-level failure status is a
+   * terminal signal even when the adapter process exits with code zero.
+   */
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   /**

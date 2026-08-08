@@ -4,8 +4,10 @@ import {
   type AdapterModelProfileDefinition,
 } from "../adapters/index.js";
 import {
+  assertRequestedModelProfileApplied,
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
+  resolveAdapterRunOutcome,
   resolveModelProfileApplication,
   isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
@@ -108,7 +110,7 @@ describe("heartbeat model profile application", () => {
     });
   });
 
-  it("falls back to the primary config when the adapter does not support the requested profile", () => {
+  it("refuses the primary config when the adapter does not support the requested profile", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [],
       agentRuntimeConfig: {
@@ -139,6 +141,85 @@ describe("heartbeat model profile application", () => {
       adapterConfig: null,
     });
     expect(merged).toEqual({ model: "primary" });
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).toThrow(
+      /refusing to fall back to the primary adapter configuration/,
+    );
+  });
+
+  it("fails closed before dispatch when status-only recovery requests a disabled cheap profile", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: false,
+            adapterConfig: { model: "disabled-cheap" },
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap", recoveryIntent: "status_only" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      fallbackReason: "agent_runtime_profile_disabled",
+    });
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).toThrowError(
+      expect.objectContaining({
+        name: "ConfigurationIncompleteFailure",
+        code: "configuration_incomplete",
+        resultJson: expect.objectContaining({
+          configurationIncomplete: expect.objectContaining({
+            reason: "requested_model_profile_unavailable",
+            requestedModelProfile: "cheap",
+            fallbackReason: "agent_runtime_profile_disabled",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("dispatches a status-only recovery hint on the base config when the adapter has no profiles", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap", recoveryIntent: "status_only" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      fallbackReason: "adapter_profile_not_supported",
+      bestEffortRecoveryHint: true,
+    });
+    // A best-effort recovery hint degrades to the base adapter config instead of
+    // failing the run closed; the missing-comment retry must still dispatch.
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).not.toThrow();
+  });
+
+  it("keeps an explicit wake-context request fail-closed even when the adapter has no profiles", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      fallbackReason: "adapter_profile_not_supported",
+      bestEffortRecoveryHint: false,
+    });
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).toThrow(
+      /refusing to fall back to the primary adapter configuration/,
+    );
   });
 
   it("normalizes a wake payload model profile into run context", () => {
@@ -153,5 +234,55 @@ describe("heartbeat model profile application", () => {
   it("treats model resolution failures as non-retryable configuration failures", () => {
     expect(isConfigurationIncompleteFailedRun({ errorCode: "model_not_found" })).toBe(true);
     expect(isConfigurationIncompleteFailedRun({ errorCode: "provider_quota" })).toBe(false);
+  });
+});
+
+describe("heartbeat adapter outcome", () => {
+  it.each(["error", "failed", "failure", "errored", " ERROR "])(
+    "maps an exit-zero adapter result with status=%j to failed",
+    (status) => {
+      expect(resolveAdapterRunOutcome({
+        adapterResult: {
+          exitCode: 0,
+          timedOut: false,
+          errorMessage: null,
+          resultJson: { status },
+        },
+      })).toBe("failed");
+    },
+  );
+
+  it("keeps timeout priority over a semantic adapter failure", () => {
+    expect(resolveAdapterRunOutcome({
+      adapterResult: {
+        exitCode: 0,
+        timedOut: true,
+        errorMessage: null,
+        resultJson: { status: "error" },
+      },
+    })).toBe("timed_out");
+  });
+
+  it("preserves an already-terminal concurrent cancellation", () => {
+    expect(resolveAdapterRunOutcome({
+      currentTerminalStatus: "cancelled",
+      adapterResult: {
+        exitCode: 0,
+        timedOut: false,
+        errorMessage: null,
+        resultJson: { status: "completed" },
+      },
+    })).toBe("cancelled");
+  });
+
+  it("does not interpret nested status fields as the adapter outcome", () => {
+    expect(resolveAdapterRunOutcome({
+      adapterResult: {
+        exitCode: 0,
+        timedOut: false,
+        errorMessage: null,
+        resultJson: { status: "completed", detail: { status: "error" } },
+      },
+    })).toBe("succeeded");
   });
 });
