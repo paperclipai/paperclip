@@ -8,10 +8,11 @@ type AgentStatus = (typeof agents.$inferSelect)["status"];
 export type AgentOrgRow = Pick<
   typeof agents.$inferSelect,
   "id" | "companyId" | "name" | "reportsTo" | "status"
->;
+> & { adapterType?: string | null };
 
 export type AgentInvokabilityBlockReason =
   | "missing"
+  | "human_agent"
   | "paused"
   | "terminated"
   | "pending_approval"
@@ -78,6 +79,15 @@ export function evaluateAgentInvokability(
     return blocked("missing", "Agent no longer exists", {}, false);
   }
 
+  if (agent.adapterType === "human") {
+    return blocked(
+      "human_agent",
+      "Human agents do not execute automated heartbeats",
+      { agentId: agent.id, adapterType: agent.adapterType },
+      false,
+    );
+  }
+
   const eligibility = getAgentWorkEligibility({
     agent: toEligibilityAgent(agent),
     agents: companyAgents.map(toEligibilityAgent),
@@ -127,6 +137,7 @@ export async function evaluateAgentInvokabilityFromDb(
       name: agents.name,
       reportsTo: agents.reportsTo,
       status: agents.status,
+      adapterType: agents.adapterType,
     })
     .from(agents)
     .where(eq(agents.companyId, agent.companyId));

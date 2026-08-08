@@ -617,7 +617,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== sourceIssue.companyId || !isAgentInvokable(candidate)) continue;
+      if (!candidate || candidate.companyId !== sourceIssue.companyId || candidate.adapterType === "human" || !isAgentInvokable(candidate)) continue;
       const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, candidate.id, {
         issueId: sourceIssue.id,
         projectId: sourceIssue.projectId ?? null,

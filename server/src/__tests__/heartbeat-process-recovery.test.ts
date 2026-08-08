@@ -6886,4 +6886,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("skips human manager in management chain and escalates to AI CTO during recovery escalation", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_error",
+    });
+    const humanManagerId = randomUUID();
+    const aiCtoId = randomUUID();
+
+    // Create Human Manager (adapterType === "human") and AI CTO (adapterType === "claude_local")
+    await db.insert(agents).values([
+      {
+        id: humanManagerId,
+        companyId,
+        name: "Human CEO/Manager",
+        role: "manager",
+        status: "active",
+        adapterType: "human",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: aiCtoId,
+        companyId,
+        name: "AI CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Set assignee's manager to Human Manager, and Human Manager's manager to AI CTO
+    await db.update(agents).set({ reportsTo: humanManagerId }).where(eq(agents.id, agentId));
+    await db.update(agents).set({ reportsTo: aiCtoId }).where(eq(agents.id, humanManagerId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+
+    const [recoveryAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+
+    expect(recoveryAction).toBeDefined();
+    expect(recoveryAction.ownerType).toBe("agent");
+    expect(recoveryAction.ownerAgentId).toBe(aiCtoId);
+  });
+
+  it("escalates to board when escalation target in management chain is Human CEO and no AI manager exists", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_error",
+    });
+    const humanCeoId = randomUUID();
+
+    // Create Human CEO (adapterType === "human") with role "ceo"
+    await db.insert(agents).values({
+      id: humanCeoId,
+      companyId,
+      name: "Human CEO",
+      role: "ceo",
+      status: "active",
+      adapterType: "human",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Set assignee's manager to Human CEO
+    await db.update(agents).set({ reportsTo: humanCeoId }).where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+
+    const [recoveryAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+
+    expect(recoveryAction).toBeDefined();
+    expect(recoveryAction.ownerType).toBe("board");
+    expect(recoveryAction.ownerAgentId).toBeNull();
+    expect(recoveryAction.wakePolicy).toMatchObject({
+      type: "board_escalation",
+      reason: "no_invokable_recovery_owner",
+    });
+  });
 });
