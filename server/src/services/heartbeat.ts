@@ -6508,6 +6508,14 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  /**
+   * Test-only seam invoked immediately before the compare-and-set write that
+   * cancels a stale queued run (see `cancelQueuedRunForStaleIssue`). Lets
+   * tests deterministically land a concurrent status change — e.g. a
+   * competing `claimQueuedRun` promoting the run to "running" — inside the
+   * exact window the guard protects. Left unset in production.
+   */
+  beforeQueuedRunCancelWrite?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void> | void;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -12759,7 +12767,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
     const now = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    if (options.beforeQueuedRunCancelWrite) {
+      await options.beforeQueuedRunCancelWrite(run);
+    }
+    // Guard the cancel with a compare-and-set on status="queued" (same
+    // primitive as setRunStatusIfRunning). evaluateQueuedRunStaleness reads
+    // the run/issue state, but between that read and this write a concurrent
+    // claimQueuedRun can have already promoted the run to "running". Without
+    // the WHERE status='queued' guard, this UPDATE would blindly overwrite
+    // that live run's status to "cancelled", stranding active work on a
+    // terminal record. When the guard matches zero rows, skip every
+    // side-effect below (wakeup skip, execution-lock clear, run event) so a
+    // run that won the race stays untouched.
+    const { run: cancelled, updated } = await setRunStatusFromLive(run.id, "cancelled", ["queued"], {
       finishedAt: now,
       error: staleness.reason,
       errorCode: staleness.errorCode,
@@ -12772,7 +12792,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         timeoutFired: false,
       },
     });
-    if (!cancelled) return null;
+    if (!updated || !cancelled) return null;
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,

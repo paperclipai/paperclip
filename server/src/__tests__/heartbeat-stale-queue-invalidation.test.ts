@@ -9,6 +9,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -1271,6 +1272,94 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(busyRun?.status).toBe("running");
 
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busyRunId));
+  });
+
+  it("does not cancel a queued run that wins the claim race between staleness evaluation and the cancel write (RENA-55706)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    // Same starting state as the eager-cancel-after-reassignment case: the
+    // assignee already flipped, and the previous assignee's queued run still
+    // holds the execution lock.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned, but the queued run wins the claim race",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: replacementAgentId,
+      executionRunId: runId,
+      executionAgentNameKey: "originalcoder",
+      executionLockedAt: new Date(),
+    });
+
+    // A heartbeat instance whose beforeQueuedRunCancelWrite hook fires exactly
+    // between evaluateQueuedRunStaleness's read (which already decided the run
+    // is stale) and cancelQueuedRunForStaleIssue's compare-and-set write —
+    // reproducing a concurrent claimQueuedRun that promotes the run to
+    // "running" inside that window (RENA-55706 Aufgabe 1).
+    const raceHeartbeat = heartbeatService(db, {
+      beforeQueuedRunCancelWrite: async (run) => {
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "running", startedAt: new Date() })
+          .where(eq(heartbeatRuns.id, run.id));
+      },
+    });
+
+    const cancelledRunIds = await raceHeartbeat.cancelStaleQueuedRunsForIssue(companyId, issueId);
+    expect(cancelledRunIds).toEqual([]);
+
+    const [run, wakeup, issue, events] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId)),
+    ]);
+
+    // The guarded write matched zero rows (status was already "running", not
+    // "queued"), so the run must stay running, not flip to "cancelled".
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    // None of the cancel side effects may fire when the guard is a no-op.
+    expect(wakeup?.status).toBe("queued");
+    expect(issue?.executionRunId).toBe(runId);
+    expect(events).toHaveLength(0);
+
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
   });
 
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
