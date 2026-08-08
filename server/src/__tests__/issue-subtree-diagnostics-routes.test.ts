@@ -314,6 +314,104 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(res.body.truncated).toBe(false);
   });
 
+  it("reports advisory continuation, cycle, no-progress, and supersession signals without changing the tree", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Root delivery",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    const earlier = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "Repeatable delivery",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    const later = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      parentId: root.id,
+      title: "  repeatable   delivery ",
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    });
+    await db.update(issues).set({
+      createdAt: new Date(earlier.createdAt.getTime() + 1_000),
+    }).where(eq(issues.id, later.id));
+    await blockIssue(db, company.id, earlier.id, later.id);
+    await blockIssue(db, company.id, later.id, earlier.id);
+    const progressAt = new Date("2026-08-01T10:00:00.000Z");
+    const noProgressAt = new Date("2026-08-01T11:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        status: "succeeded",
+        lastUsefulActionAt: progressAt,
+        finishedAt: progressAt,
+        contextSnapshot: { issueId: earlier.id },
+      },
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        status: "succeeded",
+        finishedAt: noProgressAt,
+        contextSnapshot: { issueId: earlier.id },
+      },
+      {
+        companyId: company.id,
+        agentId: agent.id,
+        status: "succeeded",
+        finishedAt: new Date("2026-08-01T12:00:00.000Z"),
+        contextSnapshot: { issueId: earlier.id },
+      },
+    ]);
+
+    const beforeIssues = await db.select({ id: issues.id, status: issues.status }).from(issues)
+      .where(eq(issues.companyId, company.id));
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/subtree`)
+      .query({ continuationWarning: 1, depthWarning: 1, successfulRunsWithoutProgressWarning: 2 });
+    const afterIssues = await db.select({ id: issues.id, status: issues.status }).from(issues)
+      .where(eq(issues.companyId, company.id));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(afterIssues).toEqual(beforeIssues);
+    expect(res.body.treeHealth).toMatchObject({
+      cycleStatus: "detected",
+      thresholds: {
+        continuationWarning: 1,
+        depthWarning: 1,
+        successfulRunsWithoutProgressWarning: 2,
+      },
+      supersessionCandidates: [
+        expect.objectContaining({
+          predecessorIssueId: earlier.id,
+          successorIssueId: later.id,
+          reason: "same_parent_normalized_title",
+        }),
+      ],
+    });
+    const earlierHealth = res.body.treeHealth.nodes.find((node: { issueId: string }) => node.issueId === earlier.id);
+    expect(earlierHealth).toMatchObject({
+      canonicalContinuationId: earlier.id,
+      continuationCount: 1,
+      continuationWarning: true,
+      cycleStatus: "detected",
+      depth: 1,
+      depthWarning: true,
+      unresolvedPathType: "cycle",
+      successfulRunsSinceProgress: 2,
+      successfulRunsWithoutProgressWarning: true,
+    });
+  });
+
   it("caps subtree nodes and reports truncation explicitly", async () => {
     const company = await seedCompany(db);
     const project = await seedProject(db, company.id, "Core");

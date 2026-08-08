@@ -358,12 +358,63 @@ export type IssueSubtreeDiagnosticEdge =
     timestamp: string;
   };
 
+/**
+ * Tree-health is advisory only.  In particular, these values never authorize
+ * a rewrite, reassignment, or inferred replacement of an existing issue.
+ */
+export type IssueTreeHealthCycleStatus = "clear" | "detected";
+
+export type IssueTreeHealthUnresolvedPathType =
+  | "none"
+  | "dependency"
+  | "execution"
+  | "review"
+  | "external"
+  | "cycle";
+
+export interface IssueTreeHealthThresholds {
+  continuationWarning: number;
+  depthWarning: number;
+  successfulRunsWithoutProgressWarning: number;
+}
+
+export interface IssueTreeHealthSupersessionCandidate {
+  predecessorIssueId: string;
+  successorIssueId: string;
+  reason: "same_parent_normalized_title";
+}
+
+export interface IssueTreeHealthNode {
+  issueId: string;
+  /**
+   * Phase 1 deliberately uses the issue id until an explicit replacement link
+   * is written by a later workflow.  Matching titles are candidates, not links.
+   */
+  canonicalContinuationId: string;
+  continuationCount: number;
+  continuationWarning: boolean;
+  cycleStatus: IssueTreeHealthCycleStatus;
+  depth: number;
+  depthWarning: boolean;
+  unresolvedPathType: IssueTreeHealthUnresolvedPathType;
+  successfulRunsSinceProgress: number;
+  successfulRunsWithoutProgressWarning: boolean;
+}
+
+export interface IssueTreeHealthDiagnostics {
+  cycleStatus: IssueTreeHealthCycleStatus;
+  thresholds: IssueTreeHealthThresholds;
+  nodes: IssueTreeHealthNode[];
+  supersessionCandidates: IssueTreeHealthSupersessionCandidate[];
+}
+
 export interface IssueSubtreeDiagnosticsResponse {
   issue: IssueBlockerDiagnosticIssueSummary;
   diagnosis: string | null;
   likelyReason: string | null;
   nodes: IssueSubtreeDiagnosticNode[];
   edges: IssueSubtreeDiagnosticEdge[];
+  treeHealth: IssueTreeHealthDiagnostics;
   nodeCount: number;
   omittedUnauthorizedNodeCount: number | null;
   truncated: boolean;

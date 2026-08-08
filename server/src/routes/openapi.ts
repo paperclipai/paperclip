@@ -6359,7 +6359,7 @@ registerCurrentRoute({
   method: "get",
   path: "/api/issues/{id}/diagnostics/subtree",
   tags: ["issues"],
-  summary: "Get bounded subtree wake and blocker diagnostics for an issue",
+  summary: "Get bounded, read-only subtree wake, blocker, and tree-health diagnostics for an issue",
 });
 
 registerCurrentRoute({

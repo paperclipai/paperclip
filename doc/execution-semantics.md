@@ -290,6 +290,59 @@ The valid action-path primitives are:
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
 
+### Canonical continuation identity and read-only tree health
+
+A continuation is not merely another issue with a similar title. Its canonical
+identity is the durable identity of one independently owned deliverable or one
+dependency path. A continuation may change session, run, assignee, or issue
+status without changing that identity. Parentage supplies structure and blocker
+edges supply dependency; neither one implicitly merges two deliverables into a
+single continuation.
+
+The initial canonical identity for an existing issue is that issue's id. This
+is intentionally conservative: an implementation must not infer an identity
+from titles, descriptions, assignees, timestamps, or adjacency in a tree. Two
+similar existing issues remain two identities unless a later, explicit
+replacement record links them. This makes the Phase 1 rollout read-only for
+legacy trees.
+
+An explicit replacement/supersession record, when the write path is introduced,
+must name both the predecessor and successor in the same company and preserve
+the predecessor for audit. It must state whether the successor takes all
+remaining scope or only a named residual scope. Replacement links are directed
+and must be validated as acyclic together with the affected continuation and
+dependency path. The server must reject a new link that would create a cycle;
+it must not repair, rewrite, or backfill a legacy tree to make the graph fit.
+
+Partial delivery does not silently close the original scope. The completing run
+or handoff must leave residual work as an explicit independently owned issue,
+an explicit blocker/dependency path, or a documented remaining-scope record on
+the same continuation. A successor cannot be treated as the canonical owner of
+the residual just because its title looks like a retry. This preserves the
+single-assignee rule while allowing legitimate parallel work on different
+deliverables.
+
+`GET /api/issues/:id/diagnostics/subtree` exposes advisory, authorization-
+filtered tree-health signals. It is read-only and neither creates links nor
+changes status, ownership, blockers, runs, or activity logs. For each visible
+node it reports the canonical identity currently known to the control plane,
+its continuation count, cycle status, depth, unresolved-path type, and the
+number of successful runs since the last durable useful action. Similar
+same-parent normalized titles are reported only as supersession *candidates*;
+they are not evidence of a replacement link.
+
+The endpoint accepts bounded `continuationWarning`, `depthWarning`, and
+`successfulRunsWithoutProgressWarning` query thresholds. Defaults are 3, 5,
+and 2 respectively, and each accepts values from 1 through 100. These values
+control only display/classification. A depth warning is never a universal
+tree-depth cap: the existing endpoint traversal bound is a response-size
+safeguard, and does not reject valid decomposition or parallel work. A
+no-progress budget is also advisory in Phase 1: a successful run that records
+`lastUsefulActionAt` resets the budget; later successful runs without a useful
+action increment it. Reaching the budget surfaces diagnostics for a human or
+recovery owner; it does not auto-close, reassign, supersede, mutate, or retry
+the issue.
+
 ### Durable external waits and heartbeat finalization
 
 An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:

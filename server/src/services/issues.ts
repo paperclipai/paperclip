@@ -703,6 +703,10 @@ type IssueSubtreeDiagnosticsWakeRequestResultRow = IssueSubtreeDiagnosticsWakeRe
 type IssueSubtreeDiagnosticsActivityResultRow = IssueSubtreeDiagnosticsActivityRow & {
   rowNumber: number | string;
 };
+type IssueSubtreeDiagnosticsRunHealthRow = {
+  issueId: string;
+  successfulRunsSinceProgress: number | string;
+};
 export type IssueDependencyReadiness = {
   issueId: string;
   blockerIssueIds: string[];
@@ -5780,6 +5784,7 @@ export function issueService(db: Db) {
       const blockersByIssueId = new Map<string, IssueSubtreeDiagnosticsBlockerRow[]>();
       const wakeRequestsByIssueId = new Map<string, IssueSubtreeDiagnosticsWakeRequestRow[]>();
       const activityRecordsByIssueId = new Map<string, IssueSubtreeDiagnosticsActivityRow[]>();
+      const successfulRunsSinceProgressByIssueId = new Map<string, number>();
       const truncatedBlockerIssueIds = new Set<string>();
       const truncatedWakeIssueIds = new Set<string>();
       const truncatedActivityIssueIds = new Set<string>();
@@ -5924,6 +5929,50 @@ export function issueService(db: Db) {
           rows.push(normalized);
           activityRecordsByIssueId.set(normalized.issueId, rows);
         }
+
+        // A useful action is the durable progress marker.  A successful run which
+        // itself records useful work resets the budget; only later successful runs
+        // with no useful action count towards the no-progress diagnostic.
+        const runTargetIssueIdSql = sql<string>`coalesce(
+          run.context_snapshot ->> 'issueId',
+          run.context_snapshot ->> 'taskId'
+        )`;
+        const rawRunHealthRows = Array.from(await db.execute(sql`
+          WITH issue_runs AS (
+            SELECT
+              ${runTargetIssueIdSql} AS "issueId",
+              run.status,
+              run.last_useful_action_at AS "lastUsefulActionAt",
+              coalesce(run.finished_at, run.updated_at, run.created_at) AS "completedAt"
+            FROM heartbeat_runs run
+            WHERE run.company_id = ${issue.companyId}
+              AND ${runTargetIssueIdSql} IN (${nodeIdValues})
+          ), progress AS (
+            SELECT "issueId", max("lastUsefulActionAt") AS "lastProgressAt"
+            FROM issue_runs
+            WHERE "lastUsefulActionAt" IS NOT NULL
+            GROUP BY "issueId"
+          )
+          SELECT
+            issue_runs."issueId",
+            count(*) FILTER (
+              WHERE issue_runs.status = 'succeeded'
+                AND issue_runs."lastUsefulActionAt" IS NULL
+                AND (
+                  progress."lastProgressAt" IS NULL
+                  OR issue_runs."completedAt" > progress."lastProgressAt"
+                )
+            )::int AS "successfulRunsSinceProgress"
+          FROM issue_runs
+          LEFT JOIN progress ON progress."issueId" = issue_runs."issueId"
+          GROUP BY issue_runs."issueId"
+        `)) as IssueSubtreeDiagnosticsRunHealthRow[];
+        for (const row of rawRunHealthRows) {
+          successfulRunsSinceProgressByIssueId.set(
+            row.issueId,
+            Number(row.successfulRunsSinceProgress),
+          );
+        }
       }
 
       return {
@@ -5932,6 +5981,7 @@ export function issueService(db: Db) {
         readinessByIssueId: readiness,
         wakeRequestsByIssueId,
         activityRecordsByIssueId,
+        successfulRunsSinceProgressByIssueId,
         truncatedNodes,
         truncatedDepth,
         truncatedBlockerIssueIds,

@@ -82,6 +82,8 @@ import {
   type IssueSubtreeDiagnosticEdge,
   type IssueSubtreeDiagnosticNode,
   type IssueSubtreeDiagnosticsResponse,
+  type IssueTreeHealthDiagnostics,
+  type IssueTreeHealthThresholds,
   type IssueWakeDiagnosticActivityRecord,
   type IssueWakeDiagnosticEvent,
   type IssueWakeDiagnosticWakeFailureClass,
@@ -1337,6 +1339,145 @@ type IssueSubtreeDiagnosticActivityRow = {
   createdAt: Date | string;
 };
 
+const DEFAULT_TREE_HEALTH_DIAGNOSTIC_THRESHOLDS: IssueTreeHealthThresholds = {
+  continuationWarning: 3,
+  depthWarning: 5,
+  successfulRunsWithoutProgressWarning: 2,
+};
+
+function readTreeHealthThreshold(value: unknown, fallback: number) {
+  const parsed = typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : fallback;
+}
+
+function readTreeHealthThresholds(req: Request): IssueTreeHealthThresholds {
+  return {
+    continuationWarning: readTreeHealthThreshold(
+      req.query.continuationWarning,
+      DEFAULT_TREE_HEALTH_DIAGNOSTIC_THRESHOLDS.continuationWarning,
+    ),
+    depthWarning: readTreeHealthThreshold(
+      req.query.depthWarning,
+      DEFAULT_TREE_HEALTH_DIAGNOSTIC_THRESHOLDS.depthWarning,
+    ),
+    successfulRunsWithoutProgressWarning: readTreeHealthThreshold(
+      req.query.successfulRunsWithoutProgressWarning,
+      DEFAULT_TREE_HEALTH_DIAGNOSTIC_THRESHOLDS.successfulRunsWithoutProgressWarning,
+    ),
+  };
+}
+
+function normalizedContinuationTitle(title: string) {
+  return title.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+}
+
+function findCycleIssueIds(edges: Map<string, string[]>) {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const cycleIssueIds = new Set<string>();
+  const path: string[] = [];
+
+  const visit = (issueId: string) => {
+    if (visiting.has(issueId)) {
+      const start = path.indexOf(issueId);
+      for (const cycleIssueId of path.slice(start)) cycleIssueIds.add(cycleIssueId);
+      return;
+    }
+    if (visited.has(issueId)) return;
+    visiting.add(issueId);
+    path.push(issueId);
+    for (const nextIssueId of edges.get(issueId) ?? []) visit(nextIssueId);
+    path.pop();
+    visiting.delete(issueId);
+    visited.add(issueId);
+  };
+
+  for (const issueId of edges.keys()) visit(issueId);
+  return cycleIssueIds;
+}
+
+function buildTreeHealthDiagnostics(input: {
+  nodes: IssueSubtreeDiagnosticAuthzNode[];
+  blockersByIssueId: Map<string, IssueSubtreeDiagnosticBlockerAuthzRow[]>;
+  readinessByIssueId: Map<string, { unresolvedBlockerIssueIds: string[] }>;
+  successfulRunsSinceProgressByIssueId: Map<string, number>;
+  thresholds: IssueTreeHealthThresholds;
+}): IssueTreeHealthDiagnostics {
+  const nodeIds = new Set(input.nodes.map((node) => node.id));
+  const parentEdges = new Map<string, string[]>();
+  const dependencyEdges = new Map<string, string[]>();
+  for (const node of input.nodes) {
+    parentEdges.set(node.id, node.parentId && nodeIds.has(node.parentId) ? [node.parentId] : []);
+    dependencyEdges.set(
+      node.id,
+      (input.blockersByIssueId.get(node.id) ?? [])
+        .map((blocker) => blocker.id)
+        .filter((blockerId) => nodeIds.has(blockerId)),
+    );
+  }
+  const cycleIssueIds = new Set([
+    ...findCycleIssueIds(parentEdges),
+    ...findCycleIssueIds(dependencyEdges),
+  ]);
+
+  const candidates: IssueTreeHealthDiagnostics["supersessionCandidates"] = [];
+  const byParentAndTitle = new Map<string, IssueSubtreeDiagnosticAuthzNode[]>();
+  for (const node of input.nodes) {
+    const key = `${node.parentId ?? "root"}\u0000${normalizedContinuationTitle(node.title)}`;
+    const siblings = byParentAndTitle.get(key) ?? [];
+    siblings.push(node);
+    byParentAndTitle.set(key, siblings);
+  }
+  for (const siblings of byParentAndTitle.values()) {
+    if (siblings.length < 2) continue;
+    siblings.sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    for (let index = 1; index < siblings.length; index += 1) {
+      candidates.push({
+        predecessorIssueId: siblings[index - 1]!.id,
+        successorIssueId: siblings[index]!.id,
+        reason: "same_parent_normalized_title",
+      });
+    }
+  }
+
+  const nodes = input.nodes.map((node) => {
+    const cycleStatus = cycleIssueIds.has(node.id) ? "detected" as const : "clear" as const;
+    const unresolvedBlockerCount = input.readinessByIssueId.get(node.id)?.unresolvedBlockerIssueIds.length ?? 0;
+    const unresolvedPathType = cycleStatus === "detected"
+      ? "cycle" as const
+      : unresolvedBlockerCount > 0
+        ? "dependency" as const
+        : node.status === "in_review"
+          ? "review" as const
+          : node.status === "blocked"
+            ? "external" as const
+            : node.status === "todo" || node.status === "in_progress"
+              ? "execution" as const
+              : "none" as const;
+    return {
+      issueId: node.id,
+      canonicalContinuationId: node.id,
+      continuationCount: 1,
+      continuationWarning: 1 >= input.thresholds.continuationWarning,
+      cycleStatus,
+      depth: node.depth,
+      depthWarning: node.depth >= input.thresholds.depthWarning,
+      unresolvedPathType,
+      successfulRunsSinceProgress: input.successfulRunsSinceProgressByIssueId.get(node.id) ?? 0,
+      successfulRunsWithoutProgressWarning:
+        (input.successfulRunsSinceProgressByIssueId.get(node.id) ?? 0)
+        >= input.thresholds.successfulRunsWithoutProgressWarning,
+    };
+  });
+
+  return {
+    cycleStatus: cycleIssueIds.size > 0 ? "detected" : "clear",
+    thresholds: input.thresholds,
+    nodes,
+    supersessionCandidates: candidates,
+  };
+}
+
 function groupByIssueId<T extends { issueId: string }>(rows: T[]) {
   const map = new Map<string, T[]>();
   for (const row of rows) {
@@ -1402,6 +1543,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
   }>;
   wakeRequestsByIssueId: Map<string, IssueSubtreeDiagnosticWakeRequestRow[]>;
   activityRecordsByIssueId: Map<string, IssueSubtreeDiagnosticActivityRow[]>;
+  successfulRunsSinceProgressByIssueId: Map<string, number>;
   truncatedNodes: boolean;
   truncatedDepth: boolean;
   truncatedBlockerIssueIds: Set<string>;
@@ -1409,6 +1551,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
   truncatedActivityIssueIds: Set<string>;
   includeInternalIds: boolean;
   caps: IssueSubtreeDiagnosticsResponse["caps"];
+  treeHealthThresholds: IssueTreeHealthThresholds;
 }): IssueSubtreeDiagnosticsResponse {
   const issue = toIssueBlockerDiagnosticSummary(input.issue);
   const visibleNodeIds = new Set(input.visibleNodes.map((node) => node.id));
@@ -1522,6 +1665,13 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
     truncated,
     caps: input.caps,
   });
+  const treeHealth = buildTreeHealthDiagnostics({
+    nodes: input.visibleNodes,
+    blockersByIssueId: visibleBlockerIdsByIssueId,
+    readinessByIssueId: input.readinessByIssueId,
+    successfulRunsSinceProgressByIssueId: input.successfulRunsSinceProgressByIssueId,
+    thresholds: input.treeHealthThresholds,
+  });
 
   return {
     issue,
@@ -1529,6 +1679,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
     likelyReason: diagnosis,
     nodes: nodeResponses,
     edges,
+    treeHealth,
     nodeCount: nodeResponses.length,
     omittedUnauthorizedNodeCount,
     truncated,
@@ -5512,6 +5663,7 @@ export function issueRoutes(
       readinessByIssueId: diagnostic.readinessByIssueId,
       wakeRequestsByIssueId: diagnostic.wakeRequestsByIssueId,
       activityRecordsByIssueId: diagnostic.activityRecordsByIssueId,
+      successfulRunsSinceProgressByIssueId: diagnostic.successfulRunsSinceProgressByIssueId,
       truncatedNodes: diagnostic.truncatedNodes,
       truncatedDepth: diagnostic.truncatedDepth,
       truncatedBlockerIssueIds: diagnostic.truncatedBlockerIssueIds,
@@ -5519,6 +5671,7 @@ export function issueRoutes(
       truncatedActivityIssueIds: diagnostic.truncatedActivityIssueIds,
       includeInternalIds,
       caps: diagnostic.caps,
+      treeHealthThresholds: readTreeHealthThresholds(req),
     });
 
     logger.info(
