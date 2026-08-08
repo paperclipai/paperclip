@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
@@ -8,6 +8,24 @@ import { formatDateTime } from "../lib/utils";
 import { ExternalLink, Square } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
+import { useAutoScroll } from "../hooks/useAutoScroll";
+
+/** Scroll container that auto-follows streaming run output (stick-to-bottom
+ * unless the user scrolls up). One instance per run card. */
+function AutoScrollBox({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  const { ref, onScroll } = useAutoScroll<HTMLDivElement>();
+  return (
+    <div ref={ref} onScroll={onScroll} className={className}>
+      {children}
+    </div>
+  );
+}
 import { StatusBadge } from "./StatusBadge";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
@@ -148,14 +166,14 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                 </div>
               </div>
 
-              <div className="max-h-(--sz-320px) overflow-y-auto pr-1">
+              <AutoScrollBox className="max-h-(--sz-320px) overflow-y-auto pr-1">
                 <RunChatSurface
                   run={run}
                   transcript={transcript}
                   hasOutput={hasOutputForRun(run.id)}
                   companyId={companyId}
                 />
-              </div>
+              </AutoScrollBox>
             </section>
           );
         })}
