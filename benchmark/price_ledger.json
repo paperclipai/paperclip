@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "title": "Public model-price ledger (subscription-pool draw proxy)",
+  "as_of": "2026-08-06",
+  "source_issue": "TSMC-20229",
+  "supersedes": "work-products/TSMC-19782/model-public-price-ledger-2026-08-05.md",
+  "anchor": {
+    "name": "terra_nominal_2_50",
+    "description": "Weight = input_usd_per_1m / 2.50. Nominal $2.50 anchor is retained even after the July-2026 Terra list cut so historical weights stay comparable; Terra itself is now weight 0.80.",
+    "usd_per_1m_input": 2.5
+  },
+  "notes": [
+    "Public API list prices only — relative subscription-pool draw proxy, not a claim that subscription usage is billed per token.",
+    "Standard/short-context, uncached. Long-context exceptions are per-run overlays.",
+    "Version-family rule: every generation/tier gets its own row — never collapse a family.",
+    "GPT-5.4/5.5 + Luna/Terra corrections: operator-supplied 2026-08-06 (TSMC-20229).",
+    "Grok 4.5 short-context rates from xAI public catalog as recorded in TSKB0056 (2026-07-30 pin-flip case).",
+    "Opus 5 / Sonnet 5 list prices remain AWAITING provider paste — do not invent proxies.",
+    "xAI post-trial personal subscription step-up remains UNRECONCILED."
+  ],
+  "rows": [
+    {
+      "id": "claude-fable-5",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Fable 5",
+      "usd_per_1m_input": 10.0,
+      "usd_per_1m_output": 50.0,
+      "input_weight": 4.0,
+      "status": "priced",
+      "aliases": ["claude-fable-5", "fable-5", "fable5", "claude-fable"]
+    },
+    {
+      "id": "claude-opus-5",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Opus 5",
+      "usd_per_1m_input": null,
+      "usd_per_1m_output": null,
+      "input_weight": null,
+      "status": "awaiting_public_price",
+      "aliases": ["claude-opus-5", "opus-5", "opus5", "claude-opus-5-0"]
+    },
+    {
+      "id": "claude-opus-4.8",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Opus 4.8",
+      "usd_per_1m_input": 5.0,
+      "usd_per_1m_output": 25.0,
+      "input_weight": 2.0,
+      "status": "priced",
+      "aliases": ["claude-opus-4.8", "claude-opus-4-8", "opus-4.8", "opus-4-8", "claude-opus", "opus"]
+    },
+    {
+      "id": "claude-opus-4.7",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Opus 4.7",
+      "usd_per_1m_input": 5.0,
+      "usd_per_1m_output": 25.0,
+      "input_weight": 2.0,
+      "status": "priced_proxy_same_as_4_8",
+      "note": "No separate public delta recorded; treat as Opus 4.8 class until provider row differs.",
+      "aliases": ["claude-opus-4.7", "claude-opus-4-7", "opus-4.7", "opus-4-7"]
+    },
+    {
+      "id": "claude-opus-4.6",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Opus 4.6",
+      "usd_per_1m_input": 5.0,
+      "usd_per_1m_output": 25.0,
+      "input_weight": 2.0,
+      "status": "priced_proxy_same_as_4_8",
+      "aliases": ["claude-opus-4.6", "claude-opus-4-6", "opus-4.6", "opus-4-6", "claude-opus-4-6-thinking"]
+    },
+    {
+      "id": "claude-sonnet-5",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Sonnet 5",
+      "usd_per_1m_input": null,
+      "usd_per_1m_output": null,
+      "input_weight": null,
+      "status": "awaiting_public_price",
+      "aliases": ["claude-sonnet-5", "sonnet-5", "sonnet5"]
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Sonnet 4.6",
+      "usd_per_1m_input": 3.0,
+      "usd_per_1m_output": 15.0,
+      "input_weight": 1.2,
+      "status": "priced",
+      "aliases": ["claude-sonnet-4.6", "claude-sonnet-4-6", "sonnet-4.6", "sonnet-4-6", "claude-sonnet", "sonnet"]
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "provider": "Anthropic",
+      "subscription": "Claude",
+      "served_public_model": "Claude Haiku 4.5",
+      "usd_per_1m_input": 1.0,
+      "usd_per_1m_output": 5.0,
+      "input_weight": 0.4,
+      "status": "priced",
+      "aliases": ["claude-haiku-4.5", "claude-haiku-4-5", "haiku-4.5", "haiku-4-5", "claude-haiku", "haiku"]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.6 Sol",
+      "usd_per_1m_input": 5.0,
+      "usd_per_1m_output": 30.0,
+      "input_weight": 2.0,
+      "status": "priced",
+      "aliases": ["gpt-5.6-sol", "5.6-sol", "sol"]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.6 Terra",
+      "usd_per_1m_input": 2.0,
+      "usd_per_1m_output": 12.0,
+      "input_weight": 0.8,
+      "status": "priced",
+      "note": "CORRECTED 2026-08-06: post July-30 list cut was $2.50/$15 (weight 1.0). Now $2/$12 (weight 0.80).",
+      "aliases": ["gpt-5.6-terra", "5.6-terra", "terra"]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.6 Luna",
+      "usd_per_1m_input": 0.2,
+      "usd_per_1m_output": 1.2,
+      "input_weight": 0.08,
+      "status": "priced",
+      "note": "CORRECTED 2026-08-06: pre-cut $1/$6 (weight 0.40) is stale. Now $0.20/$1.20 (weight 0.08).",
+      "aliases": ["gpt-5.6-luna", "5.6-luna", "luna"]
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.5",
+      "usd_per_1m_input": 5.0,
+      "usd_per_1m_output": 30.0,
+      "input_weight": 2.0,
+      "status": "priced",
+      "note": "Operator-supplied 2026-08-06. Equivalence: 5.5 → Sol class.",
+      "aliases": ["gpt-5.5", "codex-gpt-5.5"]
+    },
+    {
+      "id": "gpt-5.4",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.4",
+      "usd_per_1m_input": 2.5,
+      "usd_per_1m_output": 15.0,
+      "input_weight": 1.0,
+      "status": "priced",
+      "note": "Operator-supplied 2026-08-06. Equivalence: 5.4 → Terra (Terra now cheaper+more capable).",
+      "aliases": ["gpt-5.4", "codex-gpt-5.4"]
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "GPT-5.4 mini",
+      "usd_per_1m_input": 0.75,
+      "usd_per_1m_output": 4.5,
+      "input_weight": 0.3,
+      "status": "priced",
+      "note": "Prior TSBC-1673 standard short-context row retained.",
+      "aliases": ["gpt-5.4-mini", "gpt-5.4-mini"]
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "provider": "OpenAI",
+      "subscription": "ChatGPT / Codex",
+      "served_public_model": "Spark (5.3-codex)",
+      "usd_per_1m_input": 0.25,
+      "usd_per_1m_output": 1.5,
+      "input_weight": 0.1,
+      "status": "priced_approx",
+      "note": "Operator-supplied ~$0.25/$1.50 (2026-08-06). Equivalence: Spark → Luna (Luna cheaper+better).",
+      "aliases": ["gpt-5.3-codex-spark", "spark", "5.3-codex-spark", "codex-spark"]
+    },
+    {
+      "id": "grok-4.5",
+      "provider": "xAI",
+      "subscription": "Grok",
+      "served_public_model": "Grok 4.5",
+      "usd_per_1m_input": 2.0,
+      "usd_per_1m_output": 6.0,
+      "input_weight": 0.8,
+      "status": "priced",
+      "note": "Short-context (<200k). TSKB0056 2026-07-30 catalog. Long-context overlay not separately locked here.",
+      "aliases": ["grok-4.5", "hermes-grok-4.5", "grok4.5"]
+    },
+    {
+      "id": "grok-4.3",
+      "provider": "xAI",
+      "subscription": "Grok",
+      "served_public_model": "Grok 4.3",
+      "usd_per_1m_input": 1.25,
+      "usd_per_1m_output": 2.5,
+      "input_weight": 0.5,
+      "status": "priced",
+      "long_context": {
+        "threshold_input_tokens": 200000,
+        "usd_per_1m_input": 2.5,
+        "usd_per_1m_output": 5.0,
+        "input_weight": 1.0
+      },
+      "aliases": ["grok-4.3", "grok-4-3", "grok4.3"]
+    },
+    {
+      "id": "grok-4.2",
+      "provider": "xAI",
+      "subscription": "Grok",
+      "served_public_model": "Grok 4.2 / 4.20 family",
+      "usd_per_1m_input": null,
+      "usd_per_1m_output": null,
+      "input_weight": null,
+      "status": "awaiting_public_price",
+      "note": "Family tracked (4.20 reasoning/non-reasoning/multi-agent). Do not collapse onto 4.3/4.5 prices without provider row.",
+      "aliases": [
+        "grok-4.2",
+        "grok-4.20",
+        "grok-4.20-reasoning",
+        "grok-4.20-non-reasoning",
+        "grok-4.20-multi-agent",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-multi-agent-0309"
+      ]
+    },
+    {
+      "id": "gemini-3.1-pro",
+      "provider": "Google",
+      "subscription": "Google AI Pro / Antigravity",
+      "served_public_model": "Gemini 3.1 Pro Preview",
+      "usd_per_1m_input": 2.0,
+      "usd_per_1m_output": 12.0,
+      "input_weight": 0.8,
+      "status": "priced",
+      "long_context": {
+        "threshold_input_tokens": 200000,
+        "usd_per_1m_input": 4.0,
+        "usd_per_1m_output": 18.0,
+        "input_weight": 1.6
+      },
+      "aliases": [
+        "gemini-3.1-pro",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-low",
+        "gemini-3.1-pro-high",
+        "gemini-pro",
+        "gemini-pro-low",
+        "gemini-pro-high"
+      ]
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "provider": "Google",
+      "subscription": "Google AI Pro / Antigravity",
+      "served_public_model": "Gemini 3.5 Flash",
+      "usd_per_1m_input": 1.5,
+      "usd_per_1m_output": 9.0,
+      "input_weight": 0.6,
+      "status": "priced",
+      "aliases": [
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-medium",
+        "gemini-3.5-flash-low",
+        "gemini-3.5-flash-high",
+        "gemini-flash",
+        "gemini-flash-low",
+        "gemini-flash-high"
+      ]
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "provider": "Google",
+      "subscription": "Google AI Pro / Antigravity",
+      "served_public_model": "Gemini 3.1 Flash-Lite",
+      "usd_per_1m_input": 0.25,
+      "usd_per_1m_output": 1.5,
+      "input_weight": 0.1,
+      "status": "priced",
+      "aliases": ["gemini-3.1-flash-lite", "gemini-flash-lite", "flash-lite"]
+    },
+    {
+      "id": "gpt-oss",
+      "provider": "OpenAI",
+      "subscription": "local / GPT-OSS band",
+      "served_public_model": "GPT-OSS",
+      "usd_per_1m_input": null,
+      "usd_per_1m_output": null,
+      "input_weight": null,
+      "status": "unpriced",
+      "aliases": ["gpt-oss", "gpt-oss-120b", "gpt-oss-120b-medium", "agy-gpt-oss-120b"]
+    }
+  ],
+  "selection_guidance": {
+    "as_of": "2026-08-06",
+    "openai_chatgpt_codex": {
+      "bulk_support_extraction_classification_simple_agents": "gpt-5.6-luna",
+      "default": "gpt-5.6-terra",
+      "hard_engineering_research_long_autonomous": "gpt-5.6-sol",
+      "equivalence": {
+        "gpt-5.4": "prefer gpt-5.6-terra (cheaper + more capable)",
+        "gpt-5.5": "prefer gpt-5.6-sol only by exception (same price class)",
+        "spark": "prefer gpt-5.6-luna (cheaper + better)"
+      }
+    },
+    "band_facts": {
+      "codex_sub_clocks": "TWO clocks — Spark Sat / ChatGPT-5.4-5.6 Sun 13:35 Europe/Dublin",
+      "grok_pool": "≈ same class as Chat/Claude, NOT larger",
+      "agy_claude_gpt_oss_band": "ultra-light (≈3 bench runs/wk kills it)"
+    }
+  }
+}

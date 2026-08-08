@@ -144,3 +144,25 @@ Acceptable exception text:
 - `DEVIATION: incumbent unavailable because <named blocker>; final verdict withheld pending rerun`
 
 Without that explicit deviation, the verdict is malformed.
+
+## Addendum 2026-08-08 — price-score + weighted burn (TSMC-20229)
+
+Operator directive 2026-08-06 / recovery resume 2026-08-08:
+
+1. **Canonical price ledger (machine):** `benchmark/price_ledger.json` + `price_ledger.py`.
+   Human table: company `work-products/TSMC-20229/model-public-price-ledger-2026-08-06.md`.
+   Anchor: weight = `$/1M input ÷ 2.50`. Live Terra post-cut is weight **0.80**; Luna **0.08**.
+2. **Bench verdicts report raw quality AND score-per-weight** (`quality ÷ input_weight`).
+   Default recommendation `value_metric=input_weight`: among models within `quality_epsilon`
+   of peak raw quality, pick highest `meanQualityPerWeight`. Surfaces: `report.py`, `costreport.py`.
+3. **Daily burn metric in weighted units:** `usage.py` paperclip section prints Terra-equivalent
+   pool draw (`tokens × input_weight`) so Opus/Fable tokens are never counted equal to Luna/Haiku.
+4. **Lane selection (ChatGPT/Codex band):** Luna = bulk/support/extraction/simple agents;
+   Terra = default; Sol = hard eng/research/long autonomous by exception.
+5. **Version-family rule:** every generation/tier gets its own ledger row (Opus 5 vs 4.8;
+   Sonnet 5 vs 4.6; Grok 4.5 vs 4.3 vs 4.2). Never collapse a family.
+6. **Still open:** Opus 5 / Sonnet 5 / Grok 4.2 public list prices; xAI post-trial personal rate.
+
+Canonical KB fold target: `TSKB0056` body (README index is v1.5 while filename is still
+v1.0 — `tskb-claim --adopt` fails closed until that mismatch is repaired). This bench
+runbook copy is the executable companion until the canonical body is folded.

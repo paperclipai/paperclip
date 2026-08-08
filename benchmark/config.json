@@ -366,7 +366,7 @@
       "cadence": "monthly",
       "sampleCount": 10,
       "meanAbsDeltaAutoRevertThreshold": 0.05,
-      "spotCheckAbsDeltaOpusThreshold": 0.10,
+      "spotCheckAbsDeltaOpusThreshold": 0.1,
       "autoRevertDefaultJudgeTo": "claude-opus"
     },
     "_comment": "TSBC-1651 relane: spark-medium is the default blind bench judge after TSBC-1642 calibration. Claude Opus remains the reserve judge for the listed verdict/reference cases and for drift/spot-check escalation."
@@ -440,10 +440,11 @@
     "quality_floor": 0.6,
     "min_success_rate_for_quality": 0.8,
     "min_reps_for_decision": 3,
-    "value_metric": "output",
+    "value_metric": "input_weight",
     "quality_epsilon": 0.02,
     "cost_ratio_trigger": 1.5,
-    "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, prefer the lowest mean output tokens only when materially cheaper. min_success_rate_for_quality suppresses published quality/q-per-token when too few tasks succeeded; min_reps_for_decision caps under-repeated cells at candidate."
+    "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, prefer the lowest mean output tokens only when materially cheaper. min_success_rate_for_quality suppresses published quality/q-per-token when too few tasks succeeded; min_reps_for_decision caps under-repeated cells at candidate.",
+    "_value_metric_comment": "TSMC-20229: score-per-weight (quality/input_weight) is the default pick metric among near-peak models. Alternatives: output | total."
   },
   "incumbent_baselines": {
     "cv-review": {
@@ -510,43 +511,43 @@
       "extra_args": []
     }
   },
-  "_pricing_comment": "NOTIONAL API list prices in USD per MILLION tokens, {in, out}, for the optional $ cost basis in costreport.py (#19). Rates must come from verified provider pricing. GPT-5.6 and GPT-5.4 mini standard short-context rates were refreshed from OpenAI's official pricing page on 2026-07-31 (TSBC-1673); long-context, cache-write, and Fast-mode rates remain in the governed TSBC-1673 pricing artifact because this compact schema only prices standard input/output. Caveat: lanes are subscription/OAuth-billed so marginal $ is ~0 today; these model cost IF scaled via API. Output-token efficiency (q/1k-out) remains the live signal.",
+  "_pricing_comment": "NOTIONAL API list prices USD per MILLION tokens {in,out} for costreport + score-per-weight (TSMC-20229). Canonical rows: benchmark/price_ledger.json (as_of 2026-08-06). Weight = in/2.50. Subscription lanes still have ~0 marginal $; input_weight is the live pool-draw proxy.",
   "pricing": {
     "claude-opus": {
-      "in": null,
-      "out": null
+      "in": 5.0,
+      "out": 25.0
     },
     "codex-gpt-5.4": {
-      "in": null,
-      "out": null
+      "in": 2.5,
+      "out": 15.0
     },
     "gemini-pro": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 12.0
     },
     "grok-4.3": {
-      "in": null,
-      "out": null
+      "in": 1.25,
+      "out": 2.5
     },
     "grok-4.20": {
       "in": null,
       "out": null
     },
     "claude-sonnet": {
-      "in": null,
-      "out": null
+      "in": 3.0,
+      "out": 15.0
     },
     "claude-haiku": {
-      "in": null,
-      "out": null
+      "in": 1.0,
+      "out": 5.0
     },
     "claude-opus-4.7": {
-      "in": null,
-      "out": null
+      "in": 5.0,
+      "out": 25.0
     },
     "gpt-5.5": {
-      "in": null,
-      "out": null
+      "in": 5.0,
+      "out": 30.0
     },
     "gpt-5.6-sol": {
       "in": 5.0,
@@ -565,44 +566,56 @@
       "out": 4.5
     },
     "gpt-5.3-codex-spark": {
-      "in": null,
-      "out": null
+      "in": 0.25,
+      "out": 1.5
     },
     "grok-3-mini": {
       "in": null,
       "out": null
     },
     "grok-4.5": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 6.0
     },
     "hermes-grok-4.5": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 6.0
     },
     "gemini-pro-low": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 12.0
     },
     "gemini-pro-high": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 12.0
     },
     "gemini-flash": {
-      "in": null,
-      "out": null
+      "in": 1.5,
+      "out": 9.0
     },
     "gemini-flash-low": {
-      "in": null,
-      "out": null
+      "in": 1.5,
+      "out": 9.0
     },
     "gemini-flash-high": {
-      "in": null,
-      "out": null
+      "in": 1.5,
+      "out": 9.0
     },
     "gpt-oss-120b": {
       "in": null,
       "out": null
+    },
+    "gpt-5.4": {
+      "in": 2.5,
+      "out": 15.0
+    },
+    "claude-opus-4-8": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "claude-fable-5": {
+      "in": 10.0,
+      "out": 50.0
     }
   }
 }

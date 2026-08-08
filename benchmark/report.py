@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 
 import benchlib
 import model_provenance
+import price_ledger
 
 
 def _mean(xs):
@@ -26,11 +27,17 @@ def _q_per_1k(quality, tokens):
 
 
 def _value_key(cfg):
-    """Which efficiency metric drives recommendations. Default: output tokens —
-    total tokens are ~95% fixed CLI system-prompt overhead (a harness artifact),
-    so per-output-token is the fair marginal-cost signal."""
-    metric = (cfg.get("recommendation", {}) or {}).get("value_metric", "output")
-    return "meanQualityPer1kOutput" if metric == "output" else "meanQualityPer1k"
+    """Which efficiency metric drives recommendations.
+
+    Default as of TSMC-20229: input_weight (score-per-weight = quality ÷ ledger
+    input weight). Alternatives: output (q/1k output tokens) or total.
+    """
+    metric = (cfg.get("recommendation", {}) or {}).get("value_metric", "input_weight")
+    if metric == "input_weight":
+        return "meanQualityPerWeight"
+    if metric == "output":
+        return "meanQualityPer1kOutput"
+    return "meanQualityPer1k"
 
 
 def _success_suppression_reason(success_rate, cfg):
@@ -216,6 +223,12 @@ def aggregate(runs, cfg):
             n_tasks = _task_count(considered)
             reps = _reps_for_records(considered)
             mean_quality = _mean(qualities) if publish_quality else None
+            mean_in = _mean(in_toks)
+            input_w = price_ledger.input_weight(mid, input_tokens=mean_in)
+            mean_qpw = (
+                price_ledger.score_per_weight(mean_quality, mid, input_tokens=mean_in)
+                if publish_quality else None
+            )
             suppressed_reason = _success_suppression_reason(success_rate, cfg)
             band, band_note = _decision_band(mean_quality, success_rate, reps, bool(considered), cfg)
             if not considered and infra_quota:
@@ -232,10 +245,12 @@ def aggregate(runs, cfg):
                 "okRuns": len(ran),
                 "successRate": success_rate,
                 "meanQuality": mean_quality,
+                "inputWeight": input_w,
+                "meanQualityPerWeight": mean_qpw,  # quality ÷ ledger input weight (TSMC-20229)
                 "meanQualityPer1k": _mean(qpks) if publish_quality else None,            # per TOTAL tokens (incl CLI overhead)
                 "meanQualityPer1kOutput": _mean(qpk_out) if publish_quality else None,   # per OUTPUT tokens (marginal cost; fairer)
                 "meanTokens": _mean(toks),
-                "meanInputTokens": _mean(in_toks),
+                "meanInputTokens": mean_in,
                 "meanOutputTokens": _mean(out_toks),
                 "estimatedTokens": any(r.get("tokensEstimated") for r in considered),
                 "skippedRuns": sum(1 for r in rs if r.get("skipped")),
@@ -349,31 +364,65 @@ def _recommend(model_stats, cfg, labels, baseline_gate=None):
     best_quality = max(rated, key=lambda m: rated[m]["meanQuality"])
     peak_q = rated[best_quality]["meanQuality"]
     peak_out = rated[best_quality].get("meanOutputTokens") or 0
+    use_weight = vkey == "meanQualityPerWeight"
+    pick = best_quality
+    reason = f"peak quality {labels.get(best_quality)} ({peak_q:.3f})"
+    cost_ratio = None
 
-    # peak-quality, cost-aware: among models within eps of the peak, prefer the cheapest
-    # (lowest output tokens) — but only drop from the peak if it's materially cheaper.
+    # peak-quality, cost-aware:
+    # - default (input_weight): among models within eps of peak raw quality, pick highest
+    #   score-per-weight (quality ÷ ledger input weight). Falls back to output-token
+    #   cost if weights are missing for the near-peak set.
+    # - legacy (output/total): prefer cheapest output among near-peak when materially cheaper.
     near_peak = {m: s for m, s in rated.items() if peak_q - s["meanQuality"] <= eps}
-    cheapest = min(near_peak, key=lambda m: (near_peak[m].get("meanOutputTokens") or float("inf")))
-    cheap_out = near_peak[cheapest].get("meanOutputTokens") or 0
-    cost_ratio = (peak_out / cheap_out) if cheap_out else None
 
-    if cheapest != best_quality and cost_ratio is not None and cost_ratio >= cost_trigger:
-        pick = cheapest
-        reason = (f"peak quality is {labels.get(best_quality)} ({peak_q:.3f}); picked "
-                  f"{labels.get(cheapest)} — within {eps:.2f} quality "
-                  f"(−{peak_q - rated[cheapest]['meanQuality']:.3f}) at {cost_ratio:.1f}× less output cost")
-    else:
-        pick = best_quality
-        if cheapest != best_quality and cost_ratio is not None:
-            reason = (f"kept peak quality {labels.get(best_quality)} ({peak_q:.3f}); nearest "
-                      f"cheaper model only {cost_ratio:.1f}× cheaper (< {cost_trigger:.1f}× trigger)")
-        elif cheapest != best_quality:
-            # No token/cost data (e.g. the agentic completion suite omits tokens) —
-            # there's nothing to justify dropping below peak quality, so keep peak.
-            reason = (f"peak quality {labels.get(best_quality)} ({peak_q:.3f}); no token/cost "
-                      f"data available to trade quality for a cheaper near-peak model")
+    if use_weight:
+        weighted_near = {m: s for m, s in near_peak.items() if s.get("meanQualityPerWeight") is not None}
+        if weighted_near:
+            pick = max(weighted_near, key=lambda m: weighted_near[m]["meanQualityPerWeight"])
+            pick_qpw = weighted_near[pick]["meanQualityPerWeight"]
+            peak_qpw = rated[best_quality].get("meanQualityPerWeight")
+            w_pick = rated[pick].get("inputWeight")
+            w_peak = rated[best_quality].get("inputWeight")
+            if pick != best_quality:
+                reason = (
+                    f"peak quality is {labels.get(best_quality)} ({peak_q:.3f}, w={w_peak}, q/w={_fmt_opt(peak_qpw)}); "
+                    f"picked {labels.get(pick)} — within {eps:.2f} quality "
+                    f"(-{peak_q - rated[pick]['meanQuality']:.3f}) at higher score-per-weight "
+                    f"(q/w={pick_qpw:.3f}, w={w_pick})"
+                )
+            else:
+                reason = (
+                    f"peak quality {labels.get(best_quality)} ({peak_q:.3f}) also leads near-peak "
+                    f"score-per-weight (q/w={_fmt_opt(pick_qpw)}, w={w_pick})"
+                )
+            if w_pick and w_peak:
+                cost_ratio = float(w_peak) / float(w_pick) if w_pick else None
         else:
-            reason = f"peak quality {labels.get(best_quality)} ({peak_q:.3f}) is also the cheapest near-peak"
+            use_weight = False  # fall through to output-token path
+
+    if not use_weight:
+        cheapest = min(near_peak, key=lambda m: (near_peak[m].get("meanOutputTokens") or float("inf")))
+        cheap_out = near_peak[cheapest].get("meanOutputTokens") or 0
+        cost_ratio = (peak_out / cheap_out) if cheap_out else None
+
+        if cheapest != best_quality and cost_ratio is not None and cost_ratio >= cost_trigger:
+            pick = cheapest
+            reason = (f"peak quality is {labels.get(best_quality)} ({peak_q:.3f}); picked "
+                      f"{labels.get(cheapest)} — within {eps:.2f} quality "
+                      f"(-{peak_q - rated[cheapest]['meanQuality']:.3f}) at {cost_ratio:.1f}x less output cost")
+        else:
+            pick = best_quality
+            if cheapest != best_quality and cost_ratio is not None:
+                reason = (f"kept peak quality {labels.get(best_quality)} ({peak_q:.3f}); nearest "
+                          f"cheaper model only {cost_ratio:.1f}x cheaper (< {cost_trigger:.1f}x trigger)")
+            elif cheapest != best_quality:
+                # No token/cost data (e.g. the agentic completion suite omits tokens) —
+                # there's nothing to justify dropping below peak quality, so keep peak.
+                reason = (f"peak quality {labels.get(best_quality)} ({peak_q:.3f}); no token/cost "
+                          f"data available to trade quality for a cheaper near-peak model")
+            else:
+                reason = f"peak quality {labels.get(best_quality)} ({peak_q:.3f}) is also the cheapest near-peak"
 
     # best raw value (for reference / the efficiency view)
     valued = {m: s for m, s in rated.items() if s.get(vkey) is not None}
@@ -381,16 +430,22 @@ def _recommend(model_stats, cfg, labels, baseline_gate=None):
     return {
         "pick": pick,
         "pickLabel": labels.get(pick),
-        "objective": "peak_quality_cost_aware",
+        "objective": "peak_quality_score_per_weight" if vkey == "meanQualityPerWeight" else "peak_quality_cost_aware",
         "verdict": "decision_grade",
         "reason": reason,
         "qualityGivenUp": round(peak_q - rated[pick]["meanQuality"], 4),
         "outputCostRatioVsPeak": round(cost_ratio, 2) if cost_ratio else None,
+        "inputWeightPick": rated[pick].get("inputWeight"),
+        "scorePerWeightPick": rated[pick].get("meanQualityPerWeight"),
         "bestQuality": best_quality,
         "bestQualityLabel": labels.get(best_quality),
         "bestValue": best_value,
         "bestValueLabel": labels.get(best_value) if best_value else None,
     }
+
+
+def _fmt_opt(x):
+    return f"{x:.3f}" if isinstance(x, (int, float)) else "—"
 
 
 def _grok_h2h(model_stats, labels):
@@ -422,12 +477,26 @@ def _overall(per_role, models, labels, cfg):
         qs = [per_role[role]["models"][mid]["meanQuality"] for role in per_role]
         vs = [per_role[role]["models"][mid]["meanQualityPer1k"] for role in per_role]
         vo = [per_role[role]["models"][mid]["meanQualityPer1kOutput"] for role in per_role]
-        agg[mid] = {"meanQuality": _mean(qs), "meanQualityPer1k": _mean(vs),
-                    "meanQualityPer1kOutput": _mean(vo)}
+        qw = [per_role[role]["models"][mid].get("meanQualityPerWeight") for role in per_role]
+        ws = [per_role[role]["models"][mid].get("inputWeight") for role in per_role]
+        agg[mid] = {
+            "meanQuality": _mean(qs),
+            "meanQualityPer1k": _mean(vs),
+            "meanQualityPer1kOutput": _mean(vo),
+            "meanQualityPerWeight": _mean(qw),
+            "inputWeight": _mean(ws),
+        }
     rated = {m: s for m, s in agg.items() if s["meanQuality"] is not None}
     best = max(rated, key=lambda m: rated[m]["meanQuality"]) if rated else None
-    return {"perModel": agg, "bestOverallQuality": best,
-            "bestOverallQualityLabel": labels.get(best) if best else None}
+    weighted = {m: s for m, s in rated.items() if s.get("meanQualityPerWeight") is not None}
+    best_w = max(weighted, key=lambda m: weighted[m]["meanQualityPerWeight"]) if weighted else None
+    return {
+        "perModel": agg,
+        "bestOverallQuality": best,
+        "bestOverallQualityLabel": labels.get(best) if best else None,
+        "bestOverallScorePerWeight": best_w,
+        "bestOverallScorePerWeightLabel": labels.get(best_w) if best_w else None,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -462,11 +531,13 @@ def to_markdown(report, run_id, meta):
              f"{meta.get('n_fail', 0)} failures{skip_note}._\n")
     L.append("**Models:** " + ", ".join(f"`{m['id']}`" for m in report["models"]) + "\n")
     L.append("> Quality is a 0–1 blend of deterministic checks and the blind judge. "
-             "**`q/1k-out`** = quality per 1,000 **output** tokens — the primary value metric, "
-             "because total tokens are ~95% fixed CLI system-prompt overhead (a harness artifact) "
-             "that would otherwise reward whichever CLI ships the smallest base prompt rather than "
-             "the better model. `in`/`out` = mean input/output tokens. Quality and q/1k are "
-             f"suppressed below the {success_floor:.0%} success floor. Reps below {min_reps} are "
+             "**`q/w`** = quality ÷ ledger **input weight** (TSMC-20229 score-per-weight; "
+             "primary subscription pool-efficiency signal once the quality floor clears). "
+             "**`q/1k-out`** = quality per 1,000 **output** tokens — harness-fair secondary "
+             "value metric (total tokens are ~95% fixed CLI overhead). `w` = ledger input "
+             "weight (anchor $2.50/1M). `in`/`out` = mean input/output tokens. Quality and "
+             "efficiency columns are suppressed below the "
+             f"{success_floor:.0%} success floor. Reps below {min_reps} are "
              "capped at `candidate`. Usage-limit/no-served-output rows are marked "
              f"`{benchlib.INFRA_QUOTA_NO_SCORE}` / `{benchlib.PROVIDER_QUOTA}` and excluded "
              "from quality means until a served output exists. Models run in a neutralized "

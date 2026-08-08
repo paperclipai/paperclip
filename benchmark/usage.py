@@ -20,8 +20,10 @@ Pulls accurate token usage from four sources and presents them in a single view:
   python3 usage.py paperclip --days 7
 
 Note on metrics: under subscription billing costUsd is ~0, so TOKENS are the cost
-signal. For cross-model *efficiency* comparisons use OUTPUT tokens — input is mostly
-fixed per-CLI system-prompt overhead (a harness artifact), not marginal model cost.
+signal. As of TSMC-20229 the portfolio daily view also reports **weighted**
+Terra-equivalent units (tokens × ledger input_weight) so a Fable/Opus token is
+never counted equal to a Luna/Haiku token. For harness *efficiency* comparisons
+use OUTPUT tokens — input is mostly fixed per-CLI system-prompt overhead.
 """
 
 import argparse
@@ -33,6 +35,7 @@ import subprocess
 
 import benchlib
 import gemini_usage
+import price_ledger
 
 PG = ["env", "PGPASSWORD=paperclip", "psql", "-h127.0.0.1", "-p54329",
       "-U", "paperclip", "-d", "paperclip", "-tAF\t"]
@@ -53,6 +56,17 @@ def _row(label, calls, inp, out, total, extra=""):
 def _header():
     return (f"{'Lane / model':<28} {'calls':>7} {'input':>14} {'output':>12} "
             f"{'total':>14}")
+
+
+def _weighted_header():
+    return (f"{'Lane / model':<28} {'w':>6} {'raw in':>14} {'w·in':>14} "
+            f"{'raw out':>12} {'w·out':>12}")
+
+
+def _weighted_row(label, weight, inp, w_in, out, w_out, extra=""):
+    w_s = f"{weight:.2f}" if isinstance(weight, (int, float)) else "—"
+    return (f"{label:<28} {w_s:>6} {_fmt(inp):>14} {_fmt(w_in):>14} "
+            f"{_fmt(out):>12} {_fmt(w_out):>12}  {extra}")
 
 
 # --------------------------------------------------------------------------
@@ -221,6 +235,39 @@ def print_paperclip(days=7):
     print("   " + "-" * 78)
     print("   " + _row("TOTAL", tot["calls"], tot["input"], tot["output"], tot["total"]))
     print()
+
+    # Weighted Terra-equivalent burn (TSMC-20229)
+    print(f"## 4b. Weighted pool draw (Terra-eq units = tokens × input_weight)\n")
+    print(f"   ledger as_of={price_ledger.load_ledger().get('as_of')} · "
+          f"anchor ${price_ledger.load_ledger().get('anchor', {}).get('usd_per_1m_input', 2.5)}/1M\n")
+    print("   " + _weighted_header())
+    print("   " + "-" * 90)
+    w_tot_in = w_tot_out = 0.0
+    raw_priced_in = raw_priced_out = 0
+    unpriced = []
+    ranked = []
+    for r in rows:
+        w = price_ledger.input_weight(r["model"], input_tokens=r["input"])
+        if w is None:
+            unpriced.append(r["model"])
+            continue
+        wi = price_ledger.weighted_tokens(r["input"], r["model"], input_tokens_for_context=r["input"])
+        wo = price_ledger.weighted_tokens(r["output"], r["model"], input_tokens_for_context=r["input"])
+        ranked.append((wi or 0, r, w, wi, wo))
+        w_tot_in += wi or 0
+        w_tot_out += wo or 0
+        raw_priced_in += r["input"]
+        raw_priced_out += r["output"]
+    ranked.sort(key=lambda t: -t[0])
+    for _wi_sort, r, w, wi, wo in ranked:
+        print("   " + _weighted_row(r["model"], w, r["input"], wi, r["output"], wo))
+    print("   " + "-" * 90)
+    print("   " + _weighted_row("PRICED TOTAL", None, raw_priced_in, w_tot_in, raw_priced_out, w_tot_out))
+    if unpriced:
+        sample = ", ".join(unpriced[:8])
+        more = f" (+{len(unpriced)-8} more)" if len(unpriced) > 8 else ""
+        print(f"   unpriced/unknown models excluded from weighted total: {sample}{more}")
+    print("   note: weighted units are relative pool-draw proxies, not cash USD.\n")
 
 
 # --------------------------------------------------------------------------
