@@ -116,6 +116,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     feedbackDataSharingPreference = "prompt",
     feedbackTermsUrl = null,
     onVote,
+    draftKey,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -527,6 +528,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             currentAssigneeValue={currentAssigneeValue}
             issueStatus={issueStatus}
             mobile={isMobile}
+            draftKey={draftKey}
           />
           {footer}
         </div>
