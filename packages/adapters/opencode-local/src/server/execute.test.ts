@@ -1,6 +1,29 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import {
+  applyOpenCodeAllowAllModelsDefault,
+  ensureRemoteOpenCodeModelConfiguredAndAvailable,
+} from "./execute.js";
+
+describe("applyOpenCodeAllowAllModelsDefault", () => {
+  it("bakes the flag on by default when neither run env nor process env set it", () => {
+    const env: Record<string, string> = {};
+    applyOpenCodeAllowAllModelsDefault(env, {});
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("1");
+  });
+
+  it("never overrides a persisted adapterConfig.env value already merged into the run env", () => {
+    const env: Record<string, string> = { OPENCODE_ALLOW_ALL_MODELS: "0" };
+    applyOpenCodeAllowAllModelsDefault(env, {});
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("0");
+  });
+
+  it("defers to an explicit process-env value so an operator can disable it", () => {
+    const env: Record<string, string> = {};
+    applyOpenCodeAllowAllModelsDefault(env, { OPENCODE_ALLOW_ALL_MODELS: "0" });
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBeUndefined();
+  });
+});
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {

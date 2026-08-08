@@ -139,4 +139,10 @@ Notes:
 - When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
   runtime config with \`permission.external_directory=allow\` so headless runs do \
   not stall on approval prompts.
+- The adapter defaults \`OPENCODE_ALLOW_ALL_MODELS=1\` for every run, which skips \
+  the model-availability probe (provider/model format is still enforced). This \
+  keeps opencode's bundled fallback catalog — which intermittently omits new/edge \
+  models such as \`openrouter/z-ai/glm-5.2\` — out of the model-resolution critical \
+  path. Set \`env.OPENCODE_ALLOW_ALL_MODELS\` to \`0\` in the agent's \
+  \`adapterConfig.env\` to opt back into the probe.
 `;
