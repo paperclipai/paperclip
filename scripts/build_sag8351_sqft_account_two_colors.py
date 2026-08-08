@@ -296,7 +296,7 @@ WITH ro_cohort AS (
 def package(output_dir: Path, package_path: Path) -> None:
     package_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in PACKAGE_FILES:
+        for name in sorted(PACKAGE_FILES):
             archive.write(output_dir / name, name)
 
 
@@ -318,7 +318,15 @@ def main() -> None:
     write_csv(args.output_dir / "coverage.csv", COVERAGE_FIELDS, coverage)
     (args.output_dir / "query_receipt.sql").write_text(receipt_sql(), encoding="utf-8")
     (args.output_dir / "README.md").write_text("# Sage Quartz corrected parent/color/lane analysis\n\nRO is `Decimal(ORD_ROProduct.DealerQty)` only. MO is `Decimal(Quantity) * Decimal(CAT_Product.SquareFootage)` and PO is `Decimal(QtyOrdered) * Decimal(CAT_Product.SquareFootage)`. These lanes are separate business measures and must not be added together. The RO coverage sheet retains both cohort and excluded controls; reportability requires positive DealerQty and positive resolved source-or-house SquareFootage.\n", encoding="utf-8")
-    producer_validation = {"status": "generator output awaiting independent verifier", "source_path": str(args.db_path.relative_to(ROOT)), "window": f"[{START}, {END})", "lane_totals": {lane: str(sum((row["calculated_measure"] for row in annual if row["lane"] == lane), Decimal(0))) for lane in ("RO", "MO", "PO")}, "artifact_sha256": {name: hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest() for name in PACKAGE_FILES if name != "validation.json"}}
+    producer_validation = {
+        "status": "generator checksum manifest awaiting independent verifier",
+        "source_path": str(args.db_path.relative_to(ROOT)),
+        "window": f"[{START}, {END})",
+        "lane_totals": {lane: str(sum((row["calculated_measure"] for row in annual if row["lane"] == lane), Decimal(0))) for lane in ("RO", "MO", "PO")},
+        "package_member_names": sorted(PACKAGE_FILES),
+        "checksum_scope": "all package members except validation.json",
+        "artifact_sha256": {name: hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest() for name in PACKAGE_FILES if name != "validation.json"},
+    }
     (args.output_dir / "validation.json").write_text(json.dumps(producer_validation, indent=2) + "\n", encoding="utf-8")
     package(args.output_dir, args.package_path)
     print(json.dumps({"output_dir": str(args.output_dir), "package": str(args.package_path), "reportable_lane_totals": producer_validation["lane_totals"], "ro_coverage": [row for row in coverage if row["lane"] == "RO"]}, default=str, indent=2))

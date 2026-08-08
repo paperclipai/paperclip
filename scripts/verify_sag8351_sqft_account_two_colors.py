@@ -17,7 +17,11 @@ from openpyxl import load_workbook
 ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "data/2026-08-05/sag-8483/sage_extract.db"
 START, END = "2023-08-04", "2026-08-04"
-EXPECTED_RO = {"cohort_count": 58056, "cohort_total": Decimal("2557013.560"), "reportable_count": 48098, "reportable_total": Decimal("2061862.510"), "excluded_count": 9958, "excluded_total": Decimal("495151.050")}
+EXPECTED_CONTROLS = {
+    "RO": {"cohort_count": 58056, "cohort_total": Decimal("2557013.560"), "reportable_count": 48098, "reportable_total": Decimal("2061862.510"), "excluded_count": 9958, "excluded_total": Decimal("495151.050")},
+    "MO": {"cohort_count": 41942, "cohort_total": Decimal("1974481.800"), "reportable_count": 26577, "reportable_total": Decimal("1974481.800"), "excluded_count": 15365, "excluded_total": Decimal("0")},
+    "PO": {"cohort_count": 40298, "cohort_total": Decimal("1893200.390"), "reportable_count": 25767, "reportable_total": Decimal("1893200.390"), "excluded_count": 14531, "excluded_total": Decimal("0")},
+}
 PACKAGE_FILES = {"Sage_Quartz_Corrected_Parent_Color_Lane.xlsx", "annual_parent_year_color_lane.csv", "parent_company_lineage.csv", "retail_catalog_color_crossover.csv", "house_po_sku_manufacturer.csv", "coverage.csv", "query_receipt.sql", "validation.json", "README.md"}
 SHEETS = ["Parent Color Year Detail", "Annual Parent Rollup", "Parent Company Lineage", "Retail Catalog Crossover", "House PO SKU Manufacturer", "Coverage", "Methodology"]
 
@@ -72,7 +76,8 @@ SQL = {
     """,
     "PO": """
       SELECT p.POProductID source_line_id, po.CreatedOn source_date, p.QtyOrdered native_quantity, mp.SquareFootage reportability_square_footage,
-             mp.ProductID material_product_id, mp.ColorDescription, mp.ConsumerDescription, mp.Description,
+             mp.ProductID material_product_id, mp.ColorDescription, mp.ConsumerDescription, mp.Description, mp.MFRID, mp.SKU,
+             mp.SKU source_sku, mp.MFRID mfr_id,
              mo.CompanyID source_company_id, sc.CompanyName source_company_name, COALESCE(sc.ParentCompanyID,sc.CompanyID) parent_company_id,
              COALESCE(pc.CompanyName,sc.CompanyName,'[UNASSIGNED COMPANY]') parent_company_name
       FROM ORD_POProduct p JOIN ORD_PurchaseOrder po ON po.PurchaseOrderID=p.PurchaseOrderID
@@ -91,22 +96,88 @@ def classified(lane: str, row: sqlite3.Row) -> tuple[bool, Decimal]:
     return quantity > 0 and square_footage > 0, quantity * square_footage
 
 
+def exclusion_reason(lane: str, row: sqlite3.Row) -> str | None:
+    quantity, square_footage = decimal(row["native_quantity"]), decimal(row["reportability_square_footage"])
+    if lane == "RO":
+        return None if quantity > 0 and square_footage > 0 else "Non-positive DealerQty or reportability SquareFootage"
+    if quantity <= 0:
+        return "Non-positive Quantity"
+    if square_footage <= 0:
+        return "Non-positive SquareFootage"
+    return None
+
+
 def replay(connection: sqlite3.Connection) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for lane, query in SQL.items():
         rows = list(connection.execute(query, (START, END)))
         reportable = []
-        aggregates: dict[tuple, Decimal] = defaultdict(Decimal)
+        aggregates: dict[tuple, dict] = defaultdict(lambda: {"source_line_count": 0, "calculated_measure": Decimal(0)})
+        lineage: dict[tuple, int] = defaultdict(int)
+        coverage: dict[tuple, dict] = defaultdict(lambda: {"source_line_count": 0, "source_native_quantity": Decimal(0), "calculated_measure": Decimal(0)})
+        reportable_native_quantity = Decimal(0)
+        missing_lineage = 0
         for row in rows:
             valid, measure = classified(lane, row)
+            quantity = decimal(row["native_quantity"])
+            if not row["source_company_id"]:
+                missing_lineage += 1
             if valid:
                 reportable.append((row, measure))
-                aggregates[(clean(row["source_date"])[:4], lane, row["parent_company_id"], clean(row["parent_company_name"]), row["material_product_id"], color(row))] += measure
-        results[lane] = {"rows": rows, "reportable": reportable, "aggregates": aggregates, "cohort_count": len(rows), "cohort_total": sum((classified(lane, row)[1] for row in rows), Decimal(0)), "reportable_count": len(reportable), "reportable_total": sum((measure for _, measure in reportable), Decimal(0))}
-    ro = results["RO"]
-    ro["excluded_count"] = ro["cohort_count"] - ro["reportable_count"]
-    ro["excluded_total"] = ro["cohort_total"] - ro["reportable_total"]
+                key = (clean(row["source_date"])[:4], lane, row["parent_company_id"], clean(row["parent_company_name"]), row["material_product_id"], color(row))
+                aggregates[key]["source_line_count"] += 1
+                aggregates[key]["calculated_measure"] += measure
+                lineage[(lane, row["source_company_id"], clean(row["source_company_name"]), row["parent_company_id"], clean(row["parent_company_name"]), row["source_company_id"] == row["parent_company_id"])] += 1
+                reportable_native_quantity += quantity
+            else:
+                excluded = coverage[(lane, "Excluded", exclusion_reason(lane, row) or "Excluded")]
+                excluded["source_line_count"] += 1
+                excluded["source_native_quantity"] += quantity
+                excluded["calculated_measure"] += measure
+        cohort_total = sum((classified(lane, row)[1] for row in rows), Decimal(0))
+        reportable_total = sum((measure for _, measure in reportable), Decimal(0))
+        coverage[(lane, "Cohort", "All cohort")] = {"source_line_count": len(rows), "source_native_quantity": sum((decimal(row["native_quantity"]) for row in rows), Decimal(0)), "calculated_measure": cohort_total}
+        coverage[(lane, "Reportable", "All reportable")] = {"source_line_count": len(reportable), "source_native_quantity": reportable_native_quantity, "calculated_measure": reportable_total}
+        if missing_lineage:
+            coverage[(lane, "Informational", "Missing company lineage")] = {"source_line_count": missing_lineage, "source_native_quantity": Decimal(0), "calculated_measure": Decimal(0)}
+        results[lane] = {"rows": rows, "reportable": reportable, "aggregates": aggregates, "lineage": lineage, "coverage": coverage, "cohort_count": len(rows), "cohort_total": cohort_total, "reportable_count": len(reportable), "reportable_total": reportable_total}
+        results[lane]["excluded_count"] = results[lane]["cohort_count"] - results[lane]["reportable_count"]
+        results[lane]["excluded_total"] = results[lane]["cohort_total"] - results[lane]["reportable_total"]
     return results
+
+
+def expected_lineage(source: dict[str, dict]) -> dict[tuple, int]:
+    expected: dict[tuple, int] = defaultdict(int)
+    for lane, data in source.items():
+        for row, _ in data["reportable"]:
+            expected[(lane, nullable_int(row["source_company_id"]), clean(row["source_company_name"]),
+                      nullable_int(row["parent_company_id"]), clean(row["parent_company_name"]),
+                      nullable_int(row["source_company_id"]) == nullable_int(row["parent_company_id"]))] += 1
+    return expected
+
+
+def expected_manufacturer(connection: sqlite3.Connection, source: dict[str, dict]) -> dict[tuple, tuple[int, Decimal]]:
+    company_rows: dict[object, list[tuple[object, str]]] = defaultdict(list)
+    for company in connection.execute("SELECT CompanyID, CompanyName FROM COM_Company ORDER BY CompanyID, CompanyName"):
+        company_rows[company[0]].append((company[0], clean(company[1])))
+    expected: dict[tuple, tuple[int, Decimal]] = {}
+    for row in source["PO"]["rows"]:
+        mfr_id = row["mfr_id"]
+        matches = [] if mfr_id is None else company_rows[mfr_id]
+        if mfr_id is None:
+            relations = [(None, None, "Null MFRID")]
+        elif not matches:
+            relations = [(None, None, "Orphan MFRID")]
+        elif len(matches) == 1:
+            relations = [(matches[0][0], matches[0][1], "Matched")]
+        else:
+            relations = [(company_id, name, "Multiple COM_Company matches") for company_id, name in matches]
+        valid, measure = classified("PO", row)
+        for company_id, company_name, status in relations:
+            key = (nullable_int(row["material_product_id"]), clean(row["source_sku"]), nullable_int(mfr_id), company_id, company_name, status)
+            count, total = expected.get(key, (0, Decimal(0)))
+            expected[key] = (count + 1, total + (measure if valid else Decimal(0)))
+    return expected
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -152,10 +223,27 @@ def validate_workbook(path: Path, annual: list[dict[str, str]]) -> int:
     return errors
 
 
-def package(output_dir: Path, package_path: Path) -> None:
-    with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in sorted(PACKAGE_FILES):
-            archive.write(output_dir / name, name)
+def verify_package(output_dir: Path, package_path: Path, validation: dict) -> None:
+    if not package_path.is_file():
+        raise SystemExit(f"package path does not exist: {package_path}")
+    persisted_hashes = validation.get("artifact_sha256")
+    expected_names = sorted(PACKAGE_FILES)
+    if (not isinstance(persisted_hashes, dict)
+            or validation.get("package_member_names") != expected_names
+            or validation.get("checksum_scope") != "all package members except validation.json"
+            or set(persisted_hashes) != PACKAGE_FILES - {"validation.json"}):
+        raise SystemExit("validation.json lacks canonical member/checksum evidence")
+    for name in PACKAGE_FILES - {"validation.json"}:
+        actual = hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+        if persisted_hashes.get(name) != actual:
+            raise SystemExit(f"persisted checksum mismatch for {name}")
+    with zipfile.ZipFile(package_path) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)) or names != expected_names or archive.testzip() is not None:
+            raise SystemExit("corrected ZIP membership or CRC check failed")
+        for name in expected_names:
+            if archive.read(name) != (output_dir / name).read_bytes():
+                raise SystemExit(f"ZIP member bytes differ from output file: {name}")
 
 
 def verify(args: argparse.Namespace) -> dict:
@@ -174,28 +262,38 @@ def verify(args: argparse.Namespace) -> dict:
         source_candidates, materials = independent_candidates(connection)
     finally:
         connection.close()
-    ro_controls = {key: source["RO"][key] for key in EXPECTED_RO}
-    if ro_controls != EXPECTED_RO:
-        raise SystemExit(f"RO benchmark mismatch: {ro_controls} != {EXPECTED_RO}")
+    controls = {lane: {key: source[lane][key] for key in EXPECTED_CONTROLS[lane]} for lane in EXPECTED_CONTROLS}
+    if controls != EXPECTED_CONTROLS:
+        raise SystemExit(f"lane benchmark mismatch: {controls} != {EXPECTED_CONTROLS}")
     annual = read_csv(output_dir / "annual_parent_year_color_lane.csv")
     expected_annual = {key: total for lane in source.values() for key, total in lane["aggregates"].items()}
-    actual_annual: dict[tuple, Decimal] = {}
+    actual_annual: dict[tuple, dict] = {}
     for row in annual:
         key = (row["year"], row["lane"], nullable_int(row["parent_company_id"]), row["parent_company_name"], int(row["material_product_id"]), row["material_color"])
         if key in actual_annual:
             raise SystemExit(f"duplicate annual parent key: {key}")
-        actual_annual[key] = decimal(row["calculated_measure"])
+        actual_annual[key] = {"source_line_count": int(row["source_line_count"]), "calculated_measure": decimal(row["calculated_measure"])}
     if actual_annual != expected_annual:
         raise SystemExit(f"annual source replay mismatch (missing={len(set(expected_annual)-set(actual_annual))}, extra={len(set(actual_annual)-set(expected_annual))})")
     coverage = read_csv(output_dir / "coverage.csv")
-    indexed_coverage = {(row["lane"], row["coverage_scope"], row["exclusion_reason"]): row for row in coverage}
-    for scope, count_key, total_key in (("Cohort", "cohort_count", "cohort_total"), ("Reportable", "reportable_count", "reportable_total"), ("Excluded", "excluded_count", "excluded_total")):
-        row = indexed_coverage.get(("RO", scope, "All cohort" if scope == "Cohort" else "All reportable" if scope == "Reportable" else "Non-positive DealerQty or reportability SquareFootage"))
-        if row is None or int(row["source_line_count"]) != EXPECTED_RO[count_key] or decimal(row["calculated_measure"]) != EXPECTED_RO[total_key]:
-            raise SystemExit(f"coverage does not reconcile RO {scope.lower()} control")
+    expected_coverage = {key: total for lane in source.values() for key, total in lane["coverage"].items()}
+    actual_coverage: dict[tuple, dict] = {}
+    for row in coverage:
+        key = (row["lane"], row["coverage_scope"], row["exclusion_reason"])
+        if key in actual_coverage:
+            raise SystemExit(f"duplicate coverage control: {key}")
+        actual_coverage[key] = {"source_line_count": int(row["source_line_count"]), "source_native_quantity": decimal(row["source_native_quantity"]), "calculated_measure": decimal(row["calculated_measure"])}
+    if actual_coverage != expected_coverage:
+        raise SystemExit(f"coverage source replay mismatch (missing={len(set(expected_coverage)-set(actual_coverage))}, extra={len(set(actual_coverage)-set(expected_coverage))})")
     lineage = read_csv(output_dir / "parent_company_lineage.csv")
-    if not lineage or any(row["parent_is_source_company"] not in ("True", "False") for row in lineage):
-        raise SystemExit("parent lineage rows lack the fallback/identity flag")
+    actual_lineage: dict[tuple, int] = {}
+    for row in lineage:
+        key = (row["lane"], nullable_int(row["source_company_id"]), row["source_company_name"], nullable_int(row["parent_company_id"]), row["parent_company_name"], row["parent_is_source_company"] == "True")
+        if row["parent_is_source_company"] not in ("True", "False") or key in actual_lineage:
+            raise SystemExit("parent lineage rows lack a unique fallback/identity key")
+        actual_lineage[key] = int(row["source_line_count"])
+    if actual_lineage != expected_lineage(source):
+        raise SystemExit("parent lineage does not match independent COALESCE(source_company.ParentCompanyID, source_company.CompanyID) replay")
     crossover = read_csv(output_dir / "retail_catalog_color_crossover.csv")
     emitted_candidates = sorted((int(row["material_product_id"]), int(row["retail_product_id"]), int(row["retail_catalog_id"]), row["exact_consumer_description"]) for row in crossover if int(row["candidate_count"]) > 0)
     if emitted_candidates != source_candidates:
@@ -210,22 +308,25 @@ def verify(args: argparse.Namespace) -> dict:
     if unmatched_materials != materials - set(counts):
         raise SystemExit("crossover unmatched material sentinel relation differs from source")
     manufacturer = read_csv(output_dir / "house_po_sku_manufacturer.csv")
-    if any(row["mapping_status"] not in {"Null MFRID", "Orphan MFRID", "Matched", "Multiple COM_Company matches"} for row in manufacturer):
-        raise SystemExit("manufacturer mapping status is outside the approved contract")
+    actual_manufacturer = {(nullable_int(row["source_product_id"]), row["source_sku"], nullable_int(row["mfr_id"]), nullable_int(row["manufacturer_company_id"]), row["manufacturer_company_name"] or None, row["mapping_status"]): (int(row["affected_po_line_count"]), decimal(row["calculated_po_measure"])) for row in manufacturer}
+    connection = open_source()
+    try:
+        expected_mfr = expected_manufacturer(connection, source)
+    finally:
+        connection.close()
+    if actual_manufacturer != expected_mfr:
+        raise SystemExit("manufacturer mapping does not match independent CAT_Product.MFRID -> COM_Company replay")
     errors = validate_workbook(output_dir / "Sage_Quartz_Corrected_Parent_Color_Lane.xlsx", annual)
+    validation = json.loads((output_dir / "validation.json").read_text(encoding="utf-8"))
+    verify_package(output_dir, package_path, validation)
     validation = {
         "status": "independent verifier passed", "source_path": str(DB.relative_to(ROOT)), "source_sha256": hashlib.sha256(DB.read_bytes()).hexdigest(), "window": f"[{START}, {END})",
-        "ro_controls": {key: str(value) for key, value in ro_controls.items()},
-        "lane_replay": {lane: {"source_cohort_line_count": data["cohort_count"], "source_reportable_line_count": data["reportable_count"], "source_reportable_total": str(data["reportable_total"]), "generated_annual_total": str(sum(data["aggregates"].values(), Decimal(0))), "difference": str(data["reportable_total"] - sum(data["aggregates"].values(), Decimal(0)))} for lane, data in source.items()},
+        "ro_controls": {key: str(value) for key, value in controls["RO"].items()},
+        "lane_replay": {lane: {"source_cohort_line_count": data["cohort_count"], "source_reportable_line_count": data["reportable_count"], "source_reportable_total": str(data["reportable_total"]), "generated_annual_total": str(sum((total["calculated_measure"] for total in data["aggregates"].values()), Decimal(0))), "difference": str(data["reportable_total"] - sum((total["calculated_measure"] for total in data["aggregates"].values()), Decimal(0)))} for lane, data in source.items()},
         "parent_rollup_rows": len(annual), "parent_lineage_rows": len(lineage), "crossover_source_candidates": len(source_candidates), "crossover_emitted_candidates": len(emitted_candidates), "crossover_status_counts": dict(Counter(row["mapping_status"] for row in crossover)), "manufacturer_status_counts": dict(Counter(row["mapping_status"] for row in manufacturer)), "workbook_formula_error_tokens": errors,
         "artifact_sha256": {name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest() for name in PACKAGE_FILES if name != "validation.json"},
         "package_member_names": sorted(PACKAGE_FILES), "verification_command": "python3 scripts/verify_sag8351_sqft_account_two_colors.py --output-dir artifacts/2026-08-07/sag-8742 --package-path artifacts/SAG-8742_quartz_analysis_corrected_deliverable.zip",
     }
-    (output_dir / "validation.json").write_text(json.dumps(validation, indent=2) + "\n", encoding="utf-8")
-    package(output_dir, package_path)
-    with zipfile.ZipFile(package_path) as archive:
-        if set(archive.namelist()) != PACKAGE_FILES or archive.testzip() is not None:
-            raise SystemExit("corrected ZIP membership or CRC check failed")
     validation["package_sha256"] = hashlib.sha256(package_path.read_bytes()).hexdigest()
     print(json.dumps(validation, sort_keys=True))
     return validation
