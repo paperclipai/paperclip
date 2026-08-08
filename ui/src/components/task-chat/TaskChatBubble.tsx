@@ -14,6 +14,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { extractAttachmentRefs, fileKindForName } from "./task-chat-attachments";
+import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
@@ -58,11 +59,8 @@ export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubblePr
   }
 
   if (item.author === "system") {
-    return (
-      <div className="tc-enter-bubble flex justify-center py-1">
-        <p className="max-w-(--pct-85) text-center text-xs text-muted-foreground">{item.text}</p>
-      </div>
-    );
+    // Collapsed humanized one-liner, expandable to the full detail (PAP-443).
+    return <TaskChatSystemNotice item={item} />;
   }
 
   const isHuman = item.author === "human";
