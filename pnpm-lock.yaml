@@ -144,6 +144,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+      '@paperclipai/mcp-server':
+        specifier: workspace:*
+        version: link:../../mcp-server
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
