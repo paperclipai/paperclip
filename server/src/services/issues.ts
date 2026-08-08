@@ -780,19 +780,28 @@ function issueExecutionLockMonitorNextCheckAt(now: Date) {
   return new Date(now.getTime() + ISSUE_EXECUTION_LOCK_TTL_MS);
 }
 
-export function executionLockAcquisitionFields(runId: string, now: Date) {
-  const nextCheckAt = issueExecutionLockMonitorNextCheckAt(now);
+export function executionLockAcquisitionFields(
+  runId: string,
+  now: Date,
+  options: { scheduleMonitor?: boolean } = {},
+) {
+  const monitorFields = options.scheduleMonitor
+    ? {
+        monitorNextCheckAt: sql<Date | null>`case
+          when ${issues.monitorNextCheckAt} is null
+            and ${issues.monitorLastTriggeredAt} is null
+            and ${issues.monitorAttemptCount} = 0
+          then ${issueExecutionLockMonitorNextCheckAt(now).toISOString()}::timestamptz
+          else ${issues.monitorNextCheckAt}
+        end`,
+        monitorWakeRequestedAt: null,
+      }
+    : {};
+
   return {
     executionRunId: runId,
     executionLockedAt: now,
-    monitorNextCheckAt: sql<Date | null>`case
-      when ${issues.monitorNextCheckAt} is null
-        and ${issues.monitorLastTriggeredAt} is null
-        and ${issues.monitorAttemptCount} = 0
-      then ${nextCheckAt.toISOString()}::timestamptz
-      else ${issues.monitorNextCheckAt}
-    end`,
-    monitorWakeRequestedAt: null,
+    ...monitorFields,
   };
 }
 
@@ -5102,6 +5111,7 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
+    scheduleMonitor: boolean;
   }) {
     return db.transaction(async (tx) => {
       const lockedIssue = await tx
@@ -5159,7 +5169,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          ...executionLockAcquisitionFields(input.actorRunId, now),
+          ...executionLockAcquisitionFields(input.actorRunId, now, { scheduleMonitor: input.scheduleMonitor }),
           updatedAt: now,
         })
         .where(
@@ -5201,6 +5211,7 @@ export function issueService(db: Db) {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
+    scheduleMonitor: boolean;
   }) {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -5218,7 +5229,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          ...executionLockAcquisitionFields(input.actorRunId, now),
+          ...executionLockAcquisitionFields(input.actorRunId, now, { scheduleMonitor: input.scheduleMonitor }),
           updatedAt: now,
         })
         .where(
@@ -7976,7 +7987,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      options: { scheduleMonitor?: boolean } = {},
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -7986,6 +8003,7 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
+      const scheduleMonitor = options.scheduleMonitor ?? true;
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
@@ -8034,7 +8052,9 @@ export function issueService(db: Db) {
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
-          ...(checkoutRunId ? executionLockAcquisitionFields(checkoutRunId, now) : { executionRunId: null }),
+          ...(checkoutRunId
+            ? executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor })
+            : { executionRunId: null }),
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -8080,7 +8100,9 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             checkoutRunId,
-            ...(checkoutRunId ? executionLockAcquisitionFields(checkoutRunId, now) : { executionRunId: null }),
+            ...(checkoutRunId
+              ? executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor })
+              : { executionRunId: null }),
             updatedAt: new Date(),
           })
           .where(
@@ -8109,6 +8131,7 @@ export function issueService(db: Db) {
           actorAgentId: agentId,
           actorRunId: checkoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
+          scheduleMonitor,
         });
         if (staleAdoption.adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
@@ -8133,7 +8156,7 @@ export function issueService(db: Db) {
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
             checkoutRunId,
-            ...executionLockAcquisitionFields(checkoutRunId, now),
+            ...executionLockAcquisitionFields(checkoutRunId, now, { scheduleMonitor }),
             executionAgentNameKey: null,
             status: "in_progress",
             updatedAt: now,
@@ -8248,6 +8271,7 @@ export function issueService(db: Db) {
             issueId: id,
             actorAgentId,
             actorRunId: actorRunId!,
+            scheduleMonitor: true,
           });
 
           if (adopted) {
@@ -8274,6 +8298,7 @@ export function issueService(db: Db) {
             actorAgentId,
             actorRunId,
             expectedCheckoutRunId: previousCheckoutRunId,
+            scheduleMonitor: true,
           });
 
           if (staleAdoption.adopted) {

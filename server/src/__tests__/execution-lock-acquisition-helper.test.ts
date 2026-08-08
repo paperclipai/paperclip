@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { executionLockAcquisitionFields } from "../services/issues.js";
 
 describe("execution lock acquisition helper usage", () => {
+  it("does not create a scheduled review monitor when acquiring an execution lock", () => {
+    const now = new Date("2026-08-08T03:15:00.000Z");
+
+    expect(executionLockAcquisitionFields("run-1", now)).toEqual({
+      executionRunId: "run-1",
+      executionLockedAt: now,
+    });
+  });
+
   it("keeps production execution lock acquisition writes centralized", async () => {
     const root = process.cwd();
     const productionFiles = [
