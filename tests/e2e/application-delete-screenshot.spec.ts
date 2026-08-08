@@ -32,7 +32,7 @@ test("captures the current app removal confirmations", async ({ page }) => {
     data: {
       applicationName: "Guarded MCP",
       name: "Primary connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     },
   });

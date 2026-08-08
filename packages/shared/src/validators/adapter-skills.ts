@@ -21,6 +21,12 @@ export const agentSkillSyncModeSchema = z.enum([
   "ephemeral",
 ]);
 
+export const agentSkillAssignmentModeSchema = z.enum([
+  "add",
+  "remove",
+  "replace",
+]);
+
 export const agentDesiredSkillEntrySchema = z.object({
   key: z.string().min(1),
   versionId: z.string().uuid().nullable(),
@@ -59,6 +65,7 @@ export const agentSkillSnapshotSchema = z.object({
 });
 
 export const agentSkillSyncSchema = z.object({
+  mode: agentSkillAssignmentModeSchema,
   desiredSkills: z.array(agentDesiredSkillSelectionSchema),
 });
 

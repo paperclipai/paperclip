@@ -11,6 +11,8 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const pushToastMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
@@ -20,6 +22,7 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
+    archiveConnection: (connectionId: string) => archiveConnectionMock(connectionId),
   },
 }));
 
@@ -39,6 +42,10 @@ vi.mock("@/context/CompanyContext", () => ({
 
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,7 +95,7 @@ function connection(overrides: Record<string, unknown>) {
     applicationId: "app-x",
     name: "GitHub",
     connectionKind: "managed",
-    transport: "remote_http",
+    transport: "mcp_remote",
     status: "active",
     transportConfig: {},
     config: {},
@@ -147,6 +154,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     listProfilesMock.mockResolvedValue({ profiles: [] });
+    archiveConnectionMock.mockResolvedValue(connection({ id: "c-deleted", status: "archived" }));
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -188,14 +196,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("GitHub"),
     );
     row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
 
     mockNavigate.mockClear();
     const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Connect") && !button.textContent.includes("Connect an app"),
     );
     connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
   });
 
   it("rolls up multi-connection status, attention count, actions, and navigation by application", async () => {
@@ -266,13 +274,13 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(text).toContain("0 on");
     // 5. Last used renders a relative timestamp when present, dash when absent.
     expect(text).toContain("—");
-    // 6. Multi-connection app appears once and opens its first connection detail.
+    // 6. Multi-connection app appears once and opens its provider landing page.
     expect(Array.from(container.querySelectorAll("tbody tr")).filter((tr) => tr.textContent?.includes("Slack"))).toHaveLength(1);
     const slackRow = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
       tr.textContent?.includes("Slack"),
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-slack/setup");
     // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Open.
     const rowButtonLabel = (name: string) =>
       Array.from(container.querySelectorAll("tbody tr"))
@@ -320,6 +328,135 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     const button = row?.querySelector("td:last-child button");
     expect(button?.textContent).toBe("Open");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+  });
+
+  it("deletes a connection only after trash-can confirmation", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ id: "c-github", applicationId: "app-github", name: "GitHub" })],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    expect(deleteButton).toBeTruthy();
+
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Delete GitHub connection?");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Connection deleted",
+        body: "GitHub is no longer available to agents. You can connect it again later.",
+        tone: "success",
+      }),
+    );
+  });
+
+  it("reports the remaining active connections after deleting one", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" }),
+        connection({ id: "c-github-secondary", applicationId: "app-github", name: "GitHub Team" }),
+      ],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain(
+      "Agents can still use GitHub through 1 other active connection.",
+    );
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary");
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Connection deleted",
+        body: "GitHub still has 1 active connection available to agents.",
+        tone: "success",
+      }),
+    );
+  });
+
+  it("does not count disabled connections as available after deletion", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" }),
+        connection({
+          id: "c-github-disabled",
+          applicationId: "app-github",
+          name: "GitHub Disabled",
+          status: "disabled",
+          enabled: false,
+        }),
+      ],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Agents will lose access immediately.");
+    expect(document.body.textContent).not.toContain("Agents can still use GitHub");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: "GitHub is no longer available to agents. You can connect it again later.",
+      }),
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -18,6 +18,7 @@ import {
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentDesiredSkillEntry,
+  type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
@@ -30,6 +31,8 @@ import {
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
 import {
+  isForbiddenConfigEnvKey,
+  parseObject,
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
@@ -53,8 +56,9 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -67,6 +71,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -104,6 +109,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -111,6 +117,35 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+
+const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
+
+function requireAgentSkillAssignmentMode(req: Request, _res: Response, next: NextFunction) {
+  if (!AGENT_SKILL_ASSIGNMENT_MODES.includes(req.body?.mode)) {
+    throw unprocessable(
+      'Skill sync requires mode: "add", "remove", or "replace". '
+        + 'Use "replace" only to overwrite the complete desired skill set.',
+    );
+  }
+  next();
+}
+
+function mergeDesiredSkillEntries(
+  current: AgentDesiredSkillEntry[],
+  requested: AgentDesiredSkillEntry[],
+  mode: AgentSkillAssignmentMode,
+) {
+  if (mode === "replace") return requested;
+
+  const requestedKeys = new Set(requested.map((entry) => entry.key));
+  if (mode === "remove") {
+    return current.filter((entry) => !requestedKeys.has(entry.key));
+  }
+
+  const merged = new Map(current.map((entry) => [entry.key, entry]));
+  for (const entry of requested) merged.set(entry.key, entry);
+  return Array.from(merged.values());
+}
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -187,6 +222,7 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const runRedactions = createRunSecretRedactionRegistry(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -1107,7 +1143,24 @@ export function agentRoutes(
     };
   }
 
-  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
+  async function listNewAgentAdapterModelProfiles(
+    adapterType: string,
+  ): Promise<AdapterModelProfileDefinition[]> {
+    try {
+      return await listAdapterModelProfiles(adapterType);
+    } catch (error) {
+      logger.warn(
+        { err: error, adapterType },
+        "Failed to discover adapter model profiles while normalizing a new agent; continuing without profile defaults",
+      );
+      return [];
+    }
+  }
+
+  async function normalizeNewAgentRuntimeConfig(
+    adapterType: string,
+    runtimeConfig: unknown,
+  ): Promise<Record<string, unknown>> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -1121,6 +1174,19 @@ export function agentRoutes(
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
+
+    const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
+    const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
+    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
+      const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
+      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
+        modelProfiles.cheap = { enabled: false };
+      }
+    }
+    if (Object.keys(modelProfiles).length > 0) {
+      normalizedRuntimeConfig.modelProfiles = modelProfiles;
+    }
+
     return normalizedRuntimeConfig;
   }
 
@@ -1191,7 +1257,7 @@ export function agentRoutes(
   ): Promise<Record<string, unknown>> {
     const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
     if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+    const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
 
     const normalizedRuntimeConfig = { ...runtimeConfig };
     const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
@@ -1570,10 +1636,13 @@ export function agentRoutes(
     } = {},
   ) {
     const preference = readPaperclipSkillSyncPreference(config);
+    const betaSkillsEnabled = (await instanceSettings.getExperimental()).enableBetaSkills === true;
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: options.materializeMissing
         ?? shouldMaterializeRuntimeSkillsForAdapter(adapterType),
-      versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
+      versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries, {
+        versionPinsEnabled: betaSkillsEnabled,
+      }),
     });
     return {
       ...config,
@@ -1586,6 +1655,7 @@ export function agentRoutes(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: AgentDesiredSkillEntry[] | undefined,
+    mode: AgentSkillAssignmentMode,
     options: { tolerateUnknownDesiredSkills?: boolean } = {},
   ) {
     if (!requestedDesiredSkills) {
@@ -1597,26 +1667,55 @@ export function agentRoutes(
       };
     }
 
+    if (requestedDesiredSkills.some((entry) => entry.versionId !== null)) {
+      const betaSkillsEnabled = (await instanceSettings.getExperimental()).enableBetaSkills === true;
+      if (!betaSkillsEnabled) {
+        throw badRequest("Beta skill version pins require the Beta skills experimental setting to be enabled.");
+      }
+    }
+
     const { resolved: resolvedRequestedSkillEntries, unresolved: unresolvedDesiredSkillKeys } =
       await companySkills.resolveRequestedSkillEntries(companyId, requestedDesiredSkills, {
         tolerateUnknownReferences: options.tolerateUnknownDesiredSkills,
       });
-    // Runtime materialization + version selection only ever consider skills that
-    // actually resolve to the company library; stale keys can't be materialized.
-    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
-      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
-      versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
-    });
-    const resolvedDesiredSkillEntries = resolvedRequestedSkillEntries.filter(
+    const requestedSkillEntries = [
+      ...resolvedRequestedSkillEntries,
+      ...unresolvedDesiredSkillKeys.map((key) => ({ key, versionId: null })),
+    ].filter(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
-    // Preserve stale/unresolvable keys in the persisted desired set so they stay
-    // visible (and explicitly removable) instead of vanishing on the next save.
-    const desiredSkillEntries: AgentDesiredSkillEntry[] = [
-      ...resolvedDesiredSkillEntries,
-      ...unresolvedDesiredSkillKeys.map((key) => ({ key, versionId: null })),
-    ];
+
+    const currentPreference = readPaperclipSkillSyncPreference(adapterConfig);
+    const { resolved: resolvedCurrentSkillEntries, unresolved: unresolvedCurrentSkillKeys } =
+      currentPreference.desiredSkillEntries.length > 0
+        ? await companySkills.resolveRequestedSkillEntries(
+          companyId,
+          currentPreference.desiredSkillEntries,
+          { tolerateUnknownReferences: true },
+        )
+        : { resolved: [], unresolved: [] };
+    const currentSkillEntries = [
+      ...resolvedCurrentSkillEntries,
+      ...unresolvedCurrentSkillKeys.map((key) => ({ key, versionId: null })),
+    ].filter(
+      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    );
+
+    const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
+    const resolvedKeys = new Set([
+      ...resolvedCurrentSkillEntries.map((entry) => entry.key),
+      ...resolvedRequestedSkillEntries.map((entry) => entry.key),
+    ]);
+    // Runtime materialization + version selection only ever consider final
+    // assignments that resolve to the company library; stale keys remain
+    // persisted and explicitly removable without reaching adapter runtimes.
+    const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
+      materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      versionSelections: skillVersionSelectionMap(
+        desiredSkillEntries.filter((entry) => resolvedKeys.has(entry.key)),
+      ),
+    });
 
     return {
       adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkillEntries),
@@ -1769,11 +1868,20 @@ export function agentRoutes(
         inputAdapterConfig,
         { strictMode: strictSecretsMode, adapterType: type },
       );
+      // Prospective, non-persisted config: resolve the acting user's own user
+      // secrets in owner_scoped mode (no declaration rows exist for this config).
+      // Record an honest audit consumer — environment:<id> when the caller selected
+      // one, otherwise system:adapter_test — never a fake agent consumer.
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
-        undefined,
-        { adapterType: type },
+        buildActorSecretContext(
+          req,
+          requestedEnvironmentId
+            ? { consumerType: "environment", consumerId: requestedEnvironmentId }
+            : { consumerType: "system", consumerId: "adapter_test" },
+        ),
+        { adapterType: type, userSecretMediation: "owner_scoped" },
       );
 
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
@@ -1785,20 +1893,77 @@ export function agentRoutes(
 
       let releaseStatus: "released" | "failed" = "released";
       try {
+        // Mirror the run path (resolveExecutionRunAdapterConfig): the selected
+        // environment's envVars are the base env layer and the agent's
+        // adapterConfig.env wins on key conflicts. Without this merge the probe
+        // cannot see environment-level auth (e.g. CLAUDE_CODE_OAUTH_TOKEN) that
+        // real runs receive.
+        const environmentEnvChecks: AdapterEnvironmentCheck[] = [];
+        let effectiveAdapterConfig = runtimeAdapterConfig;
+        if (requestedEnvironmentId) {
+          const selectedEnvironment = await environmentsSvc.getById(requestedEnvironmentId);
+          const environmentEnv = Object.fromEntries(
+            Object.entries(parseObject(selectedEnvironment?.envVars)).filter(
+              ([key]) => !isForbiddenConfigEnvKey(key),
+            ),
+          );
+          if (Object.keys(environmentEnv).length > 0) {
+            const environmentSecretContext = buildActorSecretContext(req, {
+              consumerType: "environment",
+              consumerId: requestedEnvironmentId,
+            });
+            const missingBindings =
+              typeof secretsSvc.collectMissingRuntimeBindings === "function"
+                ? await secretsSvc.collectMissingRuntimeBindings(
+                    companyId,
+                    environmentEnv,
+                    environmentSecretContext,
+                  )
+                : [];
+            const missingKeys = new Set(missingBindings.map((binding) => binding.envKey));
+            if (missingKeys.size > 0) {
+              environmentEnvChecks.push({
+                code: "environment_env_binding_missing",
+                level: "error",
+                message: `Environment variables with missing secret bindings were skipped: ${[...missingKeys].join(", ")}.`,
+                hint: "Re-save the environment's variables to restore the secret binding, then test again.",
+              });
+            }
+            const resolvableEnvironmentEnv = Object.fromEntries(
+              Object.entries(environmentEnv).filter(([key]) => !missingKeys.has(key)),
+            );
+            const environmentEnvResolution = await secretsSvc.resolveEnvBindings(
+              companyId,
+              resolvableEnvironmentEnv,
+              environmentSecretContext,
+            );
+            if (Object.keys(environmentEnvResolution.env).length > 0) {
+              effectiveAdapterConfig = {
+                ...runtimeAdapterConfig,
+                env: {
+                  ...environmentEnvResolution.env,
+                  ...parseObject(runtimeAdapterConfig.env),
+                },
+              };
+            }
+          }
+        }
+
         // If the caller explicitly selected an environment, never fall back to
         // probing the host when we couldn't resolve that environment's
         // execution target. Surface the diagnostic checks instead.
         if (requestedEnvironmentId && !executionTarget && fallbackChecks.length > 0) {
-          const status: AdapterEnvironmentTestResult["status"] = fallbackChecks.some((c) => c.level === "error")
+          const combinedChecks = [...fallbackChecks, ...environmentEnvChecks];
+          const status: AdapterEnvironmentTestResult["status"] = combinedChecks.some((c) => c.level === "error")
             ? "fail"
-            : fallbackChecks.some((c) => c.level === "warn")
+            : combinedChecks.some((c) => c.level === "warn")
               ? "warn"
               : "pass";
           if (status === "fail") releaseStatus = "failed";
           const synthesized: AdapterEnvironmentTestResult = {
             adapterType: type,
             status,
-            checks: fallbackChecks,
+            checks: combinedChecks,
             testedAt: new Date().toISOString(),
           };
           res.json(synthesized);
@@ -1808,15 +1973,24 @@ export function agentRoutes(
         const result = await adapter.testEnvironment({
           companyId,
           adapterType: type,
-          config: runtimeAdapterConfig,
+          config: effectiveAdapterConfig,
           executionTarget,
           environmentName,
         });
 
-        if (result.status === "fail") releaseStatus = "failed";
+        const prefixChecks = [
+          ...(sandboxIdentityCheck ? [sandboxIdentityCheck] : []),
+          ...environmentEnvChecks,
+        ];
+        // A missing environment secret binding blocks real dispatch
+        // (ConfigurationIncompleteFailure in the heartbeat), so the test
+        // reports fail even when the adapter probe itself passed.
+        const status = environmentEnvChecks.some((c) => c.level === "error") ? "fail" : result.status;
+        if (status === "fail") releaseStatus = "failed";
         res.json({
           ...result,
-          checks: sandboxIdentityCheck ? [sandboxIdentityCheck, ...result.checks] : result.checks,
+          status,
+          checks: prefixChecks.length > 0 ? [...prefixChecks, ...result.checks] : result.checks,
         });
       } catch (err) {
         releaseStatus = "failed";
@@ -1851,7 +2025,7 @@ export function agentRoutes(
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
       agent.adapterConfig,
-      undefined,
+      buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
       { adapterType: agent.adapterType, skipUserSecrets: true },
     );
     const runtimeSkillConfig = await buildRuntimeSkillConfig(
@@ -1871,6 +2045,7 @@ export function agentRoutes(
 
   router.post(
     "/agents/:id/skills/sync",
+    requireAgentSkillAssignmentMode,
     validate(agentSkillSyncSchema),
     async (req, res) => {
       const id = req.params.id as string;
@@ -1889,6 +2064,7 @@ export function agentRoutes(
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
+        req.body.mode,
         // Toggling a resolvable skill must not fail just because the agent
         // already carries stale desired keys (e.g. a skill removed from the
         // library). Preserve those keys so they remain visible/removable.
@@ -1916,7 +2092,7 @@ export function agentRoutes(
       const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         updated.companyId,
         updated.adapterConfig,
-        undefined,
+        buildActorSecretContext(req, { consumerType: "agent", consumerId: updated.id }),
         { adapterType: updated.adapterType, skipUserSecrets: true },
       );
       const runtimeSkillConfig = {
@@ -1953,6 +2129,7 @@ export function agentRoutes(
           adapterType: updated.adapterType,
           desiredSkills,
           desiredSkillEntries,
+          assignmentMode: req.body.mode,
           mode: snapshot.mode,
           supported: snapshot.supported,
           entryCount: snapshot.entries.length,
@@ -2373,6 +2550,7 @@ export function agentRoutes(
       hireInput.adapterType,
       requestedAdapterConfig,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -2382,7 +2560,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       hireInput.adapterType,
-      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+      await normalizeNewAgentRuntimeConfig(hireInput.adapterType, hireInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     const normalizedHireInput = {
@@ -2568,6 +2746,7 @@ export function agentRoutes(
       createInput.adapterType,
       requestedAdapterConfig,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -2577,7 +2756,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       createInput.adapterType,
-      normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+      await normalizeNewAgentRuntimeConfig(createInput.adapterType, createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
@@ -3567,7 +3746,14 @@ export function agentRoutes(
     }
 
     const config = asRecord(agent.adapterConfig) ?? {};
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
+    // Persisted agent: default declared mode; consumerId = agent.id matches the
+    // declaration rows written at env.<KEY> by syncAgentAdapterEnvBindings.
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      config,
+      buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
+      { adapterType: agent.adapterType },
+    );
     const result = await runClaudeLogin({
       runId: `claude-login-${randomUUID()}`,
       agent: {
@@ -3591,7 +3777,7 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(runs);
+    res.json(await Promise.all(runs.map((run) => runRedactions.redactForRun(companyId, run.id, run))));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
@@ -3666,14 +3852,14 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      res.json(await Promise.all(rows.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
         ...heartbeat.decorateActiveRunStatus(run),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    res.json(await Promise.all(liveRuns.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
       ...heartbeat.decorateActiveRunStatus(run),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));
@@ -3685,12 +3871,14 @@ export function agentRoutes(
     if (!run) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
-    res.json(
+    res.json(await runRedactions.redactForRun(
+      run.companyId,
+      run.id,
       redactCurrentUserValue(
         { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
-    );
+    ));
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
@@ -3698,7 +3886,15 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
-    const run = await heartbeat.cancelRun(runId);
+    // Stamp the cancellation as operator-initiated (this route is board-only).
+    // Recovery reads this to stand down instead of classifying the cancelled
+    // run as agent stranding and re-waking the agent the operator just stopped.
+    const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      resultJson: {
+        cancelledByActorType: "user",
+        cancelledByUserId: req.actor.userId ?? null,
+      },
+    });
 
     if (run) {
       await logActivity(db, {
@@ -3762,7 +3958,7 @@ export function agentRoutes(
         payload: redactEventPayload(event.payload),
       }, currentUserRedactionOptions),
     );
-    res.json(redactedEvents);
+    res.json(await runRedactions.redactForRun(run.companyId, run.id, redactedEvents));
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
@@ -3778,7 +3974,7 @@ export function agentRoutes(
     });
 
     res.set("Cache-Control", "no-cache, no-store");
-    res.json(result);
+    res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {

@@ -101,7 +101,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(failed?.detail).not.toContain('"subtype":"init"');
   });
 
-  it("classifies rate-limit/overload failures as a transient warning, not a hard fail", async () => {
+  it("classifies subscription usage-limit failures as a usage-limited warning, not a hard fail", async () => {
     probeResult.value = {
       exitCode: 1,
       stdout: [
@@ -119,7 +119,31 @@ describe("claude sandbox hello probe diagnostics", () => {
       environmentName: "Daytona",
     });
 
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_usage_limited")).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_transient_upstream")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(false);
+  });
+
+  it("classifies overload failures as a transient warning, not a hard fail", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 529 overloaded_error","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
     expect(result.checks.some((check) => check.code === "claude_hello_probe_transient_upstream")).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_usage_limited")).toBe(false);
     expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(false);
   });
 
@@ -159,5 +183,60 @@ describe("claude sandbox hello probe diagnostics", () => {
 
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
+  });
+});
+
+describe("claude auth mode hints", () => {
+  const successStdout = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+  ].join("\n");
+
+  it("reports the configured subscription token for remote targets", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token" },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const hint = result.checks.find((check) => check.code === "claude_oauth_token_configured");
+    expect(hint).toBeTruthy();
+    expect(hint?.level).toBe("info");
+    expect(hint?.detail).toContain("configured environment variables");
+    expect(
+      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
+    ).toBe(false);
+  });
+
+  it("keeps the API-key warning authoritative when both ANTHROPIC_API_KEY and the token are set", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        env: {
+          ANTHROPIC_API_KEY: "api-test-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token",
+        },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(
+      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
+    ).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(false);
   });
 });

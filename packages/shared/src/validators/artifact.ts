@@ -16,6 +16,10 @@ export const companyArtifactsQuerySchema = z.object({
   q: z.string().trim().max(COMPANY_ARTIFACTS_MAX_QUERY_LENGTH).optional(),
   groupBy: companyArtifactGroupBySchema.optional().default("none"),
   groupIssueId: z.string().uuid().optional(),
+  starred: z.preprocess(
+    (value) => value === "true" ? true : value === "false" ? false : value,
+    z.boolean(),
+  ).optional().default(false),
   limit: z.coerce
     .number()
     .int()

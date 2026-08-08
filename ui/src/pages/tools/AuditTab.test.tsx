@@ -170,7 +170,7 @@ describe("AuditTab", () => {
             summary: JSON.stringify({ email: "person@example.com", apiToken: "***REDACTED***" }),
           },
           execution: {
-            transport: "remote_http",
+            transport: "mcp_remote",
             request: {
               httpMethod: "POST",
               endpoint: "https://mcp.zapier.com/api/mcp",

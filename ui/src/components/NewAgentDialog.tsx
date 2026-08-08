@@ -21,6 +21,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
@@ -141,20 +142,16 @@ export function NewAgentDialog() {
 
   async function copyText(text: string, unavailableBody: string) {
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
+      await copyTextToClipboard(text);
+      return true;
     } catch {
-      // Fall through to the unavailable message below.
+      pushToast({
+        title: "Clipboard unavailable",
+        body: unavailableBody,
+        tone: "warn",
+      });
+      return false;
     }
-
-    pushToast({
-      title: "Clipboard unavailable",
-      body: unavailableBody,
-      tone: "warn",
-    });
-    return false;
   }
 
   const createAgentInviteMutation = useMutation({

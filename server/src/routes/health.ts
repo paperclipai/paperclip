@@ -8,6 +8,11 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRe
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
+  getCloudStackContext,
+  isCloudManagedInstance,
+  type CloudInstanceEnv,
+} from "../services/cloud-instance.js";
+import {
   inspectDatabaseBackupHealth,
   type DatabaseBackupHealthStatus,
   type DatabaseBackupHealthWarning,
@@ -56,6 +61,18 @@ function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus
   };
 }
 
+function getCloudHealthStatus(env: CloudInstanceEnv) {
+  const context = getCloudStackContext(env);
+  if (!context) return undefined;
+
+  return {
+    managed: true as const,
+    managedBy: "paperclip-cloud" as const,
+    stackSlug: context.stackSlug,
+    cloudBaseUrl: context.cloudOrigin,
+  };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -65,6 +82,7 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    runtimeEnv?: CloudInstanceEnv;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -114,20 +132,39 @@ export function healthRoutes(
       actorType,
       opts.deploymentMode,
     );
+    const runtimeEnv = opts.runtimeEnv ?? process.env;
+    const cloud = getCloudHealthStatus(runtimeEnv);
     // serverInfo (git SHA + process start) rides on the full-details responses
     // only, so it reaches board/agent actors in authenticated mode or any caller
     // in local_trusted dev — never anonymous authenticated callers. The
     // enableServerInfoDebugView experimental flag gates the UI surface, not this
     // already access-controlled field.
     const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
+    // The build commit is a plain git SHA of a public repository — not a
+    // secret — so it is surfaced on every response, including the redacted
+    // one, unlike the fuller `serverInfo` block. Deploy tooling (and anyone)
+    // can read which commit this server is running without authenticating.
+    const commit = serverInfo.git.available ? serverInfo.git.fullSha : null;
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
+          ? {
+              status: "ok",
+              version: serverVersion,
+              serverVersion: serverVersion,
+              commit,
+              serverInfo,
+              ...(cloud ? { cloud } : {}),
+            }
+          : {
+              status: "ok",
+              deploymentMode: opts.deploymentMode,
+              commit,
+              ...(cloud ? { cloud } : {}),
+            },
       );
       return;
     }
@@ -140,15 +177,23 @@ export function healthRoutes(
         status: "unhealthy",
         version: serverVersion,
         serverVersion,
+        commit,
         error: "database_unreachable",
         ...(exposeFullDetails ? { serverInfo } : {}),
+        ...(cloud ? { cloud } : {}),
       });
       return;
     }
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
-    if (opts.deploymentMode === "authenticated") {
+    // Cloud-managed instances have no first-admin concept: the control
+    // plane owns identity and its trusted-header users are deliberately
+    // never instance_admin, so the role-count gate below would report
+    // bootstrap_pending forever and lock every managed tenant out at the
+    // claim screen. Self-hosted deployments (neither canonical managed signal)
+    // are unaffected.
+    if (opts.deploymentMode === "authenticated" && !isCloudManagedInstance(runtimeEnv)) {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)
@@ -203,11 +248,13 @@ export function healthRoutes(
         status: "ok",
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
+        commit,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
+        ...(cloud ? { cloud } : {}),
       });
       return;
     }
@@ -216,6 +263,7 @@ export function healthRoutes(
       status: "ok",
       version: serverVersion,
       serverVersion,
+      commit,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
@@ -228,6 +276,7 @@ export function healthRoutes(
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
+      ...(cloud ? { cloud } : {}),
     });
   });
 

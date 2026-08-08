@@ -68,6 +68,33 @@ const catchUpPolicyOptions = [
   },
 ];
 
+const activityGatePolicyOptions = [
+  {
+    value: "always",
+    title: "Run on every scheduled tick",
+    description: "Fire on the schedule no matter what — the default behavior.",
+  },
+  {
+    value: "require_external_activity",
+    title: "Skip when there's been no activity since the last run",
+    description:
+      "On a scheduled tick, only run if something happened since the last run that finished. Lets a watcher-style routine stay asleep while the system is settled instead of burning tokens.",
+  },
+];
+
+const activityGateScopeOptions = [
+  {
+    value: "company",
+    title: "Company-wide",
+    description: "Any activity across the company counts as a reason to run.",
+  },
+  {
+    value: "project",
+    title: "This project",
+    description: "Only activity in the routine's project counts as a reason to run.",
+  },
+];
+
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
 const signingModeDescriptions: Record<string, string> = {
@@ -664,6 +691,13 @@ export function DeliverySection() {
   const ctx = useRoutineDetail();
   const { editDraft, setEditDraft, routine } = ctx;
 
+  // The activity gate only affects schedule ticks (webhook/manual/API fires are
+  // themselves activity and always run), so the control is only meaningful for
+  // routines that have a schedule trigger. Disable — rather than hide — it
+  // elsewhere so the capability stays discoverable.
+  const hasScheduleTrigger = routine.triggers.some((trigger) => trigger.kind === "schedule");
+  const gateEnabled = editDraft.activityGatePolicy === "require_external_activity";
+
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -691,6 +725,38 @@ export function DeliverySection() {
           }
           options={catchUpPolicyOptions}
         />
+      </div>
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
+          Advanced run policy
+        </p>
+        <RadioCardGroup
+          ariaLabel="Advanced run policy"
+          value={editDraft.activityGatePolicy}
+          onValueChange={(activityGatePolicy) =>
+            setEditDraft((current) => ({ ...current, activityGatePolicy }))
+          }
+          options={activityGatePolicyOptions}
+          disabled={!hasScheduleTrigger}
+        />
+        {!hasScheduleTrigger ? (
+          <p className="text-xs text-muted-foreground">
+            Add a schedule trigger to gate runs on activity. Webhook, manual, and API fires always
+            run.
+          </p>
+        ) : gateEnabled ? (
+          <div className="space-y-2 rounded-lg border border-border p-3">
+            <Label className="text-xs font-medium">Activity scope</Label>
+            <RadioCardGroup
+              ariaLabel="Activity gate scope"
+              value={editDraft.activityGateScope}
+              onValueChange={(activityGateScope) =>
+                setEditDraft((current) => ({ ...current, activityGateScope }))
+              }
+              options={activityGateScopeOptions}
+            />
+          </div>
+        ) : null}
       </div>
       <NextFiresPreview
         triggers={routine.triggers}

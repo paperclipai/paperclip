@@ -118,4 +118,22 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     };
     expect(opts.onSpawn).toBeDefined();
   });
+
+  it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {
+    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    process.env.PAPERCLIP_API_KEY = "parent-process-key";
+
+    try {
+      const { ctx } = makeCtx();
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const opts = lastCall[3] as { env: Record<string, string> };
+      expect(opts.env.PAPERCLIP_API_KEY).toBeUndefined();
+    } finally {
+      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+    }
+  });
 });

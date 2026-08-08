@@ -13,6 +13,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
+  type ReactElement,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -32,6 +33,8 @@ import {
   quotePlugin,
   tablePlugin,
   thematicBreakPlugin,
+  defaultSvgIcons,
+  type IconKey,
   type RealmPlugin,
 } from "@mdxeditor/editor";
 import {
@@ -41,13 +44,14 @@ import {
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, Hash, User } from "lucide-react";
+import { Boxes, CalendarClock, Hash, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
+import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -125,6 +129,12 @@ function readHtmlAttribute(attrs: string, name: string): string | null {
   return match?.[2] ?? match?.[3] ?? match?.[4] ?? null;
 }
 
+/** MDXEditor icon override: the image chip's delete button gets the lucide X. */
+function editorIconFor(name: IconKey): ReactElement {
+  if (name === "delete_small") return <X aria-hidden />;
+  return defaultSvgIcons[name];
+}
+
 function convertHtmlImagesToMarkdown(text: string): string {
   return text.replace(/<img\b([^>]*?)\/?>/gi, (tag, attrs: string) => {
     const src = readHtmlAttribute(attrs, "src");
@@ -141,7 +151,10 @@ function convertHtmlImagesToMarkdown(text: string): string {
 
 function prepareMarkdownForEditor(value: string): string {
   const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return convertHtmlImagesToMarkdown(normalizedLineEndings);
+  // Recover escaped blockquotes (`\>`) so `>`-prefixed content renders as a real
+  // blockquote in the editor as well as on display (keeps import/export in sync).
+  const withBlockquotes = unescapeBlockquoteMarkers(normalizedLineEndings);
+  return convertHtmlImagesToMarkdown(withBlockquotes);
 }
 
 function escapeRegExp(value: string): string {
@@ -718,7 +731,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const insertMarkdown = useCallback((markdown: string) => {
     if (readOnly) return;
     if (!richEditorError && ref.current) {
-      ref.current.insertMarkdown(markdown);
+      // MDXEditor's insertMarkdown silently no-ops without a Lexical selection
+      // (an editor that was never focused). Focus first — the callback runs
+      // once focus (and a selection: caret kept, else rootEnd) is in place.
+      const editor = ref.current;
+      editor.focus(() => editor.insertMarkdown(markdown), { defaultSelection: "rootEnd" });
       return;
     }
     const textarea = fallbackTextareaRef.current;
@@ -851,7 +868,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       markdownShortcutPlugin(),
     ];
     if (imageHandler) {
-      all.push(imagePlugin({ imageUploadHandler: imageHandler }));
+      // The inline image chip keeps only its remove affordance — no settings
+      // dialog, and the X glyph instead of MDXEditor's default trash can.
+      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     }
     return all;
   }, [hasImageUpload]);
@@ -1321,11 +1340,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         <MDXEditor
           ref={setEditorRef}
           markdown={editorValue}
+          iconComponentFor={editorIconFor}
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
-          onChange={(next) => {
+          onChange={(rawNext) => {
             if (readOnly) return;
+            // Recover blockquotes the exporter escaped as `\>` (see
+            // unescapeBlockquoteMarkers) so a `>`-prefixed line the user typed
+            // always survives as a real blockquote, even when the WYSIWYG
+            // shortcut didn't fire.
+            const next = unescapeBlockquoteMarkers(rawNext);
             const echo = echoIgnoreMarkdownRef.current;
             if (echo !== null && next === echo) {
               echoIgnoreMarkdownRef.current = null;

@@ -21,12 +21,14 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
-  "cloud-upstreams.ts": "/api",
+  "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
+  "decision-queues.ts": "/api",
+  "decisions.ts": "/api",
   "decision-training.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
@@ -51,6 +53,7 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
+  "status-cards.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
@@ -186,9 +189,32 @@ describe("openapi routes", () => {
       },
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    expect(
+      res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
+    ).toBe("Withdraw a pending issue thread interaction");
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );
+    const createQueue = res.body.paths["/api/companies/{companyId}/decision-queues"].post;
+    expect(createQueue.security).toContainEqual({ AgentBearerAuth: [] });
+    expect(createQueue.responses["200"]).toBeDefined();
+    expect(createQueue.responses["201"]).toBeDefined();
+    expect(createQueue.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      properties: {
+        key: { type: "string", minLength: 1, maxLength: 80 },
+        title: { type: "string", minLength: 1, maxLength: 120 },
+      },
+      required: ["key", "title"],
+    });
+    const updateTriage = res.body.paths[
+      "/api/companies/{companyId}/decision-triage/{sourceKind}/{sourceId}"
+    ].put;
+    expect(updateTriage.responses["422"]).toBeDefined();
+    expect(updateTriage.requestBody.content["application/json"].schema.properties).toMatchObject({
+      decideBy: { nullable: true },
+      snoozedUntil: { type: "string", format: "date-time", nullable: true },
+    });
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });

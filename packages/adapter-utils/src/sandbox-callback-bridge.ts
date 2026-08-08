@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  runWithoutActiveStep,
+  runWithRuntimeParent,
+  type RuntimeSpanRunner,
+  type StartupSpanContext,
+} from "./acpx-engine/startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -17,6 +23,10 @@ const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
+
+/** Span name that wraps one Paperclip-API callback request — read the request,
+ * write the response, and remove the request file. */
+const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
 
@@ -72,10 +82,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
   { method: "PATCH", path: /^\/api\/work-products\/[^/]+$/ },
 
-  // Issue-thread interactions (suggest tasks, ask questions, request confirmation)
+  // Issue-thread interactions (create, resolve, verdict, and withdraw)
   { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond)$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond|verdicts|withdraw)$/ },
 
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
@@ -149,6 +159,11 @@ export interface SandboxCallbackBridgeDirectories {
 
 export interface SandboxCallbackBridgeQueueClient {
   makeDir(remotePath: string): Promise<void>;
+  // Optional batched directory create. The built-in clients create every
+  // queue directory in one remote exec. A client that predates this method
+  // omits it; the worker falls back to sequential `makeDir` calls, so an
+  // external implementation stays compatible without a change.
+  makeDirs?(remotePaths: string[]): Promise<void>;
   listJsonFiles(remotePath: string): Promise<string[]>;
   readTextFile(remotePath: string): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
@@ -221,6 +236,13 @@ async function runShell(
     },
     timeoutMs,
     stdin,
+    // Every command that rides this helper is bridge control-plane plumbing:
+    // input delivery, output read, callback relay, and queue/setup bookkeeping.
+    // It must run concurrently with the agent, so force it off the persistent
+    // session. In streamed mode the agent holds that single serialized session
+    // for the whole run; a control write on the same session queues behind the
+    // agent command that never returns — a permanent deadlock.
+    bypassSession: true,
   });
 }
 
@@ -359,6 +381,11 @@ export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallb
     makeDir: async (remotePath) => {
       await fs.mkdir(remotePath, { recursive: true });
     },
+    makeDirs: async (remotePaths) => {
+      for (const remotePath of remotePaths) {
+        await fs.mkdir(remotePath, { recursive: true });
+      }
+    },
     listJsonFiles: async (remotePath) => {
       const entries = await fs.readdir(remotePath, { withFileTypes: true }).catch(() => []);
       return entries
@@ -469,6 +496,13 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   return {
     makeDir: async (remotePath) => {
       await runChecked(`mkdir ${remotePath}`, `mkdir -p ${shellQuote(remotePath)}`);
+    },
+    makeDirs: async (remotePaths) => {
+      if (remotePaths.length === 0) {
+        return;
+      }
+      const quoted = remotePaths.map((remotePath) => shellQuote(remotePath));
+      await runChecked(`mkdir ${remotePaths.join(" ")}`, `mkdir -p ${quoted.join(" ")}`);
     },
     listJsonFiles: async (remotePath) => {
       const result = await runShell(
@@ -602,14 +636,37 @@ export async function startSandboxCallbackBridgeWorker(input: {
     body?: string;
   }>;
   maxBodyBytes?: number | null;
+  // Return the current-run parent-context token. The worker reads it per request
+  // and runs the request work under it, so the request `sandbox.exec` span
+  // parents to the live run span (`agent.turn` during the turn, `task.run`
+  // otherwise). When it is absent, the request work runs with an empty store,
+  // exactly like the earlier `runWithoutActiveStep` behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each Paperclip-API callback request in a
+  // `sandbox.callbackBridge.relayRequest` span, so the request's read, write, and
+  // remove execs group under one named span. When it is absent, the request work
+  // runs under the run parent with no wrapper span, exactly like the earlier
+  // behavior.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
-  await input.client.makeDir(directories.rootDir);
-  await input.client.makeDir(directories.requestsDir);
-  await input.client.makeDir(directories.responsesDir);
-  await input.client.makeDir(directories.logsDir);
+  const queueDirectories = [
+    directories.rootDir,
+    directories.requestsDir,
+    directories.responsesDir,
+    directories.logsDir,
+  ];
+  if (input.client.makeDirs) {
+    await input.client.makeDirs(queueDirectories);
+  } else {
+    // Backward-compatible fallback for a queue client that omits the batched
+    // makeDirs method. Create each queue directory with a single makeDir.
+    for (const directory of queueDirectories) {
+      await input.client.makeDir(directory);
+    }
+  }
 
   let stopping = false;
   let inFlight = 0;
@@ -717,7 +774,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
   };
 
-  const loop = (async () => {
+  // Start the long-lived poll loop outside the measured startup-step store.
+  // The `makeDir` calls above are startup work and must keep the active
+  // `bridge.paperclip` step. The loop runs run-time execs for the whole run,
+  // so each loop `sandbox.exec` span must not parent to the ended step or copy
+  // its `criticalPath` flag. `runWithoutActiveStep` empties the store for the
+  // loop only; Node keeps the empty store on every later poll continuation.
+  const loop = runWithoutActiveStep(() => (async () => {
     try {
       while (true) {
         const fileNames = await input.client.listJsonFiles(directories.requestsDir);
@@ -732,7 +795,20 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
-            await processRequestFile(fileName);
+            // A request is run-time work, not startup work. Wrap it in a
+            // `sandbox.callbackBridge.relayRequest` span, so its read, write, and
+            // remove execs group under one named span that parents to the live
+            // run span. The span runner reads the run parent per request: the
+            // live parent switches to `agent.turn` during the turn and back to
+            // `task.run` after it. Without a runner, the request runs under the
+            // run parent with no wrapper span, exactly like the earlier behavior.
+            await (input.runtimeSpan
+              ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
+                  processRequestFile(fileName),
+                )
+              : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
+                  processRequestFile(fileName),
+                ));
           } finally {
             inFlight -= 1;
           }
@@ -757,7 +833,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         settleResolve();
       }
     }
-  })();
+  })());
 
   void loop;
 
@@ -777,34 +853,54 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 }
 
-export async function syncSandboxCallbackBridgeEntrypoint(input: {
+/**
+ * Content-hash-skip write of a Paperclip-authored text file into the sandbox, in
+ * a SINGLE remote exec. The body's sha256 is computed on the host; the one shell
+ * round-trip skips the write entirely when the remote file already hashes to the
+ * same value (warm start — 0 write execs), otherwise it uploads (base64 over
+ * stdin), verifies the decoded bytes, and atomically renames into place. A
+ * PID-liveness lock serializes concurrent writers to the same path and the
+ * verify step guards against a torn upload.
+ *
+ * Fail loudly: a non-zero remote exit (surfaced by `requireSuccessfulResult`) or
+ * malformed result JSON throws rather than silently re-uploading and masking a
+ * failed check. The only intentional degradation is when the remote has neither
+ * `sha256sum` nor `shasum` — then the skip cannot be proven and we conservatively
+ * re-upload (and the post-upload verify is best-effort, as noted inline).
+ */
+export async function syncRemoteTextFileWithHashSkip(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
-  assetRemoteDir: string;
-  bridgeAsset: SandboxCallbackBridgeAsset;
+  remoteDir: string;
+  remotePath: string;
+  body: string;
+  // Human-readable noun phrase used in fail-loud messages, e.g.
+  // "Sandbox callback bridge entrypoint" / "Process session remote script".
+  label: string;
+  // Short action label for `requireSuccessfulResult`, e.g.
+  // "sync sandbox callback bridge entrypoint".
+  action: string;
+  lockDir: string;
   timeoutMs?: number | null;
   shellCommand?: "bash" | "sh" | null;
-}): Promise<{ remoteEntrypoint: string; sha256: string; uploaded: boolean }> {
+}): Promise<{ uploaded: boolean; sha256: string }> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
-  const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
-  const remoteEntrypointPartial = `${remoteEntrypoint}.partial`;
-  const remoteUploadPath = `${remoteEntrypoint}.paperclip-upload.b64`;
-  const remoteLockDir = path.posix.join(input.assetRemoteDir, ".paperclip-bridge-upload.lock");
-  const entrypointSource = await fs.readFile(input.bridgeAsset.entrypoint, "utf8");
-  const entrypointBase64 = toBuffer(Buffer.from(entrypointSource, "utf8")).toString("base64");
-  const sha256 = createHash("sha256").update(entrypointSource, "utf8").digest("hex");
+  const remotePartial = `${input.remotePath}.partial`;
+  const remoteUploadPath = `${input.remotePath}.paperclip-upload.b64`;
+  const base64Body = toBuffer(Buffer.from(input.body, "utf8")).toString("base64");
+  const sha256 = createHash("sha256").update(input.body, "utf8").digest("hex");
 
   const syncResult = await runShell(
     input.runner,
     input.remoteCwd,
     [
       "set -eu",
-      `remote_dir=${shellQuote(input.assetRemoteDir)}`,
-      `remote_path=${shellQuote(remoteEntrypoint)}`,
-      `remote_partial=${shellQuote(remoteEntrypointPartial)}`,
+      `remote_dir=${shellQuote(input.remoteDir)}`,
+      `remote_path=${shellQuote(input.remotePath)}`,
+      `remote_partial=${shellQuote(remotePartial)}`,
       `remote_upload=${shellQuote(remoteUploadPath)}`,
-      `lock_dir=${shellQuote(remoteLockDir)}`,
+      `lock_dir=${shellQuote(input.lockDir)}`,
       `expected_sha=${shellQuote(sha256)}`,
       "hash_file() {",
       "  if command -v sha256sum >/dev/null 2>&1; then",
@@ -818,7 +914,7 @@ export async function syncSandboxCallbackBridgeEntrypoint(input: {
       "  return 127",
       "}",
       "mkdir -p \"$remote_dir\"",
-      ...buildRemotePidLockAcquireScript("\"$lock_dir\"", "Timed out acquiring sandbox callback bridge upload lock."),
+      ...buildRemotePidLockAcquireScript("\"$lock_dir\"", `Timed out acquiring ${input.label} upload lock.`),
       ...buildRemotePidLockCleanupScript("\"$lock_dir\"", [
         "rm -f \"$remote_upload\" \"$remote_partial\"",
       ]),
@@ -839,29 +935,55 @@ export async function syncSandboxCallbackBridgeEntrypoint(input: {
       // best-effort and we trust base64-decode + atomic rename below.
       "if partial_sha=\"$(hash_file \"$remote_partial\" 2>/dev/null)\"; then",
       "  if [ \"$partial_sha\" != \"$expected_sha\" ]; then",
-      "    echo \"Sandbox callback bridge entrypoint upload sha mismatch.\" >&2",
+      `    echo ${shellQuote(`${input.label} upload sha mismatch.`)} >&2`,
       "    exit 1",
       "  fi",
       "else",
-      "  echo \"Sandbox callback bridge entrypoint sha verify skipped: no sha256sum/shasum on remote.\" >&2",
+      `  echo ${shellQuote(`${input.label} sha verify skipped: no sha256sum/shasum on remote.`)} >&2`,
       "fi",
       "mv \"$remote_partial\" \"$remote_path\"",
       "printf '{\"uploaded\":true}\\n'",
     ].join("\n"),
     timeoutMs,
     shellCommand,
-    entrypointBase64,
+    base64Body,
   );
-  requireSuccessfulResult("sync sandbox callback bridge entrypoint", syncResult);
+  requireSuccessfulResult(input.action, syncResult);
 
   let uploaded = false;
   try {
     uploaded = JSON.parse(syncResult.stdout.trim())?.uploaded === true;
   } catch (error) {
     throw new Error(
-      `Sandbox callback bridge sync wrote invalid result JSON: ${error instanceof Error ? error.message : String(error)}`,
+      `${input.label} sync wrote invalid result JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+
+  return { uploaded, sha256 };
+}
+
+export async function syncSandboxCallbackBridgeEntrypoint(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  assetRemoteDir: string;
+  bridgeAsset: SandboxCallbackBridgeAsset;
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<{ remoteEntrypoint: string; sha256: string; uploaded: boolean }> {
+  const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
+  const entrypointSource = await fs.readFile(input.bridgeAsset.entrypoint, "utf8");
+  const { uploaded, sha256 } = await syncRemoteTextFileWithHashSkip({
+    runner: input.runner,
+    remoteCwd: input.remoteCwd,
+    remoteDir: input.assetRemoteDir,
+    remotePath: remoteEntrypoint,
+    body: entrypointSource,
+    label: "Sandbox callback bridge entrypoint",
+    action: "sync sandbox callback bridge entrypoint",
+    lockDir: path.posix.join(input.assetRemoteDir, ".paperclip-bridge-upload.lock"),
+    timeoutMs: input.timeoutMs,
+    shellCommand: input.shellCommand,
+  });
 
   return {
     remoteEntrypoint,

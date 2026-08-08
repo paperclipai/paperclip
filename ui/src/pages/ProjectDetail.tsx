@@ -259,13 +259,12 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -330,13 +329,12 @@ function ProjectPluginOperationsList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -475,7 +473,7 @@ export function ProjectDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
     }
   };
 
@@ -670,7 +668,7 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });

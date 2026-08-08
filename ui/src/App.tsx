@@ -1,15 +1,19 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
+import { TaskChatRedesignGate } from "./components/TaskChatRedesignGate";
+import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Timeline } from "./pages/Timeline";
@@ -27,6 +31,7 @@ import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
 import { Learnings, PipelineItemDetail, PipelineItemLegacyRedirect, Pipelines, ReviewQueue } from "./pages/Pipelines";
 import { PipelineSettings } from "./pages/PipelineSettings";
+import { StatusCards } from "./pages/StatusCards";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
@@ -36,17 +41,17 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
-import { Activity } from "./pages/Activity";
+import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
+import { DecisionQueuePage } from "./pages/DecisionQueuePage";
 import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
-import { CloudUpstream } from "./pages/CloudUpstream";
-import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
 import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
+import { CrossIssueCollaborationUxLab } from "./pages/CrossIssueCollaborationUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
@@ -55,6 +60,7 @@ import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Connections } from "./pages/apps/Connections";
 import { Browse } from "./pages/apps/Browse";
 import { AppsConnect } from "./pages/apps/AppsConnect";
+import { canEnterAppsConnect } from "./pages/apps/app-connect-policy";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
@@ -104,7 +110,7 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
-      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
+      <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
@@ -116,14 +122,15 @@ function boardRoutes() {
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route element={<AppsExperimentalGate />}>
-        <Route path="apps" element={<Connections />} />
-        <Route path="apps/browse" element={<Browse />} />
+        <Route path="apps" element={<Browse />} />
+        <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
+        <Route path="apps/connections" element={<Connections />} />
         <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
-        <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
-        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
+        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
         <Route path="apps/review" element={<AppsReview />} />
         {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
-        <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
+        <Route path="apps/attention" element={<Navigate to="/apps/connections" replace />} />
         <Route path="apps/gateways" element={<GatewaysList />} />
         <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
         <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
@@ -198,6 +205,17 @@ function boardRoutes() {
         element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
       />
       <Route
+        path="status"
+        element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
+      />
+      <Route
+        path="status/:cardId"
+        element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
+      />
+      {/* Back-compat: the board lived at /status-cards before PAP-15223. */}
+      <Route path="status-cards" element={<StatusCardsLegacyRedirect />} />
+      <Route path="status-cards/:cardId" element={<StatusCardsLegacyRedirect />} />
+      <Route
         path="review-queue"
         element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
       />
@@ -245,7 +263,10 @@ function boardRoutes() {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
-      <Route path="activity" element={<Activity />} />
+      <Route path="activity" element={<CompanyActivity />} />
+      {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
+          links keep working, preset to the agent-actions scope. */}
+      <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
       {/* Conference Room Chat surfaces (PAP-136/PAP-137): routes stay
           registered but redirect to the company home while the experimental
           flag is off. The board-level `artifacts` mount below is the new
@@ -255,9 +276,20 @@ function boardRoutes() {
         <Route path="board-chat" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
+      {/* Task Chat Redesign dev harness — dev builds only, and additionally
+          gated by enableTaskChatRedesign (redirects to /dashboard when the
+          flag is off). */}
+      {import.meta.env.DEV ? (
+        <Route element={<TaskChatRedesignGate />}>
+          <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
+        </Route>
+      ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
-      <Route path="training" element={<TrainingLibrary />} />
-      <Route path="training/:id" element={<TrainingInspector />} />
+      <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
+      <Route path="decisions/training" element={<TrainingLibrary />} />
+      <Route path="decisions/training/:id" element={<TrainingInspector />} />
+      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
+      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -278,11 +310,16 @@ function boardRoutes() {
 function AppsConnectEntryRoute() {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  return searchParams.get("byo") === "1" ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
+  return canEnterAppsConnect(searchParams) ? <AppsConnect /> : <Navigate to="/apps" replace />;
 }
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacyTrainingRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {
@@ -318,7 +355,7 @@ function LegacySettingsRedirect() {
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany =
@@ -367,7 +404,7 @@ function LegacyToolsRedirect() {
 
 function legacyToolsRedirectTarget(tab?: string) {
   if (!tab) return "/apps/advanced/profiles";
-  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps";
+  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps/connections";
   return `/apps/advanced/${tab}`;
 }
 
@@ -426,7 +463,7 @@ function CompanyRootRedirect() {
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -445,12 +482,19 @@ function CompanyRootRedirect() {
   return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
 }
 
+function StatusCardsLegacyRedirect() {
+  const { cardId } = useParams<{ cardId?: string }>();
+  const prefix = useActiveCompanyPrefix();
+  const base = prefix ? `/${prefix}` : "";
+  return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
+}
+
 function UnprefixedBoardRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -506,9 +550,9 @@ export function App() {
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
-        <Route path="ux-lab/cloud-upstream" element={<CloudUpstreamUxLab />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />
+        <Route path="ux-lab/cross-issue-collaboration" element={<CrossIssueCollaborationUxLab />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
@@ -525,6 +569,10 @@ export function App() {
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="status" element={<UnprefixedBoardRedirect />} />
+          <Route path="status/:cardId" element={<UnprefixedBoardRedirect />} />
+          <Route path="status-cards" element={<UnprefixedBoardRedirect />} />
+          <Route path="status-cards/:cardId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
@@ -532,6 +580,7 @@ export function App() {
           <Route path="pipelines/:pipelineId/items/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
+          <Route path="audit" element={<UnprefixedBoardRedirect />} />
           <Route path="decisions" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />

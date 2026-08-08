@@ -476,6 +476,7 @@ describe("issue graph liveness classifier", () => {
         issue: {
           ...baseReviewIssue,
           executionState: {
+            status: "pending",
             currentParticipant: { type: "agent", agentId: coderId },
           },
         },
@@ -485,6 +486,7 @@ describe("issue graph liveness classifier", () => {
         issue: {
           ...baseReviewIssue,
           executionState: {
+            status: "pending",
             currentParticipant: { type: "user", userId: "board-user-1" },
           },
         },
@@ -534,6 +536,34 @@ describe("issue graph liveness classifier", () => {
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("does not treat a participant retained after changes are requested as an active review path", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: {
+            status: "changes_requested",
+            currentParticipant: { type: "agent", agentId: coderId },
+          },
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+    });
   });
 
   it("still flags a stalled in_review issue when its blocker has an active run", () => {

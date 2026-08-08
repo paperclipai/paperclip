@@ -6,9 +6,12 @@ import {
   attentionBadgeCount,
   attentionDateBucket,
   attentionDetailLine,
-  attentionTone,
-  attentionToneStyle,
+  attentionIsNewToday,
+  attentionKind,
+  attentionStatus,
+  attentionTaskRef,
   buildAttentionFilterOptions,
+  buildDeskShelves,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
   filterAttentionItems,
@@ -18,7 +21,6 @@ import {
   NO_GROUP_SENTINEL,
   planAttentionRenderRows,
   saveAttentionGroupBy,
-  severityBadge,
   severityStyle,
   sortAttentionItems,
   sourceMeta,
@@ -45,6 +47,18 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     relatedIssue: null,
     project: null,
     workspace: null,
+    expiresAt: null,
+    ruleKey: null,
+    originAgentName: null,
+    queues: [],
+    shelf: false,
+    retentionDays: 30,
+    keep: false,
+    archivedAt: null,
+    retentionVersion: 1,
+    decideBy: null,
+    decideByAttribution: null,
+    snoozedUntil: null,
     detail: null,
     dismissal: null,
     ...overrides,
@@ -82,8 +96,12 @@ describe("isInlineResolvable", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "approval", inlineResolvable: false }))).toBe(false);
   });
 
-  it("is never inline for reviews even when flagged", () => {
-    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: true }))).toBe(false);
+  it("inlines a stalled review the server flagged (PAP-16080 §4.4)", () => {
+    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: true }))).toBe(true);
+  });
+
+  it("keeps a covered review deep-linking (server leaves inlineResolvable off)", () => {
+    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: false }))).toBe(false);
   });
 
   it("deep-links recovery/failure/budget rows rather than inlining", () => {
@@ -94,15 +112,17 @@ describe("isInlineResolvable", () => {
 });
 
 describe("attentionBadgeCount", () => {
-  it("counts every queue row as a decision (mentions/unread never enter the feed)", () => {
+  it("uses the server's pre-pagination desk badge count", () => {
     const feed: AttentionFeed = {
       companyId: "c1",
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
+      deskBadgeCount: 2,
+      nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],
     };
-    expect(attentionBadgeCount(feed)).toBe(3);
+    expect(attentionBadgeCount(feed)).toBe(2);
   });
 
   it("is zero for an empty or missing feed", () => {
@@ -111,10 +131,64 @@ describe("attentionBadgeCount", () => {
   });
 });
 
+// Desk grouping — arrival-based ("New today" / "Earlier") with a "Decide now"
+// shelf only when an explicit decide-by deadline is due.
+describe("buildDeskShelves", () => {
+  const NOW = Date.parse("2026-07-09T12:00:00Z");
+  const todayIso = "2026-07-09T09:00:00Z";
+  const earlierIso = "2026-07-01T09:00:00Z";
+
+  it("groups by arrival with no shelf when nothing has a due deadline", () => {
+    const items = [
+      buildItem({ id: "new-1", createdAt: todayIso }),
+      buildItem({ id: "old-1", createdAt: earlierIso }),
+      buildItem({ id: "new-2", createdAt: "2026-07-09T02:00:00Z" }),
+    ];
+    const shelves = buildDeskShelves(items, NOW);
+    expect(shelves.map((s) => s.key)).toEqual(["desk:new-today", "desk:earlier"]);
+    expect(shelves[0]!.label).toBe("New today");
+    expect(shelves[0]!.items.map((i) => i.id).sort()).toEqual(["new-1", "new-2"]);
+    expect(shelves[1]!.items.map((i) => i.id)).toEqual(["old-1"]);
+  });
+
+  it("adds the 'Decide now' shelf only for items with a due decide-by, and never double-buckets them", () => {
+    const items = [
+      buildItem({ id: "due", decideBy: "today", createdAt: todayIso }),
+      buildItem({ id: "overdue", decideBy: "2026-07-01", createdAt: earlierIso }),
+      buildItem({ id: "new", createdAt: "2026-07-09T05:00:00Z" }),
+      buildItem({ id: "old", createdAt: earlierIso }),
+      buildItem({ id: "whenever", decideBy: "whenever", createdAt: "2026-07-09T11:00:00Z" }),
+    ];
+    const shelves = buildDeskShelves(items, NOW);
+    expect(shelves.map((s) => s.key)).toEqual(["desk:decide-now", "desk:new-today", "desk:earlier"]);
+    // Decide-now items are pulled out of the arrival groups (disjoint shelves).
+    expect(shelves[0]!.items.map((i) => i.id)).toEqual(["overdue", "due"]);
+    // "New today" is newest-arrival-first: whenever (11:00) before new (05:00).
+    expect(shelves[1]!.items.map((i) => i.id)).toEqual(["whenever", "new"]);
+    expect(shelves[2]!.items.map((i) => i.id)).toEqual(["old"]);
+    // Every item lands in exactly one shelf.
+    const total = shelves.reduce((n, s) => n + s.items.length, 0);
+    expect(total).toBe(items.length);
+  });
+
+  it("returns no shelves for an empty desk", () => {
+    expect(buildDeskShelves([], NOW)).toEqual([]);
+  });
+});
+
+describe("attentionIsNewToday", () => {
+  const NOW = Date.parse("2026-07-09T12:00:00Z");
+  it("is true when the item surfaced on the current UTC day", () => {
+    expect(attentionIsNewToday(buildItem({ createdAt: "2026-07-09T00:00:01Z" }), NOW)).toBe(true);
+    expect(attentionIsNewToday(buildItem({ createdAt: "2026-07-08T23:59:59Z" }), NOW)).toBe(false);
+  });
+});
+
 describe("sourceMeta + severityStyle", () => {
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
+      "decision",
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
@@ -127,7 +201,6 @@ describe("sourceMeta + severityStyle", () => {
     ];
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
-      expect(sourceMeta(kind).icon).toBeTruthy();
     }
   });
 
@@ -136,63 +209,161 @@ describe("sourceMeta + severityStyle", () => {
   });
 });
 
-describe("attentionTone + attentionToneStyle (canonical color map §4)", () => {
-  it("colors plan approvals violet regardless of source kind", () => {
-    const fromApproval = buildItem({
-      sourceKind: "approval",
-      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
+// Supersedes the five-tone map (sky/violet/rose/amber/neutral) + severityBadge:
+// rows now resolve to one of two kinds, each borrowing a task status for its
+// colour and glyph, so the queue and the task list share one vocabulary.
+describe("attentionKind + attentionStatus (flattened decision types)", () => {
+  it("reads anything stuck as blocking", () => {
+    expect(attentionKind(buildItem({ sourceKind: "failed_run" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "blocker_attention" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "recovery_action" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "budget_alert" }))).toBe("blocking");
+  });
+
+  it("reads anything awaiting a verdict as review", () => {
+    expect(attentionKind(buildItem({ sourceKind: "approval" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "issue_thread_interaction" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "join_request" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "review" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "productivity_review" }))).toBe("review");
+  });
+
+  it("keeps plan approvals in the review family whichever surface raised them", () => {
+    const planApproval = (): AttentionItem["detail"] => ({
+      kind: "plan_approval",
+      issueTitle: "I",
+      planTitle: "P",
+      summaryExcerpt: null,
+      images: [],
     });
-    const fromInteraction = buildItem({
-      sourceKind: "issue_thread_interaction",
-      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
-    });
-    expect(attentionTone(fromApproval)).toBe("violet");
-    expect(attentionTone(fromInteraction)).toBe("violet");
-    expect(attentionToneStyle(fromApproval).accent).toContain("violet");
-  });
-
-  it("colors confirmations / questions / verdicts in the sky family", () => {
-    expect(attentionTone(buildItem({ sourceKind: "approval" }))).toBe("sky");
-    expect(attentionTone(buildItem({ sourceKind: "issue_thread_interaction" }))).toBe("sky");
-    expect(
-      attentionTone(
-        buildItem({
-          sourceKind: "issue_thread_interaction",
-          detail: { kind: "questions", questionCount: 2, firstQuestionText: "?", images: [] },
-        }),
-      ),
-    ).toBe("sky");
-  });
-
-  it("colors failures rose and blocked/recovery/budget amber", () => {
-    expect(attentionTone(buildItem({ sourceKind: "failed_run" }))).toBe("rose");
-    expect(attentionTone(buildItem({ sourceKind: "agent_error_alert" }))).toBe("rose");
-    expect(attentionTone(buildItem({ sourceKind: "blocker_attention" }))).toBe("amber");
-    expect(attentionTone(buildItem({ sourceKind: "recovery_action" }))).toBe("amber");
-    expect(attentionTone(buildItem({ sourceKind: "budget_alert" }))).toBe("amber");
-  });
-
-  it("colors join requests neutral", () => {
-    expect(attentionTone(buildItem({ sourceKind: "join_request" }))).toBe("neutral");
-  });
-
-  it("gives every tone a distinct accent and never keys color off severity", () => {
-    const rose = buildItem({ sourceKind: "failed_run", severity: "low" });
-    const amber = buildItem({ sourceKind: "budget_alert", severity: "critical" });
-    // Same-source rows with opposite severities share one accent (color ≠ severity).
-    expect(attentionToneStyle(buildItem({ sourceKind: "failed_run", severity: "critical" })).accent).toBe(
-      attentionToneStyle(rose).accent,
+    expect(attentionStatus(buildItem({ sourceKind: "approval", detail: planApproval() }))).toBe("in_review");
+    expect(attentionStatus(buildItem({ sourceKind: "issue_thread_interaction", detail: planApproval() }))).toBe(
+      "in_review",
     );
-    expect(attentionToneStyle(rose).accent).not.toBe(attentionToneStyle(amber).accent);
+  });
+
+  it("keeps blocking and review distinct", () => {
+    expect(attentionStatus(buildItem({ sourceKind: "agent_error_alert" }))).not.toBe(
+      attentionStatus(buildItem({ sourceKind: "approval" })),
+    );
+  });
+
+  it("borrows exactly two task statuses — and never keys colour off severity", () => {
+    expect(attentionStatus(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocked");
+    expect(attentionStatus(buildItem({ sourceKind: "approval" }))).toBe("in_review");
+    // Same source, opposite severities → identical status (colour ≠ severity).
+    expect(attentionStatus(buildItem({ sourceKind: "failed_run", severity: "critical" }))).toBe(
+      attentionStatus(buildItem({ sourceKind: "failed_run", severity: "low" })),
+    );
   });
 });
 
-describe("severityBadge", () => {
-  it("only surfaces a badge for Critical/High", () => {
-    expect(severityBadge("critical")?.label).toBe("Critical");
-    expect(severityBadge("high")?.label).toBe("High");
-    expect(severityBadge("medium")).toBeNull();
-    expect(severityBadge("low")).toBeNull();
+// The feed stores the task in two different fields depending on what the row is
+// about. Reading only `relatedIssue` silently dropped the key on every row whose
+// subject *is* the task — reviews and blocked dependencies, i.e. the rows most
+// obviously about a task.
+describe("attentionTaskRef", () => {
+  it("reads the task off the subject when the subject IS the task", () => {
+    const item = buildItem({
+      sourceKind: "blocker_attention",
+      subject: {
+        kind: "issue",
+        id: "i1",
+        companyId: "c1",
+        title: "Update primary paperclip instance",
+        identifier: "PAP-23",
+        status: "blocked",
+        href: "/PAP/issues/PAP-23",
+      },
+    });
+    expect(attentionTaskRef(item)).toEqual({ identifier: "PAP-23", href: "/PAP/issues/PAP-23" });
+  });
+
+  it("reads the task off relatedIssue when the subject merely hangs off one", () => {
+    const item = buildItem({
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: "x1",
+        companyId: "c1",
+        title: "Ship it?",
+        identifier: null,
+        status: "pending",
+        href: "/PAP/issues/PAP-20#interaction-x1",
+      },
+      relatedIssue: {
+        kind: "issue",
+        id: "i2",
+        companyId: "c1",
+        title: "Produce launch video",
+        identifier: "PAP-20",
+        status: "in_review",
+        href: "/PAP/issues/PAP-20",
+      },
+    });
+    expect(attentionTaskRef(item)).toEqual({ identifier: "PAP-20", href: "/PAP/issues/PAP-20" });
+  });
+
+  it("prefers relatedIssue when both are present — it is the record the subject can't describe", () => {
+    const item = buildItem({
+      subject: {
+        kind: "issue",
+        id: "i1",
+        companyId: "c1",
+        title: "Subject task",
+        identifier: "PAP-1",
+        status: "todo",
+        href: "/PAP/issues/PAP-1",
+      },
+      relatedIssue: {
+        kind: "issue",
+        id: "i2",
+        companyId: "c1",
+        title: "Related task",
+        identifier: "PAP-2",
+        status: "todo",
+        href: "/PAP/issues/PAP-2",
+      },
+    });
+    expect(attentionTaskRef(item)?.identifier).toBe("PAP-2");
+  });
+
+  it("returns null for rows genuinely not attached to a task", () => {
+    // A hire approval: subject is the approval itself, no task anywhere.
+    expect(attentionTaskRef(buildItem({ sourceKind: "approval" }))).toBeNull();
+    // An agent error: subject is the agent.
+    expect(
+      attentionTaskRef(
+        buildItem({
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "ag1",
+            companyId: "c1",
+            title: "CTO",
+            identifier: null,
+            status: "error",
+            href: "/PAP/agents/ag1",
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("does not borrow a key from a non-task subject that happens to have one", () => {
+    const item = buildItem({
+      subject: {
+        kind: "approval",
+        id: "ap1",
+        companyId: "c1",
+        title: "Sign off",
+        identifier: "APR-9",
+        status: "pending",
+        href: "/PAP/approvals/ap1",
+      },
+    });
+    expect(attentionTaskRef(item)).toBeNull();
   });
 });
 

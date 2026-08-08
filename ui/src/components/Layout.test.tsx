@@ -460,7 +460,8 @@ describe("Layout", () => {
     expect(selector?.value).toBe("secrets");
     const selectorText = selector?.textContent?.toLowerCase() ?? "";
     expect(selectorText).toContain("general");
-    expect(selectorText).toContain("cloud upstream");
+    expect(selectorText).toContain("export");
+    expect(selectorText).toContain("import");
     expect(selectorText).toContain("members");
     expect(selectorText).toContain("invites");
     expect(selectorText).toContain("secrets");
@@ -529,7 +530,7 @@ describe("Layout", () => {
   });
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
-    currentPathname = "/PAP/apps/browse";
+    currentPathname = "/PAP/apps";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -607,7 +608,7 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
     currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({

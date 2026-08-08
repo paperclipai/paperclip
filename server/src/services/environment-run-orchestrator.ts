@@ -23,6 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
+  IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import {
@@ -39,6 +40,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
+  type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -202,6 +204,7 @@ export function environmentRunOrchestrator(
     agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
@@ -262,6 +265,7 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -278,6 +282,7 @@ export function environmentRunOrchestrator(
       agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+      executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
     });
 
@@ -299,6 +304,7 @@ export function environmentRunOrchestrator(
         provider: leaseRecord.lease.provider,
         executionWorkspaceId: leaseRecord.leaseContext.executionWorkspaceId,
         issueId: input.issueId,
+        networkEgress: input.executionWorkspaceSettings?.networkEgress ?? null,
       },
     });
 
@@ -426,6 +432,13 @@ export function environmentRunOrchestrator(
             SHELL: "/bin/bash",
           },
           timeoutMs: 300_000,
+          // The provision command runs before the run opens its trace root, so it
+          // carries no run parent. A sandbox provider that opens a persistent
+          // session on the first command must not open the session here, or the
+          // session-setup span loses its parent and the span backend drops it.
+          // Bypass the session for this command; the session opens on the first
+          // in-run command instead, whose setup span parents to the run trace.
+          bypassSession: true,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
@@ -480,6 +493,35 @@ export function environmentRunOrchestrator(
         lease,
         environmentRuntime,
       });
+      const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
+      const authoritativeRoot =
+        typeof workspaceRealization.authoritativeRoot === "string" && workspaceRealization.authoritativeRoot.trim().length > 0
+          ? workspaceRealization.authoritativeRoot.trim()
+          : realizedCwd;
+      const workspaceTargetMetadata: AdapterWorkspaceRealization = {
+        mode: realizationMode,
+        authoritativeRoot,
+        pathAliases: Array.isArray(workspaceRealization.pathAliases)
+          ? workspaceRealization.pathAliases.filter(
+              (entry): entry is { path: string; target: string } =>
+                typeof entry === "object" && entry !== null &&
+                typeof (entry as { path?: unknown }).path === "string" &&
+                typeof (entry as { target?: unknown }).target === "string",
+            )
+          : [],
+        outboundRestorePaths: Array.isArray(workspaceRealization.outboundRestorePaths)
+          ? workspaceRealization.outboundRestorePaths.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      };
+      if (executionTarget) {
+        executionTarget = {
+          ...executionTarget,
+          ...(executionTarget.kind === "remote" && realizationMode === "in_place"
+            ? { remoteCwd: authoritativeRoot }
+            : {}),
+          workspaceRealization: workspaceTargetMetadata,
+        } as AdapterExecutionTarget;
+      }
     } catch (err) {
       throw new EnvironmentRunError(
         "transport_resolution_failed",

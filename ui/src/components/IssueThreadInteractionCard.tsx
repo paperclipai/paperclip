@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Users, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -32,6 +32,7 @@ import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { PriorityIcon } from "./PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +66,8 @@ interface IssueThreadInteractionCardProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
+  primaryActionOnRight?: boolean;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -88,6 +91,32 @@ function resolveActorLabel(args: {
     return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
   }
   return "Unknown";
+}
+
+/**
+ * Administrative terminal outcomes (P1): an interaction that was withdrawn by
+ * its board/agent, or auto-expired when its issue reached a terminal state.
+ * Both are stored as `status="cancelled"|"expired"` with the distinguishing
+ * fact carried on `result.outcome` (there is no dedicated `withdrawn` status).
+ */
+function getAdministrativeOutcome(
+  interaction: IssueThreadInteraction,
+): "withdrawn" | "issue_closed" | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "outcome" in result) {
+    const outcome = (result as { outcome?: string | null }).outcome;
+    if (outcome === "withdrawn" || outcome === "issue_closed") return outcome;
+  }
+  return null;
+}
+
+function getAdministrativeReason(interaction: IssueThreadInteraction): string | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "reason" in result) {
+    const reason = (result as { reason?: string | null }).reason;
+    if (typeof reason === "string" && reason.trim().length > 0) return reason.trim();
+  }
+  return null;
 }
 
 function statusLabel(status: IssueThreadInteraction["status"]) {
@@ -192,6 +221,7 @@ function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
 function planStatusClasses(
   status: IssueThreadInteraction["status"],
   resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+  outcome?: string | null,
 ) {
   switch (status) {
     case "accepted":
@@ -215,7 +245,7 @@ function planStatusClasses(
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Changes requested",
+        label: outcome === "withdrawn" ? "Withdrawn" : "Changes requested",
         Icon: XCircle,
       };
     case "failed":
@@ -483,7 +513,8 @@ function TaskTreeNode({
               ) : null}
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  {node.task.priority ? (
+                  {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+                  {SHOW_TASK_PRIORITY_UI && node.task.priority ? (
                     <PriorityIcon
                       priority={node.task.priority}
                       className="mt-px"
@@ -1154,9 +1185,15 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">
+            {interaction.result?.outcome === "withdrawn"
+              ? questions.length === 1 ? "Question withdrawn" : "Questions withdrawn"
+              : "Question cancelled"}
+          </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
+          ) : interaction.result?.reason ? (
+            <p className="mt-1">{interaction.result.reason}</p>
           ) : (
             <p className="mt-1">No answer was recorded.</p>
           )}
@@ -1165,10 +1202,18 @@ function AskUserQuestionsCard({
         <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
-            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+            {interaction.result?.outcome === "issue_closed"
+              ? questions.length === 1
+                ? "Question expired when the issue closed"
+                : "Questions expired when the issue closed"
+              : questions.length === 1
+                ? "Question expired by comment"
+                : "Questions expired by comment"}
           </div>
           <p className="mt-1">
-            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+            {interaction.result?.outcome === "issue_closed"
+              ? "This question request expired automatically when the issue reached a terminal state."
+              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1346,18 +1391,42 @@ function RequestConfirmationResolution({
     );
   }
 
+  if (interaction.status === "cancelled" && outcome === "withdrawn") {
+    // Withdrawn is a neutral administrative retraction (P4 design review): the
+    // card-level withdrawn footer carries the "Withdrawn by …" attribution and
+    // reason, so this body only anchors the target chip — no rose/red styling
+    // and no duplicated reason text.
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+        <span className="font-medium">Withdrawn</span>
+        <RequestConfirmationTargetChip interaction={interaction} target={target} />
+      </div>
+    );
+  }
+
   if (interaction.status === "expired") {
     const expiredByComment = outcome === "superseded_by_comment";
+    const expiredByIssueClosed = outcome === "issue_closed";
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-        <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
-        </div>
+        {/*
+         * issue_closed already carries its label in the header status badge
+         * ("Expired · issue closed"), so this eyebrow would duplicate it
+         * verbatim — only render the eyebrow for the states the header shows
+         * generically as "Expired".
+         */}
+        {expiredByIssueClosed ? null : (
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+            {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          </div>
+        )}
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            : expiredByIssueClosed
+              ? "This confirmation expired automatically when the issue reached a terminal state."
+              : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -1812,6 +1881,7 @@ function RequestToolActionCard({
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
+  primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
   onUploadImage,
@@ -1819,6 +1889,7 @@ function RequestConfirmationCard({
 }: {
   interaction: RequestConfirmationInteraction;
   isPlan?: boolean;
+  primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -1939,7 +2010,12 @@ function RequestConfirmationCard({
 
       {interaction.status === "pending" ? (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-end gap-2",
+              primaryActionOnRight && "flex-row-reverse justify-start",
+            )}
+          >
             <Button
               size="sm"
               variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
@@ -3015,6 +3091,7 @@ export function IssueThreadInteractionCard({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  primaryActionOnRight,
   onSubmitInteractionVerdicts,
   onUploadImage,
   externalReferences,
@@ -3028,11 +3105,34 @@ export function IssueThreadInteractionCard({
       : null;
   const toolActionStyles = toolActionState ? toolActionStatusClasses(toolActionState) : null;
   const resumeFailure = requestConfirmationResumeFailure(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
+  const planStyles = isPlan
+    ? planStatusClasses(
+        interaction.status,
+        resumeFailure,
+        interaction.result && "outcome" in interaction.result ? interaction.result.outcome : null,
+      )
+    : null;
   const activeStyles = toolActionStyles ?? planStyles;
-  const StatusIcon = activeStyles ? activeStyles.Icon : statusIcon(interaction.status);
+  const adminOutcome = getAdministrativeOutcome(interaction);
+  const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
+  // P4 (design review R2): a withdrawal is a neutral administrative retraction by
+  // the requester — NOT a board "no". It must not inherit the `cancelled` card's
+  // rose/red border + XCircle, which is pixel-identical to a rejected plan and
+  // mis-signals a denial to anyone scanning the thread. Give withdrawn its own
+  // inert lane (sibling to the calm `expired` state): muted border/badge +
+  // MinusCircle ("retracted"). This overrides the plan/tool-action/status styling
+  // so a withdrawn plan or confirmation reads "closed", not "changes requested".
+  const withdrawnStyles =
+    adminOutcome === "withdrawn"
+      ? { shell: "border-border bg-transparent", badge: "border-border bg-muted/60 text-muted-foreground" }
+      : null;
+  const StatusIcon = withdrawnStyles
+    ? MinusCircle
+    : activeStyles
+      ? activeStyles.Icon
+      : statusIcon(interaction.status);
   const iconSpin = toolActionStyles?.spin ?? false;
-  const styles = activeStyles ?? statusClasses(interaction.status);
+  const styles = withdrawnStyles ?? activeStyles ?? statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -3050,6 +3150,27 @@ export function IssueThreadInteractionCard({
           userLabelMap,
         })
       : null;
+  // P4: audit-visible distinction between agent and human resolution.
+  const resolvedByAgent = Boolean(interaction.resolvedByAgentId);
+  // P2: agents may resolve when the governance-capped policy allows it.
+  const agentsMayResolve = interaction.effectiveResolverPolicy === "board_or_agents";
+  // P3: interactions directed at a specific agent addressee.
+  const addresseeLabel = interaction.addresseeAgentId
+    ? resolveActorLabel({
+        agentId: interaction.addresseeAgentId,
+        agentMap,
+        currentUserId,
+        userLabelMap,
+      })
+    : null;
+  const statusText =
+    adminOutcome === "withdrawn"
+      ? "Withdrawn"
+      : adminOutcome === "issue_closed"
+        ? "Expired · issue closed"
+        : activeStyles
+          ? activeStyles.label
+          : statusLabel(interaction.status);
 
   return (
     <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
@@ -3060,8 +3181,42 @@ export function IssueThreadInteractionCard({
               <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
               {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
               <span className="text-current/60">/</span>
-              {activeStyles ? activeStyles.label : statusLabel(interaction.status)}
+              {statusText}
             </span>
+            {agentsMayResolve ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    className="gap-1 border-indigo-500/50 text-indigo-700 dark:text-indigo-200"
+                    data-testid="interaction-policy-badge"
+                  >
+                    <Users className="h-3 w-3" />
+                    Agents may resolve
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Governance allows an assigned agent to resolve this interaction without waiting for the board.
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {addresseeLabel ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    className="gap-1"
+                    data-testid="interaction-addressee-badge"
+                  >
+                    <Bot className="h-3 w-3" />
+                    For {addresseeLabel}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Directed to {addresseeLabel}. Agent-addressed interactions are handled by that agent and are kept out of the board attention feed.
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">
@@ -3144,6 +3299,7 @@ export function IssueThreadInteractionCard({
           <RequestConfirmationCard
             interaction={interaction}
             isPlan={isPlan}
+            primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onUploadImage={onUploadImage}
@@ -3152,12 +3308,64 @@ export function IssueThreadInteractionCard({
         )}
       </div>
 
-      {resolvedByLabel && !isToolAction ? (
-        <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+      {adminOutcome === "withdrawn" ? (
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-withdrawn-footer"
+        >
+          <div>
+            Withdrawn by{" "}
+            <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+            {resolvedByAgent ? <ResolvedByAgentChip /> : null}
+            {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          </div>
+          {adminReason ? (
+            <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
+          ) : null}
+        </div>
+      ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
+        // The header badge + body already explain the issue-closed expiry;
+        // the footer is just the audit timestamp.
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-issue-closed-footer"
+        >
+          {formatShortDate(interaction.resolvedAt)}
+        </div>
+      ) : resolvedByLabel && !isToolAction ? (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-resolved-footer"
+        >
           Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
+          {resolvedByAgent ? <ResolvedByAgentChip /> : null}
           {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Small audit chip marking that an interaction was resolved by an agent (rather
+ * than a human board member) — governed agent resolution introduced in P2.
+ */
+function ResolvedByAgentChip() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="ml-1 gap-1 border-indigo-500/50 py-0 text-[length:--text-micro] text-indigo-700 dark:text-indigo-200"
+          data-testid="interaction-resolved-by-agent-chip"
+        >
+          <Bot className="h-3 w-3" />
+          Agent
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-xs text-xs">
+        Resolved by an agent under the company's interaction governance policy — audit-distinct from a human board resolution.
+      </TooltipContent>
+    </Tooltip>
   );
 }

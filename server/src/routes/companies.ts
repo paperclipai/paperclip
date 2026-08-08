@@ -1,9 +1,12 @@
-import { randomUUID } from "node:crypto";
-import { Router, type Request } from "express";
+import { createHash, randomUUID } from "node:crypto";
+import express, { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
+import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
+import { readZipArchive } from "@paperclipai/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
@@ -17,12 +20,15 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
   budgetService,
+  buildExportFidelityReport,
+  collectExportFidelityCounts,
   companyArtifactsService,
   companyPortabilityService,
   companyService,
@@ -30,9 +36,151 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+
+// A company import can arrive one of two ways on the import + preview routes:
+//   • application/json — the original inline body `{ source, target, ... }`,
+//     kept byte-identical for CLI and programmatic callers; or
+//   • the raw compressed zip, either as multipart/form-data (a `package` file
+//     field plus a JSON `meta` field) or a bare application/zip body. The zip
+//     is a third of the inline size and already gzip-friendly, so it survives
+//     the browser → edge → harness-proxy → tenant chain that truncated the
+//     inflated inline JSON on large companies.
+// The zip is unzipped server-side into the exact `{ rootPath, files }` bundle
+// the inline source carries, then fed through the unchanged preview/import
+// logic, so import semantics are identical regardless of transport.
+const PORTABLE_ZIP_CONTENT_TYPES = ["application/zip", "application/x-zip-compressed"] as const;
+
+const zipPackageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, files: 1 },
+});
+
+const rawZipBodyParser = express.raw({
+  type: [...PORTABLE_ZIP_CONTENT_TYPES],
+  limit: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
+});
+
+function requestContentType(req: Request) {
+  return (req.header("content-type") ?? "").toLowerCase();
+}
+
+function isMultipartImport(req: Request) {
+  return requestContentType(req).includes("multipart/form-data");
+}
+
+function isZipImport(req: Request) {
+  const contentType = requestContentType(req);
+  return PORTABLE_ZIP_CONTENT_TYPES.some((type) => contentType.includes(type));
+}
+
+function runMiddleware(
+  middleware: (req: Request, res: Response, next: (err?: unknown) => void) => void,
+  req: Request,
+  res: Response,
+) {
+  return new Promise<void>((resolve, reject) => {
+    middleware(req, res, (err?: unknown) => (err ? reject(err) : resolve()));
+  });
+}
+
+/**
+ * Parse the `meta` form/query field into the object the import schemas expect.
+ * A client-declared `source` is ignored — the source is always the uploaded
+ * zip — so a multipart caller only ships the other import fields (include,
+ * target, collisionStrategy, nameOverrides, selectedFiles, adapterOverrides,
+ * pauseAutomations, ...).
+ */
+function parseImportMeta(metaRaw: string | undefined): Record<string, unknown> {
+  if (metaRaw === undefined || metaRaw.trim().length === 0) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metaRaw);
+  } catch {
+    throw badRequest("Import package metadata was not valid JSON.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw badRequest("Import package metadata must be a JSON object.");
+  }
+  const { source: _ignoredSource, ...rest } = parsed as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * Resolve the object to hand the preview/import zod schemas. For a JSON request
+ * this is the inline body unchanged. For a multipart or application/zip request
+ * the uploaded zip is read into `{ rootPath, files }` and combined with the
+ * `meta` fields as `source = { type: "inline", rootPath, files }`. A truncated,
+ * corrupt, or empty zip fails closed with a 400/422 before anything is imported.
+ */
+async function resolveImportPayload(req: Request, res: Response): Promise<unknown> {
+  const multipart = isMultipartImport(req);
+  const rawZip = isZipImport(req);
+  if (!multipart && !rawZip) {
+    return req.body;
+  }
+
+  let zipBytes: Buffer | undefined;
+  let metaRaw: string | undefined;
+  if (multipart) {
+    try {
+      await runMiddleware(zipPackageUpload.single("package"), req, res);
+    } catch (error) {
+      if (error instanceof multer.MulterError) {
+        if (error.code === "LIMIT_FILE_SIZE") {
+          throw unprocessable(`Import package exceeds ${PORTABLE_ZIP_UPLOAD_LIMIT_BYTES} bytes`);
+        }
+        throw badRequest(error.message);
+      }
+      throw error;
+    }
+    const file = (req as Request & { file?: { buffer?: Buffer } }).file;
+    zipBytes = file?.buffer;
+    const metaField = (req.body as { meta?: unknown } | undefined)?.meta;
+    metaRaw = typeof metaField === "string" ? metaField : undefined;
+  } else {
+    try {
+      await runMiddleware(rawZipBodyParser, req, res);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : "Invalid zip upload");
+    }
+    zipBytes = Buffer.isBuffer(req.body) ? req.body : undefined;
+    const metaQuery = req.query.meta;
+    metaRaw = typeof metaQuery === "string" ? metaQuery : undefined;
+  }
+
+  if (!zipBytes || zipBytes.length === 0) {
+    throw badRequest("Import package upload was empty.");
+  }
+  let archive: Awaited<ReturnType<typeof readZipArchive>>;
+  try {
+    archive = await readZipArchive(zipBytes);
+  } catch (error) {
+    throw badRequest(`Import package could not be read: ${errorMessage(error)}`);
+  }
+  if (Object.keys(archive.files).length === 0) {
+    throw badRequest("Import package contained no files.");
+  }
+  return {
+    ...parseImportMeta(metaRaw),
+    source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+  };
+}
+
+/**
+ * Async job opt-in. Cloud tenants set the `x-paperclip-cloud-async-import`
+ * header server-side (they are not a browser, so it is never stripped). Board
+ * browsers cannot use that header — the Cloud harness proxy strips every
+ * inbound `x-paperclip-cloud-*` header as anti-spoofing — so they opt in with
+ * the proxy-safe `?async=1` query parameter instead. Either signal enters the
+ * async path.
+ */
+function wantsAsyncImport(req: Request) {
+  return req.query.async === "1" || req.header("x-paperclip-cloud-async-import") === "1";
+}
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -44,7 +192,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
-  const importJobTerminalRetentionMs = 5 * 60 * 1000;
+  // Terminal jobs are retained in memory for an hour after they settle. A long
+  // import can outlast a user stepping away, and dropping the completion after
+  // only a few minutes made a later poll 404 — surfacing a finished, fully
+  // written import as a scary failure. An hour is long enough to cover a real
+  // "walk away and come back" gap while keeping the map bounded, and it needs
+  // no new persistence (jobs remain in-memory-only; a restart still 404s, which
+  // the client now treats as a soft success once it has seen the job running).
+  const importJobTerminalRetentionMs = 60 * 60 * 1000;
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -142,7 +297,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
-    res.json(await artifacts.list(companyId, query));
+    res.json(await artifacts.list(companyId, query, {
+      userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+    }));
   });
 
   router.get("/:companyId/timeline", async (req, res) => {
@@ -250,19 +407,31 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(result);
   });
 
+  router.get("/:companyId/export/fidelity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertSameCompanyCeoAgentOrBoard(req, companyId, "company export fidelity");
+    const counts = await collectExportFidelityCounts(db, companyId);
+    res.json(buildExportFidelityReport(companyId, counts));
+  });
+
   router.post("/import/preview", async (req, res) => {
     assertBoard(req);
-    const body = companyPortabilityPreviewSchema.parse(req.body);
+    const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
     res.json(preview);
   });
 
   router.get("/import/jobs/:jobId", async (req, res) => {
-    assertCloudTenantCaller(req);
+    // Board sessions and trusted Cloud tenants both poll here. A job is
+    // readable only by the actor key that created it; every other caller —
+    // like every unknown or expired id — gets the same 404, so job ids
+    // cannot be probed across users or tenants. Jobs live in memory only
+    // (see the async block below), so a restart also surfaces as this 404.
+    assertBoard(req);
     cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
     const job = importJobs.get(req.params.jobId as string);
-    if (!job || job.cloudTenantKey !== cloudTenantRequestKey(req)) {
+    if (!job || job.actorKey !== importJobActorKey(req)) {
       res.status(404).json({ error: "Import job not found" });
       return;
     }
@@ -271,19 +440,57 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
     assertBoard(req);
-    const rawImportBody: unknown = req.body;
+    // Resolve the request body up front: a JSON caller's inline body is used
+    // unchanged; a multipart/application-zip caller's uploaded zip is read into
+    // the same `{ source: { type: "inline", rootPath, files } }` bundle here,
+    // fast and in-memory, so the async job machinery below is transport-agnostic.
+    const rawImportBody: unknown = await resolveImportPayload(req, res);
     const actor = getActorInfo(req);
     const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
-    if (req.header("x-paperclip-cloud-async-import") === "1") {
-      assertCloudTenantCaller(req);
+    if (wantsAsyncImport(req)) {
+      // Async job path. Two kinds of callers opt in:
+      //  - trusted Cloud tenants (original behavior, kept byte-identical),
+      //    keyed by their tenant identity headers;
+      //  - any other board session, keyed by its user id, so long imports
+      //    survive proxies cutting the connection while the server finishes.
+      // Jobs are held in memory only and are lost on restart — existing
+      // semantics; the status route above 404s unknown ids, so a client
+      // that can no longer see its job treats it as gone and resubmits.
       cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
-      const job = createImportJob(cloudTenantRequestKey(req));
+      const isCloudTenant = req.actor.source === "cloud_tenant";
+      const actorKey = importJobActorKey(req);
+      const signature = importRequestSignature(rawImportBody);
+      if (!isCloudTenant) {
+        // One live import per board actor: while a job for this key is still
+        // running, a resubmit of the *same* import gets 409 carrying the
+        // running job's id and status URL so the client adopts it instead of
+        // importing the same bundle twice. A *different* import (another tab,
+        // another target) gets a 409 without a job to adopt, so the client
+        // surfaces it as an error rather than switching to the wrong result.
+        // Terminal jobs never block a resubmit.
+        const running = findRunningImportJob(importJobs, actorKey);
+        if (running) {
+          if (running.signature === signature) {
+            res.status(409).json(importJobConflictResponse(running));
+          } else {
+            res.status(409).json(importAlreadyRunningResponse());
+          }
+          return;
+        }
+      }
+      const job = createImportJob(
+        actorKey,
+        isCloudTenant ? "cloud_tenant" : "board",
+        signature,
+      );
       importJobs.set(job.id, job);
       const operation = async () => {
         const importBody = companyPortabilityImportSchema.parse(rawImportBody);
         assertImportTargetAccess(req, importBody.target);
         const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
-        const result = await portability.importBundle(importBody, boardUserId);
+        const result = await portability.importBundle(importBody, boardUserId, {
+          pauseAutomations: importBody.pauseAutomations === true,
+        });
         await logImportedCompanyActivity(db, activity, result);
         return result;
       };
@@ -297,7 +504,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const importBody = companyPortabilityImportSchema.parse(rawImportBody);
     assertImportTargetAccess(req, importBody.target);
     const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
-    const result = await portability.importBundle(importBody, boardUserId);
+    const result = await portability.importBundle(importBody, boardUserId, {
+      pauseAutomations: importBody.pauseAutomations === true,
+    });
     await logImportedCompanyActivity(db, activity, result);
     res.json(result);
   });
@@ -349,6 +558,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const result = await portability.importBundle(body, req.actor.type === "board" ? req.actor.userId : null, {
       mode: "agent_safe",
       sourceCompanyId: companyId,
+      pauseAutomations: body.pauseAutomations === true,
     });
     await logActivity(db, {
       companyId: result.company.id,
@@ -371,7 +581,15 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(result);
   });
 
-  router.post("/", validate(createCompanySchema), async (req, res) => {
+  router.post("/", (req, _res, next) => {
+    assertBoard(req);
+    if (isCloudManagedInstance()) {
+      throw forbidden("Company creation is managed by Paperclip Cloud", {
+        code: "cloud_managed",
+      });
+    }
+    next();
+  }, validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
@@ -547,9 +765,25 @@ type CompanyImportResult = {
   warnings: unknown[];
 };
 
+type ImportJobActorKind = "cloud_tenant" | "board";
+
+/**
+ * In-memory only: import jobs do not survive a server restart, and terminal
+ * jobs are dropped after `importJobTerminalRetentionMs`. Both cases surface
+ * to pollers as the status route's 404 for an unknown id.
+ */
 interface ImportJobRecord {
   id: string;
-  cloudTenantKey: string;
+  /** Identity that created the job; the only key allowed to read it. */
+  actorKey: string;
+  actorKind: ImportJobActorKind;
+  /**
+   * Fingerprint of the import request body. A resubmit is adopted (409 →
+   * watch the running job) only when it carries the same signature, so a
+   * *different* import from another tab is rejected instead of silently
+   * adopting an unrelated job (and its target). Board jobs only.
+   */
+  signature?: string;
   status: "running" | "succeeded" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -561,6 +795,12 @@ interface ImportJobRecord {
     warningCount: number;
     companyAction: unknown;
   };
+  /**
+   * Full import result, retained for board-created jobs only so the import
+   * page can run the same success path as the synchronous response. Cloud
+   * tenant job responses keep their original summary-only shape.
+   */
+  fullResult?: CompanyPortabilityImportResult;
 }
 
 interface ImportedCompanyActivityContext {
@@ -571,12 +811,6 @@ interface ImportedCompanyActivityContext {
   include: unknown;
 }
 
-function assertCloudTenantCaller(req: Request) {
-  if (req.actor.source !== "cloud_tenant") {
-    throw forbidden("Trusted Cloud tenant access required");
-  }
-}
-
 function cloudTenantRequestKey(req: Request) {
   return [
     req.actor.userId ?? "",
@@ -585,20 +819,59 @@ function cloudTenantRequestKey(req: Request) {
   ].join(":");
 }
 
-function createImportJob(cloudTenantKey: string): ImportJobRecord {
+/**
+ * Identity a job is created under and authorized against. Cloud tenant
+ * callers keep their header-derived tenant key; every other board session is
+ * keyed by its user id. The distinct prefixes keep the two namespaces
+ * disjoint, so crafted tenant headers can never collide with a board key.
+ */
+function importJobActorKey(req: Request) {
+  if (req.actor.source === "cloud_tenant") {
+    return `cloud-tenant:${cloudTenantRequestKey(req)}`;
+  }
+  return `board:${req.actor.userId ?? "local-board"}`;
+}
+
+function createImportJob(
+  actorKey: string,
+  actorKind: ImportJobActorKind,
+  signature?: string,
+): ImportJobRecord {
   const now = new Date().toISOString();
   return {
-    id: `tenant-import-${randomUUID()}`,
-    cloudTenantKey,
+    // Cloud tenant job ids keep their original prefix; board jobs get their own.
+    id: `${actorKind === "cloud_tenant" ? "tenant-import" : "import"}-${randomUUID()}`,
+    actorKey,
+    actorKind,
+    signature,
     status: "running",
     createdAt: now,
     updatedAt: now,
   };
 }
 
+/**
+ * Stable fingerprint of an import request body. The same client resubmitting
+ * the same import produces a byte-identical body (no nonce/timestamp), so its
+ * signature matches; a different import differs. Used to tell a duplicate
+ * submit apart from a concurrent, unrelated import.
+ */
+function importRequestSignature(body: unknown): string {
+  return createHash("sha256").update(JSON.stringify(body) ?? "").digest("hex");
+}
+
+function findRunningImportJob(importJobs: Map<string, ImportJobRecord>, actorKey: string) {
+  for (const job of importJobs.values()) {
+    if (job.status === "running" && job.actorKey === actorKey) {
+      return job;
+    }
+  }
+  return undefined;
+}
+
 async function runImportJob(
   job: ImportJobRecord,
-  operation: () => Promise<CompanyImportResult>,
+  operation: () => Promise<CompanyPortabilityImportResult>,
 ) {
   try {
     const result = await operation();
@@ -612,6 +885,9 @@ async function runImportJob(
       warningCount: result.warnings.length,
       companyAction: result.company.action,
     };
+    if (job.actorKind === "board") {
+      job.fullResult = result;
+    }
   } catch (error) {
     const now = new Date().toISOString();
     job.status = "failed";
@@ -657,13 +933,41 @@ async function logImportedCompanyActivity(
   });
 }
 
+function importJobStatusUrl(job: ImportJobRecord) {
+  return `/api/companies/import/jobs/${encodeURIComponent(job.id)}`;
+}
+
 function importJobAcceptedResponse(job: ImportJobRecord) {
   return {
     job: {
       id: job.id,
       status: job.status,
     },
-    statusUrl: `/api/companies/import/jobs/${encodeURIComponent(job.id)}`,
+    statusUrl: importJobStatusUrl(job),
+    retryAfterMs: 1000,
+  };
+}
+
+/**
+ * 409 body for a concurrent, *different* import while one is already running.
+ * Carries no job to adopt, so the client reports it as an error rather than
+ * watching (and switching to) an unrelated import's result.
+ */
+function importAlreadyRunningResponse() {
+  return {
+    error: "A different import is already running for this account. Wait for it to finish before starting another.",
+  };
+}
+
+/** 409 body for a duplicate submit: points at the job already running. */
+function importJobConflictResponse(job: ImportJobRecord) {
+  return {
+    error: "An import is already running for this account",
+    job: {
+      id: job.id,
+      status: job.status,
+    },
+    statusUrl: importJobStatusUrl(job),
     retryAfterMs: 1000,
   };
 }
@@ -679,6 +983,9 @@ function importJobResponse(job: ImportJobRecord) {
       ...(job.completedAt ? { completedAt: job.completedAt } : {}),
       ...(job.error ? { error: job.error } : {}),
       ...(job.result ? { result: job.result } : {}),
+      // Board jobs additionally carry the full import result (parity with
+      // the synchronous response); cloud tenant jobs never set it.
+      ...(job.fullResult ? { importResult: job.fullResult } : {}),
     },
     ...(isTerminal ? {} : { retryAfterMs: 1000 }),
   };

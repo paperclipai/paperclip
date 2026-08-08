@@ -51,14 +51,14 @@ This routine is **paused by default** and spends no tokens until an operator ena
 ## What this run must do
 
 1. Select summary slots whose scope has changed since their last revision and whose `lastGeneratedAt` is older than `{{staleAfterHours}}` hours. Restrict to `{{scopeKinds}}` when a specific kind is chosen. Cap the set at `{{maxSlots}}`, most-stale first.
-2. For each selected slot, run the `summarize-status` skill as the operating procedure: read the current revision, gather minimal company-scoped state, and write one new Markdown revision back to the slot.
+2. For each selected slot, run the `summarize-status` skill as the operating procedure: read the current revision, read the company-scoped state you need to understand where things are, and write one new Markdown revision back to the slot.
 3. Skip slots with no meaningful change since their last revision — do not spend tokens rewriting an unchanged summary.
 
 ## Hard limits for this routine
 
 - Read-and-report only. This routine must never change issues, workspaces, code, or agent configuration — its only write is the summary revision.
 - Keep every read company-scoped. Do not cross company boundaries.
-- Run on the low-cost model profile lane (`cheap`). Keep each summary short and pull only the data the summary needs.
+- Run on the low-cost model profile lane (`cheap`). Keep each summary short.
 - Never fabricate status and never surface secrets from issue bodies or configs.
 
 ## Output

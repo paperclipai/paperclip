@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -22,6 +21,12 @@ import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
+import {
+  resourceStatus,
+  stableJson,
+  stockHash,
+  type ManagedResourceStockStatus,
+} from "./managed-resource-drift.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -72,11 +77,7 @@ export interface BuiltInAgentProvisionResult {
 }
 
 export type BuiltInManagedResourceKind = "instructions" | "skill" | "routine";
-export type BuiltInManagedResourceStockStatus =
-  | "missing"
-  | "stock_current"
-  | "stock_update_available"
-  | "operator_modified";
+export type BuiltInManagedResourceStockStatus = ManagedResourceStockStatus;
 
 export interface BuiltInManagedResourceState {
   resourceKind: BuiltInManagedResourceKind;
@@ -196,13 +197,13 @@ const FALLBACK_SUMMARIZER_ROUTINE = [
 const FALLBACK_SUMMARIZER_SKILL = [
   "---",
   "name: summarize-status",
-  "description: Write a short, colloquial summary for a Paperclip summary slot: open with the one or two decisions the reader must make — or, when nothing needs deciding, what to review — each with a recommendation, close with one or two recent pieces of work and where they stand, streaming status as it works.",
+  "description: Write a short, colloquial summary for a Paperclip summary slot: open with the 1–3 specific, concrete actions the reader needs to take right now to unblock the work, then a brief plain-language status, streaming progress as it works.",
   "key: paperclipai/bundled/paperclip-operations/summarize-status",
   "---",
   "",
   "# Summarize status",
   "",
-  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — opening with a `**Decide:**` block of at most two bullets (each with the decision's context, a link, and an `**I suggest:**` recommendation), followed by plain prose on the one or two things that matter most, with at most three or four inline issue links and never a trailing link list — then write it back to the scope's summary slot. When nothing needs a decision, open with `**Nothing to decide right now.**` plus a `**Review:**` block (at most two bullets) triaging what is waiting on review — easy approves vs what needs the reader's eyes — each with a link and an `**I suggest:**` recommendation. End every summary with a `**Recent work:**` block: at most two bullets, one line each, naming a recent piece of work and where it stands. Post the first `STATUS:` line immediately from the first task in context and keep streaming `STATUS:` lines while working. Not a task list. Read-and-report only; never fabricate status.",
+  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary and write it back to the scope's summary slot. Open with the 1–3 specific, concrete, actionable items the reader should do right now to unblock the work — each saying what to do and why it's the thing holding up progress, with an inline link — then a brief plain-prose status of where things stand, written for a reader who has not memorized issue ids or threads. Read whatever issues you need to understand the state, then focus on what's most important; never a task list or a dump of issue links. If genuinely nothing needs the reader, say so plainly in one line and name the next thing worth watching. Post the first `STATUS:` line immediately from the first task in context, keep streaming `STATUS:` lines while working, and emit the final Markdown between the summary-draft sentinels before the slot write. Read-and-report only; never fabricate status.",
   "",
 ].join("\n");
 
@@ -495,40 +496,11 @@ function uniqueNonEmptyStrings(values: string[]) {
   return result;
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function stockHash(value: unknown) {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
-}
-
 function changedFileList(currentFiles: Record<string, string | null>, stockFiles: Record<string, string>) {
   const paths = new Set([...Object.keys(currentFiles), ...Object.keys(stockFiles)]);
   return [...paths]
     .filter((filePath) => (currentFiles[filePath] ?? null) !== (stockFiles[filePath] ?? null))
     .sort((left, right) => left.localeCompare(right));
-}
-
-function resourceStatus(input: {
-  resourceId: string | null;
-  currentHash: string | null;
-  bindingStockHash: string | null;
-  latestStockHash: string;
-}): BuiltInManagedResourceStockStatus {
-  if (!input.resourceId || !input.currentHash) return "missing";
-  if (input.currentHash === input.latestStockHash) return "stock_current";
-  if (input.bindingStockHash && input.currentHash === input.bindingStockHash) {
-    return "stock_update_available";
-  }
-  return "operator_modified";
 }
 
 function stockState(input: {
@@ -798,6 +770,26 @@ function hasProvisionSetupInput(input: BuiltInAgentProvisionInput) {
 function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
   const marker = readBuiltInAgentMarker(row.metadata);
   return marker?.key === key;
+}
+
+// Partial unique index (migration 0192) that guarantees one active built-in
+// agent per (company, marker key). A losing provisioning race raises this as a
+// 23505; provision()/ensure() catch it and re-resolve to the winning row.
+const BUILT_IN_AGENT_MARKER_UNIQUE_INDEX = "agents_company_built_in_agent_key_unique_idx";
+
+function isBuiltInAgentMarkerConflict(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+    const constraint = maybe.constraint ?? maybe.constraint_name;
+    if (maybe.code === "23505" && constraint === BUILT_IN_AGENT_MARKER_UNIQUE_INDEX) {
+      return true;
+    }
+    current = maybe.cause;
+  }
+  return false;
 }
 
 export function builtInAgentService(db: Db) {
@@ -1526,17 +1518,50 @@ export function builtInAgentService(db: Db) {
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id));
   }
 
-  async function findSingleAgent(companyId: string, definition: BuiltInAgentDefinition) {
-    const markedRows = await findMarkedRows(companyId, definition.key);
-    if (markedRows.length > 1) {
-      throw conflict(`Multiple built-in agents found for ${definition.key}`, {
-        code: "built_in_agent_duplicate_instance",
-        key: definition.key,
-        agentIds: markedRows.map((row) => row.id),
+  // Self-heal duplicate built-in agents. `findMarkedRows` already sorts oldest
+  // first, so the first row is authoritative: keep it, terminate the rest, and
+  // cancel each duplicate's orphan pending hire_agent approval. Idempotent, so
+  // concurrent callers converge on the same surviving row.
+  async function resolveDuplicateMarkedRows(
+    companyId: string,
+    definition: BuiltInAgentDefinition,
+    markedRows: Array<typeof agents.$inferSelect>,
+  ) {
+    const [keep, ...duplicates] = markedRows;
+    for (const duplicate of duplicates) {
+      const openApproval = await approvalSvc.findOpenHireApprovalForAgent(companyId, duplicate.id);
+      await agentSvc.terminate(duplicate.id);
+      if (openApproval) {
+        await approvalSvc.cancel(
+          openApproval.id,
+          `Cancelled: duplicate built-in ${definition.key} agent resolved during reconciliation.`,
+        );
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "built-in-agents",
+        action: "built_in_agent.duplicate_resolved",
+        entityType: "agent",
+        entityId: duplicate.id,
+        details: {
+          key: definition.key,
+          keptAgentId: keep!.id,
+          terminatedAgentId: duplicate.id,
+          cancelledApprovalId: openApproval?.id ?? null,
+        },
       });
     }
+    return keep!;
+  }
+
+  async function findSingleAgent(companyId: string, definition: BuiltInAgentDefinition) {
+    const markedRows = await findMarkedRows(companyId, definition.key);
     if (markedRows.length === 0) return null;
-    const agent = await agentSvc.getById(markedRows[0]!.id);
+    const survivor = markedRows.length > 1
+      ? await resolveDuplicateMarkedRows(companyId, definition, markedRows)
+      : markedRows[0]!;
+    const agent = await agentSvc.getById(survivor.id);
     return agent as Agent | null;
   }
 
@@ -1561,7 +1586,12 @@ export function builtInAgentService(db: Db) {
     return state(definition, await findSingleAgent(companyId, definition));
   }
 
-  async function ensure(companyId: string, key: string, input: BuiltInAgentProvisionInput = {}) {
+  async function ensure(
+    companyId: string,
+    key: string,
+    input: BuiltInAgentProvisionInput = {},
+    options: { isRaceRetry?: boolean } = {},
+  ) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
     const existing = await findSingleAgent(companyId, definition);
@@ -1619,20 +1649,31 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const created = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, resolvedInput),
-      status: definition.defaultStatus ?? "idle",
-      pauseReason: definition.defaultStatus === "paused"
-        ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
-        : null,
-      pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
-      reportsTo,
-      metadata: builtInMetadata(definition),
-      runtimeConfig: definition.defaultRuntimeConfig ?? {},
-      permissions: definition.defaultPermissions ?? {},
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
-    }, { allowBuiltInAgentMetadata: true }) as Agent;
+    let created: Agent;
+    try {
+      created = await agentSvc.create(companyId, {
+        ...definitionPatch(definition, resolvedInput),
+        status: definition.defaultStatus ?? "idle",
+        pauseReason: definition.defaultStatus === "paused"
+          ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
+          : null,
+        pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
+        reportsTo,
+        metadata: builtInMetadata(definition),
+        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        permissions: definition.defaultPermissions ?? {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      }, { allowBuiltInAgentMetadata: true }) as Agent;
+    } catch (error) {
+      // Lost the provisioning race: a concurrent writer inserted the row first
+      // and the partial unique index rejected ours. Re-run once; the winning
+      // row now exists, so we take the update path instead of inserting again.
+      if (!options.isRaceRetry && isBuiltInAgentMarkerConflict(error)) {
+        return ensure(companyId, key, input, { isRaceRetry: true });
+      }
+      throw error;
+    }
 
     await logActivity(db, {
       companyId,
@@ -1683,7 +1724,23 @@ export function builtInAgentService(db: Db) {
         };
       }
 
-      if (input.adapterType !== undefined || input.adapterConfig !== undefined) {
+      const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined;
+
+      // A built-in row that has never completed adapter setup (incomplete
+      // config, i.e. `needs_setup`) is still first-time configuration, not a
+      // reconfiguration of a live agent. Its existence was already sanctioned
+      // when the row was created — e.g. the auto-provisioned Reflection Coach
+      // hire approval resolves (`activatePendingApproval`) to an idle row whose
+      // adapterConfig is still empty. Completing that setup applies directly, as
+      // it does when board approval is not required, instead of dead-ending on a
+      // fresh board-approval requirement the operator can never satisfy.
+      if (providesAdapterSetup && !hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig)) {
+        return { state: await ensure(companyId, key, input), approval: null };
+      }
+
+      // Changing the adapter of an already-configured (`ready`/`paused`)
+      // built-in agent is a genuine reconfiguration and stays gated.
+      if (providesAdapterSetup) {
         throw conflict("Built-in agent adapter changes require board approval before they can be applied.", {
           code: "built_in_agent_reconfiguration_requires_approval",
           key: definition.key,
@@ -1697,16 +1754,34 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const pending = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, input),
-      status: "pending_approval",
-      reportsTo,
-      metadata: builtInMetadata(definition),
-      runtimeConfig: definition.defaultRuntimeConfig ?? {},
-      permissions: definition.defaultPermissions ?? {},
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
-    }, { allowBuiltInAgentMetadata: true }) as Agent;
+    let pending: Agent;
+    try {
+      pending = await agentSvc.create(companyId, {
+        ...definitionPatch(definition, input),
+        status: "pending_approval",
+        reportsTo,
+        metadata: builtInMetadata(definition),
+        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        permissions: definition.defaultPermissions ?? {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      }, { allowBuiltInAgentMetadata: true }) as Agent;
+    } catch (error) {
+      // Lost the provisioning race: a concurrent writer inserted the row (and
+      // its own hire approval) first, and the partial unique index rejected
+      // ours before we created a paired approval. Re-resolve to the winner and
+      // return its pending state + open approval instead of surfacing the 23505.
+      if (isBuiltInAgentMarkerConflict(error)) {
+        const winner = await findSingleAgent(companyId, definition);
+        if (winner) {
+          const winnerApproval = winner.status === "pending_approval"
+            ? await approvalSvc.findOpenHireApprovalForAgent(companyId, winner.id)
+            : null;
+          return { state: await state(definition, winner), approval: winnerApproval as Approval | null };
+        }
+      }
+      throw error;
+    }
 
     const approval = await approvalSvc.create(companyId, {
       type: "hire_agent",
@@ -1890,11 +1965,22 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
   let autoEnsured = 0;
   let pendingApprovals = 0;
   let defaultGrantsEnsured = 0;
+  // Isolate per-company failures so one bad company (e.g. an unresolvable data
+  // problem) can no longer abort reconciliation for every company after it.
+  let companyFailures = 0;
   for (const company of companyRows) {
-    const result = await svc.autoProvisionBundledAgents(company.id);
-    autoEnsured += result.autoEnsured;
-    pendingApprovals += result.pendingApprovals;
-    defaultGrantsEnsured += result.defaultGrantsEnsured;
+    try {
+      const result = await svc.autoProvisionBundledAgents(company.id);
+      autoEnsured += result.autoEnsured;
+      pendingApprovals += result.pendingApprovals;
+      defaultGrantsEnsured += result.defaultGrantsEnsured;
+    } catch (err) {
+      companyFailures += 1;
+      console.error(
+        `built-in agent auto-provisioning failed for company ${company.id}; continuing with remaining companies`,
+        err,
+      );
+    }
   }
   const rows = await db
     .select({
@@ -1924,9 +2010,17 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
       continue;
     }
     seen.add(instanceKey);
-    await svc.reconcileDefinitionDefaults(row.companyId, marker.key);
-    reconciled += 1;
+    try {
+      await svc.reconcileDefinitionDefaults(row.companyId, marker.key);
+      reconciled += 1;
+    } catch (err) {
+      companyFailures += 1;
+      console.error(
+        `built-in agent default reconciliation failed for company ${row.companyId} key ${marker.key}; continuing`,
+        err,
+      );
+    }
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured };
+  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured, companyFailures };
 }

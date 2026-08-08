@@ -17,10 +17,16 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
+
+// React 19.2 emits an unbounded stream of performance.measure() entries for its
+// DevTools performance tracks and never clears them; on a long-lived tab they
+// accumulate into millions of native objects (GBs). Reap them periodically.
+startPerfMeasureReaper();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

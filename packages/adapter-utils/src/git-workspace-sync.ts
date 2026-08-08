@@ -110,6 +110,67 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
+// scp-like ssh remote (`user@host:path`). The syntax has no password slot, so
+// it cannot embed a secret. Conservative shape: exactly one `@`, no colon in
+// the user segment (a colon there could smuggle credential-looking material),
+// no scheme separator (a `://` form parses as a URL and never reaches this).
+const SCP_LIKE_REMOTE_PATTERN = /^[^@:/\s]+@[^@:/\s]+:\S+$/;
+
+/**
+ * Reduce a git remote URL to a credential-free form before it is copied into a
+ * transported workspace, or null when the URL must not be carried at all.
+ * Allowlist, fail closed: only shapes whose credential surface is fully known
+ * are kept — http(s) with userinfo/query/fragment stripped (tokens ride in any
+ * of those), ssh/git schemes with password/query/fragment stripped, and
+ * scp-like `user@host:path` (no password slot exists in that syntax). Every
+ * other form — filesystem paths, unknown schemes, unparseable strings — is
+ * dropped rather than risk persisting an embedded secret in the execution
+ * host's git config.
+ */
+export function sanitizeGitRemoteUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+    if (parsed.protocol === "ssh:" || parsed.protocol === "git:" || parsed.protocol === "git+ssh:") {
+      // The username (conventionally `git`) is addressing, not a secret; a
+      // password or query string can be, so those are stripped.
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return SCP_LIKE_REMOTE_PATTERN.test(trimmed) ? trimmed : null;
+  }
+}
+
+/**
+ * The workspace's `origin` remote URL with credentials scrubbed, or null when
+ * the workspace has no `origin` remote (or is not a git repository).
+ */
+export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["remote", "get-url", "origin"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    return sanitizeGitRemoteUrl(result.stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -120,6 +181,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
+    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
@@ -128,6 +190,19 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 10_000,
       maxBuffer: 64 * 1024,
     });
+    if (originUrl) {
+      // The clone is what lands in the sandbox. Without `origin`, the branch
+      // there reads as an unpublishable root snapshot even though its head is a
+      // commit the upstream remote already holds — so fetch (to reconnect
+      // ancestry) and push (to publish the branch; the shallow boundary commit
+      // is already on the remote, so the pack closes) are both mechanically
+      // possible once the remote is carried over. Best-effort: a failure to
+      // record the remote must not fail the transport.
+      await runLocalGit(cloneDir, ["remote", "add", "origin", originUrl], {
+        timeout: 10_000,
+        maxBuffer: 16 * 1024,
+      }).catch(() => undefined);
+    }
     await runLocalGit(cloneDir, ["fetch", "--depth=1", input.localDir, tempRef], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
@@ -197,6 +272,24 @@ export async function fetchGitBundleIntoLocalRef(input: {
   return importedHead.stdout.trim();
 }
 
+/** Substrings git emits when a bundle names a prerequisite the importer lacks. */
+const GIT_MISSING_PREREQUISITE_MARKERS = [
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+  "revision walk setup failed",
+];
+
+/**
+ * True when a bundle import failed because the host repository does not hold a
+ * commit the (delta) bundle assumes as a prerequisite. Such a failure is
+ * recoverable by re-exporting a full, self-contained bundle from the still-live
+ * sandbox rather than discarding the run.
+ */
+export function isMissingGitPrerequisiteError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return GIT_MISSING_PREREQUISITE_MARKERS.some((marker) => message.includes(marker));
+}
+
 export function buildRemoteGitDeltaBundleScript(input: {
   remoteDir: string;
   baseSha: string;
@@ -205,6 +298,12 @@ export function buildRemoteGitDeltaBundleScript(input: {
   statusPath?: string;
   catBundle?: boolean;
   cleanupBundle?: boolean;
+  /**
+   * Skip the delta boundary entirely and always emit a full, self-contained
+   * bundle (no prerequisites). Used as the recovery path when a delta import
+   * failed because the host lacked the bundle's prerequisite.
+   */
+  forceFullBundle?: boolean;
 }): string {
   const remoteDir = shellQuote(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
@@ -222,11 +321,44 @@ export function buildRemoteGitDeltaBundleScript(input: {
     input.cleanupBundle ? "trap cleanup EXIT" : "",
     `mkdir -p ${shellQuote(path.posix.dirname(input.bundlePath))}`,
     `rm -f ${bundlePath}`,
-    `git -C ${remoteDir} cat-file -e ${baseSha}^{commit}`,
-    `commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not ${baseSha})`,
+    // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
+    // baseSha as a prerequisite the importer (host) must already hold. That
+    // assumption breaks in two real cases, and then `git fetch` on the host
+    // hard-fails with "did not send all necessary objects" and the run's work
+    // is lost:
+    //   1. The sandbox HEAD has diverged from baseSha (e.g. a local-only branch
+    //      that forked from an older commit) — the host may still hold baseSha,
+    //      but a repo whose history is inconsistent cannot satisfy the walk.
+    //   2. The host workspace no longer holds baseSha at import time (a shared
+    //      workspace that was reset/re-realized between export and import).
+    // Bundle relative to the merge-base of baseSha and HEAD instead: that
+    // merge-base is an ancestor of baseSha, so any host that holds baseSha (or
+    // an ancestor of it) can satisfy the prerequisite, while the bundle stays a
+    // delta. When baseSha is absent from the sandbox — or no merge-base exists,
+    // or the caller forces it after a delta import failed on a missing
+    // prerequisite — fall back to a full, self-contained bundle with no
+    // prerequisites.
+    ...(input.forceFullBundle
+      ? [`bundle_base=""`]
+      : [
+        `if git -C ${remoteDir} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
+        `  bundle_base=$(git -C ${remoteDir} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
+        "else",
+        `  bundle_base=""`,
+        "fi",
+      ]),
+    `if [ -n "$bundle_base" ]; then`,
+    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
+    "else",
+    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD)`,
+    "fi",
     'if [ "$commit_count" -gt 0 ]; then',
     `  git -C ${remoteDir} update-ref ${exportRef} HEAD`,
-    `  git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} --not ${baseSha} >/dev/null`,
+    `  if [ -n "$bundle_base" ]; then`,
+    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} --not "$bundle_base" >/dev/null`,
+    "  else",
+    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} >/dev/null`,
+    "  fi",
     "else",
     `  : > ${bundlePath}`,
     "fi",

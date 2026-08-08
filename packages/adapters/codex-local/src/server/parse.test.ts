@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -33,6 +34,8 @@ describe("parseCodexJsonl", () => {
       },
       usageBasis: "per_run",
       errorMessage: "resume failed",
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
     });
   });
 
@@ -67,7 +70,77 @@ describe("parseCodexJsonl", () => {
       },
       usageBasis: "per_run",
       errorMessage: null,
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
     });
+  });
+});
+
+describe("isCodexHarnessCrash", () => {
+  const crashedMidTurnStream = [
+    JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Checking out the issue now." },
+    }),
+    JSON.stringify({ type: "item.started", item: { type: "command_execution" } }),
+  ].join("\n");
+
+  it("classifies a nonzero exit with no protocol-terminal event as a harness crash", () => {
+    const parsed = parseCodexJsonl(crashedMidTurnStream);
+    expect(parsed.sawProtocolEvent).toBe(true);
+    expect(parsed.sawProtocolTerminalEvent).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: 1, ...parsed })).toBe(true);
+  });
+
+  it("does not classify runs whose turn reached a protocol-terminal event", () => {
+    const failedInProtocol = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({ type: "turn.failed", error: { message: "the model rejected the request" } }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...failedInProtocol })).toBe(false);
+
+    const completedThenFailedExit = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4 },
+        }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...completedThenFailedExit })).toBe(false);
+  });
+
+  it("does not classify successful exits or streams that never spoke the protocol", () => {
+    expect(isCodexHarnessCrash({ exitCode: 0, ...parseCodexJsonl(crashedMidTurnStream) })).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: null, ...parseCodexJsonl(crashedMidTurnStream) })).toBe(false);
+
+    const neverStarted = parseCodexJsonl("error: unexpected argument '--bogus-flag'\n");
+    expect(neverStarted.sawProtocolEvent).toBe(false);
+    expect(isCodexHarnessCrash({ exitCode: 2, ...neverStarted })).toBe(false);
+  });
+
+  it("stays structural: agent output discussing network errors does not affect classification", () => {
+    const parsed = parseCodexJsonl(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: "The deploy failed with connection reset by peer; investigating." },
+        }),
+        JSON.stringify({ type: "turn.failed", error: { message: "agent gave up" } }),
+      ].join("\n"),
+    );
+    expect(isCodexHarnessCrash({ exitCode: 1, ...parsed })).toBe(false);
+    expect(
+      isCodexTransientUpstreamError({
+        stdout: "connection reset by peer while running the deploy",
+        errorMessage: "agent gave up",
+      }),
+    ).toBe(false);
   });
 });
 

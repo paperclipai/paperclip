@@ -698,6 +698,68 @@ describe("codex execute", () => {
     }
   });
 
+  it("classifies mid-turn harness crashes as retryable transient upstream errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-harness-crash-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    // Faithful to the observed MCP transport crash: the protocol stream starts,
+    // then the process dies with only a harness tracing line on stderr — no
+    // protocol-terminal event (error / turn.failed / turn.completed).
+    const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-crash-1" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Starting the task." } }));
+console.error("2026-07-23T22:58:56.007042Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some(\\"text/plain\\"))");
+process.exit(1);
+`;
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+
+    try {
+      const result = await execute({
+        runId: "run-harness-crash",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_harness_crash");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toContain("Transport channel closed");
+      expect(result.sessionId).toBe("thread-crash-1");
+      expect(result.clearSession).toBe(false);
+      expect((result.resultJson as Record<string, unknown>).errorFamily).toBe("transient_upstream");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("persists retry-not-before metadata for codex provider quota failures", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-usage-limit-"));
     const workspace = path.join(root, "workspace");
