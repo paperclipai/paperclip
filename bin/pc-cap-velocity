@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import urllib.parse
+import urllib.request
+from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
+
+def parse_dt(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value > 1_000_000_000_000 else value
+        return datetime.fromtimestamp(seconds, timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.replace(".", "", 1).isdigit():
+        return parse_dt(float(text))
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+def business_days(start, end):
+    if end < start:
+        return None
+    total = 0.0
+    cursor = start
+    one_day = timedelta(days=1)
+    while cursor.date() <= end.date():
+        day_start = datetime.combine(cursor.date(), time.min, timezone.utc)
+        day_end = day_start + one_day
+        if day_start.weekday() < 5:
+            total += max(0.0, (min(end, day_end) - max(start, day_start)).total_seconds() / 86400)
+        cursor = day_end
+    return round(total, 6)
+
+def pick(record, *names):
+    for name in names:
+        if name in record:
+            return record[name]
+    return None
+
+def percentile(values, p):
+    if not values:
+        return None
+    ordered = sorted(values)
+    pos = (len(ordered) - 1) * p
+    low = int(pos)
+    high = min(low + 1, len(ordered) - 1)
+    value = ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
+    return round(value, 3)
+
+def summarize(records, company_id, days=14, now=None):
+    now_dt = parse_dt(now) or datetime.now(timezone.utc)
+    cutoff = now_dt - timedelta(days=days)
+    durations = []
+    for raw in records:
+        record = dict(raw)
+        status = pick(record, "status")
+        if status and str(status).lower() != "done":
+            continue
+        created = parse_dt(pick(record, "created_at", "createdAt", "issue_created_at"))
+        done = parse_dt(pick(record, "completed_at", "completedAt", "done_at", "updated_at", "updatedAt"))
+        if not created or not done or done < cutoff:
+            continue
+        duration = business_days(created, done)
+        if duration is not None:
+            durations.append(duration)
+    return {
+        "company_id": company_id,
+        "p50": percentile(durations, 0.50),
+        "p75": percentile(durations, 0.75),
+        "p95": percentile(durations, 0.95),
+        "n_issues": len(durations),
+        "window_days": days,
+    }
+
+def quote_ident(name):
+    return '"' + name.replace('"', '""') + '"'
+
+def table_columns(conn, table):
+    rows = conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()
+    return [row[1] for row in rows]
+
+def load_sqlite_records(path, company_id):
+    if not path.exists():
+        return None
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "issue_events" not in tables:
+            return None
+        cols = table_columns(conn, "issue_events")
+        colset = set(cols)
+        done_col = next((c for c in ("completed_at", "completedAt", "done_at", "status_done_at") if c in colset), None)
+        where, params = "", []
+        if company_id and "company_id" in colset:
+            where, params = " WHERE company_id = ?", [company_id]
+        if "created_at" in colset and done_col:
+            rows = conn.execute(f"SELECT * FROM issue_events{where}", params).fetchall()
+            return [dict(row) for row in rows]
+        ts_col = next((c for c in ("occurred_at", "created_at", "timestamp", "ts") if c in colset), None)
+        issue_col = next((c for c in ("issue_id", "id") if c in colset), None)
+        status_cols = [c for c in ("status", "to_status", "new_status", "status_to") if c in colset]
+        if not ts_col or not issue_col or not status_cols:
+            return None
+        done_cond = " OR ".join(f"LOWER(CAST({quote_ident(c)} AS TEXT)) = 'done'" for c in status_cols)
+        group_cols = [issue_col] + (["company_id"] if "company_id" in colset else [])
+        select_company = "company_id" if "company_id" in colset else "NULL AS company_id"
+        sql = f"""
+            SELECT {select_company}, {quote_ident(issue_col)} AS issue_id,
+                   MIN({quote_ident(ts_col)}) AS created_at,
+                   MIN(CASE WHEN {done_cond} THEN {quote_ident(ts_col)} END) AS done_at,
+                   'done' AS status
+            FROM issue_events{where}
+            GROUP BY {', '.join(quote_ident(c) for c in group_cols)}
+            HAVING done_at IS NOT NULL
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+def read_context(path, profile_name):
+    context_path = Path(path or os.environ.get("PAPERCLIP_CONTEXT", "~/.paperclip/context.json")).expanduser()
+    if not context_path.exists():
+        return {}
+    with context_path.open() as fh:
+        data = json.load(fh)
+    profiles = data.get("profiles") or {}
+    return profiles.get(profile_name or data.get("currentProfile") or "default") or {}
+
+def fetch_api_records(api_base, company_id, api_key):
+    if not company_id:
+        raise SystemExit("Missing company id. Pass --company-id or set PAPERCLIP_COMPANY_ID.")
+    if not api_base:
+        raise SystemExit("Missing API base. Pass --api-base or set PAPERCLIP_API_URL.")
+    records, offset, limit = [], 0, 1000
+    while True:
+        query = urllib.parse.urlencode({"status": "done", "limit": limit, "offset": offset})
+        url = f"{api_base.rstrip('/')}/api/companies/{urllib.parse.quote(company_id)}/issues?{query}"
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        if api_key:
+            request.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            page = json.load(response)
+        if not isinstance(page, list):
+            raise SystemExit("Paperclip issues API returned a non-list response.")
+        records.extend(page)
+        if len(page) < limit:
+            return records
+        offset += limit
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Report feature_to_shippable_days for Paperclip issues.")
+    parser.add_argument("--json", action="store_true", help="Output JSON; accepted for CLI consistency.")
+    parser.add_argument("--days", type=int, default=14)
+    parser.add_argument("--company-id")
+    parser.add_argument("--api-base")
+    parser.add_argument("--api-key")
+    parser.add_argument("--context")
+    parser.add_argument("--profile")
+    parser.add_argument("--metrics-db", default=os.environ.get("PAPERCLIP_METRICS_SQLITE", "~/.paperclip/metrics.sqlite"))
+    args = parser.parse_args(argv)
+    if args.days <= 0:
+        raise SystemExit("--days must be a positive integer.")
+    profile = read_context(args.context, args.profile)
+    company_id = args.company_id or os.environ.get("PAPERCLIP_COMPANY_ID") or profile.get("companyId")
+    api_base = args.api_base or os.environ.get("PAPERCLIP_API_URL") or profile.get("apiBase") or "http://127.0.0.1:3100"
+    key_env = profile.get("apiKeyEnvVarName")
+    api_key = args.api_key or os.environ.get("PAPERCLIP_API_KEY") or (os.environ.get(key_env) if key_env else None)
+    records = load_sqlite_records(Path(args.metrics_db).expanduser(), company_id)
+    if records is None:
+        records = fetch_api_records(api_base, company_id, api_key)
+    print(json.dumps(summarize(records, company_id, args.days), separators=(",", ":")))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
