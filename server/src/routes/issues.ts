@@ -135,6 +135,7 @@ import {
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { postIssueCheckpointDigest } from "../services/issue-checkpoint-digest.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -9546,59 +9547,14 @@ export function issueRoutes(
       // recorded state as a compact checkpoint so its first run reads a digest, not the
       // whole thread. Best-effort: a reassign must never fail because the digest did.
       try {
-        const [lastGoodRun] = await db
-          .select({
-            id: heartbeatRuns.id,
-            resultJson: heartbeatRuns.resultJson,
-            nextAction: heartbeatRuns.nextAction,
-            finishedAt: heartbeatRuns.finishedAt,
-          })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, existing.companyId),
-              eq(heartbeatRuns.agentId, effectivePrimaryAgentId),
-              eq(heartbeatRuns.status, "succeeded"),
-              sql`(
-                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${existing.id}
-                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${existing.id}
-              )`,
-            ),
-          )
-          .orderBy(desc(heartbeatRuns.finishedAt))
-          .limit(1);
-        const digestClip = (value: string, max: number) =>
-          value.length > max ? `${value.slice(0, max)}…` : value;
-        const lastResult =
-          typeof lastGoodRun?.resultJson === "object" && lastGoodRun?.resultJson !== null
-            ? (lastGoodRun.resultJson as Record<string, unknown>)
-            : {};
-        const lastSummary = [lastResult.summary, lastResult.result, lastResult.message].find(
-          (value): value is string => typeof value === "string" && value.trim().length > 0,
-        );
-        const lastNextAction =
-          typeof lastGoodRun?.nextAction === "string" && lastGoodRun.nextAction.trim().length > 0
-            ? lastGoodRun.nextAction.trim()
-            : null;
-        if (lastSummary || lastNextAction) {
-          const digestLines = [
-            "## Takeover checkpoint (auto-generated)",
-            "",
-            `Previous assignee's last successful run${lastGoodRun?.finishedAt ? ` (${lastGoodRun.finishedAt.toISOString()})` : ""}:`,
-            ...(lastSummary ? ["", digestClip(lastSummary.trim(), 1200)] : []),
-            ...(lastNextAction ? ["", `**Recorded next action:** ${digestClip(lastNextAction, 400)}`] : []),
-            "",
-            "Resume from this checkpoint. Do not re-read the full issue thread — read the",
-            "issue description's acceptance section and any comment newer than this one,",
-            "then continue the work.",
-          ];
-          await svc.addComment(
-            existing.id,
-            digestLines.join("\n"),
-            { runId: actorRunId ?? null },
-            { authorType: "system" },
-          );
-        }
+        await postIssueCheckpointDigest(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          agentId: effectivePrimaryAgentId,
+          kind: "takeover",
+          runId: actorRunId ?? null,
+          contextLine: `Fallback reassigned → \`${targetAgentId}\` (reason: ${String(req.body.reason ?? "unspecified")}).`,
+        });
       } catch (err) {
         logger.warn(
           { err, issueId: existing.id, fromAgentId: effectivePrimaryAgentId },

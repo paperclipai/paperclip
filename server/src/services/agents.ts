@@ -36,6 +36,7 @@ import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
+import { postParkCheckpointsForAgent } from "./issue-checkpoint-digest.js";
 
 const FALLBACK_LIMIT_REASON_RE =
   /you(?:'|’)ve hit your (session|weekly|daily|5-?hour|usage) limit/i;
@@ -553,8 +554,10 @@ export function agentService(db: Db) {
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const transitioningToPaused =
+      existing.status !== "paused" && normalizedPatch.status === "paused";
 
-    return db.transaction(async (tx) => {
+    const normalizedUpdated = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const updated = await tx
         .update(agents)
@@ -568,18 +571,18 @@ export function agentService(db: Db) {
         await syncAgentSecretBindings(updated, txDb);
       }
 
-      const normalizedUpdated = await agentService(txDb).getById(updated.id);
-      if (!normalizedUpdated) {
+      const next = await agentService(txDb).getById(updated.id);
+      if (!next) {
         throw notFound("Agent not found");
       }
 
       if (shouldRecordRevision && beforeConfig) {
-        const afterConfig = buildConfigSnapshot(normalizedUpdated);
+        const afterConfig = buildConfigSnapshot(next);
         const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
         if (changedKeys.length > 0) {
           await tx.insert(agentConfigRevisions).values({
-            companyId: normalizedUpdated.companyId,
-            agentId: normalizedUpdated.id,
+            companyId: next.companyId,
+            agentId: next.id,
             createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
             createdByUserId: options?.recordRevision?.createdByUserId ?? null,
             source: options?.recordRevision?.source ?? "patch",
@@ -591,8 +594,27 @@ export function agentService(db: Db) {
         }
       }
 
-      return normalizedUpdated;
+      return next;
     });
+
+    // TSMC-20213: session-limit-watch and other PATCH paths park via update(status=paused).
+    // Stamp assigned issues so any future lane resumes warm. Best-effort.
+    if (normalizedUpdated && transitioningToPaused) {
+      try {
+        await postParkCheckpointsForAgent(db, {
+          companyId: normalizedUpdated.companyId,
+          agentId: normalizedUpdated.id,
+          pauseReason:
+            typeof normalizedUpdated.pauseReason === "string"
+              ? normalizedUpdated.pauseReason
+              : "paused",
+        });
+      } catch {
+        // Park mutation must not fail because digest posting failed.
+      }
+    }
+
+    return normalizedUpdated;
   }
 
   return {
@@ -661,6 +683,7 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
+      const alreadyPaused = existing.status === "paused";
 
       const updated = await db
         .update(agents)
@@ -674,7 +697,20 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      const paused = updated ? await getById(updated.id) : null;
+      // TSMC-20213 checkpoint-on-park: only on transition into paused.
+      if (paused && !alreadyPaused) {
+        try {
+          await postParkCheckpointsForAgent(db, {
+            companyId: paused.companyId,
+            agentId: paused.id,
+            pauseReason: reason,
+          });
+        } catch {
+          // Best-effort.
+        }
+      }
+      return paused;
     },
 
     resume: async (id: string) => {

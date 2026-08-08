@@ -56,6 +56,18 @@ export interface PortfolioRunsRow {
   priced_cost_event_count: number;
   /** Token-bearing run rows whose provider price was not reported. */
   unpriced_cost_event_count: number;
+  /**
+   * Runs that started with no prior session id (cold start). TSMC-20213 —
+   * visible fresh-vs-reused ratio; target fleet-wide fresh_session_ratio < 0.30.
+   */
+  runs_fresh_session: number;
+  /** Runs that reused a prior adapter/task session. */
+  runs_reused_session: number;
+  /**
+   * runs_fresh_session / (runs_fresh_session + runs_reused_session), or 0 when
+   * neither flag was recorded in the window.
+   */
+  fresh_session_ratio: number;
 }
 
 export interface PortfolioDigestCompanyRow {
@@ -256,7 +268,14 @@ export function portfolioService(db: Db) {
               ),
               0
             )::int AS seconds_on_task,
-            COUNT(DISTINCT hr.context_snapshot ->> 'issueId')::int AS distinct_issues
+            COUNT(DISTINCT hr.context_snapshot ->> 'issueId')::int AS distinct_issues,
+            COUNT(DISTINCT hr.id) FILTER (
+              WHERE COALESCE(hr.usage_json ->> 'freshSession', 'false') IN ('true', 't', '1')
+            )::int AS runs_fresh_session,
+            COUNT(DISTINCT hr.id) FILTER (
+              WHERE COALESCE(hr.usage_json ->> 'sessionReused', 'false') IN ('true', 't', '1')
+                 OR COALESCE(hr.usage_json ->> 'taskSessionReused', 'false') IN ('true', 't', '1')
+            )::int AS runs_reused_session
           FROM heartbeat_runs hr
           WHERE
             hr.company_id IN (${companyIdsParam})
@@ -293,7 +312,20 @@ export function portfolioService(db: Db) {
           END AS heartbeats_avg,
           COALESCE(c.cost_cents, 0)::bigint AS cost_cents,
           COALESCE(c.priced_cost_event_count, 0)::int AS priced_cost_event_count,
-          COALESCE(c.unpriced_cost_event_count, 0)::int AS unpriced_cost_event_count
+          COALESCE(c.unpriced_cost_event_count, 0)::int AS unpriced_cost_event_count,
+          COALESCE(r.runs_fresh_session, 0)::int AS runs_fresh_session,
+          COALESCE(r.runs_reused_session, 0)::int AS runs_reused_session,
+          CASE
+            WHEN COALESCE(r.runs_fresh_session, 0) + COALESCE(r.runs_reused_session, 0) > 0
+              THEN ROUND(
+                (
+                  r.runs_fresh_session::numeric
+                  / (r.runs_fresh_session::numeric + r.runs_reused_session::numeric)
+                ),
+                4
+              )::double precision
+            ELSE 0::double precision
+          END AS fresh_session_ratio
         FROM run_aggregated r
         FULL OUTER JOIN cost_aggregated c
           ON c.company_id = r.company_id AND c.agent_id = r.agent_id
@@ -314,6 +346,9 @@ export function portfolioService(db: Db) {
         cost_cents: Number(row.cost_cents ?? 0),
         priced_cost_event_count: Number(row.priced_cost_event_count ?? 0),
         unpriced_cost_event_count: Number(row.unpriced_cost_event_count ?? 0),
+        runs_fresh_session: Number(row.runs_fresh_session ?? 0),
+        runs_reused_session: Number(row.runs_reused_session ?? 0),
+        fresh_session_ratio: Number(row.fresh_session_ratio ?? 0),
       })) satisfies PortfolioRunsRow[];
     },
 

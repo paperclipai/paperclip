@@ -26,6 +26,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { postParkCheckpointsForAgent } from "./issue-checkpoint-digest.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -249,7 +250,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
-      await db
+      const pausedRows = await db
         .update(agents)
         .set({
           status: "paused",
@@ -257,7 +258,21 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])))
+        .returning({ id: agents.id, companyId: agents.companyId });
+      // TSMC-20213: budget hard-stop parks lanes without agents.pause — stamp digests here.
+      for (const row of pausedRows) {
+        try {
+          await postParkCheckpointsForAgent(db, {
+            companyId: row.companyId,
+            agentId: row.id,
+            pauseReason: "budget",
+            now,
+          });
+        } catch {
+          // Best-effort.
+        }
+      }
       return;
     }
 

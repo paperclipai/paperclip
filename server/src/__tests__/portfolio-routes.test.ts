@@ -144,6 +144,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         startedAt: new Date("2026-06-10T10:00:00.000Z"),
         finishedAt: new Date("2026-06-10T10:02:00.000Z"),
         contextSnapshot: { issueId: issueA },
+        usageJson: { freshSession: true, sessionReused: false },
       },
       {
         id: runB,
@@ -154,6 +155,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
         startedAt: new Date("2026-06-11T10:00:00.000Z"),
         finishedAt: new Date("2026-06-11T10:03:00.000Z"),
         contextSnapshot: { issueId: issueB },
+        usageJson: { freshSession: false, sessionReused: true },
       },
       {
         id: runInFlight,
@@ -228,6 +230,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         "cost_cents",
         "priced_cost_event_count",
         "unpriced_cost_event_count",
+        "runs_fresh_session",
+        "runs_reused_session",
+        "fresh_session_ratio",
       ],
     });
     expect(res.body.rows).toEqual([
@@ -244,6 +249,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         cost_cents: 0,
         priced_cost_event_count: 0,
         unpriced_cost_event_count: 0,
+        runs_fresh_session: 1,
+        runs_reused_session: 1,
+        fresh_session_ratio: 0.5,
       },
     ]);
     expect(Object.keys(res.body.rows[0] ?? {})).toEqual([
@@ -259,6 +267,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "cost_cents",
       "priced_cost_event_count",
       "unpriced_cost_event_count",
+      "runs_fresh_session",
+      "runs_reused_session",
+      "fresh_session_ratio",
     ]);
     const row = res.body.rows[0];
     expect(row.runs_total).toBe(row.runs_succeeded + row.runs_failed + row.runs_other);
