@@ -374,6 +374,105 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("lists document annotations with default status and includeComments query params", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "thread-1" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListDocumentAnnotations");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations?status=all&includeComments=true",
+    );
+  });
+
+  it("honors status and includeComments args when listing document annotations", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "thread-1", status: "open" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListDocumentAnnotations");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      status: "open",
+      includeComments: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations?status=open&includeComments=false",
+    );
+  });
+
+  it("gets a document annotation thread by id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "thread-1", comments: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetDocumentAnnotation");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      threadId: "44444444-4444-4444-4444-444444444444",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations/44444444-4444-4444-4444-444444444444",
+    );
+  });
+
+  it("appends includeAnnotationComments query param when getting a document", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ key: "plan", body: "# Plan" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetDocument");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      includeAnnotationComments: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan?includeAnnotationComments=true",
+    );
+  });
+
+  it("omits query string when getting a document without includeAnnotationComments", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ key: "plan", body: "# Plan" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetDocument");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan",
+    );
+  });
+
   it("rejects invalid generic request paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
 
