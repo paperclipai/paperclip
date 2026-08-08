@@ -1,0 +1,41 @@
+name: starter-kit-ci
+
+on:
+  push:
+    paths:
+      - "packages/starter-kit/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "packages/starter-kit/**"
+      - ".github/workflows/ci.yml"
+
+jobs:
+  kit:
+    name: Starter kit (typecheck + test + eval)
+    runs-on: ubuntu-latest
+    # The starter kit runs fully offline with no credentials, so this job needs
+    # no secrets to go green.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Typecheck starter kit
+        run: pnpm --filter @chimeric/starter-kit typecheck
+
+      - name: Unit + e2e tests (offline)
+        run: pnpm --filter @chimeric/starter-kit test
+
+      - name: Eval / benchmark gate
+        run: pnpm --filter @chimeric/starter-kit eval

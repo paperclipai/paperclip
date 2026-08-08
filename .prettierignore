@@ -1,0 +1,13 @@
+# Dependencies and build output
+node_modules
+**/dist
+**/build
+**/coverage
+
+# Generated files
+pnpm-lock.yaml
+**/*.min.js
+
+# Docs and non-source
+**/*.md
+CHANGELOG.md
