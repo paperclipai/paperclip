@@ -64,7 +64,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the

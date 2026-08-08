@@ -1,17 +1,21 @@
 import { defineConfig } from "vitest/config";
+import {
+  EMBEDDED_POSTGRES_HOOK_TIMEOUT_MS,
+  EMBEDDED_POSTGRES_TEARDOWN_TIMEOUT_MS,
+} from "../scripts/embedded-postgres-test-budget.mjs";
 
 export default defineConfig({
   test: {
     environment: "node",
     // Each server suite boots + tears down its own embedded Postgres in
-    // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) the
-    // graceful shutdown can occasionally cross vitest's default 10s hookTimeout,
-    // producing flaky "Hook timed out in 10000ms" afterAll failures on CI. Give
-    // the boot/teardown hooks generous headroom; 30s is far above the observed
-    // worst-case teardown yet still catches a genuinely hung hook. teardownTimeout
-    // mirrors it for the same reason.
-    hookTimeout: 30000,
-    teardownTimeout: 30000,
+    // beforeAll/afterAll. The boot (initdb + start + applyPendingMigrations)
+    // costs ~92s on developer hardware, and the graceful shutdown under the
+    // loaded serial shard (maxWorkers=1) can also run long. The budget is
+    // centralized in scripts/embedded-postgres-test-budget.mjs (RBR-918) so it
+    // cannot drift per-file: inline hook budgets win over --hookTimeout, so a
+    // per-file value could not be corrected from CI configuration.
+    hookTimeout: EMBEDDED_POSTGRES_HOOK_TIMEOUT_MS,
+    teardownTimeout: EMBEDDED_POSTGRES_TEARDOWN_TIMEOUT_MS,
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,

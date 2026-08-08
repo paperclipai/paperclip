@@ -33,7 +33,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-lock-release-on-reassignment-");
     db = createDb(tempDb.connectionString);
-  }, 60_000);
+  });
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);

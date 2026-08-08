@@ -51,7 +51,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     db = createDb(started.connectionString);
     svc = feedbackService(db);
     tempDb = started;
-  }, 120_000);
+  });
 
   afterEach(async () => {
     await db.delete(feedbackExports);

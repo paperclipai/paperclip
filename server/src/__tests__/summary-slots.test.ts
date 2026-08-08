@@ -42,7 +42,7 @@ describeEmbeddedPostgres("summary slot service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-summary-slots-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(summarySlots);

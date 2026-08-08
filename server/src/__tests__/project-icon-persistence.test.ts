@@ -27,7 +27,7 @@ describeEmbeddedPostgres("project icon persistence", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-project-icon-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(projectsTable);

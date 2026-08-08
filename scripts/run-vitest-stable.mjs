@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
+import { findZeroExecutedSuites } from "./check-executed-test-suites.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -267,11 +268,29 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
-    cwd: repoRoot,
-    env,
-    stdio: "inherit",
-  });
+  // RBR-918: emit a machine-readable report alongside the human reporter so the
+  // zero-executed-suite guard can inspect what actually ran. Without it, a file
+  // whose tests all report `skipped` — because the embedded-Postgres support
+  // probe failed and `describeEmbeddedPostgres` fell back to `describe.skip` —
+  // still exits 0 and is indistinguishable from a passing suite.
+  const reportPath = path.join(testRoot, "vitest-report.json");
+  const result = spawnSync(
+    "pnpm",
+    [
+      "exec",
+      "vitest",
+      "run",
+      ...args,
+      "--reporter=default",
+      "--reporter=json",
+      `--outputFile.json=${reportPath}`,
+    ],
+    {
+      cwd: repoRoot,
+      env,
+      stdio: "inherit",
+    },
+  );
   if (result.error) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
     process.exit(1);
@@ -279,7 +298,52 @@ function runVitest(args, label) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+  assertSuitesExecuted(reportPath, label);
 }
+
+// RBR-918 AC3: fail the run when a suite reports zero executed tests. A
+// permanently-green suite that asserts nothing is worse than no suite at all.
+function assertSuitesExecuted(reportPath, label) {
+  let report;
+  try {
+    report = JSON.parse(readFileSync(reportPath, "utf8"));
+  } catch (error) {
+    console.error(
+      `[test:run] Could not read the vitest JSON report for "${label}" (${reportPath}): ${error.message}. ` +
+        "The zero-executed-suite guard cannot verify this run, so it is failing closed.",
+    );
+    process.exit(1);
+  }
+
+  const offenders = findZeroExecutedSuites(report);
+  if (offenders.length === 0) {
+    return;
+  }
+
+  const hidden = offenders.reduce((sum, offender) => sum + offender.declaredTests, 0);
+  const message =
+    `[test:run] ${offenders.length} suite(s) in "${label}" executed zero tests, hiding ${hidden} test(s):`;
+
+  if (process.env.PAPERCLIP_ALLOW_ZERO_EXECUTED_SUITES === "1") {
+    console.warn(`${message} (allowed by PAPERCLIP_ALLOW_ZERO_EXECUTED_SUITES=1; CI must not set it)`);
+    for (const offender of offenders) {
+      console.warn(`  ${toRepoPath(offender.file)} (${offender.declaredTests} hidden)`);
+    }
+    return;
+  }
+
+  console.error(message);
+  for (const offender of offenders) {
+    console.error(`  ${toRepoPath(offender.file)} (${offender.declaredTests} hidden)`);
+  }
+  console.error(
+    "[test:run] Common cause: the embedded-Postgres support probe failed, so `describeEmbeddedPostgres` fell " +
+      "back to `describe.skip` and the file reported success without asserting anything. Fix the host or the " +
+      "probe. If this host genuinely cannot run embedded Postgres, set PAPERCLIP_ALLOW_ZERO_EXECUTED_SUITES=1 locally.",
+  );
+  process.exit(1);
+}
+
 
 function runGeneralSuites(routeTests) {
   for (const groupName of generalGroupNames) {

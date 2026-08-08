@@ -109,7 +109,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-permissions-boundary-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueAttachments);

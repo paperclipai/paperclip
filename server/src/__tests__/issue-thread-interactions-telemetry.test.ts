@@ -41,7 +41,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-interaction-telemetry-");
     db = createDb(tempDb.connectionString);
     interactionsSvc = issueThreadInteractionService(db);
-  }, 20_000);
+  });
 
   beforeEach(() => {
     telemetryMocks.track.mockClear();

@@ -70,7 +70,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       membershipRole: "owner",
       updatedAt: new Date(),
     });
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

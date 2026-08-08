@@ -39,6 +39,8 @@
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
+    "check:embedded-postgres-budgets": "node scripts/audit-embedded-postgres-hook-budgets.mjs",
+    "test:check-executed-test-suites": "node --test scripts/__tests__/check-executed-test-suites.test.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
