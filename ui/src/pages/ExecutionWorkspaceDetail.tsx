@@ -43,8 +43,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import {
   getWorkspaceSpecificRoutineVariableNames,
-  routineHasWorkspaceSpecificVariables,
-  sortWorkspaceRoutinesByName,
+  groupWorkspaceSpecificRoutines,
 } from "../lib/workspace-routines";
 
 type WorkspaceFormState = {
@@ -636,6 +635,37 @@ function WorkspaceRoutineRow({
   );
 }
 
+function WorkspaceRoutineGroup({
+  title,
+  routines,
+  runningRoutineId,
+  onRunNow,
+}: {
+  title: string;
+  routines: RoutineListItem[];
+  runningRoutineId: string | null;
+  onRunNow: (routine: RoutineListItem) => void;
+}) {
+  if (routines.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <h3 className="text-sm font-medium text-foreground">{title}</h3>
+      <div className="rounded-lg border border-border">
+        {routines.map((routine) => (
+          <WorkspaceRoutineRow
+            key={routine.id}
+            routine={routine}
+            variableNames={getWorkspaceSpecificRoutineVariableNames(routine)}
+            runningRoutineId={runningRoutineId}
+            onRunNow={onRunNow}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ExecutionWorkspaceRoutinesList({
   workspace,
   project,
@@ -649,8 +679,8 @@ function ExecutionWorkspaceRoutinesList({
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
 
   const { data: routines, isLoading, error } = useQuery({
-    queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
-    queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
+    queryKey: queryKeys.routines.list(workspace.companyId),
+    queryFn: () => routinesApi.list(workspace.companyId),
   });
 
   const { data: agents } = useQuery({
@@ -658,10 +688,12 @@ function ExecutionWorkspaceRoutinesList({
     queryFn: () => agentsApi.list(workspace.companyId),
   });
 
-  const workspaceRoutines = useMemo(
-    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
-    [routines],
+  const workspaceRoutineGroups = useMemo(
+    () => groupWorkspaceSpecificRoutines(routines ?? [], workspace.projectId),
+    [routines, workspace.projectId],
   );
+  const hasWorkspaceRoutines =
+    workspaceRoutineGroups.thisWorkspace.length > 0 || workspaceRoutineGroups.otherWorkspaces.length > 0;
 
   const runRoutine = useMutation({
     mutationFn: ({ id, data }: { id: string; data?: RoutineRunDialogSubmitData }) => routinesApi.run(id, {
@@ -682,7 +714,7 @@ function ExecutionWorkspaceRoutinesList({
     onSuccess: async (_, { id }) => {
       setRunDialogRoutine(null);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["routines", workspace.companyId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(workspace.companyId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(workspace.companyId, workspace.id) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(workspace.companyId) }),
@@ -721,7 +753,7 @@ function ExecutionWorkspaceRoutinesList({
             <p className="text-sm text-destructive">
               {error instanceof Error ? error.message : "Failed to load routines."}
             </p>
-          ) : workspaceRoutines.length === 0 ? (
+          ) : !hasWorkspaceRoutines ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <Repeat className="h-5 w-5 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
@@ -729,16 +761,19 @@ function ExecutionWorkspaceRoutinesList({
               </p>
             </div>
           ) : (
-            <div className="rounded-lg border border-border">
-              {workspaceRoutines.map((routine) => (
-                <WorkspaceRoutineRow
-                  key={routine.id}
-                  routine={routine}
-                  variableNames={getWorkspaceSpecificRoutineVariableNames(routine)}
-                  runningRoutineId={runningRoutineId}
-                  onRunNow={setRunDialogRoutine}
-                />
-              ))}
+            <div className="space-y-5">
+              <WorkspaceRoutineGroup
+                title="This workspace"
+                routines={workspaceRoutineGroups.thisWorkspace}
+                runningRoutineId={runningRoutineId}
+                onRunNow={setRunDialogRoutine}
+              />
+              <WorkspaceRoutineGroup
+                title="Other workspaces"
+                routines={workspaceRoutineGroups.otherWorkspaces}
+                runningRoutineId={runningRoutineId}
+                onRunNow={setRunDialogRoutine}
+              />
             </div>
           )}
         </CardContent>

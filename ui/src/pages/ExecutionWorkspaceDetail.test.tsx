@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
-import { act, type ReactNode } from "react";
+import type { ExecutionWorkspace, Project, RoutineListItem } from "@paperclipai/shared";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionWorkspaceDetail } from "./ExecutionWorkspaceDetail";
@@ -192,6 +193,41 @@ function project(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function routine(overrides: Partial<RoutineListItem> = {}): RoutineListItem {
+  const now = new Date("2026-05-01T00:00:00Z");
+  return {
+    id: "routine-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    goalId: null,
+    parentIssueId: null,
+    title: "Workspace routine",
+    description: null,
+    assigneeAgentId: "agent-1",
+    priority: "medium",
+    status: "active",
+    concurrencyPolicy: "coalesce_if_active",
+    catchUpPolicy: "skip_missed",
+    variables: [
+      { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+    ],
+    latestRevisionId: null,
+    latestRevisionNumber: 1,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    lastTriggeredAt: null,
+    lastEnqueuedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    triggers: [],
+    lastRun: null,
+    activeIssue: null,
+    ...overrides,
+  };
+}
+
 function pluginSlot(overrides: Record<string, unknown> = {}) {
   return {
     id: "changes-tab",
@@ -210,6 +246,15 @@ function pluginSlot(overrides: Record<string, unknown> = {}) {
 async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 2000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (condition()) return;
+    await flush();
+  }
+  expect(condition(), `condition did not become true within ${timeoutMs}ms`).toBe(true);
 }
 
 describe("ExecutionWorkspaceDetail plugin slots", () => {
@@ -232,7 +277,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
   });
 
   afterEach(() => {
-    act(() => root?.unmount());
+    flushSync(() => root?.unmount());
     root = null;
     container.remove();
     vi.clearAllMocks();
@@ -242,7 +287,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
 
   async function render() {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
+    flushSync(() => {
       root = createRoot(container);
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -250,9 +295,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {
-      await flush();
-    });
+    await flush();
   }
 
   it("scopes the plugin detail-tab discovery to execution_workspace and the workspace's company", async () => {
@@ -355,5 +398,33 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       "Routines",
       "Default",
     ]);
+  });
+
+  it("loads all company routines and renders current and other workspace groups", async () => {
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/routines";
+    mockRoutinesApi.list.mockResolvedValue([
+      routine({ id: "routine-current", title: "Current workspace routine", projectId: "project-1" }),
+      routine({ id: "routine-other", title: "Other workspace routine", projectId: "project-2" }),
+      routine({
+        id: "routine-general",
+        title: "General routine",
+        projectId: "project-1",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      }),
+    ]);
+
+    await render();
+
+    await waitForCondition(() => container.textContent?.includes("This workspace") === true);
+
+    expect(mockRoutinesApi.list).toHaveBeenCalledWith("company-1");
+    expect(mockRoutinesApi.list).not.toHaveBeenCalledWith("company-1", { projectId: "project-1" });
+    expect(container.textContent).toContain("This workspace");
+    expect(container.textContent).toContain("Current workspace routine");
+    expect(container.textContent).toContain("Other workspaces");
+    expect(container.textContent).toContain("Other workspace routine");
+    expect(container.textContent).not.toContain("General routine");
   });
 });
