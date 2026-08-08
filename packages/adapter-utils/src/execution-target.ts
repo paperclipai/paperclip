@@ -1983,6 +1983,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   runtimeRootDir: string | null | undefined;
   adapterKey: string;
   timeoutSec?: number | null;
+  runtimePath?: string | null;
   hostApiToken: string | null | undefined;
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -2112,6 +2113,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       bridgeAsset,
       timeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
+      runtimePath: input.runtimePath,
       shellCommand,
     });
   } catch (error) {
