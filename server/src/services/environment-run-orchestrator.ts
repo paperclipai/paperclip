@@ -420,7 +420,11 @@ export function environmentRunOrchestrator(
       (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
         ? lease.metadata.remoteCwd.trim()
         : executionWorkspace.cwd);
-    if (provisionCommand && environment.driver !== "local") {
+    const isNew =
+      executionWorkspace.created === true ||
+      workspaceRealization.isNew === true ||
+      workspaceRealization.created === true;
+    if (provisionCommand && environment.driver !== "local" && isNew) {
       try {
         const provisionResult = await environmentRuntime.execute({
           environment,

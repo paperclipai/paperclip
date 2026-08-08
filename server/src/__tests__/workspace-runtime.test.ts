@@ -1204,6 +1204,8 @@ describe("realizeExecutionWorkspace", () => {
       "true\n",
     );
 
+    await fs.rm(path.join(workspace.cwd, ".paperclip-provision-created"));
+
     const reused = await realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
@@ -1232,10 +1234,11 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
+    expect(reused.created).toBe(false);
+    await expect(fs.access(path.join(reused.cwd, ".paperclip-provision-created"))).rejects.toThrow();
   });
 
-  it("uses the latest repo-managed provision script when reusing an existing worktree", async () => {
+  it("skips running the provision script when reusing an existing worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
@@ -1292,8 +1295,6 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "scripts/provision.sh"]);
     await runGit(repoRoot, ["commit", "-m", "Update provision script"]);
 
-    await expect(fs.readFile(path.join(initial.cwd, "scripts", "provision.sh"), "utf8")).resolves.toContain("v1");
-
     const reused = await realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
@@ -1322,7 +1323,8 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
+    expect(reused.created).toBe(false);
+    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v1\n");
   }, 30_000);
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {

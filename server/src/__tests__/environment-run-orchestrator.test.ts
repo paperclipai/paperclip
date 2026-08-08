@@ -100,7 +100,10 @@ function makeLease(overrides: Partial<EnvironmentLease> = {}): EnvironmentLease 
   };
 }
 
-function makeExecutionWorkspace(cwd: string = "/workspace/project"): RealizedExecutionWorkspace {
+function makeExecutionWorkspace(
+  cwd: string = "/workspace/project",
+  overrides: Partial<RealizedExecutionWorkspace> = {},
+): RealizedExecutionWorkspace {
   return {
     baseCwd: "/workspace",
     source: "project_primary",
@@ -113,7 +116,8 @@ function makeExecutionWorkspace(cwd: string = "/workspace/project"): RealizedExe
     branchName: null,
     worktreePath: null,
     warnings: [],
-    created: false,
+    created: true,
+    ...overrides,
   };
 }
 
@@ -548,6 +552,63 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       args: ["-lc", "npm install -g @google/gemini-cli"],
     }));
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
+  });
+
+  it("skips remote provision command when reusing an existing workspace", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "sandbox",
+            remote: { path: "/remote/workspace" },
+            isNew: false,
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+      executionWorkspace: makeExecutionWorkspace("/workspace/project", { created: false }),
+    }));
+
+    expect(runtime.execute).not.toHaveBeenCalled();
   });
 
   it("surfaces remote provision command failures before resolving the adapter target", async () => {
