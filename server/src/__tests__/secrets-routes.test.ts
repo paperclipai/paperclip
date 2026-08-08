@@ -41,9 +41,11 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
+  accessService: () => mockAccessService,
   logActivity: mockLogActivity,
 }));
 
@@ -71,6 +73,8 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({ allowed: false, explanation: "Missing permission", reason: "deny_missing_grant" });
   });
 
   it("returns provider health checks for board callers with company access", async () => {
@@ -96,6 +100,147 @@ describe("secret routes", () => {
         },
       ],
     });
+  });
+
+  it("allows only a granted run-bound agent JWT to create a company secret without exposing its value", async () => {
+    const sentinel = "route-test-secret-sentinel";
+    const created = {
+      id: "11111111-1111-4111-8111-111111111111",
+      name: sentinel,
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: sentinel,
+      encryptedValue: sentinel,
+      externalRef: "should-not-leak",
+      providerMetadata: { secret: sentinel },
+    };
+    mockAccessService.decide.mockResolvedValue({ allowed: true, explanation: "Granted", reason: "allow_explicit_grant" });
+    mockSecretService.create.mockResolvedValue(created);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_jwt",
+      onBehalfOfUserId: "user-1",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "operator" },
+      ],
+    })).post("/api/companies/company-1/secrets").send({
+      name: sentinel,
+      key: "agent_created_secret",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: sentinel,
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ id: created.id });
+    expect(mockAccessService.decide).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ agentId: "agent-1", runId: "run-1", source: "agent_jwt" }),
+      action: "credentials:write",
+      resource: { type: "company", companyId: "company-1" },
+    });
+    expect(mockSecretService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: sentinel,
+    }), { userId: null, agentId: "agent-1" });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.created",
+      actorType: "agent",
+      actorId: "agent-1",
+      entityId: created.id,
+      details: {},
+    }));
+    expect(JSON.stringify({ response: res.body, activity: mockLogActivity.mock.calls })).not.toContain(sentinel);
+  });
+
+  it("denies an otherwise allowed run-bound agent JWT without a responsible-user binding", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      explanation: "Granted",
+      reason: "allow_explicit_grant",
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_jwt",
+    })).post("/api/companies/company-1/secrets").send({
+      name: "Agent-created secret",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: "route-test-secret-sentinel",
+    });
+
+    expect(res.status).toBe(403);
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("denies ungranted, cross-company, agent-key, and runless agents before creating company secrets", async () => {
+    const body = {
+      name: "Agent-created secret",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: "route-test-secret-sentinel",
+    };
+    const actors = [
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+        source: "agent_jwt",
+        onBehalfOfUserId: "user-1",
+        onBehalfOfMemberships: [
+          { companyId: "company-1", status: "active", membershipRole: "operator" },
+        ],
+      },
+      { type: "agent", agentId: "agent-1", companyId: "other-company", runId: "run-1", source: "agent_jwt" },
+      { type: "agent", agentId: "agent-1", companyId: "company-1", runId: "run-1", source: "agent_key" },
+      { type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt" },
+    ];
+
+    for (const actor of actors) {
+      const res = await request(createApp(actor)).post("/api/companies/company-1/secrets").send(body);
+      expect(res.status).toBe(403);
+    }
+
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps board company-secret creation response and attribution unchanged", async () => {
+    const created = {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Board-created secret",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      createdByUserId: "user-1",
+    };
+    mockSecretService.create.mockResolvedValue(created);
+
+    const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
+      name: "Board-created secret",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      value: "route-test-secret-sentinel",
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(created);
+    expect(mockSecretService.create).toHaveBeenCalledWith("company-1", expect.anything(), { userId: "user-1", agentId: null });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.created",
+      actorType: "user",
+      actorId: "user-1",
+    }));
   });
 
   it("rejects managed secret creation when externalRef is supplied", async () => {

@@ -118,6 +118,35 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
+  async function assertCanCreateCompanySecret(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    if (req.actor.type === "board") {
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      return null;
+    }
+
+    assertCompanyAccess(req, companyId);
+    if (
+      req.actor.type !== "agent" ||
+      req.actor.source !== "agent_jwt" ||
+      !req.actor.agentId ||
+      !req.actor.runId ||
+      !req.actor.onBehalfOfUserId?.trim()
+    ) {
+      throw forbidden("Run-bound agent JWT with responsible-user binding required");
+    }
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "credentials:write",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
+    return { agentId: req.actor.agentId };
+  }
+
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       throw forbidden("Run-bound agent authentication required");
@@ -893,7 +922,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanySecretWrite(req, companyId);
+    const agent = await assertCanCreateCompanySecret(req, companyId);
 
     const created = await svc.create(
       companyId,
@@ -909,20 +938,20 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         providerVersionRef: req.body.providerVersionRef,
         providerMetadata: req.body.providerMetadata,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      agent ? { userId: null, agentId: agent.agentId } : { userId: req.actor.userId ?? "board", agentId: null },
     );
 
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: agent ? "agent" : "user",
+      actorId: agent?.agentId ?? req.actor.userId ?? "board",
       action: "secret.created",
       entityType: "secret",
       entityId: created.id,
-      details: { name: created.name, provider: created.provider },
+      details: agent ? {} : { name: created.name, provider: created.provider },
     });
 
-    res.status(201).json(created);
+    res.status(201).json(agent ? { id: created.id } : created);
   });
 
   router.post(

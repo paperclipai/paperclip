@@ -970,6 +970,7 @@ export const PERMISSION_KEYS = [
   "inbox:manage",
   "users:invite",
   "users:manage_permissions",
+  "credentials:write",
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
