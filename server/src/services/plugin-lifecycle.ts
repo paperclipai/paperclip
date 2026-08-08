@@ -733,7 +733,39 @@ export function pluginLifecycleManager(
         "plugin lifecycle: starting worker",
       );
 
-      await workerManager.startWorker(pluginId, options);
+      // Resolve the install's company so the worker starts with a populated
+      // `invocationScope`. The plugin's first config row carries the company
+      // that originated the install; a bundled plugin has exactly one. Without
+      // this scope the worker is rejected on its first capability call (e.g.
+      // `config.get`) with "company context is required" and never reaches
+      // `ready`. See PLUGIN_SPEC §13 - Host-Worker Protocol.
+      //
+      // Best-effort: matches the pattern in plugin-loader.ts (lines ~2160): if the
+      // lookup fails (transient DB blip, race during install, etc.) we log at
+      // debug and proceed without a scope. The worker's own init code will
+      // surface the missing-scope error if it really needs the company to
+      // bootstrap; this prevents a momentary infra issue from turning a
+      // recoverable scope-population miss into a hard activation failure
+      // that leaves the plugin stuck in `status='error'`.
+      let configRows: Awaited<ReturnType<typeof registry.listConfigs>> = [];
+      try {
+        configRows = await registry.listConfigs(pluginId);
+      } catch (listErr) {
+        log.debug(
+          {
+            pluginId,
+            pluginKey: plugin.pluginKey,
+            err: listErr instanceof Error ? listErr.message : String(listErr),
+          },
+          "plugin lifecycle: could not resolve install company for invocationScope; starting worker without scope",
+        );
+      }
+      const installCompanyId = configRows[0]?.companyId;
+      const scopedOptions = installCompanyId
+        ? { ...options, invocationScope: { companyId: installCompanyId } }
+        : options;
+
+      await workerManager.startWorker(pluginId, scopedOptions);
       emitDomain("plugin.worker_started", {
         pluginId,
         pluginKey: plugin.pluginKey,
