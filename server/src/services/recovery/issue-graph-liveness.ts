@@ -61,6 +61,7 @@ export interface IssueLivenessWaitingPathInput {
 }
 
 export interface IssueLivenessPendingInteractionPathInput extends IssueLivenessWaitingPathInput {
+  kind?: string | null;
   createdAt: Date | string | null;
 }
 
@@ -114,12 +115,14 @@ export interface IssueGraphLivenessInput {
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
 
-// A pending interaction is a bounded human-response lease, not permanent proof
-// that an issue is healthy. Once a response has been outstanding for a day the
-// interaction still remains pending for the responder, but liveness recovery is
-// allowed to surface the missing handoff through its normal escalation path.
+// Most pending interactions are bounded human-response leases, not permanent
+// proof that an issue is healthy. A request_confirmation is different: it is an
+// explicit authorization hold and remains the owner of progress until somebody
+// resolves it. Expiring that hold merely because it is old would let automated
+// recovery act without the requested confirmation.
 export const ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+export const ISSUE_LIVENESS_DURABLE_PENDING_INTERACTION_KIND = "request_confirmation";
 // A wake row without a live queued/running heartbeat is only short-lived
 // dispatch evidence. Deferred rows are normally promoted when the issue's
 // active run terminates; if that handoff is missed, they must not certify the
@@ -191,18 +194,29 @@ function hasCurrentPendingInteractionPath(
     if (entry.companyId !== companyId || entry.issueId !== issueId || entry.status !== "pending") {
       return false;
     }
-
-    const createdAtMs = readDateMs(entry.createdAt);
-    if (createdAtMs === null) return false;
-    const ageMs = nowMs - createdAtMs;
-    return ageMs >= -ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS &&
-      ageMs <= ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS;
+    return isIssueLivenessPendingInteractionCurrent(entry.createdAt, entry.kind, nowMs);
   });
+}
+
+export function isIssueLivenessPendingInteractionCurrent(
+  createdAt: Date | string | null,
+  kind: string | null | undefined,
+  now: Date | string | number,
+) {
+  const createdAtMs = readDateMs(createdAt);
+  const nowMs = typeof now === "number" ? now : readDateMs(now);
+  if (createdAtMs === null || nowMs === null) return false;
+  const ageMs = nowMs - createdAtMs;
+  if (ageMs < -ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS) return false;
+  return kind === ISSUE_LIVENESS_DURABLE_PENDING_INTERACTION_KIND ||
+    ageMs <= ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS;
 }
 
 export function issueLivenessPendingInteractionExpiresAt(
   createdAt: Date | string | null,
+  kind?: string | null,
 ) {
+  if (kind === ISSUE_LIVENESS_DURABLE_PENDING_INTERACTION_KIND) return null;
   const createdAtMs = readDateMs(createdAt);
   return createdAtMs === null
     ? null
