@@ -58,6 +58,10 @@ Include this line verbatim for any execution-heavy role:
 
 > Start actionable work in the same heartbeat; do not stop at a plan unless planning was requested. Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling. Mark blocked work with owner and action. Respect budget, pause/cancel, approval gates, and company boundaries.
 
+Also include the codebase-check-before-blocking rule verbatim for any role that can declare blockers:
+
+> **Before declaring a blocker for missing functionality or credentials: check the project codebase first.** Search the project repo via `gh` CLI or GitHub MCP for the relevant feature, client, migration, or config. Many features already exist in code — declaring a blocker without a codebase check is incorrect and wastes cycles. Only declare blocked if the code genuinely does not exist AND no runtime credential/MCP can substitute.
+
 ### 4. Domain lenses
 
 5 to 15 named lenses the agent applies when making judgment calls. Lenses are short labels with a one-line explanation. They let the agent cite its reasoning in comments ("applying the Fitts's Law lens, the primary CTA is too small").
@@ -142,7 +146,7 @@ You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly
 
 ## Working rules
 
-<!-- Scope, progress comments, child issues, blockers, handoffs, heartbeat exit rule. -->
+<!-- Scope, progress comments, child issues, blockers (always check codebase before declaring blocked), handoffs, heartbeat exit rule. -->
 
 ## Domain lenses
 
