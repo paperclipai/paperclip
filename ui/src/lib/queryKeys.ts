@@ -227,6 +227,13 @@ export const queryKeys = {
       query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
     ) =>
       ["issues", "file-resources", issueId, "content", query] as const,
+    /**
+     * Batched availability preflight. `refKeys` are the deduplicated,
+     * lexicographically sorted reference keys in the request so identical
+     * batches share one cache entry.
+     */
+    fileResourceAvailability: (issueId: string, refKeys: readonly string[]) =>
+      ["issues", "file-resources", issueId, "availability", refKeys] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>

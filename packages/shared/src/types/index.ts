@@ -384,6 +384,11 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
+  NormalizedWorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityRequest,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
   WorkspaceFileListDirectoryItem,
