@@ -44,6 +44,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {
     id: "0c1d2e3f-4a5b-4c6d-8e7f-333333333333",
+    agentId: "4d5e6f70-8a9b-4c1d-8e2f-444444444444",
     status: "failed",
     errorCode: "workspace_validation_failed",
     errorSummary: "Expected project worktree but resolved the agent fallback directory.",
@@ -70,7 +71,13 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     const rows = allRows(notice.metadata);
     expect(rows).toContainEqual({ type: "key_value", label: "Recovery action", value: actionId });
     expect(rows).toContainEqual({ type: "agent_link", label: "Recovery owner", agentId: owner.id, name: owner.name });
-    expect(rows).toContainEqual({ type: "run_link", label: "Source run", runId: sourceRun.id, title: "failed" });
+    expect(rows).toContainEqual({
+      type: "run_link",
+      label: "Source run",
+      runId: sourceRun.id,
+      agentId: sourceRun.agentId,
+      title: "failed",
+    });
     expect(rows).toContainEqual({
       type: "key_value",
       label: "Failure code",
@@ -128,11 +135,23 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
       recoveryActionId: actionId,
       recoveryOwner: owner,
-      sourceRun: { id: sourceRun.id, status: "cancelled", errorCode: null, errorSummary: null },
+      sourceRun: {
+        id: sourceRun.id,
+        agentId: sourceRun.agentId,
+        status: "cancelled",
+        errorCode: null,
+        errorSummary: null,
+      },
     });
 
     const rows = allRows(notice.metadata);
-    expect(rows).toContainEqual({ type: "run_link", label: "Source run", runId: sourceRun.id, title: "cancelled" });
+    expect(rows).toContainEqual({
+      type: "run_link",
+      label: "Source run",
+      runId: sourceRun.id,
+      agentId: sourceRun.agentId,
+      title: "cancelled",
+    });
     expect(rows.some((row) => row.label === "Failure code")).toBe(false);
     expect(rows.some((row) => row.label === "Failure summary")).toBe(false);
   });

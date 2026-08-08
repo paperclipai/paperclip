@@ -104,6 +104,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   recoveryOwner: { id: string; name: string | null } | null | undefined;
   sourceRun: {
     id: string;
+    agentId?: string | null;
     status: string;
     errorCode?: string | null;
     errorSummary?: string | null;

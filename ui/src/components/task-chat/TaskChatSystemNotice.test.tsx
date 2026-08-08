@@ -90,11 +90,13 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
 
   it("links source-run metadata when the comment carries its run agent", () => {
     renderNotice({
-      runAgentId: "agent-1",
       metadata: {
         version: 1,
         sections: [
-          { title: "Run", rows: [{ type: "run_link", label: "Source run", runId: "run-1", title: "failed" }] },
+          {
+            title: "Run",
+            rows: [{ type: "run_link", label: "Source run", runId: "run-1", agentId: "agent-1", title: "failed" }],
+          },
         ],
       },
     });

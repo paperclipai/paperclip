@@ -3374,6 +3374,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       sourceRun: input.latestRun
         ? {
             id: input.latestRun.id,
+            agentId: input.latestRun.agentId,
             status: input.latestRun.status,
             errorCode: input.latestRun.errorCode,
             errorSummary: input.latestRun.error ? redactSensitiveText(input.latestRun.error) : null,

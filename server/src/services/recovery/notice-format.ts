@@ -29,10 +29,16 @@ export function issueLinkRow(
 
 export function runLinkRow(
   label: string,
-  run: { id: string; status: string } | null | undefined,
+  run: { id: string; status: string; agentId?: string | null } | null | undefined,
 ): NoticeMetadataRow {
   if (!run) return keyValueRow(label, "unknown");
-  return { type: "run_link", label, runId: run.id, title: run.status };
+  return {
+    type: "run_link",
+    label,
+    runId: run.id,
+    ...(run.agentId ? { agentId: run.agentId } : {}),
+    title: run.status,
+  };
 }
 
 export function agentLinkRow(
