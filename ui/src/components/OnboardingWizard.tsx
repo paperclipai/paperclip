@@ -66,6 +66,8 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
+export const COMPANY_NAME_FIELD_LABEL = "Name";
+
 const MISSION_PROMPT_CHIPS = [
   "Build a SaaS product",
   "Scale a content business",
@@ -988,7 +990,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      {COMPANY_NAME_FIELD_LABEL}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
