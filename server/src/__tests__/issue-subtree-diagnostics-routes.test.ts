@@ -139,27 +139,31 @@ async function blockIssue(db: Db, companyId: string, blockerIssueId: string, blo
 }
 
 async function snapshotIssueRows(db: Db, companyId: string) {
-  return (await db.select({
-    id: issues.id,
-    parentId: issues.parentId,
-    title: issues.title,
-    status: issues.status,
-    assigneeAgentId: issues.assigneeAgentId,
-    assigneeUserId: issues.assigneeUserId,
-    checkoutRunId: issues.checkoutRunId,
-    executionRunId: issues.executionRunId,
-  }).from(issues).where(eq(issues.companyId, companyId)))
+  return (await db.select().from(issues).where(eq(issues.companyId, companyId)))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 async function snapshotRelationRows(db: Db, companyId: string) {
-  return (await db.select({
-    id: issueRelations.id,
-    issueId: issueRelations.issueId,
-    relatedIssueId: issueRelations.relatedIssueId,
-    type: issueRelations.type,
-  }).from(issueRelations).where(eq(issueRelations.companyId, companyId)))
+  return (await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId)))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function assertSelfCanonicalHealth(response: any, expected: Record<string, {
+  unresolvedPathType: string;
+  cycleStatus?: string;
+}>) {
+  expect(response.body.treeHealth.nodes).toHaveLength(response.body.nodes.length);
+  for (const [issueId, classification] of Object.entries(expected)) {
+    const health = response.body.treeHealth.nodes.find(
+      (node: { issueId: string }) => node.issueId === issueId,
+    );
+    expect(health, `missing tree-health entry for ${issueId}`).toMatchObject({
+      issueId,
+      canonicalContinuationId: issueId,
+      continuationCount: 1,
+      ...classification,
+    });
+  }
 }
 
 async function attachMentionScopedLowTrustRun(db: Db, fixture: {
@@ -377,6 +381,11 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(afterIssues).toEqual(beforeIssues);
     expect(afterRelations).toEqual(beforeRelations);
     expect(res.body.treeHealth).toMatchObject({ cycleStatus: "clear", supersessionCandidates: [] });
+    assertSelfCanonicalHealth(res, {
+      [root.id]: { unresolvedPathType: "execution" },
+      [execution.id]: { unresolvedPathType: "execution" },
+      [review.id]: { unresolvedPathType: "review" },
+    });
     const executionHealth = res.body.treeHealth.nodes.find(
       (node: { issueId: string }) => node.issueId === execution.id,
     );
@@ -436,6 +445,11 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(afterIssues).toEqual(beforeIssues);
     expect(afterRelations).toEqual(beforeRelations);
     expect(res.body.treeHealth.supersessionCandidates).toEqual([]);
+    assertSelfCanonicalHealth(res, {
+      [root.id]: { unresolvedPathType: "execution" },
+      [completedReview.id]: { unresolvedPathType: "none" },
+      [residualReview.id]: { unresolvedPathType: "execution" },
+    });
     const completedHealth = res.body.treeHealth.nodes.find(
       (node: { issueId: string }) => node.issueId === completedReview.id,
     );
@@ -481,6 +495,10 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(afterIssues).toEqual(beforeIssues);
     expect(afterRelations).toEqual(beforeRelations);
+    assertSelfCanonicalHealth(res, {
+      [root.id]: { unresolvedPathType: "execution" },
+      [blockedLeaf.id]: { unresolvedPathType: "external" },
+    });
     const blockedNode = res.body.nodes.find(
       (node: { issue: { id: string } }) => node.issue.id === blockedLeaf.id,
     );
@@ -542,6 +560,11 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     expect(afterRelations).toEqual(beforeRelations);
     expect(res.body.nodeCount).toBe(3);
     expect(res.body.treeHealth.cycleStatus).toBe("detected");
+    assertSelfCanonicalHealth(res, {
+      [root.id]: { unresolvedPathType: "execution", cycleStatus: "clear" },
+      [first.id]: { unresolvedPathType: "cycle", cycleStatus: "detected" },
+      [second.id]: { unresolvedPathType: "cycle", cycleStatus: "detected" },
+    });
     for (const issueId of [first.id, second.id]) {
       expect(res.body.treeHealth.nodes.find(
         (node: { issueId: string }) => node.issueId === issueId,
