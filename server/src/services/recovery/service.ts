@@ -3348,12 +3348,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
     let notice: SuccessfulRunHandoffNotice | null = null;
     if (input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON && input.successfulRunHandoffEvidence) {
+      const [sourceRun] = input.successfulRunHandoffEvidence.sourceRunId
+        ? await db
+          .select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+            agentId: heartbeatRuns.agentId,
+          })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, input.successfulRunHandoffEvidence.sourceRunId),
+            eq(heartbeatRuns.companyId, input.issue.companyId),
+          ))
+          .limit(1)
+        : [];
       notice = buildSuccessfulRunHandoffExhaustedNotice({
         issue: input.issue,
-        sourceRun: input.successfulRunHandoffEvidence.sourceRunId
-          ? { id: input.successfulRunHandoffEvidence.sourceRunId, status: "succeeded" }
+        sourceRun: sourceRun ?? null,
+        correctiveRun: input.latestRun
+          ? { id: input.latestRun.id, status: input.latestRun.status, agentId: input.latestRun.agentId }
           : null,
-        correctiveRun: input.latestRun ? { id: input.latestRun.id, status: input.latestRun.status } : null,
         sourceAssignee,
         recoveryIssue: null,
         recoveryActionId: recoveryAction.id,

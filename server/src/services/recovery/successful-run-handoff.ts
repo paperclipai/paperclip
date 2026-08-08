@@ -64,7 +64,7 @@ type IssueRow = Pick<
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
-type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">;
+type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId">;
 type NoticeAgent = Pick<typeof agents.$inferSelect, "id" | "name">;
 type NullableNoticeAgent = NoticeAgent | null | undefined;
 type NullableNoticeIssue = NoticeIssue | null | undefined;
