@@ -58,6 +58,22 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Strip `<think>...</think>` blocks from model output before returning to Paperclip.
+ *
+ * Mirrors enrichment/dispatcher.py:280 (`re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)`)
+ * and trims only after a think block was removed, leaving clean responses byte-for-byte unchanged.
+ * Non-greedy (won't merge separate blocks), dotall (`s` flag), case-sensitive. Requires a matching
+ * closing tag — unclosed `<think>` tags are left intact so real output is never truncated.
+ */
+export function stripThinkBlocks(text: string): string {
+  if (!/<think>.*?<\/think>/s.test(text)) {
+    return text;
+  }
+
+  return text.replace(/<think>.*?<\/think>/gs, "").trim();
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -684,7 +700,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },
-        summary: attempt.parsed.summary,
+        summary: stripThinkBlocks(attempt.parsed.summary),
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
     };
