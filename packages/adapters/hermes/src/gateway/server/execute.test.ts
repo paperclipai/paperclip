@@ -139,8 +139,9 @@ describe("execute", () => {
         PAPERCLIP_TASK_ID: "issue-1",
       },
     });
-    expect(String(createBody?.input)).not.toContain(scopedToken);
-    expect(String(createBody?.instructions)).not.toContain(scopedToken);
+    const submittedBody = createBody as unknown as Record<string, unknown>;
+    expect(String(submittedBody.input)).not.toContain(scopedToken);
+    expect(String(submittedBody.instructions)).not.toContain(scopedToken);
     expect(result.summary).not.toContain(scopedToken);
   });
 
