@@ -1,0 +1,33 @@
+TSMC-20250 batch issue pickup — pre-change baseline (2026-08-08)
+
+Source: operator measurement in issue description + TSMC-20243 baseline-2026-08-06.txt
+(reused as the same measurement window that reshaped this design).
+
+7d run mix (from issue design):
+- total ~16.6k runs
+- issue_assigned = 10,158 (61%)  — primary entry-tax lever
+- issue_commented = 575
+- continuation = 1,190
+- handoff = 608
+- recovery = 652
+
+TSMC-20243 snapshot (2026-08-06):
+- 2,594 runs/day
+- claude avg ~51k in-tokens/run
+- review-class 451.8M tokens/7d
+- issue_assigned 10,658 runs/7d (near-identical to design number)
+
+Target effect (design): 30-50% run-count reduction on batchable assignment classes
+≈ 100-200M input tokens/wk raw.
+
+Env knobs after land:
+- PAPERCLIP_BATCH_ISSUE_PICKUP=true|false (default true)
+- PAPERCLIP_BATCH_ISSUE_PICKUP_WINDOW_MS (override all lanes)
+- PAPERCLIP_BATCH_ISSUE_PICKUP_MAX (default 8)
+- PAPERCLIP_COMMENT_BURST_DEBOUNCE_MS (default 300000; 0=off)
+
+Lane windows (defaults):
+- csuite/coordination: 15m
+- engineering: 10m
+- drafter/content: 30m
+- system/recovery: 0 (no hold)
