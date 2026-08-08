@@ -7126,6 +7126,150 @@ export function issueService(db: Db) {
           if (!projectWorkspaceId && issueData.projectId) {
             const project = await tx
               .select({
+                executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              })
+              .from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
+            projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
+            if (!projectWorkspaceId) {
+              projectWorkspaceId = await tx
+                .select({ id: projectWorkspaces.id })
+                .from(projectWorkspaces)
+                .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
+                .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+                .then((rows) => rows[0]?.id ?? null);
+            }
+          }
+          if (projectWorkspaceId) {
+            await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
+          }
+          if (executionWorkspaceId) {
+            await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+          }
+          if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+            assertExplicitPinnedWorktreeIssueRunnable({
+              projectId: issueData.projectId ?? null,
+              projectWorkspaceId,
+              executionWorkspaceId,
+              executionWorkspacePreference,
+              executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+            });
+          }
+          // Self-correcting counter: use MAX(issue_number) + 1 if the counter
+          // has drifted below the actual max, preventing identifier collisions.
+          const [maxRow] = await tx
+            .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+            .from(issues)
+            .where(eq(issues.companyId, companyId));
+          const currentMax = maxRow?.maxNum ?? 0;
+
+          const [company] = await tx
+            .update(companies)
+            .set({
+              issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
+            })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+
+          const issueNumber = company.issueCounter;
+          const identifier = `${company.issuePrefix}-${issueNumber}`;
+          const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
+            explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+            createdByUserId: issueData.createdByUserId ?? null,
+            parentId: issueData.parentId ?? null,
+            originKind: issueData.originKind ?? "manual",
+            originRunId: issueData.originRunId ?? null,
+            actorRunId: actorRunId ?? null,
+            actorResponsibleUserId: actorResponsibleUserId ?? null,
+            trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
+          });
+
+          const values = {
+            ...issueData,
+            responsibleUserId,
+            requestDepth: clampIssueRequestDepth(issueData.requestDepth),
+            originKind: issueData.originKind ?? "manual",
+            goalId: resolveIssueGoalId({
+              projectId: issueData.projectId,
+              goalId: issueData.goalId,
+              projectGoalId,
+              defaultGoalId: defaultCompanyGoal?.id ?? null,
+            }),
+            ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+            ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
+            ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
+            ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+            companyId,
+            issueNumber,
+            identifier,
+          } as typeof issues.$inferInsert;
+          if (values.status === "in_progress" && !values.startedAt) {
+            values.startedAt = new Date();
+          }
+          if (values.status === "done") {
+            values.completedAt = new Date();
+          }
+          if (values.status === "cancelled") {
+            values.cancelledAt = new Date();
+          }
+          Object.assign(
+            values,
+            buildInitialIssueMonitorFields({
+              policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+              status: values.status ?? "backlog",
+              assigneeAgentId: values.assigneeAgentId ?? null,
+              assigneeUserId: values.assigneeUserId ?? null,
+            }),
+          );
+
+          const [issue] = await tx.insert(issues).values(values).returning();
+          if (idempotencyKey) {
+            await tx.insert(issueCreateIdempotencyKeys).values({
+              companyId,
+              idempotencyKey,
+              issueId: issue.id,
+            });
+          }
+          if (watchdog) {
+            await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
+              agentId: watchdog.agentId,
+              instructions: watchdog.instructions,
+              actor: {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+                runId: watchdogActorRunId ?? null,
+              },
+            });
+          }
+          if (inputLabelIds) {
+            await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+          }
+          if (blockedByIssueIds !== undefined) {
+            await syncBlockedByIssueIds(
+              issue.id,
+              companyId,
+              blockedByIssueIds,
+              {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+              },
+              tx,
+            );
+          }
+          const [enriched] = await withIssueLabels(tx, [issue]);
+          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+          return withRelations;
+        });
+      } catch (err) {
+        const fkError = parseForeignKeyError(err);
+        if (fkError) throw unprocessable(fkError.message);
+        throw err;
+      }
+    },
+
+    /**
      * Batched issue insert for company import.
      *
      * Company import used to call {@link create} once per issue — each call a
