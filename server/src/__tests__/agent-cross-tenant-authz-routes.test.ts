@@ -48,6 +48,8 @@ let currentAccessCanUser = false;
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
+  getChainOfCommand: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
   clearError: vi.fn(),
@@ -239,6 +241,24 @@ async function loadRouteModules() {
   return routeModules;
 }
 
+function buildStubDb(): Record<string, unknown> {
+  const chain = {
+    from() { return chain; },
+    leftJoin() { return chain; },
+    innerJoin() { return chain; },
+    where() { return chain; },
+    orderBy() { return chain; },
+    limit() { return chain; },
+    then(onfulfilled: (rows: unknown[]) => unknown) { return Promise.resolve([]).then(onfulfilled); },
+  };
+  return {
+    select: () => chain,
+    insert: () => chain,
+    update: () => chain,
+    delete: () => chain,
+  };
+}
+
 async function createApp(actor: Record<string, unknown>) {
   const [{ errorHandler }, { agentRoutes }] = await loadRouteModules();
   const app = express();
@@ -250,7 +270,7 @@ async function createApp(actor: Record<string, unknown>) {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(buildStubDb() as any));
   app.use(errorHandler);
   return app;
 }
@@ -300,6 +320,8 @@ function resetMockDefaults() {
   currentKeyAgentId = agentId;
   currentAccessCanUser = false;
   mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent }));
+  mockAgentService.list.mockImplementation(async () => [{ ...baseAgent }]);
+  mockAgentService.getChainOfCommand.mockImplementation(async () => []);
   mockAgentService.pause.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.resume.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.clearError.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
@@ -531,5 +553,245 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only agents in error status can have their error cleared");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("agent adapterConfig.env redaction on cross-actor reads (BASA-29461)", () => {
+  const peerAgentId = "44444444-4444-4444-8444-444444444444";
+
+  const sensitiveAdapterConfig = {
+    workspaceRoot: "/srv/agent",
+    env: {
+      OPENAI_API_KEY: "sk-live-do-not-leak",
+      GITHUB_TOKEN: "ghp_live-do-not-leak",
+      LOG_LEVEL: "info",
+    },
+  };
+
+  const sensitiveRuntimeConfig = {
+    schedulerHeartbeat: { enabled: true, intervalSec: 30 },
+    ANTHROPIC_API_KEY: "sk-ant-do-not-leak",
+  };
+
+  const targetAgent = {
+    ...baseAgent,
+    id: agentId,
+    adapterConfig: sensitiveAdapterConfig,
+    runtimeConfig: sensitiveRuntimeConfig,
+  };
+
+  beforeEach(() => {
+    resetMockDefaults();
+  });
+
+  function mockAgentLookup(actorAgentOverrides?: Record<string, unknown>) {
+    const actorAgent = { ...baseAgent, id: peerAgentId, ...actorAgentOverrides };
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) return { ...actorAgent };
+      if (id === agentId) return { ...targetAgent };
+      return null;
+    });
+    mockAgentService.list.mockImplementation(async () => [{ ...targetAgent }]);
+  }
+
+  it("GET /api/agents/:id as privileged peer agent → env keys preserved, values redacted (leak does not return)", async () => {
+    currentAccessCanUser = true;
+    mockAgentLookup({ permissions: { canCreateAgents: true } });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId,
+      runId: "run-peer",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.workspaceRoot).toBe("/srv/agent");
+    expect(res.body.adapterConfig.env).toMatchObject({
+      OPENAI_API_KEY: "***REDACTED***",
+      GITHUB_TOKEN: "***REDACTED***",
+    });
+    expect(res.body.adapterConfig.env.LOG_LEVEL).toBe("info");
+    expect(JSON.stringify(res.body)).not.toContain("sk-live-do-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("ghp_live-do-not-leak");
+    expect(res.body.runtimeConfig.ANTHROPIC_API_KEY).toBe("***REDACTED***");
+    expect(res.body.runtimeConfig.schedulerHeartbeat).toEqual({ enabled: true, intervalSec: 30 });
+    expect(JSON.stringify(res.body)).not.toContain("sk-ant-do-not-leak");
+  });
+
+  it("GET /api/agents/:id as self → plaintext present (adapter boot path still works)", async () => {
+    currentAccessCanUser = true;
+    mockAgentService.getById.mockImplementation(async () => ({ ...targetAgent }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-self",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.OPENAI_API_KEY).toBe("sk-live-do-not-leak");
+    expect(res.body.adapterConfig.env.GITHUB_TOKEN).toBe("ghp_live-do-not-leak");
+    expect(res.body.runtimeConfig.ANTHROPIC_API_KEY).toBe("sk-ant-do-not-leak");
+  });
+
+  // Restricted-path coverage lives in `agent-permissions-routes.test.ts`
+  // ("redacts agent detail for authenticated company members without agent admin
+  // permission"). With dbebf30's `assertAgentReadAllowed` 403 gate landing on master,
+  // a peer-agent caller without grants 403s before reaching the restricted body.
+
+  it("GET /api/companies/:companyId/agents as board user → every element has env values redacted, key names preserved", async () => {
+    const secondAgentId = "55555555-5555-4555-8555-555555555555";
+    const secondAgent = {
+      ...targetAgent,
+      id: secondAgentId,
+      adapterConfig: {
+        env: { STRIPE_SECRET_KEY: "sk_live_stripe_do_not_leak" },
+      },
+      runtimeConfig: {},
+    };
+    mockAgentService.list.mockImplementation(async () => [{ ...targetAgent }, { ...secondAgent }]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].adapterConfig.env).toMatchObject({
+      OPENAI_API_KEY: "***REDACTED***",
+      GITHUB_TOKEN: "***REDACTED***",
+      LOG_LEVEL: "info",
+    });
+    expect(res.body[1].adapterConfig.env).toEqual({
+      STRIPE_SECRET_KEY: "***REDACTED***",
+    });
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("sk-live-do-not-leak");
+    expect(body).not.toContain("ghp_live-do-not-leak");
+    expect(body).not.toContain("sk_live_stripe_do_not_leak");
+  });
+
+  it("GET /api/agents/:id as board user with non-low-trust target → env values redacted (BASA-29460 carve-out scoped to low-trust only)", async () => {
+    mockAgentService.getById.mockImplementation(async () => ({ ...targetAgent }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env).toMatchObject({
+      OPENAI_API_KEY: "***REDACTED***",
+      GITHUB_TOKEN: "***REDACTED***",
+      LOG_LEVEL: "info",
+    });
+    expect(res.body.runtimeConfig.ANTHROPIC_API_KEY).toBe("***REDACTED***");
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain("sk-live-do-not-leak");
+    expect(body).not.toContain("ghp_live-do-not-leak");
+    expect(body).not.toContain("sk-ant-do-not-leak");
+  });
+
+  it("GET /api/agents/:id as board user with low-trust target → plaintext returned (containment-audit carve-out per PR #7530)", async () => {
+    const lowTrustAgent = {
+      ...targetAgent,
+      permissions: { canCreateAgents: false, trustPreset: "low_trust_review" },
+    };
+    mockAgentService.getById.mockImplementation(async () => ({ ...lowTrustAgent }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.OPENAI_API_KEY).toBe("sk-live-do-not-leak");
+    expect(res.body.runtimeConfig.ANTHROPIC_API_KEY).toBe("sk-ant-do-not-leak");
+  });
+
+  it("GET /api/agents/:id as privileged peer agent reading low-trust target → STILL redacted (carve-out is board-only)", async () => {
+    currentAccessCanUser = true;
+    const lowTrustTarget = {
+      ...targetAgent,
+      permissions: { canCreateAgents: false, trustPreset: "low_trust_review" },
+    };
+    const actorAgent = { ...baseAgent, id: peerAgentId, permissions: { canCreateAgents: true } };
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) return { ...actorAgent };
+      if (id === agentId) return { ...lowTrustTarget };
+      return null;
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId,
+      runId: "run-peer-lowtrust",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.OPENAI_API_KEY).toBe("***REDACTED***");
+    expect(res.body.runtimeConfig.ANTHROPIC_API_KEY).toBe("***REDACTED***");
+    expect(JSON.stringify(res.body)).not.toContain("sk-live-do-not-leak");
+  });
+
+  it("GET /api/agents/:id with {type:'secret_ref'} env binding → envelope passes through unchanged", async () => {
+    currentAccessCanUser = true;
+    const secretRefAgent = {
+      ...targetAgent,
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-001", version: 3 },
+        },
+      },
+      runtimeConfig: {},
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) {
+        return { ...baseAgent, id: peerAgentId, permissions: { canCreateAgents: true } };
+      }
+      if (id === agentId) return { ...secretRefAgent };
+      return null;
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId,
+      runId: "run-peer-secretref",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.OPENAI_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-001",
+      version: 3,
+    });
   });
 });
