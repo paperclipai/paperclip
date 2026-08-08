@@ -594,6 +594,105 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows credential metadata grants for active responsible-user JWT and key actors", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialMetadata");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:view_metadata");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const decideFor = (source: "agent_jwt" | "agent_key") => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source,
+      },
+      action: "credentials:view_metadata" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    await expect(decideFor("agent_jwt")).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+    });
+    await expect(decideFor("agent_key")).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+    });
+  });
+
+  it("fails closed for credential metadata without an agent grant or active same-company responsible user", async () => {
+    const company = await createCompany(db, "ResponsibleUserCredentialMetadataDenied");
+    const otherCompany = await createCompany(db, "ResponsibleUserCredentialMetadataOther");
+    const actorAgent = await createAgent(db, company.id);
+    const activeUserId = await createUser(db);
+    const inactiveUserId = await createUser(db);
+    const crossCompanyUserId = await createUser(db);
+    await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: activeUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: inactiveUserId,
+        status: "inactive",
+        membershipRole: "operator",
+      },
+      {
+        companyId: otherCompany.id,
+        principalType: "user",
+        principalId: crossCompanyUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+    ]);
+
+    const decideFor = (onBehalfOfUserId: string, source: "agent_jwt" | "agent_key") => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId,
+        source,
+      },
+      action: "credentials:view_metadata" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    await expect(decideFor(activeUserId, "agent_jwt")).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "credentials:view_metadata");
+
+    await expect(decideFor(`missing-${randomUUID()}`, "agent_key")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor(inactiveUserId, "agent_jwt")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+    await expect(decideFor(crossCompanyUserId, "agent_key")).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+    });
+  });
+
   it("denies cross-company agent decisions before grant evaluation", async () => {
     const sourceCompany = await createCompany(db, "Source");
     const targetCompany = await createCompany(db, "Target");

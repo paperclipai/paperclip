@@ -117,6 +117,60 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
+  function serializeSecretMetadata(secret: Awaited<ReturnType<typeof svc.list>>[number]) {
+    return {
+      id: secret.id,
+      companyId: secret.companyId,
+      scope: secret.scope,
+      ownerUserId: secret.ownerUserId,
+      userSecretDefinitionId: secret.userSecretDefinitionId,
+      key: secret.key,
+      name: secret.name,
+      provider: secret.provider,
+      status: secret.status,
+      managedMode: secret.managedMode,
+      externalRef: secret.externalRef,
+      providerConfigId: secret.providerConfigId,
+      providerMetadata: secret.providerMetadata,
+      latestVersion: secret.latestVersion,
+      description: secret.description,
+      lastResolvedAt: secret.lastResolvedAt,
+      lastRotatedAt: secret.lastRotatedAt,
+      deletedAt: secret.deletedAt,
+      createdByAgentId: secret.createdByAgentId,
+      createdByUserId: secret.createdByUserId,
+      createdAt: secret.createdAt,
+      updatedAt: secret.updatedAt,
+      referenceCount: secret.referenceCount,
+    };
+  }
+
+  function serializeGrantedSecretMetadata(secret: Awaited<ReturnType<typeof svc.list>>[number]) {
+    return {
+      id: secret.id,
+      name: secret.name,
+      provider: secret.provider,
+      // Company rows may not have ownerUserId; audit exports use the creator as the accountable owner.
+      owner: secret.ownerUserId ?? secret.createdByUserId ?? secret.createdByAgentId ?? null,
+      createdAt: secret.createdAt,
+      lastUsedAt: secret.lastResolvedAt,
+    };
+  }
+
+  async function assertCanReadCredentialMetadata(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "credentials:view_metadata",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
+  }
+
 
   async function assertCanCreateCompanySecret(req: Parameters<typeof assertBoard>[0], companyId: string) {
     if (req.actor.type === "board") {
@@ -628,11 +682,12 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   });
 
   router.get("/companies/:companyId/secrets", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanReadCredentialMetadata(req, companyId);
     const secrets = await svc.list(companyId);
-    res.json(secrets);
+    res.json(req.actor.type === "board"
+      ? secrets.map(serializeSecretMetadata)
+      : secrets.map(serializeGrantedSecretMetadata));
   });
 
   router.get("/companies/:companyId/user-secret-definitions", async (req, res) => {

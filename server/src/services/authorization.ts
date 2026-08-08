@@ -543,6 +543,26 @@ function activeResponsibleUserCanAuthorizeAgentGrantedCredentialWrite(
   );
 }
 
+function activeResponsibleUserCanAuthorizeAgentGrantedCredentialMetadata(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+  agentDecision: AuthorizationDecision,
+  actorAgentId: string | null | undefined,
+) {
+  // Credential metadata is a read-only, agent-scoped audit grant. The bound
+  // user remains an active same-company accountability check, but does not
+  // need an identical user grant.
+  return Boolean(
+    action === "credentials:view_metadata" &&
+    membership &&
+    membership.status === "active" &&
+    agentDecision.allowed &&
+    agentDecision.reason === "allow_explicit_grant" &&
+    agentDecision.grant?.principalType === "agent" &&
+    agentDecision.grant.principalId === actorAgentId &&
+    agentDecision.grant.permissionKey === "credentials:view_metadata",
+  );
+}
 function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: string) {
   return scope?.[key] === true;
 }
@@ -2310,6 +2330,16 @@ export function authorizationService(db: Db) {
       return agentDecision;
     }
 
+    if (
+      activeResponsibleUserCanAuthorizeAgentGrantedCredentialMetadata(
+        input.action,
+        snapshot.activeMembership,
+        agentDecision,
+        input.actor.agentId,
+      )
+    ) {
+      return agentDecision;
+    }
     const userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,

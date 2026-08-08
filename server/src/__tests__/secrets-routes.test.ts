@@ -19,6 +19,7 @@ const mockSecretService = vi.hoisted(() => ({
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
   getByKey: vi.fn(),
+  list: vi.fn(),
   create: vi.fn(),
   rotate: vi.fn(),
   update: vi.fn(),
@@ -100,6 +101,109 @@ describe("secret routes", () => {
         },
       ],
     });
+  });
+
+  it("returns exactly approved credential metadata to an explicitly granted agent", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true, explanation: "Granted" });
+    mockSecretService.list.mockResolvedValue([{
+      id: "secret-1",
+      companyId: "company-1",
+      scope: "company",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      ownerUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: "creator-agent",
+      createdAt: new Date("2026-04-11T00:00:00.000Z"),
+      lastResolvedAt: new Date("2026-04-12T00:00:00.000Z"),
+      externalRef: "should-not-leak",
+      providerMetadata: { token: "should-not-leak" },
+      providerConfigId: "should-not-leak",
+      latestVersion: 7,
+      encryptedValue: "should-not-leak",
+    }]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    })).get("/api/companies/company-1/secrets");
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ agentId: "agent-1", runId: "run-1" }),
+      action: "credentials:view_metadata",
+      resource: { type: "company", companyId: "company-1" },
+    });
+    expect(Object.keys(res.body[0])).toEqual(["id", "name", "provider", "owner", "latestVersion", "createdAt", "lastUsedAt"]);
+    expect(res.body[0]).toEqual({
+      id: "secret-1",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      owner: "local-board",
+      latestVersion: 7,
+      createdAt: "2026-04-11T00:00:00.000Z",
+      lastUsedAt: "2026-04-12T00:00:00.000Z",
+    });
+  });
+
+  it("keeps the board company-secret metadata shape unchanged", async () => {
+    const secret = {
+      id: "secret-1",
+      companyId: "company-1",
+      scope: "company",
+      ownerUserId: null,
+      userSecretDefinitionId: null,
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef: "external-ref",
+      providerConfigId: "config-1",
+      providerMetadata: { region: "us-east-1" },
+      latestVersion: 1,
+      description: "Board-visible metadata",
+      lastResolvedAt: null,
+      lastRotatedAt: null,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      createdAt: new Date("2026-04-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-12T00:00:00.000Z"),
+      referenceCount: 2,
+    };
+    mockSecretService.list.mockResolvedValue([secret]);
+
+    const res = await request(createApp()).get("/api/companies/company-1/secrets");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toEqual({
+      ...secret,
+      createdAt: "2026-04-11T00:00:00.000Z",
+      updatedAt: "2026-04-12T00:00:00.000Z",
+    });
+  });
+
+  it("denies ungranted and cross-company agent company-secret reads before listing", async () => {
+    const ungranted = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    })).get("/api/companies/company-1/secrets");
+    expect(ungranted.status).toBe(403);
+    expect(mockSecretService.list).not.toHaveBeenCalled();
+
+    const crossCompany = await request(createApp({
+      type: "agent",
+      agentId: "agent-2",
+      companyId: "company-2",
+      runId: "run-2",
+    })).get("/api/companies/company-1/secrets");
+    expect(crossCompany.status).toBe(403);
+    expect(mockSecretService.list).not.toHaveBeenCalled();
   });
 
   it("allows only a granted run-bound agent JWT to create a company secret without exposing its value", async () => {

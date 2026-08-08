@@ -971,6 +971,7 @@ export const PERMISSION_KEYS = [
   "users:invite",
   "users:manage_permissions",
   "credentials:write",
+  "credentials:view_metadata",
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
