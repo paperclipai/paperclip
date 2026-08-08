@@ -5,12 +5,21 @@ const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   create: vi.fn(),
   terminate: vi.fn(),
+  getById: vi.fn(),
+}));
+
+const mockSecretService = vi.hoisted(() => ({
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: vi.fn(() => mockSecretService),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -26,13 +35,13 @@ type ApprovalRecord = {
   requestedByAgentId: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, payload: Record<string, unknown> = { agentId: "agent-1" }): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
     type: "hire_agent",
     status,
-    payload: { agentId: "agent-1" },
+    payload,
     requestedByAgentId: "requester-1",
   };
 }
@@ -61,6 +70,8 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAgentService.getById.mockResolvedValue({ id: "agent-1", adapterConfig: {} });
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -165,5 +176,85 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("approvalService hire secret bindings (COD-362)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
+    mockAgentService.create.mockResolvedValue({ id: "agent-created" });
+    mockAgentService.terminate.mockResolvedValue(undefined);
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
+    mockNotifyHireApproved.mockResolvedValue(undefined);
+  });
+
+  it("writes secret bindings on the activatePendingApproval branch (approval carries an agentId)", async () => {
+    const approved = createApproval("approved", { agentId: "agent-1" });
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const env = { OMNI_KEY: { type: "secret_ref", secretId: "sec-omni", version: "latest" } };
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      adapterConfig: { env },
+    });
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockAgentService.getById).toHaveBeenCalledWith("agent-1");
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledTimes(1);
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "agent", targetId: "agent-1" },
+      env,
+    );
+  });
+
+  it("writes secret bindings on the create branch (approval has no agentId)", async () => {
+    const approved = createApproval("approved", {
+      name: "New Agent",
+      role: "general",
+      adapterType: "claude_local",
+    });
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const env = { OMNI_KEY: { type: "secret_ref", secretId: "sec-omni", version: "latest" } };
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-created",
+      companyId: "company-1",
+      adapterConfig: { env },
+    });
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    expect(mockAgentService.getById).toHaveBeenCalledWith("agent-created");
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "agent", targetId: "agent-created" },
+      env,
+    );
+  });
+
+  it("does not call the secret sync when the hired agent has no env", async () => {
+    const approved = createApproval("approved", { agentId: "agent-1" });
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      adapterConfig: {},
+    });
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.approve("approval-1", "board", "ship it");
+
+    expect(mockSecretService.syncEnvBindingsForTarget).not.toHaveBeenCalled();
   });
 });
