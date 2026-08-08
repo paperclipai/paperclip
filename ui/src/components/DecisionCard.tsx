@@ -164,18 +164,52 @@ function executionRow(
   }
 }
 
-function DecisionLanguageSummary({ decision }: { decision: Decision }) {
+function effectConsequence(
+  effect: DecisionEffect,
+  resolveIssue: (issueId: string) => DecisionIssueRef | null,
+): string {
+  const target = issueLabel(resolveIssue(effect.targetIssueId), effect.targetIssueId);
+  switch (effect.type) {
+    case "comment_on_issue":
+      return `This will add a comment to ${target}.`;
+    case "create_issue": {
+      const title = isActionCardTechnicalText(effect.draft.title) ? null : effect.draft.title.trim();
+      return title ? `This will create the task “${title}” under ${target}.` : `This will create a new task under ${target}.`;
+    }
+    case "update_issue_status":
+      return `This will set ${target} to ${humanStatus(effect.status)}.`;
+    case "assign_issue":
+      return `This will assign ${target} to the selected responsible person.`;
+    case "resolve_blocker":
+      return `This will remove ${pluralize(effect.removeBlockedByIssueIds.length, "blocker")} from ${target}.`;
+    case "cancel_issue_tree":
+      return `This will cancel ${target} and its related work.`;
+  }
+}
+
+function DecisionLanguageSummary({
+  decision,
+  resolveIssue,
+}: {
+  decision: Decision;
+  resolveIssue: (issueId: string) => DecisionIssueRef | null;
+}) {
+  const consequence = decision.options
+    .flatMap((option) => option.effects)
+    .map((effect) => effectConsequence(effect, resolveIssue))
+    .at(0);
   const language = buildActionCardLanguage({
     family: "request_confirmation",
-    prompt: decision.title,
+    title: decision.title,
+    consequence,
     primaryLabel: decision.options[0]?.label,
     safetyFacts: decision.options.some((option) => isDestructiveOption(option))
       ? ["This action can permanently change or cancel work."]
       : [],
     technicalDetails: decision.options.flatMap((option) => [
       option.id,
-      ...option.effects.flatMap((effect) => [effect.type, effect.targetIssueId]),
-    ]),
+      ...option.effects.map((effect) => JSON.stringify(effect)),
+    ]).concat(isActionCardTechnicalText(decision.body) ? [decision.body] : []),
   });
 
   return (
@@ -331,8 +365,7 @@ export function DecisionCard({
     >
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <DecisionLanguageSummary decision={decision} />
-        <h3 className="min-w-0 flex-1 text-base font-semibold text-foreground">{decision.title}</h3>
+        <DecisionLanguageSummary decision={decision} resolveIssue={(issueId) => resolveIssue?.(issueId) ?? null} />
         <div className="flex shrink-0 items-center gap-1.5">
           {open && hasCancelTree && (
             <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE.destructive)}>
@@ -365,7 +398,7 @@ export function DecisionCard({
       </p>
 
       {/* Body */}
-      {decision.body?.trim() && (
+      {decision.body?.trim() && !isActionCardTechnicalText(decision.body) && (
         <div className="mt-3 text-sm leading-6 text-foreground/90">
           <MarkdownBody>{decision.body}</MarkdownBody>
         </div>
@@ -465,12 +498,14 @@ export function DecisionCard({
                   )}
                   {option.effects.length > 0 && (
                     <div className={cn(
-                      "mt-2 text-xs",
+                      "mt-2 space-y-1 text-xs",
                       destructive ? "text-rose-700 dark:text-rose-300" : "text-muted-foreground",
                     )}>
-                      {destructive
-                        ? "This option will cancel the selected work and its sub-tasks."
-                        : "This option applies the proposed change."}
+                      {option.effects.map((effect) => (
+                        <div key={`${effect.type}-${effect.targetIssueId}`}>
+                          {effectConsequence(effect, resolveIssue)}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </button>

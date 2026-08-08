@@ -1,4 +1,5 @@
 export type ActionCardFamily =
+  | "attention"
   | "request_confirmation"
   | "request_checkbox_confirmation"
   | "ask_user_questions"
@@ -35,6 +36,13 @@ const MACHINE_LANGUAGE = /(?:\/api\/|https?:\/\/|\bAPI\b|\b(?:POST|PUT|PATCH|DEL
 const SAFETY_LANGUAGE = /(?:cost|price|budget|token|delete|deletion|remove|external|outside the company|private|privacy|personal|access|permission|send|write|irreversible|cannot be undone|permanent)/i;
 
 const DEFAULTS: Record<ActionCardFamily, Omit<ActionCardLanguage, "safetyFacts" | "technicalDetails">> = {
+  attention: {
+    decision: "Review why this item needs attention.",
+    consequence: "Opening it shows the current state and the next action.",
+    nonEffect: "Reviewing it does not approve or change the item.",
+    primaryAction: "Review item",
+    secondaryAction: null,
+  },
   request_confirmation: {
     decision: "Choose whether to approve this request.",
     consequence: "Agreeing will let the responsible agent continue with the proposed action.",
@@ -76,11 +84,11 @@ function unique(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-function isMachineText(value: string | null | undefined): value is string {
+function isMachineText(value: string | null | undefined): boolean {
   return Boolean(value?.trim() && MACHINE_LANGUAGE.test(value));
 }
 
-export function isActionCardTechnicalText(value: string | null | undefined): value is string {
+export function isActionCardTechnicalText(value: string | null | undefined): boolean {
   return isMachineText(value);
 }
 
@@ -143,7 +151,7 @@ export function buildActionCardLanguage(input: ActionCardLanguageInput): ActionC
   const sourceValues = [input.title, input.prompt, input.summary, input.consequence, input.nonEffect];
   const technicalDetails = unique([
     ...(input.technicalDetails ?? []),
-    ...sourceValues.filter(isMachineText),
+    ...sourceValues.filter((value): value is string => Boolean(value && isMachineText(value))),
   ]);
   const explicitConsequence = input.consequence?.trim();
   const explicitNonEffect = input.nonEffect?.trim();

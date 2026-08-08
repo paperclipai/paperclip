@@ -30,7 +30,11 @@ import {
   sourceMeta,
 } from "../lib/attention";
 import { isTrainable } from "../lib/decisionTraining";
-import { buildActionCardLanguage, isActionCardTechnicalText } from "../lib/action-card-language";
+import {
+  buildActionCardLanguage,
+  isActionCardTechnicalText,
+  type ActionCardFamily,
+} from "../lib/action-card-language";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { StatusGlyph } from "./StatusGlyph";
@@ -52,6 +56,23 @@ import { DecisionResolver } from "./DecisionResolver";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+
+function attentionActionCardFamily(item: AttentionItem): ActionCardFamily {
+  if (item.sourceKind === "issue_thread_interaction") {
+    switch (item.detail?.kind) {
+      case "confirmation": return "request_confirmation";
+      case "checkbox_confirmation": return "request_checkbox_confirmation";
+      case "questions": return "ask_user_questions";
+      case "suggested_tasks": return "suggest_tasks";
+      case "item_verdicts": return "request_item_verdicts";
+      default: return "attention";
+    }
+  }
+  if (item.sourceKind === "approval" || item.sourceKind === "decision" || item.sourceKind === "join_request") {
+    return "request_confirmation";
+  }
+  return "attention";
+}
 
 // Decision-action buttons: a comfortable tap target when the row is narrow
 // (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
@@ -135,12 +156,13 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const actionCardLanguage = buildActionCardLanguage({
-    family: item.sourceKind === "issue_thread_interaction" ? "request_confirmation" : "request_confirmation",
+    family: attentionActionCardFamily(item),
     prompt: item.subject.title,
     consequence: item.whyNow,
     safetyFacts: [item.whyNow, detailLine],
     technicalDetails: [
       item.subject.id,
+      ...(isActionCardTechnicalText(detailLine) ? [detailLine] : []),
       ...Object.entries(item.subject.metadata ?? {}).map(([key, value]) => `${key}=${String(value)}`),
     ],
   });
@@ -405,7 +427,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <span className="line-clamp-2 text-sm font-medium text-foreground" title={isActionCardTechnicalText(item.subject.title) ? undefined : item.subject.title ?? undefined}>
           {isActionCardTechnicalText(item.subject.title) ? meta.label : item.subject.title ?? meta.label}
         </span>
-        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+        {!isActionCardTechnicalText(detailLine) ? (
+          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+        ) : null}
       </div>
 
       {/* Collapsed-only content. It has no counterpart to morph into — the

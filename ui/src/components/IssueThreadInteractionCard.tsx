@@ -258,10 +258,13 @@ function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCa
       return {
         family: interaction.kind,
         title: interaction.payload.title,
-        technicalDetails: interaction.payload.questions.flatMap((question) => [
-          question.id,
-          ...question.options.map((option) => option.id),
-        ]),
+        technicalDetails: [
+          ...(isActionCardTechnicalText(interaction.title) ? [interaction.title] : []),
+          ...interaction.payload.questions.flatMap((question) => [
+            question.id,
+            ...question.options.map((option) => option.id),
+          ]),
+        ],
         submitLabel: interaction.payload.submitLabel,
       };
     case "request_confirmation": {
@@ -3370,6 +3373,10 @@ export function IssueThreadInteractionCard({
   const visibleSummary = isActionCardTechnicalText(interaction.summary)
     ? null
     : interaction.summary;
+  const visibleQuestionPayloadTitle =
+    interaction.kind === "ask_user_questions" && !isActionCardTechnicalText(interaction.payload.title)
+      ? interaction.payload.title
+      : null;
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -3408,7 +3415,7 @@ export function IssueThreadInteractionCard({
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
+                  ? visibleQuestionPayloadTitle ?? "Questions for the operator"
                 : interaction.kind === "request_checkbox_confirmation"
                   ? "Checkbox confirmation requested"
                   : isToolAction

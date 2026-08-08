@@ -57,6 +57,39 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => root.unmount());
   });
 
+  it("keeps technical risks in disclosure while retaining their visible safety fact", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{
+            title: "Approve the export",
+            risks: [
+              "The export may cost money.",
+              "POST /api/exports returned error_code=permission_denied while sending private data externally.",
+            ],
+          }}
+        />,
+      );
+    });
+
+    const visibleRisks = container.querySelector("ul");
+    expect(visibleRisks?.textContent).toContain("The export may cost money.");
+    expect(visibleRisks?.textContent).not.toContain("error_code=permission_denied");
+    expect(container.textContent).toContain("This involves private information being sent outside the company.");
+    const technicalTrigger = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Technical details"),
+    );
+    act(() => technicalTrigger?.click());
+    const details = container.querySelector("[data-action-card-technical-details]");
+    expect(details?.textContent).toContain("POST /api/exports");
+    expect(details?.textContent).toContain("error_code=permission_denied");
+
+    act(() => root.unmount());
+  });
+
   it("renders request_board_approval payload fields without falling back to raw JSON", () => {
     const root = createRoot(container);
 

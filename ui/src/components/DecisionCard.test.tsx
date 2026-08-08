@@ -133,7 +133,52 @@ describe("DecisionCard", () => {
     expect(el.textContent).toContain("Choose whether to approve this request.");
     expect(el.textContent).toContain("Agreeing will let the responsible agent continue");
     expect(el.textContent).toContain("Technical details");
-    expect(el.textContent).not.toContain("targetIssueId");
+    expect(Array.from(el.querySelectorAll("p, button, span"))
+      .filter((node) => !node.closest("details"))
+      .map((node) => node.textContent)
+      .join(" ")).not.toContain("targetIssueId");
+    expect(el.querySelector("h3")).toBeNull();
+  });
+
+  it("keeps technical title, body, and effect metadata in disclosure while showing each structured consequence", () => {
+    const technicalTitle = "POST /api/decisions/decision-1";
+    const technicalBody = "effectType=update_issue_status targetIssueId=issue-target";
+    const el = render({
+      decision: mkDecision({
+        title: technicalTitle,
+        body: technicalBody,
+        options: [{
+          id: "apply-effects",
+          label: "Apply the changes",
+          effects: [
+            { type: "comment_on_issue", targetIssueId: "issue-target", staleness: "lenient", bodyMarkdown: "POST /api/comments" },
+            { type: "create_issue", targetIssueId: "issue-target", staleness: "lenient", draft: { title: "Follow-up" } },
+            { type: "update_issue_status", targetIssueId: "issue-target", staleness: "lenient", status: "done" },
+            { type: "assign_issue", targetIssueId: "issue-target", staleness: "lenient", assigneeAgentId: "agent-1" },
+            { type: "resolve_blocker", targetIssueId: "issue-target", staleness: "lenient", removeBlockedByIssueIds: ["issue-origin"] },
+            { type: "cancel_issue_tree", targetIssueId: "issue-target", staleness: "strict", reasonComment: "cleanup" },
+          ],
+        }],
+      }),
+    });
+
+    const visibleCopy = Array.from(el.querySelectorAll("p, button, span"))
+      .filter((node) => !node.closest("details"))
+      .map((node) => node.textContent)
+      .join(" ");
+    const disclosure = el.querySelector("[data-action-card-technical-details]");
+
+    expect(visibleCopy).not.toContain(technicalTitle);
+    expect(visibleCopy).not.toContain(technicalBody);
+    expect(visibleCopy).toContain("add a comment to PAP-456");
+    expect(visibleCopy).toContain("create the task “Follow-up” under PAP-456");
+    expect(visibleCopy).toContain("set PAP-456 to done");
+    expect(visibleCopy).toContain("assign PAP-456");
+    expect(visibleCopy).toContain("remove 1 blocker from PAP-456");
+    expect(visibleCopy).toContain("cancel PAP-456 and its related work");
+    expect(disclosure?.textContent).toContain(technicalTitle);
+    expect(disclosure?.textContent).toContain(technicalBody);
+    expect(disclosure?.textContent).toContain("comment_on_issue");
   });
 
   it("renders a pending decision with provenance, technical effect details and dismiss", () => {

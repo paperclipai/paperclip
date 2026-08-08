@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildActionCardLanguage,
+  isActionCardTechnicalText,
   type ActionCardLanguageInput,
 } from "./action-card-language";
 
@@ -40,6 +41,35 @@ const technicalSamples: ActionCardLanguageInput[] = [
 ];
 
 describe("buildActionCardLanguage", () => {
+  it("keeps plain strings usable after the technical-text check", () => {
+    const label: string = "Approve this request";
+
+    if (!isActionCardTechnicalText(label)) {
+      expect(label.toLowerCase()).toBe("approve this request");
+    }
+  });
+
+  it("keeps technical title, body, and external-write risk text in disclosure while exposing its safety fact", () => {
+    const title = "POST /api/exports for runId=abc123";
+    const body = "connector_error=permission_denied";
+    const risk = "POST an external API write to send private customer data outside the company.";
+    const language = buildActionCardLanguage({
+      family: "request_confirmation",
+      title,
+      prompt: body,
+      safetyFacts: [risk],
+    });
+
+    expect(isActionCardTechnicalText(title)).toBe(true);
+    expect(isActionCardTechnicalText(body)).toBe(true);
+    expect(language.technicalDetails).toEqual(expect.arrayContaining([title, body]));
+    expect(language.decision).not.toContain("/api/");
+    expect(language.decision).not.toContain("connector_error");
+    expect(language.safetyFacts).toContain(
+      "This involves private information being sent outside the company.",
+    );
+  });
+
   it.each(technicalSamples)(
     "leads $family with a board decision and keeps machine wording technical",
     (sample) => {

@@ -3,12 +3,13 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { RequestConfirmationInteraction } from "@/lib/issue-thread-interactions";
+import type { IssueThreadInteraction, RequestConfirmationInteraction } from "@/lib/issue-thread-interactions";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TaskChatInteractionCard } from "./TaskChatInteractionCard";
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import type { TaskChatInteractionItem } from "./task-chat-model";
+import { pendingAskUserQuestionsInteraction } from "../../fixtures/issueThreadInteractionFixtures";
 
 function createRequestConfirmation(
   overrides: Partial<RequestConfirmationInteraction> = {},
@@ -38,9 +39,7 @@ function createRequestConfirmation(
   };
 }
 
-function interactionItem(
-  interaction: RequestConfirmationInteraction,
-): TaskChatInteractionItem {
+function interactionItem(interaction: IssueThreadInteraction): TaskChatInteractionItem {
   return { id: `interaction:${interaction.id}`, kind: "interaction", interaction };
 }
 
@@ -98,6 +97,35 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).toContain("Choose whether to approve this request.");
     expect(container.textContent).toContain("Agreeing will let the responsible agent continue");
     expect(container.textContent).toContain("Technical details");
+  });
+
+  it("keeps the questions title fallback and disclosure behavior in task chat", () => {
+    const interaction = {
+      ...pendingAskUserQuestionsInteraction,
+      title: "POST /api/interactions/interaction-questions-default",
+      payload: {
+        ...pendingAskUserQuestionsInteraction.payload,
+        title: "tool_call=ask_user_questions runId=abc123",
+      },
+    };
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(interaction)} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Questions for the operator");
+    expect(container.textContent).not.toContain("tool_call=ask_user_questions");
+    const trigger = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Technical details"),
+    );
+    flushSync(() => (trigger as HTMLButtonElement).click());
+    expect(container.querySelector("[data-action-card-technical-details]")?.textContent)
+      .toContain("tool_call=ask_user_questions runId=abc123");
   });
 
   it("puts the primary CTA on the right via a reversed action row", () => {

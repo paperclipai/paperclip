@@ -170,6 +170,8 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
         .map((value) => value.trim())
         .filter(Boolean)
     : [];
+  const visibleRisks = risks.filter((risk) => !isActionCardTechnicalText(risk));
+  const technicalRisks = risks.filter((risk) => isActionCardTechnicalText(risk));
   const title = firstNonEmptyString(payload.title);
   const summary = firstNonEmptyString(payload.summary);
   const recommendedAction = firstNonEmptyString(payload.recommendedAction);
@@ -181,7 +183,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
     consequence: nextActionOnApproval,
     primaryLabel: recommendedAction,
     safetyFacts: risks,
-    technicalDetails: [title, summary, recommendedAction, nextActionOnApproval].filter(
+    technicalDetails: [...technicalRisks, title, summary, recommendedAction, nextActionOnApproval].filter(
       (value): value is string => Boolean(value && isActionCardTechnicalText(value)),
     ),
   });
@@ -240,11 +242,11 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="mt-1 leading-6 text-foreground">{visibleNextAction}</p>
         </div>
       )}
-      {risks.length > 0 && (
+      {visibleRisks.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Risks</p>
           <ul className="space-y-1 text-sm text-muted-foreground">
-            {risks.map((risk) => (
+            {visibleRisks.map((risk) => (
               <li key={risk} className="flex items-start gap-2">
                 <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
                 <span className="leading-6">{risk}</span>

@@ -105,6 +105,28 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toMatch(/will not|not change|leave every/);
   });
 
+  it("uses a stable questions heading when interaction and payload titles are technical", async () => {
+    const interaction = {
+      ...pendingAskUserQuestionsInteraction,
+      title: "POST /api/interactions/interaction-1",
+      payload: {
+        ...pendingAskUserQuestionsInteraction.payload,
+        title: "tool_call=ask_user_questions runId=abc123",
+      },
+    };
+    const host = renderCard({ interaction });
+
+    expect(host.textContent).toContain("Questions for the operator");
+    expect(host.textContent).not.toContain("tool_call=ask_user_questions");
+    const trigger = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Technical details"),
+    );
+    await act(() => (trigger as HTMLButtonElement).click());
+    const details = host.querySelector("[data-action-card-technical-details]");
+    expect(details?.textContent).toContain("POST /api/interactions/interaction-1");
+    expect(details?.textContent).toContain("tool_call=ask_user_questions runId=abc123");
+  });
+
   it("exposes pending question options as selectable radio and checkbox controls", () => {
     const host = renderCard({
       interaction: pendingAskUserQuestionsInteraction,

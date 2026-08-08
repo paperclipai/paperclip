@@ -152,6 +152,52 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("effectType");
   });
 
+  it("uses neutral attention language and hides a technical state detail until disclosure", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          subject: { ...buildItem().subject, title: "GET /api/reviews/runId=abc123", metadata: {} },
+          whyNow: "A review needs your attention.",
+          detail: { kind: "generic", summaryExcerpt: "GET /api/runs/runId=abc123 returned error_code=stalled", images: [] },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    expect(el.textContent).toContain("Review why this item needs attention.");
+    expect(el.textContent).not.toContain("Choose whether to approve this request.");
+    expect(el.textContent).not.toContain("error_code=stalled");
+    const trigger = Array.from(el.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Technical details"),
+    );
+    act(() => trigger?.click());
+    expect(el.querySelector("[data-action-card-technical-details]")?.textContent).toContain("error_code=stalled");
+  });
+
+  it("uses question language only for a questions interaction detail", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: { ...buildItem().subject, kind: "interaction", title: "POST /api/questions", metadata: {} },
+          detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which option?", images: [] },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    expect(el.textContent).toContain("Answer the questions so the work can move forward.");
+    expect(el.textContent).not.toContain("Choose whether to approve this request.");
+  });
+
   it("renders an inline approval resolver when expanded", () => {
     const el = render(
       <AttentionQueueRow
