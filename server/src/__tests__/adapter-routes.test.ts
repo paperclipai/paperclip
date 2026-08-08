@@ -1,5 +1,8 @@
 import express from "express";
 import request from "supertest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -43,6 +46,9 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
   }),
 };
 
+let pluginsRoot: string;
+let fakeHotInstallDir: string;
+let fakeCodexOverrideDir: string;
 let registerServerAdapter: typeof import("../adapters/registry.js").registerServerAdapter;
 let unregisterServerAdapter: typeof import("../adapters/registry.js").unregisterServerAdapter;
 let findServerAdapter: typeof import("../adapters/registry.js").findServerAdapter;
@@ -94,7 +100,39 @@ describe("adapter routes", () => {
     mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
     mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
     mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+    // The install/reload routes run the plugin-load validator before
+    // calling the (mocked) loader, so the plugins dir and any fake
+    // local-path fixtures must be real directories on disk with a
+    // valid package.json declaring the paperclip-adapter-plugin
+    // keyword. Create both up front.
+    pluginsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-adapter-routes-test-"));
+    fakeHotInstallDir = path.join(pluginsRoot, "fake-hot-install-adapter");
+    fakeCodexOverrideDir = path.join(pluginsRoot, "fake-codex-override");
+    for (const dir of [fakeHotInstallDir, fakeCodexOverrideDir]) {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "package.json"),
+        JSON.stringify({
+          name: path.basename(dir),
+          version: "1.0.0",
+          keywords: ["paperclip-adapter-plugin"],
+          main: "./index.js",
+        }),
+      );
+      // Round-5 validator requires the entry file to exist (file-
+      // mutation bypass closure). Seed a benign entry so the test
+      // exercises the happy path; the plugin-loader mock short-
+      // circuits the actual import.
+      await fs.writeFile(
+        path.join(dir, "index.js"),
+        `export function createServerAdapter() { return { type: "fake_${path.basename(dir).replace(/[^a-z0-9]/gi, "_")}", configSchema: {} }; }`,
+      );
+      // Backdate mtime so the 2-second floor is satisfied.
+      const old = Date.now() / 1000 - 60;
+      await fs.utimes(path.join(dir, "package.json"), old, old);
+      await fs.utimes(path.join(dir, "index.js"), old, old);
+    }
+    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue(pluginsRoot);
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
     mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
@@ -120,10 +158,13 @@ describe("adapter routes", () => {
     registerServerAdapter(overridingConfigSchemaAdapter);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
+    if (pluginsRoot) {
+      await fs.rm(pluginsRoot, { recursive: true, force: true });
+    }
   });
 
   it("GET /api/adapters includes capabilities object for each adapter", async () => {
@@ -460,7 +501,7 @@ describe("adapter routes", () => {
     const app = createApp({ isInstanceAdmin: true });
     const res = await request(app)
       .post("/api/adapters/install")
-      .send({ packageName: "/tmp/fake-hot-install-adapter", isLocalPath: true });
+      .send({ packageName: fakeHotInstallDir, isLocalPath: true });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.type).toBe(HOT_INSTALL_TYPE);
@@ -492,7 +533,7 @@ describe("adapter routes", () => {
     const app = createApp({ isInstanceAdmin: true });
     const res = await request(app)
       .post("/api/adapters/install")
-      .send({ packageName: "/tmp/fake-codex-override", isLocalPath: true });
+      .send({ packageName: fakeCodexOverrideDir, isLocalPath: true });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.type).toBe("codex_local");

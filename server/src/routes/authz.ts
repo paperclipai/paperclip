@@ -72,6 +72,46 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+/**
+ * Agent-reachable variant of `assertInstanceAdmin`. Used by routes
+ * that must be callable from an agent session AND from an instance
+ * admin, but should NOT be reachable by ordinary company members
+ * (operator / viewer / member). Used by /api/adapters/install and
+ * /api/adapters/:type/reload after the constraint stack has been
+ * applied so an agent cannot use this to load arbitrary untrusted
+ * code.
+ *
+ * This helper is the auth half of the two-layer gate. The other
+ * half — the confused-deputy validator — lives in
+ * `services/adapter-plugin-validator.ts` and runs *after* this
+ * helper has accepted the actor but *before* any `import()` of the
+ * plugin code. Both gates run, in either order, and either failure
+ * short-circuits the load.
+ *
+ * Mechanics:
+ *  - board actor        → must be instance admin (local_implicit OR isInstanceAdmin)
+ *  - agent actor        → must have a companyId set; tenant isolation
+ *                          is enforced at the route level (each adapter
+ *                          install is bound to the agent's company)
+ *  - everything else     → 403
+ */
+export function assertAgentReachableInstanceAdmin(req: Request) {
+  if (req.actor.type === "agent") {
+    if (!req.actor.companyId) {
+      throw forbidden("Agent session has no companyId");
+    }
+    return;
+  }
+  if (req.actor.type === "board") {
+    assertBoard(req);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return;
+    }
+    throw forbidden("Instance admin access required");
+  }
+  throw forbidden("Agent or instance-admin access required");
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
