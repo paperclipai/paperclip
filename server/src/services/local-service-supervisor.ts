@@ -285,7 +285,7 @@ export async function findAdoptableLocalService(input: {
   return record;
 }
 
-async function readProcessGroupId(pid: number) {
+export async function readProcessGroupId(pid: number) {
   if (process.platform === "win32") return null;
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(pid)]);
