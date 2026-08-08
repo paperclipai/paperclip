@@ -419,12 +419,25 @@ export async function readLocalServicePortOwner(port: number) {
 }
 
 export async function readLocalServiceProcessCwd(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
-  try {
-    return await fs.readlink(`/proc/${pid}/cwd`);
-  } catch {
-    return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      return await fs.readlink(`/proc/${pid}/cwd`);
+    } catch {
+      return null;
+    }
   }
+  if (process.platform === "darwin") {
+    // No /proc on macOS; lsof -Fn prints the cwd as an "n"-prefixed field line.
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+      const cwdLine = stdout.split("\n").find((line) => line.startsWith("n"));
+      return cwdLine ? cwdLine.slice(1) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function isLocalServiceProcessInWorkspace(processCwd: string, workspaceCwd: string) {
