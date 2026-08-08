@@ -55,12 +55,14 @@ export class PaperclipApiClient {
   apiKey?: string;
   readonly runId?: string;
   readonly recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
+  readonly loopbackFallbackBase?: string;
 
   constructor(opts: ApiClientOptions) {
     this.apiBase = opts.apiBase.replace(/\/+$/, "");
     this.apiKey = opts.apiKey?.trim() || undefined;
     this.runId = opts.runId?.trim() || undefined;
     this.recoverAuth = opts.recoverAuth;
+    this.loopbackFallbackBase = computeLoopbackFallbackBase(this.apiBase);
   }
 
   get<T>(path: string, opts?: RequestOptions): Promise<T | null> {
@@ -101,8 +103,10 @@ export class PaperclipApiClient {
     init: RequestInit,
     opts?: RequestOptions,
     hasRetriedAuth = false,
+    usedLoopbackFallback = false,
   ): Promise<T | null> {
-    const url = buildUrl(this.apiBase, path);
+    const base = usedLoopbackFallback && this.loopbackFallbackBase ? this.loopbackFallbackBase : this.apiBase;
+    const url = buildUrl(base, path);
     const method = String(init.method ?? "GET").toUpperCase();
 
     const headers: Record<string, string> = {
@@ -129,6 +133,9 @@ export class PaperclipApiClient {
         headers,
       });
     } catch (error) {
+      if (this.loopbackFallbackBase && !usedLoopbackFallback) {
+        return this.request<T>(path, init, opts, hasRetriedAuth, true);
+      }
       throw new ApiConnectionError({
         apiBase: this.apiBase,
         path,
@@ -246,6 +253,21 @@ function formatConnectionCause(error: unknown): string | undefined {
   }
   const message = String(error).trim();
   return message || undefined;
+}
+
+function computeLoopbackFallbackBase(apiBase: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiBase);
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") {
+    return undefined; // already loopback; nothing to fall back to
+  }
+  parsed.hostname = "localhost";
+  return parsed.toString().replace(/\/+$/, "");
 }
 
 function toStringRecord(headers: HeadersInit | undefined): Record<string, string> {
