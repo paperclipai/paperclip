@@ -4,6 +4,16 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+/**
+ * Ceiling paperclip-server applies to every plugin RPC (MAX_RPC_TIMEOUT_MS in
+ * server/src/services/plugin-worker-manager.ts). A larger `timeoutMs` cannot
+ * take effect, and a validation warning would not reach the operator (the
+ * server only forwards warnings inside the error payload of a rejected config),
+ * so the schema rejects it rather than letting the host shorten it silently.
+ * Keep the manifest's JSON Schema `maximum` in step with this value.
+ */
+export const HOST_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -32,6 +42,27 @@ export const kubernetesProviderConfigSchema = z
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
+
+    /**
+     * RPC budget (ms) paperclip-server grants this environment's lease lifecycle
+     * calls (acquire / resume / release / realizeWorkspace / execute). The server
+     * reads the key off the driver config; without it the 30s default applies,
+     * which is tight for a first dispatch that bootstraps a whole tenant
+     * namespace (ServiceAccount, RBAC, quotas, network policies) and then waits
+     * on the runtime image pull. Declared here because the schema strips keys it
+     * does not know: an operator-set value would otherwise be dropped during
+     * normalization and never reach the server. Recommended: 180000 or more on
+     * clusters with slow first-dispatch bootstrap, up to HOST_MAX_RPC_TIMEOUT_MS.
+     */
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(
+        HOST_MAX_RPC_TIMEOUT_MS,
+        `timeoutMs must not exceed ${HOST_MAX_RPC_TIMEOUT_MS} ms: paperclip-server caps every plugin RPC at 15 minutes, so a larger budget cannot take effect`,
+      )
+      .optional(),
 
     /**
      * The adapter type that Jobs in this environment will run.

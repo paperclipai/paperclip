@@ -41,4 +41,29 @@ describe("wrapCommandWithEnv", () => {
     const out = wrapCommandWithEnv(["opencode"], { V: "a'b" });
     expect(out[2]).toContain("export V='a'\\''b';");
   });
+
+  describe("cwd", () => {
+    it("prefixes cd when a cwd is given and there is no env", () => {
+      expect(wrapCommandWithEnv(["ls", "-la"], null, "/workspace/repo")).toEqual([
+        "/bin/sh",
+        "-c",
+        "cd '/workspace/repo' && exec 'ls' '-la'",
+      ]);
+    });
+
+    it("changes directory before exporting the env", () => {
+      const out = wrapCommandWithEnv(["node", "run.js"], { FOO: "bar" }, "/workspace");
+      expect(out[2]).toBe("cd '/workspace' && export FOO='bar'; exec 'node' 'run.js'");
+    });
+
+    it("shell-escapes single quotes in the cwd", () => {
+      const out = wrapCommandWithEnv(["ls"], null, "/tmp/a'b");
+      expect(out[2]).toContain("cd '/tmp/a'\\''b' &&");
+    });
+
+    it("returns the command unchanged when there is no env and no cwd", () => {
+      expect(wrapCommandWithEnv(["ls"], null, null)).toEqual(["ls"]);
+      expect(wrapCommandWithEnv(["ls"], null, "   ")).toEqual(["ls"]);
+    });
+  });
 });
