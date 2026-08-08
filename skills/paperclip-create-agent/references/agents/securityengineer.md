@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # SecurityEngineer Agent Template
 
 Use this template when hiring security engineers who own security posture: threat-model systems, review auth/crypto/input handling, triage supply-chain and LLM-agent risk, and drive concrete remediations.
