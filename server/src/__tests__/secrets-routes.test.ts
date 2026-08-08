@@ -24,6 +24,7 @@ const mockSecretService = vi.hoisted(() => ({
   rotate: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  removeOwnedUnboundCompanySecret: vi.fn(),
   listUserSecretDefinitions: vi.fn(),
   createUserSecretDefinition: vi.fn(),
   updateUserSecretDefinition: vi.fn(),
@@ -1267,8 +1268,7 @@ describe("secret routes", () => {
       key: "agent_created_key",
     };
     mockSecretService.getById.mockResolvedValue(secret);
-    mockSecretService.listBindingReferences.mockResolvedValue([]);
-    mockSecretService.remove.mockResolvedValue(secret);
+    mockSecretService.removeOwnedUnboundCompanySecret.mockResolvedValue(secret);
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       explanation: "Granted",
@@ -1286,8 +1286,11 @@ describe("secret routes", () => {
       action: "credentials:write",
       resource: { type: "company", companyId: "company-1" },
     });
-    expect(mockSecretService.listBindingReferences).toHaveBeenCalledWith("company-1", secret.id);
-    expect(mockSecretService.remove).toHaveBeenCalledWith(secret.id);
+    expect(mockSecretService.removeOwnedUnboundCompanySecret).toHaveBeenCalledWith({
+      secretId: secret.id,
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1312,7 +1315,9 @@ describe("secret routes", () => {
       key: "agent_created_key",
     };
     mockSecretService.getById.mockResolvedValue(secret);
-    mockSecretService.listBindingReferences.mockResolvedValue([{ id: "bind-1" }]);
+    mockSecretService.removeOwnedUnboundCompanySecret.mockRejectedValue(
+      new HttpError(403, "Secret is still bound and cannot be deleted"),
+    );
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       explanation: "Granted",
@@ -1324,7 +1329,7 @@ describe("secret routes", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockSecretService.removeOwnedUnboundCompanySecret).toHaveBeenCalledOnce();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
@@ -1340,7 +1345,9 @@ describe("secret routes", () => {
       key: "agent_created_key",
     };
     mockSecretService.getById.mockResolvedValue(secret);
-    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockSecretService.removeOwnedUnboundCompanySecret.mockRejectedValue(
+      new HttpError(403, "Not an active agent-created paperclip_managed secret owned by this agent"),
+    );
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       explanation: "Granted",
@@ -1352,7 +1359,7 @@ describe("secret routes", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockSecretService.removeOwnedUnboundCompanySecret).toHaveBeenCalledOnce();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
@@ -1368,7 +1375,9 @@ describe("secret routes", () => {
       key: "imported_key",
     };
     mockSecretService.getById.mockResolvedValue(secret);
-    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    mockSecretService.removeOwnedUnboundCompanySecret.mockRejectedValue(
+      new HttpError(403, "Not an active agent-created paperclip_managed secret owned by this agent"),
+    );
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       explanation: "Granted",
@@ -1380,7 +1389,7 @@ describe("secret routes", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(mockSecretService.remove).not.toHaveBeenCalled();
+    expect(mockSecretService.removeOwnedUnboundCompanySecret).toHaveBeenCalledOnce();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 

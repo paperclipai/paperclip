@@ -710,11 +710,16 @@ export function secretService(db: Db) {
     actor?: { userId?: string | null; agentId?: string | null };
   };
 
-  async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
-    return source
+  async function getById(
+    id: string,
+    source: Pick<Db | DbTransaction, "select"> = db,
+    options?: { lockForUpdate?: boolean },
+  ) {
+    const query = source
       .select()
       .from(companySecrets)
-      .where(eq(companySecrets.id, id))
+      .where(eq(companySecrets.id, id));
+    return (options?.lockForUpdate ? query.for("update") : query)
       .then((rows) => rows[0] ?? null);
   }
 
@@ -941,8 +946,9 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     source: Pick<Db | DbTransaction, "select"> = db,
+    options?: { lockForUpdate?: boolean },
   ) {
-    const secret = await getById(secretId, source);
+    const secret = await getById(secretId, source, options);
     if (!secret) throw notFound("Secret not found");
     if (secret.status === "deleted") throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
@@ -2290,6 +2296,71 @@ export function secretService(db: Db) {
     }
     await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
     return secret;
+  }
+
+  async function reserveOwnedUnboundCompanySecretDeletion(input: {
+    secretId: string;
+    companyId: string;
+    agentId: string;
+  }) {
+    type ReservationResult = typeof companySecrets.$inferSelect;
+    const reserve = async (txDb: Db): Promise<ReservationResult> => {
+      const secret = await getById(input.secretId, txDb, { lockForUpdate: true });
+      if (!secret || secret.companyId !== input.companyId || secret.scope !== "company") {
+        throw notFound("Secret not found");
+      }
+      if (
+        secret.status !== "active" ||
+        secret.managedMode !== "paperclip_managed" ||
+        secret.createdByAgentId !== input.agentId
+      ) {
+        throw forbidden("Not an active agent-created paperclip_managed secret owned by this agent");
+      }
+      const binding = await txDb
+        .select({ id: companySecretBindings.id })
+        .from(companySecretBindings)
+        .where(and(
+          eq(companySecretBindings.companyId, input.companyId),
+          eq(companySecretBindings.secretId, input.secretId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (binding) {
+        throw forbidden("Secret is still bound and cannot be deleted");
+      }
+
+      const reserved = await txDb
+        .update(companySecrets)
+        .set({
+          key: `${secret.key}__deleted__${secret.id}`,
+          name: `${secret.name}__deleted__${secret.id}`,
+          status: "deleted",
+          deletedAt: secret.deletedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(companySecrets.id, secret.id), eq(companySecrets.status, "active")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!reserved) {
+        throw forbidden("Not an active agent-created paperclip_managed secret owned by this agent");
+      }
+      return secret;
+    };
+
+    const transaction = (db as unknown as {
+      transaction?: (callback: (tx: unknown) => Promise<ReservationResult>) => Promise<ReservationResult>;
+    }).transaction;
+    if (typeof transaction !== "function") return reserve(db);
+    return transaction.call(db, async (tx) => reserve(tx as Db));
+  }
+
+  async function removeOwnedUnboundCompanySecret(input: {
+    secretId: string;
+    companyId: string;
+    agentId: string;
+  }) {
+    await reserveOwnedUnboundCompanySecretDeletion(input);
+    return removeSecretInternal(input.secretId);
   }
 
   async function removeUserSecretDefinitionInternal(
@@ -3960,6 +4031,9 @@ export function secretService(db: Db) {
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
 
       await db.transaction(async (tx) => {
+        for (const secretId of [...new Set(normalizedRefs.map((ref) => ref.secretId))].sort()) {
+          await assertSecretInCompany(companyId, secretId, tx, { lockForUpdate: true });
+        }
         if (options?.replaceAll) {
           await tx
             .delete(companySecretBindings)
@@ -4221,7 +4295,7 @@ export function secretService(db: Db) {
           continue;
         }
         if (binding.type !== "secret_ref") continue;
-        await assertSecretInCompany(companyId, binding.secretId, bindingDb);
+        await assertSecretInCompany(companyId, binding.secretId, bindingDb, { lockForUpdate: true });
         const configPath = `${pathPrefix}.${key}`;
         assertClass3StaticLeaseAllowed({
           targetType: target.targetType,
@@ -4310,6 +4384,8 @@ export function secretService(db: Db) {
     },
 
     remove: removeSecretInternal,
+
+    removeOwnedUnboundCompanySecret,
 
     normalizeAdapterConfigForPersistence: async (
       companyId: string,

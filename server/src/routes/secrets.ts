@@ -1241,19 +1241,11 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     if (!agent) {
       throw forbidden("Run-bound agent JWT with responsible-user binding required");
     }
-    if (
-      existing.status !== "active" ||
-      existing.managedMode !== "paperclip_managed" ||
-      existing.createdByAgentId !== agent.agentId
-    ) {
-      throw forbidden("Not an active agent-created paperclip_managed secret owned by this agent");
-    }
-    const bindings = await svc.listBindingReferences(existing.companyId, existing.id);
-    if (bindings.length !== 0) {
-      throw forbidden("Secret is still bound and cannot be deleted");
-    }
-
-    const removed = await svc.remove(id);
+    const removed = await svc.removeOwnedUnboundCompanySecret({
+      secretId: id,
+      companyId: existing.companyId,
+      agentId: agent.agentId,
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;
