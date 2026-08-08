@@ -1,0 +1,14 @@
+version = 0.1
+
+[default]
+[default.build]
+[default.build.parameters]
+template_file = "template.yaml"
+cached = true
+parallel = true
+
+[default.local_invoke]
+[default.local_invoke.parameters]
+template_file = "template.yaml"
+event = "events/mock-event.json"
+parameter_overrides = "DeploymentStage=dev EntitlementsTableName=kinetica-entitlements EventBusName=default"

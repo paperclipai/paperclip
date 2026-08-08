@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Paperclip Ingest Middleware Lambda scaffold (KIN-942 / KIN-375 Phase C prep)
+
+Parameters:
+  DeploymentStage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  EntitlementsTableName:
+    Type: String
+    Default: kinetica-entitlements
+  EventBusName:
+    Type: String
+    Default: default
+  PaperclipApiUrl:
+    Type: String
+    Default: https://paperclip.example.internal/api
+
+Resources:
+  IngestMiddlewareDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub paperclip-ingest-dlq-${DeploymentStage}
+      MessageRetentionPeriod: 1209600
+
+  IngestMiddlewareFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub paperclip-ingest-middleware-${DeploymentStage}
+      Description: Middleware layer for Notion webhook fan-out into Paperclip tasks.
+      Runtime: nodejs20.x
+      Handler: handler.handler
+      CodeUri: src/
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          DEPLOYMENT_STAGE: !Ref DeploymentStage
+          ENTITLEMENTS_TABLE_NAME: !Ref EntitlementsTableName
+          PAPERCLIP_API_URL: !Ref PaperclipApiUrl
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt IngestMiddlewareDLQ.Arn
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EntitlementsTableName}
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EntitlementsTableName}/index/*
+        - Statement:
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt IngestMiddlewareDLQ.Arn
+      Events:
+        NotionWebhookEvent:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref EventBusName
+            Pattern:
+              source:
+                - kinetica.notion
+              detail-type:
+                - notion.webhook.received
+
+Outputs:
+  IngestMiddlewareFunctionArn:
+    Description: ARN of the ingest middleware Lambda function.
+    Value: !GetAtt IngestMiddlewareFunction.Arn
+  IngestMiddlewareDlqArn:
+    Description: ARN of DLQ for failed ingest middleware invocations.
+    Value: !GetAtt IngestMiddlewareDLQ.Arn
