@@ -74,12 +74,22 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(project: Project, onFieldUpdate: (field: string, data: Record<string, unknown>) => void) {
+function render(
+  project: Project,
+  onFieldUpdate: (field: string, data: Record<string, unknown>) => void,
+  onDelete?: (deleteFiles: boolean) => void,
+) {
   act(() => {
     root.render(
       <QueryClientProvider client={primedClient()}>
         <TooltipProvider>
-          <ProjectProperties project={project} onFieldUpdate={onFieldUpdate} getFieldSaveState={() => "idle"} onArchive={noop} />
+          <ProjectProperties
+            project={project}
+            onFieldUpdate={onFieldUpdate}
+            getFieldSaveState={() => "idle"}
+            onArchive={noop}
+            onDelete={onDelete}
+          />
         </TooltipProvider>
       </QueryClientProvider>,
     );
@@ -125,5 +135,42 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
         executionWorkspacePolicy: expect.objectContaining({ sharedWorkspaceConcurrency: "allow" }),
       }),
     );
+  });
+});
+
+describe("ProjectProperties — permanent deletion", () => {
+  function clickButton(label: string) {
+    const button = [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.includes(label),
+    );
+    if (!button) throw new Error(`Button not found: ${label}`);
+    act(() => button.click());
+  }
+
+  it("requires confirmation and forwards the managed-file opt-in", () => {
+    const onDelete = vi.fn();
+    render(makeProject(), vi.fn(), onDelete);
+
+    clickButton("Delete project");
+    const checkbox = container.querySelector<HTMLElement>('[role="checkbox"]');
+    if (!checkbox) throw new Error("Managed-file checkbox not found");
+    act(() => checkbox.click());
+    clickButton("Confirm delete");
+
+    expect(onDelete).toHaveBeenCalledWith(true);
+  });
+
+  it("resets the managed-file opt-in when the project changes", () => {
+    render(makeProject(), vi.fn(), vi.fn());
+    clickButton("Delete project");
+    const firstCheckbox = container.querySelector<HTMLElement>('[role="checkbox"]');
+    if (!firstCheckbox) throw new Error("Managed-file checkbox not found");
+    act(() => firstCheckbox.click());
+    expect(firstCheckbox.getAttribute("aria-checked")).toBe("true");
+
+    render(makeProject({ id: "project-2", urlKey: "project-2", name: "Second project" }), vi.fn(), vi.fn());
+    clickButton("Delete project");
+    const secondCheckbox = container.querySelector<HTMLElement>('[role="checkbox"]');
+    expect(secondCheckbox?.getAttribute("aria-checked")).toBe("false");
   });
 });

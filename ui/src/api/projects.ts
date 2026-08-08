@@ -7,6 +7,8 @@ import type {
 import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
   const separator = path.includes("?") ? "&" : "?";
@@ -62,5 +64,11 @@ export const projectsApi = {
     ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
-  remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
+  remove: (id: string, options: { companyId?: string; deleteFiles?: boolean } = {}) =>
+    api.delete<Project & { fileCleanup: FileCleanupStatus }>(
+      withCompanyScope(
+        `/projects/${encodeURIComponent(id)}${options.deleteFiles ? "?deleteFiles=true" : ""}`,
+        options.companyId,
+      ),
+    ),
 };
