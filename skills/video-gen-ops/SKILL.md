@@ -15,9 +15,17 @@ package before it, the assembly and QA after it.
 Grok Imagine model-routing note (validated 2026-08-09):
 - Current production-safe text-to-video path remains `grok-imagine-video` at 480p/720p.
 - The installed Hermes xAI provider can select `grok-imagine-video-1.5` per call and
-  accepts image input plus an explicit 1080p request. Use it only for a controlled
-  **image-to-video** probe until a served-model clip is banked with an execution ledger;
-  do not change the global provider default or use it as a text-to-video fallback.
+  accepts image input plus an explicit 1080p request. TSM-6553 served-proved that exact
+  **image-to-video** route (one `video_generate` call; 6.04s H.264 result). Do not change
+  the global provider default or use 1.5 as a text-to-video fallback.
+- A moving asset means the `video_generate` tool. Never use `image_generate` with an
+  image input as a substitute; that is an image edit and must fail the media gate.
+- Hermes caches completed xAI video locally and provider public storage is off by default.
+  Copy/attach the cached asset into the governed package promptly; do not depend on a
+  temporary xAI URL or re-enable permanent public URLs without a retention owner.
+- xAI may return a 1920x1088 padded stream while declaring 1080p. The Mini assembly
+  handler deterministically normalizes text-free motion B-roll to 1920x1080 and records
+  the source/delivery geometry. It is not an upscale or a reason to regenerate.
 - The provider supports reference-to-video, edit and extension on the base model. Generated
   URLs are temporary: download, hash, attach, and register the asset promptly.
 - Native generated audio can speed rough cuts, but it is still scratch ambience until ear
@@ -37,7 +45,7 @@ Grok Imagine model-routing note (validated 2026-08-09):
      ```bash
      curl -sS -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
        -F "file=@<the-generated-clip-path>" \
-       "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/<this-issue-id>/attachments"
+       "$PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/issues/<this-issue-id>/attachments"
      ```
    - Comment the exact prompt used and confirm the attachment, then set the disposition.
    - **Exception:** if the brief *explicitly* requires Veo, Flow, or Sora — capabilities

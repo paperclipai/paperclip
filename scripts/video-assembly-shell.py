@@ -44,6 +44,27 @@ def digest(path):
             h.update(chunk)
     return h.hexdigest()
 
+def geometry(path):
+    """Return source video geometry when ffprobe can read it.
+
+    This makes padded provider outputs (for example 1920x1088 labelled
+    "1080p") visible in the zero-LLM assembly evidence before the standard
+    scale/crop delivery normalization is applied.
+    """
+    try:
+        raw = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "json", str(path),
+        ], text=True)
+        streams = json.loads(raw).get("streams") or []
+        stream = streams[0] if streams else {}
+        width, height = stream.get("width"), stream.get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            return {"width": width, "height": height}
+    except Exception:
+        pass
+    return None
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--manifest", required=True)
 parser.add_argument("--out-dir", required=True)
@@ -80,7 +101,18 @@ for index, clip in enumerate(clips):
         run(command)
     seconds = duration(target)
     parts.append(target)
-    plan.append({"index": index, "src": clip["src"], "duration_s": seconds, "sha256": digest(source)})
+    plan.append({
+        "index": index,
+        "src": clip["src"],
+        "duration_s": seconds,
+        "sha256": digest(source),
+        "source_geometry": geometry(source),
+        "delivery_geometry": {"width": width, "height": height},
+        "normalization": {
+            "filter": vf,
+            "padded_1080p_policy": "crop to the requested delivery height; preserve the source hash in this cut map",
+        },
+    })
 concat = work / "concat.txt"
 concat.write_text("".join(f"file '{part.resolve()}'\n" for part in parts))
 timeline = work / "timeline.mp4"

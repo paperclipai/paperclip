@@ -35,6 +35,14 @@ and a passing visual check. It is forbidden for readable text, UI/capture proof,
 charts, evidence, and hero shots. A final 1080p container must never be described
 as native 1080p source quality.
 
+Provider video marked “1080p” can arrive as a padded 1920×1088 H.264 stream.
+That is not an upscale and does not require another generation: the Mini-only
+assembly handler deterministically normalizes it to the requested 1920×1080
+delivery frame (`scale`/centred `crop`) and records both source geometry/hash and
+delivery geometry in `metrics.json` / `cut-map.json`. Use this only for a
+text-free moving asset; do not crop UI, charts, evidence, captions, or other
+edge-critical material without a visual approval.
+
 ## Controlled validation sequence
 
 No fleet-wide resume is part of this sequence.
@@ -44,11 +52,13 @@ No fleet-wide resume is part of this sequence.
    job remains inactive.
 2. **Deterministic proof:** run one self-contained RoutineOps assembly; retain
    `metrics.json`, Mini queue evidence, output hash, and zero LLM-token fields.
-3. **Grok capability probe:** one Designer-Media heartbeat only. Generate one
-   text-free Stack Lab style still, then use that image as the input to one
-   `grok-imagine-video-1.5` 1080p image-to-video request. Attach both assets and
-   record requested/served model, resolution, elapsed time, tool result, and
-   Paperclip heartbeat token counts. Never retry a failure automatically.
+3. **Grok capability probe:** served validation is recorded in TSM-6552/6553.
+   The first two-call probe exposed an incorrect `image_generate` route; the
+   corrected revalidation used exactly one `video_generate` call with
+   `grok-imagine-video-1.5`, reused its source still, and returned 6.04 seconds
+   of H.264 video. Future pilots retain the same one-call/no-retry evidence
+   contract: attach both assets, record requested/served model, resolution,
+   elapsed time, tool result, and Paperclip heartbeat token counts.
 4. **Faceless full-route proof:** use one bounded Stack Lab source package through
    the shared Mini/deck/rejection-QA path. It must carry normal brand marks via the
    deterministic brand layer, not AI-generated text.
