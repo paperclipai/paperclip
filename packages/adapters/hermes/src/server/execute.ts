@@ -441,11 +441,11 @@ export async function execute(
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
     explicitProvider,
-    detectedProvider: detectedConfig?.provider,
-    detectedModel: detectedConfig?.model,
-    detectedBaseUrl: detectedConfig?.baseUrl,
-    detectedHasApiKey: detectedConfig?.hasApiKey,
-    detectedApiMode: detectedConfig?.apiMode,
+    detectedProvider: hasProfileArg ? undefined : detectedConfig?.provider,
+    detectedModel: hasProfileArg ? undefined : detectedConfig?.model,
+    detectedBaseUrl: hasProfileArg ? undefined : detectedConfig?.baseUrl,
+    detectedHasApiKey: hasProfileArg ? undefined : detectedConfig?.hasApiKey,
+    detectedApiMode: hasProfileArg ? undefined : detectedConfig?.apiMode,
     model,
   });
 
