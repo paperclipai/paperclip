@@ -104,6 +104,38 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(opts.onSpawn).toBe(onSpawn);
   });
 
+  it("binds MOA to Planner without changing the Executor route", async () => {
+    const binding = { planner: "LagunaS-Qwen" };
+
+    const { ctx: plannerCtx } = makeCtx({
+      profile: "planner",
+      model: "qwen3.6:27b",
+      provider: "ollama-launch",
+      moaProfileBindings: binding,
+    });
+    await execute(plannerCtx as any);
+
+    const plannerArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(plannerArgs[plannerArgs.indexOf("-m") + 1]).toBe("moa:LagunaS-Qwen");
+    expect(plannerArgs[plannerArgs.indexOf("--provider") + 1]).toBe("moa");
+
+    const { ctx: executorCtx } = makeCtx({
+      profile: "executor",
+      model: "qwen3.6:27b",
+      provider: "ollama-launch",
+      moaProfileBindings: binding,
+      extraArgs: ["--profile", "planner"],
+    });
+    await execute(executorCtx as any);
+
+    const executorArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(executorArgs.slice(0, 3)).toEqual(["--profile", "executor", "chat"]);
+    expect(executorArgs[executorArgs.indexOf("-m") + 1]).toBe("qwen3.6:27b");
+    expect(executorArgs[executorArgs.indexOf("--provider") + 1]).toBe("ollama-launch");
+    expect(executorArgs).not.toContain("moa:LagunaS-Qwen");
+    expect(executorArgs).not.toContain("planner");
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches

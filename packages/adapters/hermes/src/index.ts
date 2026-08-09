@@ -84,6 +84,8 @@ tools, persistent memory, session persistence, skills, and MCP support.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| profile | string | default | Authoritative Hermes profile. Safe identifiers only; passed before \`chat\` for every run. |
+| moaProfileBindings | object | (none) | Optional profile-to-preset map, for example \`{ "planner": "LagunaS-Qwen" }\`. Only the exact bound profile selects Hermes' virtual \`moa:<preset>\` model; unbound profiles keep their configured single model. |
 | model | string | (Hermes configured default) | Optional explicit model in provider/model format. Leave blank to use Hermes's configured default model. |
 | provider | string | (auto) | API provider: auto, openrouter, nous, openai-codex, zai, kimi-coding, minimax, minimax-cn. Usually not needed — Hermes auto-detects from model name. |
 | timeoutSec | number | 300 | Execution timeout in seconds |
