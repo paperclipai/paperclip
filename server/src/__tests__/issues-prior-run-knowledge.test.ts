@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
+  listReviewAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
@@ -115,6 +116,9 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,
@@ -295,6 +299,7 @@ function setupDefaultMocks() {
   });
   mockIssueService.getComment.mockResolvedValue(null);
   mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
+  mockIssueService.listReviewAttention.mockResolvedValue(new Map());
   mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
   mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
   mockIssueService.listAttachments.mockResolvedValue([]);
@@ -302,13 +307,15 @@ function setupDefaultMocks() {
   mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
   mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
   mockExecutionWorkspaceService.getById.mockResolvedValue(null);
-  mockDb.select.mockReturnValue({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        orderBy: vi.fn(async () => []),
-      })),
-    })),
-  });
+  const emptyQuery = {
+    from: vi.fn(() => emptyQuery),
+    where: vi.fn(() => emptyQuery),
+    orderBy: vi.fn(() => emptyQuery),
+    limit: vi.fn(async () => []),
+    then: (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve([]).then(resolve, reject),
+  };
+  mockDb.select.mockReturnValue(emptyQuery);
   mockDb.execute.mockResolvedValue([]);
   mockProjectService.listByIds.mockResolvedValue([]);
   mockGoalService.getById.mockResolvedValue(null);
