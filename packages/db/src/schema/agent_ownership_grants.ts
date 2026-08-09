@@ -61,6 +61,7 @@ export const AGENT_OWNERSHIP_SOURCES = [
   "manual_grant",
   "transfer_accept",
   "instance_admin_override",
+  "instance_admin_bootstrap",
 ] as const;
 export type AgentOwnershipSource = (typeof AGENT_OWNERSHIP_SOURCES)[number];
 

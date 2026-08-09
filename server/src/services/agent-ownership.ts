@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import type { Db, AgentOwnershipPrincipalType, AgentOwnershipRole, AgentOwnershipSource } from "@paperclipai/db";
 import { agentOwnershipGrants, agentOwnershipTransfers, agents, companyMemberships } from "@paperclipai/db";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, isPostgresError, notFound, unprocessable } from "../errors.js";
 
 /**
  * TECH-4929 stage 1: agent ownership/role data model.
@@ -47,6 +47,31 @@ function toRow(row: typeof agentOwnershipGrants.$inferSelect): AgentOwnershipGra
   return { ...row };
 }
 
+/**
+ * A user counts as an eligible non-viewer member if their membershipRole is
+ * anything other than "viewer" -- including NULL/unset (no role assigned at
+ * all is not the same as explicitly being a viewer). Extracted to a single
+ * place after `bootstrapOwnership` and `buildEnforcementDryRunReport`
+ * independently drifted: both used bare `ne(membershipRole, "viewer")`,
+ * which silently excludes NULL-role members too (SQL's `<>` against NULL is
+ * NULL, not true) -- fixed in one, not the other, until this extraction made
+ * them structurally impossible to desync again. This is one specific model
+ * of "who can act on an agent" (mirrors `authorization.ts`'s NULL !==
+ * "viewer" treatment); other access paths in this codebase (e.g.
+ * routes/issues.ts) treat a NULL role as denied, a real, currently
+ * undocumented divergence -- not resolved here, since reconciling it is a
+ * separate question from the bug this predicate was extracted to prevent.
+ */
+function isActiveNonViewerMember(companyId: string, principalId?: string) {
+  return and(
+    eq(companyMemberships.companyId, companyId),
+    eq(companyMemberships.principalType, "user"),
+    ...(principalId ? [eq(companyMemberships.principalId, principalId)] : []),
+    eq(companyMemberships.status, "active"),
+    or(isNull(companyMemberships.membershipRole), ne(companyMemberships.membershipRole, "viewer")),
+  );
+}
+
 export function agentOwnershipService(db: Db) {
   /**
    * Write the owner grant for a brand-new agent. MUST be called inside the
@@ -81,6 +106,110 @@ export function agentOwnershipService(db: Db) {
       .returning()
       .then((rows) => rows[0]);
     return toRow(created);
+  }
+
+  /**
+   * TECH-4930 stage 2 follow-up: one-time backfill for agents that predate
+   * TECH-4929 stage 1 (write-on-create) and therefore have zero ownership
+   * grants at all -- `companyService.update` refuses to enable
+   * `enforceAgentOwnership` while any such agent exists (see that file's
+   * comment), and neither `setRole` (owner can't be assigned through it)
+   * nor `proposeTransfer`/`forceTransferByInstanceAdmin` (both require an
+   * existing owner to transfer from) can create the first grant. This is
+   * the only path that can. Instance-admin only, and refuses outright if
+   * the agent already has an active owner -- this is a bootstrap for
+   * genuinely unowned agents, not a quieter way to reassign an owned one
+   * (that's `forceTransferByInstanceAdmin`).
+   *
+   * SECURITY: this function performs NO authorization check of its own --
+   * it trusts `input.instanceAdminUserId` and executes unconditionally.
+   * That is deliberate: the route guard (`assertInstanceAdmin` in
+   * server/src/routes/agents.ts) owns verifying the caller is actually an
+   * instance admin. This function is exported from services/index.ts, so
+   * every caller (route handler, script, future service) MUST
+   * independently re-verify instance-admin authorization before invoking
+   * it -- do not add a new call site that skips that check.
+   */
+  async function bootstrapOwnership(input: {
+    companyId: string;
+    agentId: string;
+    ownerUserId: string;
+    instanceAdminUserId: string;
+  }): Promise<AgentOwnershipGrantRow> {
+    const ownerUserId = input.ownerUserId?.trim();
+    if (!ownerUserId) throw unprocessable("ownerUserId is required");
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const existingOwner = await txDb
+        .select({ id: agentOwnershipGrants.id })
+        .from(agentOwnershipGrants)
+        .where(
+          and(
+            eq(agentOwnershipGrants.agentId, input.agentId),
+            eq(agentOwnershipGrants.role, "owner"),
+            isNull(agentOwnershipGrants.revokedAt),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (existingOwner) {
+        throw conflict("Agent already has an active owner -- use the transfer flow to change it.");
+      }
+      // Nothing upstream has already validated that ownerUserId belongs to
+      // this company for THIS path specifically -- the sibling transfer
+      // paths (proposeTransfer, forceTransferByInstanceAdmin) do not check
+      // membership either today, so this is not yet a codebase-wide
+      // invariant, only a bootstrap-specific one. Without this check, an
+      // instance admin could bootstrap an agent to a nonexistent user or one
+      // from a different tenant, orphaning the agent the moment enforcement
+      // is turned on (an unreachable owner is worse than none).
+      // `isActiveNonViewerMember` is shared with buildEnforcementDryRunReport
+      // below -- see that function's definition for why this is extracted
+      // rather than duplicated. The NULL-role accept path is covered by the
+      // pre-existing happy-path test above (seedActiveMembership leaves
+      // membershipRole unset); the non-NULL, non-viewer accept path and the
+      // viewer-reject path each have their own dedicated test below.
+      // `.for("update")` locks the matched row for the rest of this
+      // transaction so a concurrent membership revocation can't land between
+      // this check and the INSERT below (TOCTOU).
+      const membership = await txDb
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(isActiveNonViewerMember(input.companyId, ownerUserId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!membership) {
+        throw unprocessable("ownerUserId must be an active, non-viewer member of this company");
+      }
+      // The pre-check SELECT above is not a lock -- two concurrent bootstrap
+      // calls for the same agent can both pass it. The partial unique index
+      // `agent_ownership_grants_one_active_owner_idx` is what actually
+      // enforces "at most one active owner"; catch its violation here and
+      // translate it to the same 409 the pre-check produces, rather than
+      // letting the raw Postgres error surface as an unhandled 500.
+      try {
+        const created = await txDb
+          .insert(agentOwnershipGrants)
+          .values({
+            id: randomUUID(),
+            companyId: input.companyId,
+            agentId: input.agentId,
+            principalType: "user",
+            principalId: ownerUserId,
+            role: "owner",
+            grantedByUserId: input.instanceAdminUserId,
+            isInstanceAdminOverride: true,
+            source: "instance_admin_bootstrap",
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        return toRow(created);
+      } catch (error) {
+        if (isPostgresError(error, "23505")) {
+          throw conflict("Agent already has an active owner -- use the transfer flow to change it.");
+        }
+        throw error;
+      }
+    });
   }
 
   async function getActiveOwner(agentId: string): Promise<AgentOwnershipGrantRow | null> {
@@ -506,14 +635,12 @@ export function agentOwnershipService(db: Db) {
       db
         .select({ principalId: companyMemberships.principalId, membershipRole: companyMemberships.membershipRole })
         .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.companyId, companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.status, "active"),
-            ne(companyMemberships.membershipRole, "viewer"),
-          ),
-        ),
+        // Models "who has run-triggering access to this company's agents
+        // today" (see isActiveNonViewerMember's own definition for the
+        // NULL-role rationale and the known issues.ts divergence this does
+        // NOT resolve) -- shared with bootstrapOwnership's eligible-owner
+        // check above so the two can't independently drift again.
+        .where(isActiveNonViewerMember(companyId)),
     ]);
 
     const grantsByAgent = new Map<string, typeof activeGrants>();
@@ -565,6 +692,7 @@ export function agentOwnershipService(db: Db) {
 
   return {
     writeInitialOwnership,
+    bootstrapOwnership,
     getActiveOwner,
     listActiveGrants,
     setRole,

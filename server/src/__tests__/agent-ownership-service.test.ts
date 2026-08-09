@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
 import {
   agentOwnershipGrants,
   agentOwnershipTransfers,
   agents,
   companies,
+  companyMemberships,
   createDb,
 } from "@paperclipai/db";
 import {
@@ -38,6 +40,7 @@ describeEmbeddedPostgres("agent ownership (TECH-4929 stage 1: data model + write
     await db.delete(agentOwnershipTransfers);
     await db.delete(agentOwnershipGrants);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -54,6 +57,16 @@ describeEmbeddedPostgres("agent ownership (TECH-4929 stage 1: data model + write
       requireBoardApprovalForNewAgents: false,
     });
     return companyId;
+  }
+
+  async function seedActiveMembership(companyId: string, userId: string) {
+    await db.insert(companyMemberships).values({
+      id: randomUUID(),
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+    });
   }
 
   async function activeOwnerRows(agentId: string) {
@@ -477,6 +490,318 @@ describeEmbeddedPostgres("agent ownership (TECH-4929 stage 1: data model + write
 
       expect(result.grant.principalId).toBe(toUserId);
       expect(result.transfer.forcedByInstanceAdminUserId).toBe(unrelatedCallerId);
+    });
+  });
+
+  describe("bootstrapOwnership (instance-admin one-time backfill)", () => {
+    async function seedUnownedAgent(companyId: string) {
+      const svc = agentService(db);
+      const ownership = agentOwnershipService(db);
+      const agent = await svc.create(
+        companyId,
+        {
+          name: "Pre-TECH-4929 Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+          spentMonthlyCents: 0,
+          lastHeartbeatAt: null,
+        },
+        { ownerUserId: `user-${randomUUID()}` },
+      );
+      // Simulate an agent that predates write-on-create: revoke its only
+      // owner grant so it has zero active owner rows, matching exactly
+      // what `listUnownedAgents` selects for.
+      const currentOwner = await ownership.getActiveOwner(agent.id);
+      await db
+        .update(agentOwnershipGrants)
+        .set({ revokedAt: new Date(), revokedReason: "test_setup_simulate_legacy_unowned" })
+        .where(eq(agentOwnershipGrants.id, currentOwner!.id));
+      return agent;
+    }
+
+    it("creates the first owner grant for a genuinely unowned agent", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const ownerUserId = `user-${randomUUID()}`;
+      const instanceAdminUserId = `admin-${randomUUID()}`;
+      const agent = await seedUnownedAgent(companyId);
+      await seedActiveMembership(companyId, ownerUserId);
+
+      expect(await activeOwnerRows(agent.id)).toHaveLength(0);
+
+      const grant = await ownership.bootstrapOwnership({
+        companyId,
+        agentId: agent.id,
+        ownerUserId,
+        instanceAdminUserId,
+      });
+
+      expect(grant.role).toBe("owner");
+      expect(grant.principalId).toBe(ownerUserId);
+      expect(grant.isInstanceAdminOverride).toBe(true);
+      expect(grant.source).toBe("instance_admin_bootstrap");
+
+      const ownersAfter = await activeOwnerRows(agent.id);
+      expect(ownersAfter).toHaveLength(1);
+      expect(ownersAfter[0].id).toBe(grant.id);
+    });
+
+    it("refuses to bootstrap an agent that already has an active owner", async () => {
+      const companyId = await seedCompany();
+      const svc = agentService(db);
+      const ownership = agentOwnershipService(db);
+      const existingOwnerUserId = `user-${randomUUID()}`;
+      const agent = await svc.create(
+        companyId,
+        {
+          name: "Already Owned Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+          spentMonthlyCents: 0,
+          lastHeartbeatAt: null,
+        },
+        { ownerUserId: existingOwnerUserId },
+      );
+
+      // The passed ownerUserId is intentionally NOT a seeded company member.
+      // That's fine here: the existing-owner check (409) runs before the
+      // membership check (422), so this call fails on the existing-owner
+      // branch regardless of the candidate owner's membership status --
+      // this test is not implicitly relying on membership seeding being
+      // optional in general, just on this specific check ordering.
+      await expect(
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: `user-${randomUUID()}`,
+          instanceAdminUserId: `admin-${randomUUID()}`,
+        }),
+      ).rejects.toThrow(/already has an active owner/);
+
+      // The pre-existing owner is untouched -- this is a refusal, not a
+      // silent takeover of an already-owned agent.
+      const ownersAfter = await activeOwnerRows(agent.id);
+      expect(ownersAfter).toHaveLength(1);
+      expect(ownersAfter[0].principalId).toBe(existingOwnerUserId);
+    });
+
+    it("requires a non-empty ownerUserId", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+
+      await expect(
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: "   ",
+          instanceAdminUserId: `admin-${randomUUID()}`,
+        }),
+      ).rejects.toThrow(/ownerUserId is required/);
+    });
+
+    it("refuses to bootstrap to a user who is not an active member of the company", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+
+      await expect(
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: `not-a-member-${randomUUID()}`,
+          instanceAdminUserId: `admin-${randomUUID()}`,
+        }),
+      ).rejects.toThrow(/active, non-viewer member of this company/);
+
+      expect(await activeOwnerRows(agent.id)).toHaveLength(0);
+    });
+
+    it("refuses to bootstrap to a user whose membership is inactive", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+      const revokedMemberUserId = `user-${randomUUID()}`;
+      await db.insert(companyMemberships).values({
+        id: randomUUID(),
+        companyId,
+        principalType: "user",
+        principalId: revokedMemberUserId,
+        status: "revoked",
+      });
+
+      await expect(
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: revokedMemberUserId,
+          instanceAdminUserId: `admin-${randomUUID()}`,
+        }),
+      ).rejects.toThrow(/active, non-viewer member of this company/);
+    });
+
+    it("refuses to bootstrap to a viewer-role member", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+      const viewerUserId = `user-${randomUUID()}`;
+      await db.insert(companyMemberships).values({
+        id: randomUUID(),
+        companyId,
+        principalType: "user",
+        principalId: viewerUserId,
+        status: "active",
+        membershipRole: "viewer",
+      });
+
+      await expect(
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: viewerUserId,
+          instanceAdminUserId: `admin-${randomUUID()}`,
+        }),
+      ).rejects.toThrow(/active, non-viewer member of this company/);
+    });
+
+    it("accepts a non-NULL, non-viewer membershipRole (the ne() branch's accept side, distinct from the pre-existing NULL-role happy path)", async () => {
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+      const operatorUserId = `user-${randomUUID()}`;
+      await db.insert(companyMemberships).values({
+        id: randomUUID(),
+        companyId,
+        principalType: "user",
+        principalId: operatorUserId,
+        status: "active",
+        membershipRole: "operator",
+      });
+
+      const grant = await ownership.bootstrapOwnership({
+        companyId,
+        agentId: agent.id,
+        ownerUserId: operatorUserId,
+        instanceAdminUserId: `admin-${randomUUID()}`,
+      });
+
+      expect(grant.principalId).toBe(operatorUserId);
+    });
+
+    it("deterministically hits the 23505-to-conflict() catch branch (not just the pre-check SELECT)", async () => {
+      // The concurrent-calls test below proves the *invariant* holds under
+      // real concurrency, but per its own comment does not reliably
+      // exercise this specific catch branch -- the pre-check SELECT usually
+      // wins the race in a single-threaded test process. This test pins the
+      // catch branch directly with a hand-built fake `db` whose INSERT
+      // rejects with a real Postgres 23505 shape, so a future change that
+      // breaks or removes the catch (letting the raw error propagate) fails
+      // this test even if the real-concurrency test above stays green.
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const ownerUserId = `user-${randomUUID()}`;
+      const instanceAdminUserId = `admin-${randomUUID()}`;
+      // Real Promises throughout, not hand-rolled thenables: the production
+      // code calls `.then(onFulfilled)` with no `onRejected` argument (e.g.
+      // `.returning().then((rows) => rows[0])`), so a rejection has to come
+      // from an actual Promise.reject to propagate correctly -- a thenable
+      // whose `.then` only receives one callback has no way to signal
+      // rejection to that call shape.
+      // Dispatches by call ORDER, not by which table is queried -- this
+      // assumes bootstrapOwnership's implementation queries existingOwner
+      // first and membership second (see agent-ownership.ts). If that
+      // order is ever swapped, this fake returns the wrong shape for each
+      // call and this test fails with an unrelated-looking TypeError rather
+      // than a clear assertion diff -- update this dispatch to match if the
+      // production code's query order ever changes.
+      let selectCallCount = 0;
+      const pgUniqueViolation = Object.assign(
+        new Error('duplicate key value violates unique constraint "agent_ownership_grants_one_active_owner_idx"'),
+        { code: "23505" },
+      );
+      const fakeTx = {
+        select: () => ({
+          from: () => ({
+            where: () => {
+              selectCallCount += 1;
+              if (selectCallCount === 1) {
+                // existingOwner pre-check -- awaited directly, no .for() call.
+                return Promise.resolve([]);
+              }
+              // membership check -- chained with .for("update").
+              return { for: () => Promise.resolve([{ id: "membership-1" }]) };
+            },
+          }),
+        }),
+        insert: () => ({
+          values: () => ({
+            returning: () => Promise.reject(pgUniqueViolation),
+          }),
+        }),
+      };
+      const fakeDb = {
+        transaction: (cb: (tx: typeof fakeTx) => Promise<unknown>) => cb(fakeTx),
+      };
+      const ownership = agentOwnershipService(fakeDb as unknown as Db);
+
+      await expect(
+        ownership.bootstrapOwnership({ companyId, agentId, ownerUserId, instanceAdminUserId }),
+      ).rejects.toMatchObject({
+        message: "Agent already has an active owner -- use the transfer flow to change it.",
+        status: 409,
+      });
+    });
+
+    it("under concurrent calls for the same unowned agent, exactly one succeeds and the other gets a conflict -- the invariant holds regardless of whether the pre-check SELECT or the partial unique index catches it", async () => {
+      // The pre-check SELECT is not a lock -- both calls can pass it before
+      // either INSERT commits, in which case the partial unique index
+      // (`agent_ownership_grants_one_active_owner_idx`) is what actually
+      // prevents two active owners, and the try/catch around the INSERT
+      // translates its violation to the same `conflict()` the pre-check
+      // throws. This test asserts the invariant (exactly one owner, one
+      // caller rejected with 409), not which of the two code paths caught
+      // it -- in a single-threaded Node test against embedded Postgres, the
+      // pre-check SELECT usually wins the race, so this does not by itself
+      // pin the try/catch branch specifically.
+      const companyId = await seedCompany();
+      const ownership = agentOwnershipService(db);
+      const agent = await seedUnownedAgent(companyId);
+      const instanceAdminUserId = `admin-${randomUUID()}`;
+      const ownerUserIdA = `user-a-${randomUUID()}`;
+      const ownerUserIdB = `user-b-${randomUUID()}`;
+      await seedActiveMembership(companyId, ownerUserIdA);
+      await seedActiveMembership(companyId, ownerUserIdB);
+
+      const results = await Promise.allSettled([
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: ownerUserIdA,
+          instanceAdminUserId,
+        }),
+        ownership.bootstrapOwnership({
+          companyId,
+          agentId: agent.id,
+          ownerUserId: ownerUserIdB,
+          instanceAdminUserId,
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(/already has an active owner/);
+      expect((rejected[0] as PromiseRejectedResult).reason.status).toBe(409);
+
+      const ownersAfter = await activeOwnerRows(agent.id);
+      expect(ownersAfter).toHaveLength(1);
     });
   });
 

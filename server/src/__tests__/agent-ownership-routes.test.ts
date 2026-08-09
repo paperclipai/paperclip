@@ -139,6 +139,7 @@ const mockOwnershipService = vi.hoisted(() => ({
   setRole: vi.fn(),
   revokeRole: vi.fn(),
   forceTransferByInstanceAdmin: vi.fn(),
+  bootstrapOwnership: vi.fn(),
 }));
 
 function registerModuleMocks() {
@@ -382,6 +383,7 @@ describe.sequential("agent ownership routes (TECH-4929 stage 1)", () => {
     mockOwnershipService.setRole.mockReset();
     mockOwnershipService.revokeRole.mockReset();
     mockOwnershipService.forceTransferByInstanceAdmin.mockReset();
+    mockOwnershipService.bootstrapOwnership.mockReset();
   });
 
   it("rejects an agent-type actor before any ownership logic runs", async () => {
@@ -704,6 +706,122 @@ describe.sequential("agent ownership routes (TECH-4929 stage 1)", () => {
       expect(res.status).toBe(403);
       expect(mockAgentService.getById).not.toHaveBeenCalled();
       expect(mockOwnershipService.forceTransferByInstanceAdmin).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("bootstrap ownership (instance-admin one-time backfill)", () => {
+    it("returns 403 when the caller is not an instance admin, and does not invoke the service", async () => {
+      const app = await createApp(boardNonAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${agentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "new-owner" });
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.getById).not.toHaveBeenCalled();
+      expect(mockOwnershipService.bootstrapOwnership).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("happy path: 201 with the created grant when called by an instance admin", async () => {
+      const grant = {
+        id: "grant-4",
+        companyId,
+        agentId,
+        principalType: "user",
+        principalId: "new-owner",
+        role: "owner",
+        isInstanceAdminOverride: true,
+        source: "instance_admin_bootstrap",
+      };
+      mockOwnershipService.bootstrapOwnership.mockResolvedValue(grant);
+
+      const app = await createApp(instanceAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${agentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "new-owner" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body).toMatchObject(grant);
+      expect(mockOwnershipService.bootstrapOwnership).toHaveBeenCalledWith({
+        companyId,
+        agentId,
+        ownerUserId: "new-owner",
+        instanceAdminUserId: "instance-admin",
+      });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "agent.ownership_bootstrapped",
+        details: expect.objectContaining({ ownerUserId: "new-owner", isInstanceAdminOverride: true }),
+      }));
+    });
+
+    it("returns 422 when ownerUserId is missing", async () => {
+      const app = await createApp(instanceAdminActor);
+      const res = await request(app).post(`/api/agents/${agentId}/ownership/bootstrap`).send({});
+
+      expect(res.status).toBe(422);
+      expect(mockOwnershipService.bootstrapOwnership).not.toHaveBeenCalled();
+    });
+
+    it("propagates a 409 when the agent already has an active owner", async () => {
+      const { conflict } = await errorsModule();
+      mockOwnershipService.bootstrapOwnership.mockRejectedValue(
+        conflict("Agent already has an active owner -- use the transfer flow to change it."),
+      );
+
+      const app = await createApp(instanceAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${agentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "new-owner" });
+
+      expect(res.status).toBe(409);
+    });
+
+    it("propagates a 422 when the service rejects ownerUserId for not being an active company member (distinct from the missing-field 422 above)", async () => {
+      const { unprocessable } = await errorsModule();
+      mockOwnershipService.bootstrapOwnership.mockRejectedValue(
+        unprocessable("ownerUserId must be an active, non-viewer member of this company"),
+      );
+
+      const app = await createApp(instanceAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${agentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "not-a-member" });
+
+      expect(res.status).toBe(422);
+      // This asserts the route's own behavior: an arbitrary unprocessable()
+      // message from the service propagates through the error middleware
+      // verbatim (err.message -> res.body.error), and does so at a status
+      // code (422) distinct from the missing-field case above -- it does
+      // NOT verify that agentOwnershipService actually produces this exact
+      // string in production; that's agent-ownership-service.test.ts's job.
+      expect(res.body).toMatchObject({ error: expect.stringMatching(/non-viewer member/) });
+    });
+
+    it("ordering pin: an unauthorised caller asking about a nonexistent agent gets the authorization failure, not a 404", async () => {
+      mockAgentService.getById.mockResolvedValue(null);
+      const nonexistentAgentId = "99999999-9999-4999-8999-999999999999";
+
+      const app = await createApp(boardNonAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${nonexistentAgentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "new-owner" });
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.getById).not.toHaveBeenCalled();
+      expect(mockOwnershipService.bootstrapOwnership).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 for an authorized instance admin when the agent does not exist", async () => {
+      mockAgentService.getById.mockResolvedValue(null);
+      const nonexistentAgentId = "99999999-9999-4999-8999-999999999999";
+
+      const app = await createApp(instanceAdminActor);
+      const res = await request(app)
+        .post(`/api/agents/${nonexistentAgentId}/ownership/bootstrap`)
+        .send({ ownerUserId: "new-owner" });
+
+      expect(res.status).toBe(404);
+      expect(mockOwnershipService.bootstrapOwnership).not.toHaveBeenCalled();
     });
   });
 

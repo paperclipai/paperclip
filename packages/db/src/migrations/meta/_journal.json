@@ -1478,6 +1478,13 @@
       "when": 1786223854510,
       "tag": "0212_blushing_elektra",
       "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "7",
+      "when": 1786289248481,
+      "tag": "0213_regular_eternals",
+      "breakpoints": true
     }
   ]
 }
