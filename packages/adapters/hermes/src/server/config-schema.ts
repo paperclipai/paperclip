@@ -29,6 +29,12 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Authoritative Hermes profile (1-64 lowercase letters, numbers, hyphens, or underscores). The adapter passes it before chat; extraArgs cannot override it.",
       },
       {
+        key: "moaProfileBindings",
+        label: "Profile-scoped MOA bindings",
+        type: "textarea",
+        hint: 'Optional JSON object mapping exact Hermes profiles to existing presets, for example { "planner": "LagunaS-Qwen" }. Unbound profiles stay on their configured single model.',
+      },
+      {
         key: "provider",
         label: "Provider",
         type: "select",

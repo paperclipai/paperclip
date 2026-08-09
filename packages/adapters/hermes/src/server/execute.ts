@@ -59,6 +59,7 @@ import {
   HERMES_PROFILE_INVALID_MESSAGE,
   resolveHermesProfile,
 } from "./profile.js";
+import { resolveHermesModelSelection } from "./moa-profile.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -553,9 +554,9 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
   const profile = resolveHermesProfile(config);
   if (!profile) {
+    const model = cfgString(config.model) || DEFAULT_MODEL;
     return {
       exitCode: 1,
       signal: null,
@@ -565,6 +566,8 @@ export async function execute(
       model,
     };
   }
+  const modelSelection = resolveHermesModelSelection(config, profile);
+  const model = modelSelection.model;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
@@ -619,7 +622,7 @@ export async function execute(
     };
   }
 
-  if (!explicitProvider) {
+  if (!explicitProvider && !modelSelection.moaPreset) {
     try {
       detectedConfig = await detectModel();
     } catch {
@@ -627,15 +630,16 @@ export async function execute(
     }
   }
 
-  const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
-    explicitProvider,
-    detectedProvider: detectedConfig?.provider,
-    detectedModel: detectedConfig?.model,
-    detectedBaseUrl: detectedConfig?.baseUrl,
-    detectedHasApiKey: detectedConfig?.hasApiKey,
-    detectedApiMode: detectedConfig?.apiMode,
-    model,
-  });
+  const { provider: resolvedProvider, resolvedFrom } = modelSelection.moaPreset
+    ? { provider: "moa", resolvedFrom: "profileMoaBinding" }
+    : resolveProvider({
+        explicitProvider,
+        detectedProvider: detectedConfig?.provider,
+        detectedModel: detectedConfig?.model,
+        detectedBaseUrl: detectedConfig?.baseUrl,
+        detectedHasApiKey: detectedConfig?.hasApiKey,
+        model,
+      });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
   // Paperclip can materialize managed instructions into instructionsFilePath;

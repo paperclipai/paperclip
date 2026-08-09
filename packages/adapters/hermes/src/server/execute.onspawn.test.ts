@@ -137,6 +137,35 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(args.slice(3).some((arg) => /^(?:--profile|-p|--skills|-s)(?:=|$)/.test(arg))).toBe(false);
   });
 
+  it("binds MOA to the configured Planner profile without changing the Executor route", async () => {
+    const binding = { planner: "LagunaS-Qwen" };
+
+    const { ctx: plannerCtx } = makeCtx({
+      profile: "planner",
+      model: "qwen3.6:27b",
+      provider: "ollama-launch",
+      moaProfileBindings: binding,
+    });
+    await execute(plannerCtx as any);
+
+    const plannerArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(plannerArgs[plannerArgs.indexOf("-m") + 1]).toBe("moa:LagunaS-Qwen");
+    expect(plannerArgs[plannerArgs.indexOf("--provider") + 1]).toBe("moa");
+
+    const { ctx: executorCtx } = makeCtx({
+      profile: "executor",
+      model: "qwen3.6:27b",
+      provider: "ollama-launch",
+      moaProfileBindings: binding,
+    });
+    await execute(executorCtx as any);
+
+    const executorArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(executorArgs[executorArgs.indexOf("-m") + 1]).toBe("qwen3.6:27b");
+    expect(executorArgs[executorArgs.indexOf("--provider") + 1]).toBe("ollama-launch");
+    expect(executorArgs).not.toContain("moa:LagunaS-Qwen");
+  });
+
   it.each(["../outside", "profile/name", "profile;rm", "", " ", " profile ", { name: "profile" }])(
     "rejects unsafe profile %j before spawning Hermes",
     async (profile) => {
