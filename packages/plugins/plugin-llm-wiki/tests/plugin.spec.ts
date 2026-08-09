@@ -571,6 +571,7 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     status: "todo",
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,

@@ -1081,7 +1081,7 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
-  it("denies simple-mode assignment when the target agent requires protected-assignment approval", async () => {
+  it("hard-blocks assignment when the target agent blocks protected assignment", async () => {
     const company = await createCompany(db, "ProtectedAssignment");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
     const targetAgent = await createAgent(db, company.id, {
@@ -1090,16 +1090,17 @@ describeEmbeddedPostgres("authorization service", () => {
         authorizationPolicy: {
           assignmentPolicy: {
             mode: "protected",
-            protectedAgentRequiresApproval: true,
           },
           protectedAgent: {
-            requiresApproval: true,
-            approvalReason: "Production deployment authority",
+            blockAssignment: true,
+            blockReason: "Production deployment authority",
           },
           managedBy: "permissions-extension",
         },
       },
     });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
 
     const decision = await authorizationService(db).decide({
       actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
@@ -1112,7 +1113,47 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_policy_restricted",
     });
-    expect(decision.explanation).toContain("requires approval");
+    expect(decision.explanation).toBe(
+      "Target agent assignment is blocked by protected-agent policy. " +
+      "A company administrator can remove the assignment block, then retry.",
+    );
+    expect(decision.explanation).not.toContain("approval");
+  });
+
+  it("keeps legacy protected-assignment approval flags as hard blocks without approval copy", async () => {
+    const company = await createCompany(db, "LegacyProtectedAssignment");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "protected",
+            protectedAgentRequiresApproval: true,
+          },
+          protectedAgent: {
+            requiresApproval: true,
+          },
+        },
+      },
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
+    expect(decision.explanation).toContain("assignment is blocked");
+    expect(decision.explanation).toContain("company administrator");
+    expect(decision.explanation).not.toContain("approval");
   });
 
   it("requires an explicit grant before assigning to a private target agent", async () => {
@@ -2370,5 +2411,33 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "inbox:manage",
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("denies secrets proposals for scoped tokens regardless of request source", async () => {
+    const company = await createCompany(db, "SecretProposalScopes");
+    const actorAgent = await createAgent(db, company.id);
+    const resource = { type: "company" as const, companyId: company.id };
+    const authz = authorizationService(db);
+
+    for (const actor of [
+      {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt" as const,
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge" as const, parentIssueId: randomUUID() },
+      },
+      {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt" as const,
+        keyScope: { kind: "skill_test" as const, issueId: randomUUID() },
+      },
+    ]) {
+      await expect(authz.decide({ actor, action: "secrets:propose", resource }))
+        .resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
   });
 });

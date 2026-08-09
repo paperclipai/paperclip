@@ -15,7 +15,7 @@ import {
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
 import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
 import { isExecutionForcedToKubernetes } from "../services/execution-allowlist.js";

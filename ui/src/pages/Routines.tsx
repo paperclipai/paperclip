@@ -655,7 +655,7 @@ export function Routines() {
     () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
     [routineFolders],
   );
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, routineExecutionIssues), [liveRuns, routineExecutionIssues]);
   const visibleRoutines = useMemo(
     () => (routines ?? []).filter((routine) => routine.status !== "archived"),
     [routines],

@@ -74,6 +74,7 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
@@ -288,6 +289,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockExternalObjectService.syncCommentSafely.mockReset();
@@ -352,6 +354,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
@@ -682,7 +685,11 @@ describe.sequential("issue comment reopen routes", () => {
         .send({ body: "Please continue this closed issue.", ...intent });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
-      expect(res.body).toEqual({ error: "Issue is outside this actor's authorization boundary" });
+      expect(res.body.details.code).toBe("issue_write_not_visible");
+      // Plan §6: name the boundary, who can act, and the sanctioned path.
+      expect(res.body.error).toContain("Issue visibility");
+      expect(res.body.error).toContain("Who can act:");
+      expect(res.body.details.sanctionedPath).toContain("child issue");
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
       expect(mockIssueService.update).not.toHaveBeenCalled();

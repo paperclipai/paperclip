@@ -107,6 +107,37 @@ const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 /** Maximum number of stderr characters retained for worker failure context. */
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
+/** Maximum characters accepted for one `execute.log` chunk. A larger chunk is
+ * dropped, so a faulty or hostile worker cannot flood the host with one
+ * unbounded notification. */
+const MAX_EXECUTE_LOG_CHUNK_CHARS = 1_000_000;
+
+/**
+ * Maximum characters accepted for one incoming worker stdout line before the
+ * host parses it as JSON. The host drops a longer line without a parse, so a
+ * faulty or hostile worker cannot force the host to parse an unbounded document
+ * and exhaust memory. The bound sits far above the largest legitimate framed
+ * message, so a real large command result still passes. A worker can override
+ * it through `WorkerStartOptions.executeLogLimits`.
+ */
+const MAX_WORKER_MESSAGE_CHARS = 128 * 1024 * 1024;
+
+/**
+ * Default ceiling for the total characters one execute call may stream through
+ * `execute.log`. The host counts the delivered characters for each active
+ * execute route and drops further chunks past this bound, so one runaway or
+ * hostile execution cannot flood the host and the run-log sink without limit.
+ * The final command result still delivers the complete output through its own
+ * capture path. A worker can override it through
+ * `WorkerStartOptions.executeLogLimits`.
+ */
+const MAX_EXECUTE_LOG_TOTAL_CHARS = 128 * 1024 * 1024;
+
+/** Minimum time between two dropped-`execute.log` debug records. The router
+ * rate-limits the record so a flood of dropped chunks writes at most one line
+ * per window with a running count. */
+const EXECUTE_LOG_DROP_LOG_INTERVAL_MS = 1_000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -239,6 +270,18 @@ export interface WorkerStartOptions {
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
   onStreamNotification?: (method: string, params: Record<string, unknown>) => void;
+  /**
+   * Framing and flood limits for the `execute.log` route. The defaults bound
+   * one incoming line before the JSON parse and the total streamed output for
+   * one execute call. A test overrides them to exercise the drop paths without
+   * huge inputs.
+   */
+  executeLogLimits?: {
+    /** Max characters for one incoming worker line before the JSON parse. */
+    maxIncomingMessageChars?: number;
+    /** Max total characters one execute call may stream through `execute.log`. */
+    maxTotalCharsPerExecute?: number;
+  };
 }
 
 /**
@@ -266,6 +309,42 @@ interface ActiveInvocation {
   // when no startup span is active. The span host handler reads it to mint the
   // parentage, so a worker never supplies the parent itself.
   traceparent?: string;
+}
+
+/**
+ * Sink for one incremental output chunk of an active `environmentExecute` call.
+ * The host runner passes it to `call` for the execute method, and the manager
+ * delivers each `execute.log` chunk to it. The sink may return a promise; the
+ * caller owns the ordering.
+ */
+export type ExecuteLogSink = (
+  stream: "stdout" | "stderr",
+  chunk: string,
+) => void | Promise<void>;
+
+/**
+ * Host-owned route for one active execute call. The host mints the invocation
+ * id and stores the exact company id and log sink here. A worker never selects
+ * this record; the host looks it up by the host-issued invocation id on the
+ * message envelope. The company id is the single authority for the delivery
+ * target, so an `execute.log` notification never carries a company id.
+ */
+interface ExecuteLogRoute {
+  companyId: string;
+  onLog: ExecuteLogSink;
+  /**
+   * The count of characters delivered through this route. The router bounds the
+   * per-execute total and drops chunks past the configured ceiling.
+   */
+  deliveredChars: number;
+  /**
+   * Latched when the router cannot bind the shared worker pipe to a single
+   * company, because a second company's execute overlapped this one. After the
+   * latch the router drops every further chunk for this route and lets the final
+   * command result deliver the complete output. The latch keeps the delivered
+   * prefix contiguous, so the run log never shows a gap.
+   */
+  crossCompanyBlocked: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +395,7 @@ export interface PluginWorkerHandle {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -424,6 +504,7 @@ export interface PluginWorkerManager {
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]>;
 }
 
@@ -460,6 +541,28 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  // Host-owned execute routes, keyed by the host-issued invocation id. Only an
+  // `environmentExecute` call with a log sink registers a route here. The
+  // `execute.log` router delivers only through this map — never through the
+  // generic `activeInvocations` record — so a non-execute call can never become
+  // a log target.
+  const activeExecuteRoutes = new Map<string, ExecuteLogRoute>();
+  // Rate-limit state for dropped `execute.log` notifications. The debug record
+  // never carries chunk bytes.
+  let executeLogDropCount = 0;
+  let executeLogDropLoggedAtMs = 0;
+  // Rate-limit state for dropped oversized worker lines. The warn record carries
+  // only the length, never the line bytes.
+  let oversizedLineDropCount = 0;
+  let oversizedLineLoggedAtMs = 0;
+
+  // Framing and flood limits for the `execute.log` route. The defaults bound one
+  // incoming line before the JSON parse and the total streamed output for one
+  // execute call. A caller (a test) can lower them.
+  const maxIncomingMessageChars =
+    options.executeLogLimits?.maxIncomingMessageChars ?? MAX_WORKER_MESSAGE_CHARS;
+  const maxExecuteLogTotalChars =
+    options.executeLogLimits?.maxTotalCharsPerExecute ?? MAX_EXECUTE_LOG_TOTAL_CHARS;
 
   // ------------------------------------------------------------------
   // Proactive company scopes (LOOA-629)
@@ -546,6 +649,14 @@ export function createPluginWorkerHandle(
 
   function handleLine(line: string): void {
     if (!line.trim()) return;
+
+    // Enforce the framing bound BEFORE the JSON parse. A line longer than the
+    // limit is dropped without a parse, so a faulty or hostile worker cannot
+    // force the host to parse an unbounded document and exhaust memory.
+    if (line.length > maxIncomingMessageChars) {
+      dropOversizedLine(line.length);
+      return;
+    }
 
     let message: unknown;
     try {
@@ -656,6 +767,157 @@ export function createPluginWorkerHandle(
     const entry = activeInvocations.get(invocation.id);
     if (entry?.timer) clearTimeout(entry.timer);
     activeInvocations.delete(invocation.id);
+  }
+
+  // Store the host-owned execute route for one active execute call. The host
+  // holds the exact company id and log sink; the worker never supplies them.
+  function registerExecuteRoute(
+    invocationId: string,
+    companyId: string,
+    onLog: ExecuteLogSink,
+  ): void {
+    activeExecuteRoutes.set(invocationId, {
+      companyId,
+      onLog,
+      deliveredChars: 0,
+      crossCompanyBlocked: false,
+    });
+  }
+
+  function clearExecuteRoute(invocationId: string | undefined): void {
+    if (invocationId) activeExecuteRoutes.delete(invocationId);
+  }
+
+  // Drop an oversized incoming worker line before the JSON parse. Write a
+  // rate-limited warn record with the length and a running drop count. The
+  // record never carries the line bytes.
+  function dropOversizedLine(lineLength: number): void {
+    oversizedLineDropCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - oversizedLineLoggedAtMs >= EXECUTE_LOG_DROP_LOG_INTERVAL_MS) {
+      log.warn(
+        { lineLength, maxIncomingMessageChars, droppedSinceLastLog: oversizedLineDropCount },
+        "dropping oversized worker line before JSON parse",
+      );
+      oversizedLineLoggedAtMs = nowMs;
+      oversizedLineDropCount = 0;
+    }
+  }
+
+  // Drop an `execute.log` notification. Write a rate-limited debug record with
+  // the reason and a running drop count. The record never carries the chunk
+  // bytes, the company id, or command data.
+  function dropExecuteLogNotification(reason: string): void {
+    executeLogDropCount += 1;
+    const nowMs = Date.now();
+    if (nowMs - executeLogDropLoggedAtMs >= EXECUTE_LOG_DROP_LOG_INTERVAL_MS) {
+      log.debug(
+        { reason, droppedSinceLastLog: executeLogDropCount },
+        "dropping execute.log notification",
+      );
+      executeLogDropLoggedAtMs = nowMs;
+      executeLogDropCount = 0;
+    }
+  }
+
+  // Route one `execute.log` notification to its host-owned execute route. The
+  // route is the single authority for the delivery target and the company
+  // binding. This never reads a company id from the notification and never
+  // routes through the generic active-invocation record.
+  //
+  // Complete mediation: the host and the worker share one stdio pipe, and the
+  // worker process sees every active invocation id. So the host cannot prove
+  // which concurrent invocation produced a notification, and it must NOT treat
+  // the worker-supplied `paperclipInvocationId` alone as proof of origin. The
+  // host validates the exact company scope instead: it delivers only while every
+  // active execute route on this worker belongs to ONE company. When a second
+  // company's execute overlaps, the host fails closed — it latches the active
+  // routes and drops the chunk — so a worker that runs company A can never forge
+  // company B's active id and inject output into B's route. The final command
+  // result still delivers the complete output, so no byte is lost; only the live
+  // stream pauses while two companies overlap.
+  function routeExecuteLogNotification(notification: JsonRpcNotification): void {
+    const invocationId = readNonEmptyString(
+      (notification as { paperclipInvocationId?: unknown }).paperclipInvocationId,
+    );
+    const params = isRecord(notification.params) ? notification.params : {};
+    const stream = params.stream;
+    const chunk = params.chunk;
+    // Runtime-validate the payload. Drop invalid input without a throw.
+    if (stream !== "stdout" && stream !== "stderr") {
+      dropExecuteLogNotification("invalid-stream");
+      return;
+    }
+    if (
+      typeof chunk !== "string" ||
+      chunk.length === 0 ||
+      chunk.length > MAX_EXECUTE_LOG_CHUNK_CHARS
+    ) {
+      dropExecuteLogNotification("invalid-chunk");
+      return;
+    }
+    if (!invocationId) {
+      dropExecuteLogNotification("missing-invocation");
+      return;
+    }
+    const route = activeExecuteRoutes.get(invocationId);
+    if (!route) {
+      // No active execute route for this id: a late chunk after settlement or
+      // timeout, a non-execute invocation, or an unknown id. Drop it.
+      dropExecuteLogNotification("no-active-route");
+      return;
+    }
+    // The route already lost single-company attribution earlier in its life, so
+    // it stays closed for the rest of the call.
+    if (route.crossCompanyBlocked) {
+      dropExecuteLogNotification("cross-company-scope");
+      return;
+    }
+    // Validate the exact company scope. Deliver only while every active execute
+    // route on this worker belongs to one company. A second company's active
+    // route makes the shared pipe ambiguous, so the host fails closed: it
+    // latches every active route and drops the chunk.
+    let onlyCompanyId: string | null = null;
+    let crossCompany = false;
+    for (const active of activeExecuteRoutes.values()) {
+      if (onlyCompanyId === null) {
+        onlyCompanyId = active.companyId;
+      } else if (onlyCompanyId !== active.companyId) {
+        crossCompany = true;
+        break;
+      }
+    }
+    if (crossCompany) {
+      for (const active of activeExecuteRoutes.values()) {
+        active.crossCompanyBlocked = true;
+      }
+      dropExecuteLogNotification("cross-company-scope");
+      return;
+    }
+    // Bound the total characters one execute call may stream. Past the ceiling
+    // the host drops further chunks, so one runaway or hostile execution cannot
+    // flood the host and the run-log sink without limit.
+    if (route.deliveredChars + chunk.length > maxExecuteLogTotalChars) {
+      dropExecuteLogNotification("execute-output-cap");
+      return;
+    }
+    route.deliveredChars += chunk.length;
+    try {
+      const delivery = route.onLog(stream, chunk);
+      if (delivery && typeof (delivery as Promise<void>).then === "function") {
+        void (delivery as Promise<void>).catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "execute.log delivery failed",
+          );
+        });
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "execute.log delivery threw",
+      );
+    }
   }
 
   /**
@@ -808,6 +1070,13 @@ export function createPluginWorkerHandle(
       } else {
         log.info(logFields, `[plugin] ${msg}`);
       }
+      return;
+    }
+
+    // Execute-log notifications: deliver one incremental output chunk to the
+    // host-owned execute route for the active execute call.
+    if (notification.method === "execute.log") {
+      routeExecuteLogNotification(notification);
       return;
     }
 
@@ -1273,6 +1542,7 @@ export function createPluginWorkerHandle(
     method: M,
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
@@ -1288,6 +1558,13 @@ export function createPluginWorkerHandle(
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      // Register the host-owned execute route only for an execute call that
+      // carries a log sink. The company id comes from the host-derived
+      // invocation scope, never from the worker. This binds the sink to the
+      // exact company for the life of the call.
+      if (invocation && invocationScope && executeLogSink && method === "environmentExecute") {
+        registerExecuteRoute(invocation.id, invocationScope.companyId, executeLogSink);
+      }
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1301,6 +1578,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         fn(value);
       };
 
@@ -1343,6 +1621,7 @@ export function createPluginWorkerHandle(
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
+        clearExecuteRoute(invocation?.id);
         reject(
           new Error(
             `Failed to send "${method}" to worker: ${
@@ -1396,6 +1675,7 @@ export function createPluginWorkerHandle(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
@@ -1404,7 +1684,7 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return callInternal(method, params, timeoutMs);
+      return callInternal(method, params, timeoutMs, executeLogSink);
     },
 
     notify(method: string, params: unknown) {
@@ -1635,6 +1915,7 @@ export function createPluginWorkerManager(
       method: M,
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
+      executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
       if (!handle) {
@@ -1642,7 +1923,7 @@ export function createPluginWorkerManager(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.call(method, params, timeoutMs);
+      return handle.call(method, params, timeoutMs, executeLogSink);
     },
   };
 }

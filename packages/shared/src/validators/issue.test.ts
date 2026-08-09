@@ -48,6 +48,22 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
+  it("accepts review policies on create and update while rejecting unknown values", () => {
+    expect(createIssueSchema.parse({ title: "Human review", reviewPolicy: "human_only" }).reviewPolicy)
+      .toBe("human_only");
+    expect(updateIssueSchema.parse({ reviewPolicy: "not_creator" }).reviewPolicy)
+      .toBe("not_creator");
+    expect(updateIssueSchema.parse({ reviewPolicy: null }).reviewPolicy).toBeNull();
+    expect(updateIssueSchema.safeParse({ reviewPolicy: "creator_only" }).success).toBe(false);
+  });
+
+  it("accepts only UUID review interaction bindings on update", () => {
+    expect(updateIssueSchema.parse({
+      reviewInteractionId: "11111111-1111-4111-8111-111111111111",
+    }).reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(updateIssueSchema.safeParse({ reviewInteractionId: "interaction-1" }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",
@@ -261,7 +277,12 @@ describe("issue validators", () => {
             rows: [
               { type: "key_value", label: "Cause", value: "successful_run_missing_state" },
               { type: "issue_link", label: "Source issue", identifier: "PAP-3440" },
-              { type: "run_link", label: "Run", runId: "11111111-1111-4111-8111-111111111111" },
+              {
+                type: "run_link",
+                label: "Run",
+                runId: "11111111-1111-4111-8111-111111111111",
+                agentId: "22222222-2222-4222-8222-222222222222",
+              },
             ],
           },
         ],
@@ -272,6 +293,10 @@ describe("issue validators", () => {
     expect(parsed.presentation?.density).toBe("compact");
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+    expect(parsed.metadata?.sections[0]?.rows[2]).toMatchObject({
+      type: "run_link",
+      agentId: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   it("rejects unknown issue comment presentation densities", () => {

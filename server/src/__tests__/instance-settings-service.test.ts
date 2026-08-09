@@ -44,6 +44,7 @@ describe("instance settings service", () => {
       enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      enableSimplifiedEnglishInteractions: false,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
@@ -69,6 +70,19 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableConferenceRoomChat,
     ).toBe(false);
+  });
+
+  it("defaults enableSimplifiedEnglishInteractions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(true);
   });
 
   it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {

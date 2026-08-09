@@ -77,13 +77,14 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
     : null;
   const reviewCount =
-    (attentionItem?.pendingActionRequestCount ?? 0) + (attentionItem?.quarantinedCatalogEntryCount ?? 0);
+    (attentionItem?.pendingActionRequestCount ?? 0) +
+    ((attentionItem?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
       <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
         <Link
-          to="/apps"
+          to="/apps/connections"
           onClick={() => {
             if (isMobile) setSidebarOpen(false);
           }}

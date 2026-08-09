@@ -67,6 +67,18 @@ export type DecisionEffect =
   | CancelIssueTreeDecisionEffect
   | ResolveBlockerDecisionEffect;
 
+export function decisionEffectTargetIssueIds(effect: DecisionEffect): string[] {
+  const ids = new Set([effect.targetIssueId]);
+  if (effect.type === "create_issue") {
+    if (effect.draft.parentId) ids.add(effect.draft.parentId);
+    for (const id of effect.draft.blockedByIssueIds ?? []) ids.add(id);
+  }
+  if (effect.type === "resolve_blocker") {
+    for (const id of effect.removeBlockedByIssueIds) ids.add(id);
+  }
+  return [...ids];
+}
+
 export interface DecisionOption {
   id: string;
   label: string;

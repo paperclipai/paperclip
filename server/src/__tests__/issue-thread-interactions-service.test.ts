@@ -1472,6 +1472,117 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("records an authorized agent as the review-confirmation resolver", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Agent review verdict");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve this review?" },
+    }, {
+      userId: "local-board",
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      reviewVerdictAuthorized: true,
+    });
+
+    expect(accepted.interaction).toMatchObject({
+      status: "accepted",
+      resolvedByAgentId: resolverAgentId,
+      resolvedByRunId: resolverRunId,
+      resolvedByUserId: null,
+    });
+  });
+
+  it("preserves creator and same-run guards for authorized agent review verdicts", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Guard agent review verdicts");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve your own request?" },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ createdByAgentId: resolverAgentId })
+      .where(eq(issueThreadInteractions.id, createdByResolver.id));
+
+    const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the same run?",
+        options: [{ id: "approve", label: "Approve" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ sourceRunId: resolverRunId })
+      .where(eq(issueThreadInteractions.id, createdBySameRun.id));
+
+    const issue = { id: issueId, companyId, goalId, projectId: null };
+    const actor = {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      reviewVerdictAuthorized: true,
+    };
+    await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
+      .rejects.toThrow("Agents cannot resolve interactions they created");
+    await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
+      selectedOptionIds: ["approve"],
+    }, actor)).rejects.toThrow("Agents cannot resolve interactions created by the same run");
+  });
+
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation accept");
 
@@ -1867,7 +1978,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
+  it("returns accepted agent confirmations from review without resetting active work", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -1944,6 +2055,90 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(updatedIssue).toMatchObject({
       id: issueId,
       status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const agentOwnedConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve the next step?",
+      },
+    }, {
+      agentId,
+    });
+
+    const resumed = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, agentOwnedConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(resumed.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    const resumedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(resumedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, issueId));
+
+    const activeConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve while work is active?",
+      },
+    }, {
+      agentId,
+    });
+
+    const acceptedWhileActive = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, activeConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(acceptedWhileActive.continuationIssue).toBeNull();
+    const activeIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(activeIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });
@@ -2438,6 +2633,130 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         },
       },
     });
+  });
+
+  it("rejects creating a plan confirmation against a stale document revision and accepts the current one", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Stale plan confirmation",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    // Document is already at revision 2 — revision 1 is stale.
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values([
+      {
+        id: revisionId,
+        companyId,
+        documentId,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "v1",
+      },
+      {
+        id: nextRevisionId,
+        companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "v2",
+      },
+    ]);
+
+    const staleTarget = {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+
+    // The revision check runs inside the create transaction (locking the
+    // document row), so a target pointing at an older revision is rejected
+    // atomically with the would-be insert rather than by a racy pre-check.
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: staleTarget,
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("current issue document revision"),
+    });
+
+    const noRows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(noRows).toHaveLength(0);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: {
+          ...staleTarget,
+          revisionId: nextRevisionId,
+          revisionNumber: 2,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+    expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {

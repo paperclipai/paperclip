@@ -742,6 +742,37 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("renders the simplified-english interaction directive only when the payload enables it", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-15936",
+        title: "Interaction language",
+        description: null,
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    expect(renderPaperclipWakePrompt(payload)).not.toContain("ASD-STE100");
+
+    const enabled = { ...payload, simplifiedEnglishInteractions: true };
+    const fresh = renderPaperclipWakePrompt(enabled);
+    expect(fresh).toContain("ASD-STE100 Simplified Technical English");
+    expect(fresh).toContain("what happens for each choice");
+    // Resume deltas carry the directive too: the setting can change between wakes.
+    expect(renderPaperclipWakePrompt(enabled, { resumedSession: true })).toContain(
+      "ASD-STE100 Simplified Technical English",
+    );
+    expect(JSON.parse(stringifyPaperclipWakePayload(enabled) ?? "{}")).toMatchObject({
+      simplifiedEnglishInteractions: true,
+    });
+  });
+
   it("suppresses the issue description when the prompt already carries the task-context markdown", () => {
     const payload = {
       reason: "issue_assigned",

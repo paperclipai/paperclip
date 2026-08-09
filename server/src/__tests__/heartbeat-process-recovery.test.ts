@@ -116,6 +116,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  noticeMetadataReferencesRecoveryAction,
 } from "../services/recovery/index.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
@@ -128,6 +129,11 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+function commentMetadataRows(comment: { metadata?: unknown } | null | undefined) {
+  const metadata = comment?.metadata as { sections?: Array<{ rows?: unknown[] }> } | null | undefined;
+  return (metadata?.sections ?? []).flatMap((section) => section.rows ?? []) as Array<Record<string, unknown>>;
 }
 
 function spawnAliveProcess() {
@@ -2489,8 +2495,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -2565,6 +2574,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",
@@ -2944,7 +2954,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       authorType: "system",
       body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
     });
-    expect(comments[0]?.body).toContain("Recovery action:");
+    expect(commentMetadataRows(comments[0]).some((row) => row.label === "Recovery action")).toBe(true);
 
     const interaction = await db
       .select({ result: issueThreadInteractions.result })
@@ -4697,7 +4707,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     const recoveryComment = comments.find((comment) =>
       comment.body.includes("pending execution-review participant once") &&
-        comment.body.includes(`Recovery action: \`${recoveryAction.id}\``),
+        noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id),
     );
     expect(recoveryComment).toBeTruthy();
 
@@ -5511,25 +5521,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain(`Recovery owner: [${longRecoveryOwnerName}]`);
-    expect(comments[0]?.presentation).toMatchObject({
-      kind: "system_notice",
-      tone: "warning",
-      title: `${`Recovery: retries exhausted — moved to blocked (owner: ${longRecoveryOwnerName})`.slice(0, 159)}…`,
-      density: "compact",
-    });
-    expect(comments[0]?.metadata).toMatchObject({
-      version: 1,
-      sections: [expect.objectContaining({
-        rows: expect.arrayContaining([
-          expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
-          expect.objectContaining({ type: "key_value", label: "Cause", value: "process_lost" }),
-          expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "R".repeat(160) }),
-        ]),
-      })],
-    });
+    expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
+    const failureSummary = commentMetadataRows(comments[0]).find((row) =>
+      row.type === "key_value" && row.label === "Failure summary"
+    );
+    expect(failureSummary).toMatchObject({ type: "key_value", label: "Failure summary" });
+    expect(failureSummary?.type === "key_value" ? failureSummary.value : "").toContain("Authorization");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === longRecoveryOwnerName.slice(0, 160),
+    )).toBe(true);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
@@ -5933,9 +5936,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
@@ -5966,8 +5971,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    // The short structured body carries no failure details; the normalized
+    // failure code surfaces only as a metadata row.
+    expect(comments[0]?.body).not.toContain("adapter_exit_code");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_exit_code",
+    });
   });
 
   it("keeps retrying transient adapter_failed continuation runs before the cap", async () => {
@@ -6060,7 +6072,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("3× attempts");
-    expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_failed",
+    });
   });
 
   it("does not count mixed-cause continuation failures toward the transient cap", async () => {
@@ -6687,8 +6703,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("automatically retried continuation");
     expect(comments[0]?.body).toContain("still has no live execution path");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {

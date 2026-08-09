@@ -36,6 +36,7 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
@@ -580,7 +581,15 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(result);
   });
 
-  router.post("/", validate(createCompanySchema), async (req, res) => {
+  router.post("/", (req, _res, next) => {
+    assertBoard(req);
+    if (isCloudManagedInstance()) {
+      throw forbidden("Company creation is managed by Paperclip Cloud", {
+        code: "cloud_managed",
+      });
+    }
+    next();
+  }, validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");

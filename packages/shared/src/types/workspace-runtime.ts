@@ -35,6 +35,12 @@ export type ExecutionWorkspaceStatus =
   | "archived"
   | "cleanup_failed";
 
+export type ExecutionWorkspaceDeliveryState =
+  | "merged_via_pr"
+  | "merged_by_ancestry"
+  | "unmerged"
+  | "unknown";
+
 export type ExecutionWorkspaceCloseReadinessState =
   | "ready"
   | "ready_with_warnings"
@@ -137,6 +143,7 @@ export interface ExecutionWorkspaceCloseGitReadiness {
 
 export interface ExecutionWorkspaceCloseReadiness {
   workspaceId: string;
+  deliveryState: ExecutionWorkspaceDeliveryState;
   state: ExecutionWorkspaceCloseReadinessState;
   blockingReasons: string[];
   warnings: string[];
@@ -252,6 +259,7 @@ export interface ExecutionWorkspace {
   strategyType: ExecutionWorkspaceStrategyType;
   name: string;
   status: ExecutionWorkspaceStatus;
+  deliveryState: ExecutionWorkspaceDeliveryState;
   cwd: string | null;
   repoUrl: string | null;
   baseRef: string | null;

@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 export type WorkspaceServiceControlState =
   | "stopped"
@@ -121,8 +122,7 @@ function CopyUrlButton({ url, disabled }: { url: string; disabled?: boolean }) {
       className="text-muted-foreground hover:text-foreground"
       onClick={async () => {
         try {
-          if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
-          await navigator.clipboard.writeText(url);
+          await copyTextToClipboard(url);
           setCopyState("copied");
         } catch {
           setCopyState("failed");

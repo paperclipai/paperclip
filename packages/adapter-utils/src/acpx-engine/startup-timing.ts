@@ -403,6 +403,66 @@ export function runWithRuntimeParent<T>(
 }
 
 /**
+ * Run one run-time operation inside its own wrapper span. The runner opens a
+ * wrapper span parented to the current run span, publishes the wrapper span as
+ * the runtime parent while `work` runs, and ends the span when `work` settles.
+ * A child `sandbox.exec` span inside `work` parents to the wrapper span, so the
+ * trace groups the operation's execs under one named span. A throwing `work`
+ * sets the wrapper span error status before the span ends.
+ *
+ * The runner reads the run parent per call, so it always parents to the live
+ * span (`agent.turn` during the turn, `task.run` otherwise). The default runner
+ * opens no real span; it only runs `work` under the current run parent, so the
+ * span path stays a no-op until the server injects a real tracer.
+ */
+export type RuntimeSpanRunner = <T>(name: string, work: () => Promise<T>) => Promise<T>;
+
+/**
+ * Build a {@link RuntimeSpanRunner} from a trace context and the run-parent
+ * getter. The runner opens the wrapper span through `traceContext.tracer`, and
+ * it derives the wrapper span's child parent token through
+ * `traceContext.contextWithSpan`. A no-op trace context yields a runner that
+ * opens no real span and runs `work` under the current run parent, so the span
+ * path stays inert until the server injects a real tracer. Every tracer call
+ * sits inside an error swallow, so a throwing tracer never changes control flow.
+ */
+export function createRuntimeSpanRunner(
+  traceContext: StartupTraceContext,
+  getRuntimeParentContext: () => StartupSpanContext | undefined,
+): RuntimeSpanRunner {
+  return async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    const parentContext = getRuntimeParentContext();
+    let span: StartupSpan;
+    try {
+      span = traceContext.tracer.startSpan(name, undefined, parentContext);
+    } catch {
+      // A throwing tracer must not change control flow; run `work` unwrapped.
+      return runWithRuntimeParent(parentContext, work);
+    }
+    let childContext: StartupSpanContext;
+    try {
+      childContext = traceContext.contextWithSpan(span);
+    } catch {
+      childContext = parentContext;
+    }
+    let failed = false;
+    try {
+      return await runWithRuntimeParent(childContext, work);
+    } catch (err) {
+      failed = true;
+      throw err;
+    } finally {
+      try {
+        if (failed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+        span.end();
+      } catch {
+        // Observability must not change control flow.
+      }
+    }
+  };
+}
+
+/**
  * Set a numeric span attribute only when the value is a finite number. A reader
  * that returns `undefined` (the counter is unavailable) yields no attribute,
  * never `NaN` and never a misleading `0`. This mirrors the host counter guard

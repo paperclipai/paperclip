@@ -253,7 +253,7 @@ Key shared semantics:
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
 - **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
-- **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
+- **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. When a `request_confirmation` or `request_checkbox_confirmation` is the issue review request, include its returned id as `reviewInteractionId` in that PATCH. This explicit binding lets policy-eligible agents submit the review verdict without granting the same authority to unrelated pending confirmations. The pending interaction is the explicit waiting path.
 
 ### Standalone Decisions
 
@@ -421,7 +421,7 @@ or linking cases through the agent-facing cases API.
 Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
 
 - Install and inspect company skills with the company skills API.
-- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
+- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync` and an explicit `add`, `remove`, or `replace` mode. Prefer `add`; `replace` overwrites the complete desired skill set.
 - When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
 
 If you are asked to install a skill for the company or an agent you MUST read:
@@ -444,6 +444,13 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
+
+## Proposing Credentials Safely
+
+**When you receive a credential, propose it as a Paperclip secret immediately with `POST /api/agents/me/secret-proposals`. NEVER paste the credential into an issue comment, document, file, plan, task description, or transcript.** This applies whether the value was pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source.
+
+Before proposing a credential you MUST read the "Agent secret proposals" section in:
+`skills/paperclip/references/api-reference.md`
 
 ## Reading Granted Secrets
 
@@ -594,6 +601,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| Secret proposals                      | `POST\|GET /api/agents/me/secret-proposals` • `DELETE /api/agents/me/secret-proposals/:id`                                  |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.

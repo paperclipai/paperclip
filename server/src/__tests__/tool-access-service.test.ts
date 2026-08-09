@@ -3045,7 +3045,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(callbackRes.body.connection).toMatchObject({
       id: connectRes.body.connectionId,
       status: "active",
-      enabled: false,
+      enabled: true,
       credentialSecretRefs: [
         expect.objectContaining({ configPath: "oauth.access_token", label: "OAuth access token" }),
         expect.objectContaining({ configPath: "oauth.refresh_token", label: "OAuth refresh token" }),
@@ -3240,11 +3240,214 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
   });
 
-  it("refreshes expired OAuth access tokens before remote app calls", async () => {
+  it("discovers Notion MCP OAuth metadata, registers one public client, and reuses it", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      name: "Notion DCR",
+    });
+    const redirectUri = "https://paperclip-dev.tail29c1aa.ts.net/api/tools/oauth/callback";
+    const registrationBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          authorization_servers: ["https://mcp.notion.com"],
+          scopes_supported: ["default"],
+        });
+      }
+      if (href === "https://mcp.notion.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://mcp.notion.com",
+          authorization_endpoint: "https://mcp.notion.com/authorize",
+          token_endpoint: "https://mcp.notion.com/token",
+          registration_endpoint: "https://mcp.notion.com/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://mcp.notion.com/register") {
+        expect(init?.method).toBe("POST");
+        registrationBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return mcpHttpResponse({
+          client_id: "notion-dcr-client",
+          client_secret: "notion-dcr-secret",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const [first, concurrent] = await Promise.all([
+      service.startOAuth(company.id, connected.connectionId, {
+        redirectUri,
+        actor: { actorType: "user", actorId: "board" },
+      }),
+      service.startOAuth(company.id, connected.connectionId, {
+        redirectUri,
+        actor: { actorType: "user", actorId: "board" },
+      }),
+    ]);
+
+    expect(new URL(first.authorizationUrl).origin).toBe("https://mcp.notion.com");
+    expect(new URL(concurrent.authorizationUrl).searchParams.get("client_id")).toBe("notion-dcr-client");
+    expect(registrationBodies).toEqual([{
+      client_name: "Paperclip (paperclip-dev.tail29c1aa.ts.net)",
+      redirect_uris: [redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    }]);
+
+    fetchMock.mockClear();
+    const reused = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    });
+    expect(new URL(reused.authorizationUrl).searchParams.get("client_id")).toBe("notion-dcr-client");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(connection).toMatchObject({ ownership: "dcr" });
+    expect(connection.config).toMatchObject({
+      oauth: {
+        provider: "notion",
+        clientId: "notion-dcr-client",
+        clientRegistrationSource: "dcr",
+        clientTokenEndpointAuthMethod: "none",
+        clientRedirectUri: redirectUri,
+        registrationUrl: "https://mcp.notion.com/register",
+      },
+    });
+    expect(connection.credentialSecretRefs).toEqual([
+      expect.objectContaining({ configPath: "oauth.client_secret", required: false }),
+    ]);
+    expect(JSON.stringify(connection.config)).not.toContain("notion-dcr-secret");
+  });
+
+  it.each([
+    [
+      "a confidential token endpoint auth method",
+      { client_id: "notion-dcr-client", token_endpoint_auth_method: "client_secret_basic" },
+      "token_endpoint_auth_method",
+    ],
+    [
+      "a different redirect URI",
+      { client_id: "notion-dcr-client", redirect_uris: ["https://attacker.example/callback"] },
+      "redirect_uris",
+    ],
+    [
+      "a reduced grant set",
+      { client_id: "notion-dcr-client", grant_types: ["authorization_code"] },
+      "grant_types",
+    ],
+    [
+      "missing response types",
+      { client_id: "notion-dcr-client", response_types: undefined },
+      "response_types",
+    ],
+    [
+      "an oversized client id",
+      { client_id: "x".repeat(4_097) },
+      "client_id",
+    ],
+  ])("rejects DCR responses that return %s", async (_label, registrationResponse, field) => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      name: `Notion invalid DCR ${field}`,
+    });
+    const redirectUri = "https://paperclip-dev.tail29c1aa.ts.net/api/tools/oauth/callback";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({ authorization_servers: ["https://mcp.notion.com"] });
+      }
+      if (href === "https://mcp.notion.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          authorization_endpoint: "https://mcp.notion.com/authorize",
+          token_endpoint: "https://mcp.notion.com/token",
+          registration_endpoint: "https://mcp.notion.com/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://mcp.notion.com/register") {
+        return mcpHttpResponse({
+          client_id: "notion-dcr-client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+          ...registrationResponse,
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({
+      status: 502,
+      details: {
+        code: "oauth_dcr_response_invalid",
+        field,
+      },
+    });
+
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(connection.ownership).not.toBe("dcr");
+    expect((connection.config.oauth as Record<string, unknown> | undefined)?.clientId).toBeUndefined();
+  });
+
+  it("fails fast when Notion DCR is attempted from a non-loopback HTTP origin", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      name: "Notion invalid origin",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "http://paperclip-dev:3100/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "This provider requires an HTTPS or loopback origin. Configure TLS before connecting.",
+      details: expect.objectContaining({
+        code: "oauth_redirect_origin_unsupported",
+        docsPath: "docs/deploy",
+      }),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("leases rotating OAuth refresh tokens across service instances before concurrent remote app calls", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
     const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
 
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack refresh" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -3252,6 +3455,7 @@ describeEmbeddedPostgres("tool access service", () => {
       actor: { actorType: "user", actorId: "board" },
     });
     const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    let refreshCallCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
       if (href === "https://slack.com/api/oauth.v2.access") {
@@ -3270,6 +3474,8 @@ describeEmbeddedPostgres("tool access service", () => {
         }
         expect(body.get("grant_type")).toBe("refresh_token");
         expect(body.get("refresh_token")).toBe("refresh-token");
+        refreshCallCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
         return {
           ok: true,
           json: async () => ({
@@ -3311,9 +3517,14 @@ describeEmbeddedPostgres("tool access service", () => {
       })
       .where(eq(toolConnections.id, connect.connectionId));
 
-    const health = await service.checkHealth(connect.connectionId);
+    const [health, concurrentHealth] = await Promise.all([
+      service.checkHealth(connect.connectionId),
+      concurrentService.checkHealth(connect.connectionId),
+    ]);
 
     expect(health.connection.healthStatus).toBe("ok");
+    expect(concurrentHealth.connection.healthStatus).toBe("ok");
+    expect(refreshCallCount).toBe(1);
     const fetchCalls = vi.mocked(globalThis.fetch).mock.calls;
     const mcpCalls = fetchCalls.filter(([url]) => String(url) === "https://mcp.slack.com/mcp");
     expect(mcpCalls.at(-1)?.[1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer new-access-token" }));
@@ -3334,6 +3545,231 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ configPath: "oauth.refresh_token", outcome: "success" }),
       expect.objectContaining({ configPath: "credentials.oauth.access_token", outcome: "success" }),
     ]));
+  });
+
+  it("treats invalid_grant as terminal without replaying a rotated refresh token", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack invalid grant" });
+    const start = await service.startOAuth(company.id, connect.connectionId, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return mcpHttpResponse({
+          ok: true,
+          access_token: "expired-access-token",
+          refresh_token: "single-use-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state,
+      code: "oauth-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const [connected] = await db.select().from(toolConnections).where(eq(toolConnections.id, connect.connectionId));
+    await db.update(toolConnections).set({
+      config: {
+        ...connected.config,
+        oauth: {
+          ...(connected.config.oauth as Record<string, unknown>),
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+      },
+    }).where(eq(toolConnections.id, connect.connectionId));
+
+    let refreshCallCount = 0;
+    fetchMock.mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("grant_type")).toBe("refresh_token");
+        expect(body.get("refresh_token")).toBe("single-use-refresh-token");
+        refreshCallCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          ok: false,
+          status: 400,
+          headers: { get: () => null },
+          json: async () => ({ error: "invalid_grant", error_description: "Refresh token was already used" }),
+        } as unknown as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const results = await Promise.allSettled([
+      service.checkHealth(connect.connectionId),
+      service.checkHealth(connect.connectionId),
+    ]);
+    expect(results).toEqual([
+      expect.objectContaining({ status: "rejected" }),
+      expect.objectContaining({ status: "rejected" }),
+    ]);
+    for (const result of results) {
+      expect(result.status === "rejected" ? result.reason : null).toMatchObject({
+        details: expect.objectContaining({ code: "oauth_reauthorization_required" }),
+      });
+    }
+    expect(refreshCallCount).toBe(1);
+    const [reauthorizationRequired] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connect.connectionId));
+    expect(reauthorizationRequired).toMatchObject({
+      status: "draft",
+      enabled: false,
+      healthStatus: "error",
+    });
+    expect(reauthorizationRequired.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.access_token");
+    expect(reauthorizationRequired.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.refresh_token");
+    expect(reauthorizationRequired.credentialRefs.map((ref) => ref.name)).not.toContain("oauth.access_token");
+  });
+
+  it("does not disable a connection when invalid_grant used a superseded refresh-token version", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      name: "Slack stale invalid grant",
+    });
+    const start = await service.startOAuth(company.id, connect.connectionId, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return mcpHttpResponse({
+          ok: true,
+          access_token: "expired-access-token",
+          refresh_token: "submitted-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state,
+      code: "oauth-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const [connected] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connect.connectionId));
+    const refreshRef = connected.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!;
+    await db.update(toolConnections).set({
+      config: {
+        ...connected.config,
+        oauth: {
+          ...(connected.config.oauth as Record<string, unknown>),
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+      },
+    }).where(eq(toolConnections.id, connect.connectionId));
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("refresh_token")).toBe("submitted-refresh-token");
+        await secretService(db).rotate(refreshRef.secretId, { value: "newer-refresh-token" });
+        return {
+          ok: false,
+          status: 400,
+          headers: { get: () => null },
+          json: async () => ({ error: "invalid_grant" }),
+        } as unknown as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await expect(service.checkHealth(connect.connectionId)).rejects.toMatchObject({
+      status: 502,
+      details: expect.objectContaining({ code: "oauth_refresh_superseded" }),
+    });
+    const [preserved] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connect.connectionId));
+    expect(preserved).toMatchObject({ status: "active", enabled: true });
+    expect(preserved.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining([
+      "oauth.access_token",
+      "oauth.refresh_token",
+    ]));
+    expect((preserved.config.oauth as Record<string, unknown>).refreshLease).toBeUndefined();
+  });
+
+  it("fails closed instead of replaying a refresh token after an abandoned lease", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fixture = await createOAuthConnection(db, company.id);
+    const refreshSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `OAuth refresh ${randomUUID()}`,
+      key: `oauth.refresh.${randomUUID()}`,
+      value: "possibly-consumed-refresh-token",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: refreshSecret.id,
+      targetType: "tool_connection",
+      targetId: fixture.connection.id,
+      configPath: "oauth.refresh_token",
+    });
+    await db.update(toolConnections).set({
+      config: {
+        ...fixture.connection.config,
+        oauth: {
+          ...(fixture.connection.config.oauth as Record<string, unknown>),
+          expiresAt: "2000-01-01T00:00:00.000Z",
+          refreshLease: {
+            id: "abandoned-refresh",
+            expiresAt: "2000-01-01T00:00:00.000Z",
+          },
+        },
+      },
+      credentialSecretRefs: [
+        ...fixture.connection.credentialSecretRefs,
+        {
+          secretId: refreshSecret.id,
+          versionSelector: "latest",
+          configPath: "oauth.refresh_token",
+          required: false,
+          label: "OAuth refresh token",
+        },
+      ],
+    }).where(eq(toolConnections.id, fixture.connection.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(service.checkHealth(fixture.connection.id)).rejects.toMatchObject({
+      status: 502,
+      details: expect.objectContaining({ code: "oauth_refresh_outcome_unknown" }),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
@@ -4065,6 +4501,36 @@ describeEmbeddedPostgres("tool access service", () => {
     }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 404 });
   });
 
+  it("allows multiple same-named connections on one application", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://first.example.test/actions",
+      name: "Notion",
+    }, { actorType: "user", actorId: "board" });
+    const second = await service.connectGalleryApp(company.id, {
+      link: "https://second.example.test/actions",
+      name: "Notion",
+      applicationId: first.application.id,
+    }, { actorType: "user", actorId: "board" });
+
+    expect(second.application.id).toBe(first.application.id);
+    expect(second.connectionId).not.toBe(first.connectionId);
+    const rows = await db.select().from(toolConnections).where(eq(toolConnections.applicationId, first.application.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.name)).toEqual(["Notion", "Notion"]);
+    expect(new Set(rows.map((row) => row.uid))).toHaveProperty("size", 2);
+  });
+
   it("does not delete a reused application when the connect rolls back", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -4647,6 +5113,149 @@ describeEmbeddedPostgres("tool access service", () => {
         connectionId: connect.connectionId,
         catalogEntryId: updateEntry.id,
       }),
+    });
+
+    const createEntry = rereview.catalog.find((entry) => entry.toolName === "create_zap")!;
+    await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+    const stillQuarantined = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    expect(stillQuarantined).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: updateEntry.id, status: "quarantined" }),
+      expect.objectContaining({ id: createEntry.id, status: "quarantined" }),
+    ]));
+
+    await expect(service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, createEntry.id],
+      askFirstCatalogEntryIds: [createEntry.id],
+      reviewedCatalogEntryIds: [createEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 400,
+      message: "Action review decisions must cover every currently quarantined action exactly once",
+    });
+
+    const reviewed = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, createEntry.id],
+      askFirstCatalogEntryIds: [createEntry.id],
+      reviewedCatalogEntryIds: [updateEntry.id, createEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(reviewed.profileEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: listEntry.id }),
+      expect.objectContaining({ catalogEntryId: createEntry.id }),
+    ]));
+    expect(reviewed.profileEntries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: updateEntry.id }),
+    ]));
+    const reviewedCatalog = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    expect(reviewedCatalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: updateEntry.id, status: "active", reviewedAt: expect.any(Date), quarantineReason: null }),
+      expect.objectContaining({ id: createEntry.id, status: "active", reviewedAt: expect.any(Date), quarantineReason: null }),
+    ]));
+    const attentionAfterReview = await service.listAppsNeedingAttention(company.id);
+    expect(attentionAfterReview.apps).toEqual([]);
+  });
+
+  it("resolves Notion reads as allowed, mutations as ask-first, and denies cross-company use", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `app-gallery:notion:${randomUUID()}`,
+      name: "Notion workspace",
+      type: "mcp_http",
+      status: "draft",
+      metadata: { sourceTemplateKey: "notion", galleryKey: "notion" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Notion workspace",
+      uid: `notion/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "draft",
+      enabled: false,
+      config: {
+        url: "https://mcp.notion.com/mcp",
+        sourceTemplateKey: "notion",
+        quarantineNewEntries: true,
+      },
+      transportConfig: { url: "https://mcp.notion.com/mcp" },
+      healthStatus: "ok",
+    }).returning();
+    mockToolsList([
+      { name: "notion-fetch", annotations: { readOnlyHint: true } },
+      // These two mutations do not contain a generic create/update verb.
+      { name: "notion-move-pages" },
+      { name: "notion-duplicate-page", annotations: { readOnlyHint: true } },
+    ]);
+
+    const refresh = await service.refreshCatalog(connection.id);
+    const fetchEntry = refresh.catalog.find((entry) => entry.toolName === "notion-fetch")!;
+    const moveEntry = refresh.catalog.find((entry) => entry.toolName === "notion-move-pages")!;
+    const duplicateEntry = refresh.catalog.find((entry) => entry.toolName === "notion-duplicate-page")!;
+    expect(refresh.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fetchEntry.id, riskLevel: "read", isReadOnly: true }),
+      expect.objectContaining({ id: moveEntry.id, riskLevel: "write", isWrite: true }),
+      expect.objectContaining({ id: duplicateEntry.id, riskLevel: "write", isWrite: true }),
+    ]));
+
+    await expect(service.finishGalleryAppConnection(otherCompany.id, connection.id, {
+      enabledCatalogEntryIds: [fetchEntry.id],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    })).rejects.toMatchObject({ status: 404 });
+
+    await service.finishGalleryAppConnection(company.id, connection.id, {
+      enabledCatalogEntryIds: [fetchEntry.id, moveEntry.id, duplicateEntry.id],
+      askFirstCatalogEntryIds: [moveEntry.id, duplicateEntry.id],
+      access: "all_agents",
+    });
+
+    const policyService = toolAccessPolicyService(db);
+    const decide = (catalogEntryId: string, toolName: string) => policyService.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId, toolName, arguments: {} },
+    });
+    await expect(decide(fetchEntry.id, fetchEntry.toolName)).resolves.toMatchObject({
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    await expect(decide(moveEntry.id, moveEntry.toolName)).resolves.toMatchObject({
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+    });
+    await expect(decide(duplicateEntry.id, duplicateEntry.toolName)).resolves.toMatchObject({
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+    });
+
+    await expect(policyService.decide({
+      companyId: otherCompany.id,
+      actor: { actorType: "user", actorId: "other-board" },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: fetchEntry.id,
+        toolName: fetchEntry.toolName,
+        arguments: {},
+      },
+    })).resolves.toMatchObject({
+      decision: "deny",
+      reasonCode: "deny_missing_tool",
     });
   });
 
@@ -6347,5 +6956,41 @@ describe("classifyRisk", () => {
     expect(risk("list_items", { destructiveHint: true })).toBe("destructive");
     expect(risk("list_items", { writeHint: true })).toBe("write");
     expect(risk("list_items", { readOnlyHint: false })).toBe("write");
+  });
+
+  it("classifies the reviewed Notion MCP catalog with provider-scoped defaults", () => {
+    const notionRisk = (name: string, annotations?: Record<string, unknown>) =>
+      classifyRisk({ name, annotations }, "notion");
+    const readTools = [
+      "notion-search",
+      "notion-fetch",
+      "notion-query-data-sources",
+      "notion-query-database-view",
+      "notion-query-meeting-notes",
+      "notion-get-comments",
+      "notion-get-teams",
+      "notion-get-users",
+      "notion-get-async-task",
+    ];
+    const writeTools = [
+      "notion-create-pages",
+      "notion-update-page",
+      "notion-convert-page-to-skill",
+      "notion-move-pages",
+      "notion-duplicate-page",
+      "notion-create-database",
+      "notion-create-folder",
+      "notion-update-data-source",
+      "notion-create-view",
+      "notion-update-view",
+      "notion-create-comment",
+    ];
+
+    for (const toolName of readTools) expect(notionRisk(toolName)).toBe("read");
+    for (const toolName of writeTools) {
+      expect(notionRisk(toolName, { readOnlyHint: true })).toBe("write");
+    }
+    expect(notionRisk("notion-delete-page")).toBe("destructive");
+    expect(classifyRisk({ name: "move_pages" })).toBe("read");
   });
 });

@@ -203,7 +203,7 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
-  if (mode === "board_full") return "replace" as const;
+  if (mode === "board_full") return collisionStrategy;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
 }
 
@@ -5329,7 +5329,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);
         if (importedSkill.action === "skipped") {
           warnings.push(`Skipped skill ${importedSkill.originalSlug}; existing skill ${importedSkill.skill.slug} was kept.`);
-        } else if (importedSkill.originalKey !== importedSkill.skill.key) {
+        } else if (importedSkill.action === "renamed") {
           warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
         }
       }
@@ -6148,6 +6148,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           action: companyAction,
         },
         agents: resultAgents,
+        skills: importedSkills.map((result) => ({
+          originalKey: result.originalKey,
+          originalSlug: result.originalSlug,
+          key: result.skill.key,
+          slug: result.skill.slug,
+          id: result.skill.id,
+          action: result.action,
+          reason: result.reason,
+        })),
         projects: resultProjects,
         routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],

@@ -21,6 +21,8 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
 
+export { isCloudManagedInstance } from "../services/cloud-instance.js";
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -383,22 +385,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     next();
   };
-}
-
-/**
- * Whether this instance is managed by a Paperclip Cloud control plane.
- * When the tenant server token is configured, the control plane owns the
- * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted the
- * `instance_admin` DB role. The only elevation a cloud tenant can carry is
- * computed per request at the trusted-header boundary (owner stack role +
- * the `enableOwnerInstanceAdmin` flag) and floored by code on
- * platform-owned surfaces. Surfaces that assume a self-hosted operator
- * will claim the instance (e.g. the first-admin bootstrap gate) should
- * treat a cloud-managed instance as already set up.
- */
-export function isCloudManagedInstance(): boolean {
-  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
 }
 
 /**

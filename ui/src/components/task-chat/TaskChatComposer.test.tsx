@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAgentMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { TaskChatComposer } from "./TaskChatComposer";
+import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 
 /**
  * MDXEditor-in-jsdom weight (mirrors MarkdownEditor.test.tsx): the real editor
@@ -149,6 +150,7 @@ let root: Root | null = null;
 let originalRangeRect: typeof Range.prototype.getBoundingClientRect;
 
 beforeEach(() => {
+  localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -251,6 +253,7 @@ describe("TaskChatComposer", () => {
     expect(sendButton().disabled).toBe(false);
 
     pressKey("Enter", { metaKey: true });
+    await flushAsync();
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("hello there", undefined, undefined);
@@ -584,5 +587,147 @@ describe("TaskChatComposer", () => {
     );
     const trigger = container.querySelector('[data-testid="task-chat-composer-assignee"]');
     expect(trigger?.textContent).toContain("Sam");
+  });
+
+  describe("draft persistence", () => {
+    const draftKey = "task-chat-draft:issue-1";
+
+    it("restores a saved draft on mount", () => {
+      localStorage.setItem(draftKey, "unsent draft");
+
+      render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+
+      expect(editable().textContent).toBe("unsent draft");
+      expect(sendButton().disabled).toBe(false);
+    });
+
+    it("preserves a restored draft through the StrictMode effect probe", () => {
+      localStorage.setItem(draftKey, "still here");
+
+      render(
+        <StrictMode>
+          <TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />
+        </StrictMode>,
+      );
+
+      expect(editable().textContent).toBe("still here");
+      expect(localStorage.getItem(draftKey)).toBe("still here");
+    });
+
+    it("saves after the debounce and flushes a pending value on unmount", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+        typeText("work in progress");
+        expect(localStorage.getItem(draftKey)).toBeNull();
+
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+        expect(localStorage.getItem(draftKey)).toBe("work in progress");
+
+        typeText("save before leaving");
+        flushSync(() => root?.unmount());
+        root = null;
+        expect(localStorage.getItem(draftKey)).toBe("save before leaving");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("flushes a pending value before page unload", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={draftKey} />);
+        typeText("save before reload");
+
+        window.dispatchEvent(new Event("beforeunload"));
+
+        expect(localStorage.getItem(draftKey)).toBe("save before reload");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears the saved draft only after a successful send", async () => {
+      localStorage.setItem(draftKey, "queued message");
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("queued message", undefined, undefined);
+      expect(localStorage.getItem(draftKey)).toBeNull();
+    });
+
+    it("keeps text entered while an earlier send is pending", async () => {
+      let resolveSend!: () => void;
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }));
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+      typeText("first message");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      typeText("next message");
+      resolveSend();
+      await flushAsync();
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
+      expect(editable().textContent).toBe("next message");
+      expect(localStorage.getItem(draftKey)).toBe("next message");
+    });
+
+    it("keeps an attachment added while an earlier send is pending", async () => {
+      let resolveSend!: () => void;
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }));
+      const onAttachImage = vi.fn().mockResolvedValue({
+        contentPath: "/attachments/next.txt",
+        originalFilename: "next.txt",
+      });
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          draftKey={draftKey}
+          onAttachImage={onAttachImage}
+        />,
+      );
+      typeText("first message");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      pasteFiles([new File(["next"], "next.txt", { type: "text/plain" })]);
+      await flushAsync();
+      resolveSend();
+      await flushAsync();
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
+      expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent)
+        .toContain("next.txt");
+    });
+
+    it("keeps the body and saved draft when sending fails", async () => {
+      vi.useFakeTimers();
+      try {
+        const onAdd = vi.fn().mockRejectedValue(new Error("network down"));
+        render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
+        typeText("do not lose this");
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+        vi.useRealTimers();
+
+        pressKey("Enter", { metaKey: true });
+        await flushAsync();
+
+        expect(editable().textContent).toBe("do not lose this");
+        expect(localStorage.getItem(draftKey)).toBe("do not lose this");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

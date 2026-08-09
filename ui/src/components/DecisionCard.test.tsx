@@ -38,6 +38,8 @@ vi.mock("@/lib/router", () => ({
 const ISSUES: Record<string, DecisionIssueRef> = {
   "issue-origin": { id: "issue-origin", identifier: "PAP-123", title: "Gardener sweep", href: "/PAP/issues/PAP-123", status: "in_progress" },
   "issue-target": { id: "issue-target", identifier: "PAP-456", title: "Stale epic", href: "/PAP/issues/PAP-456", status: "backlog" },
+  "issue-parent": { id: "issue-parent", identifier: "PAP-789", title: "Parent task", href: "/PAP/issues/PAP-789", status: "todo" },
+  "issue-blocker": { id: "issue-blocker", identifier: "PAP-790", title: "Blocking task", href: "/PAP/issues/PAP-790", status: "todo" },
   "issue-new": { id: "issue-new", identifier: "PAP-999", title: "Follow-up", href: "/PAP/issues/PAP-999", status: "todo" },
 };
 const resolveIssue = (id: string): DecisionIssueRef | null => ISSUES[id] ?? null;
@@ -133,6 +135,54 @@ describe("DecisionCard", () => {
     expect(el.textContent).toContain("PAP-123");
     expect(el.textContent).toContain("Comment on PAP-456");
     expect([...el.querySelectorAll("button")].some((b) => b.textContent?.includes("Dismiss"))).toBe(true);
+  });
+
+  it("links the target issue the decision applies to, not just the origin", () => {
+    const el = render({});
+    expect(el.textContent).toContain("applies to");
+    const provenance = el.querySelector("p");
+    expect(provenance?.textContent).toContain("PAP-456");
+    expect(
+      [...(provenance?.querySelectorAll("a") ?? [])].some((a) => a.getAttribute("href") === "/PAP/issues/PAP-456"),
+    ).toBe(true);
+  });
+
+  it("omits the applies-to link when the decision only targets its origin issue", () => {
+    const el = render({
+      decision: mkDecision({
+        options: [
+          { id: "comment", label: "Comment", effects: [{ type: "comment_on_issue", targetIssueId: "issue-origin", staleness: "lenient", bodyMarkdown: "nudge" }] },
+        ],
+      }),
+    });
+    expect(el.textContent).not.toContain("applies to");
+  });
+
+  it("links secondary target issues referenced by an effect", () => {
+    const el = render({
+      decision: mkDecision({
+        options: [{
+          id: "create",
+          label: "Create follow-up",
+          effects: [{
+            type: "create_issue",
+            targetIssueId: "issue-target",
+            staleness: "strict",
+            draft: {
+              title: "Follow-up",
+              parentId: "issue-parent",
+              blockedByIssueIds: ["issue-blocker"],
+            },
+          }],
+        }],
+      }),
+    });
+    const targetHrefs = [...(el.querySelector("p")?.querySelectorAll("a") ?? [])].map((a) => a.getAttribute("href"));
+    expect(targetHrefs).toEqual(expect.arrayContaining([
+      "/PAP/issues/PAP-456",
+      "/PAP/issues/PAP-789",
+      "/PAP/issues/PAP-790",
+    ]));
   });
 
   it("fires onDecide with the chosen option id", () => {
@@ -261,5 +311,13 @@ describe("DecisionCard", () => {
     const dismissed = render({ decision: mkDecision({ status: "decided", executionStatus: "succeeded", chosenOptionId: "dismissed", metadata: { dismissed: true } }), executions: [] });
     expect(dismissed.textContent).toContain("Dismissed");
     expect(dismissed.textContent).toContain("no effects were run");
+  });
+
+  it("explains when a decision expires because its targets completed", () => {
+    const expired = render({
+      decision: mkDecision({ status: "expired", metadata: { expiredReason: "target_completed" } }),
+    });
+    expect(expired.textContent).toContain("target issues were completed");
+    expect(expired.textContent).not.toContain("expiry deadline");
   });
 });

@@ -827,13 +827,13 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
       .send({ status: "blocked" });
     expect(checkedOutPeerUpdate.status, JSON.stringify(checkedOutPeerUpdate.body)).toBe(409);
-    expect(checkedOutPeerUpdate.body.error).toBe("Issue is checked out by another agent");
+    expect(checkedOutPeerUpdate.body.details.code).toBe("issue_write_assignee_run_lock");
 
     const documentWrite = await request(standardApp)
       .put(`/api/issues/${fixture.issues.reviewRoot.id}/documents/upward-write`)
       .send({ format: "markdown", body: "No upward document write" });
     expect(documentWrite.status, JSON.stringify(documentWrite.body)).toBe(409);
-    expect(documentWrite.body.error).toBe("Issue is checked out by another agent");
+    expect(documentWrite.body.details.code).toBe("issue_write_assignee_run_lock");
 
     for (const closedParent of [
       { assigneeAgentId: null, intent: { reopen: true } },
@@ -972,7 +972,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .post(`/api/issues/${targetIssue!.id}/comments`)
       .send({ body: "I was not mentioned." });
     expect(unmentionedComment.status, JSON.stringify(unmentionedComment.body)).toBe(403);
-    expect(unmentionedComment.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(unmentionedComment.body.details.code).toBe("issue_write_actor_class_excluded");
   });
 
   it("propagates denied low-trust policy conflicts on control-plane guards", async () => {

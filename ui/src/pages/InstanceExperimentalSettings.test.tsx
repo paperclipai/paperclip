@@ -90,6 +90,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
     enableServerInfoDebugView: false,
+    enableSimplifiedEnglishInteractions: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
@@ -860,5 +861,69 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     await act(() => appsToggle?.click());
     await flushReact();
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableApps: true });
+  });
+});
+
+describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  async function renderPage(settings: InstanceExperimentalSettingsWithManaged) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ ...settings });
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceExperimentalSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockInstanceSettingsApi.updateExperimental.mockImplementation(async (patch) => ({
+      ...defaultExperimentalSettings(),
+      ...patch,
+    }));
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("renders every card heading in alphabetical order", async () => {
+    await renderPage(defaultExperimentalSettings());
+
+    const headings = [...container.querySelectorAll("h2")].map(
+      (heading) => heading.textContent ?? "",
+    );
+
+    // Sanity: the page rendered a meaningful set of cards, not an empty list.
+    expect(headings.length).toBeGreaterThan(10);
+
+    const alphabetical = [...headings].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
+    expect(headings).toEqual(alphabetical);
+  });
+
+  it("no longer renders an 'Experimental' secondary badge on any card", async () => {
+    await renderPage(defaultExperimentalSettings());
+
+    const badges = [...container.querySelectorAll('[data-slot="badge"]')].map(
+      (badge) => badge.textContent?.trim(),
+    );
+    expect(badges).not.toContain("Experimental");
   });
 });

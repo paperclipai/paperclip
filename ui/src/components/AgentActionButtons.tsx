@@ -33,6 +33,7 @@ import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -399,7 +400,9 @@ export function AgentActionButtons({
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
             onClick={() => {
-              navigator.clipboard.writeText(agent.id);
+              void copyTextToClipboard(agent.id).catch(() => {
+                pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });
+              });
               setMoreOpen(false);
             }}
           >
