@@ -32,6 +32,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   resolvePaperclipDesiredSkillNames,
@@ -409,7 +410,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { wakeToken: paperclipWakeToken(agent), resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""

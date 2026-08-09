@@ -34,6 +34,7 @@ import {
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
@@ -164,6 +165,7 @@ export function buildPrompt(
     resumedSession: options.resumedSession === true,
   });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    wakeToken: paperclipWakeToken(ctx.agent),
     resumedSession: options.resumedSession === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.

@@ -8,6 +8,7 @@ import {
   asString,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
@@ -274,6 +275,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     Boolean(nonEmpty(ctx.runtime?.sessionId));
   const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    wakeToken: paperclipWakeToken(ctx.agent),
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: Boolean(taskMarkdown),

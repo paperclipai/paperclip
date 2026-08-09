@@ -40,6 +40,7 @@ import {
   isPaperclipRuntimeEnvKey,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
@@ -805,6 +806,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    wakeToken: paperclipWakeToken(agent),
     resumedSession: Boolean(sessionId),
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.

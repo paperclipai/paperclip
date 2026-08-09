@@ -40,6 +40,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
@@ -603,7 +604,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !canResumeSession && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { wakeToken: paperclipWakeToken(agent), resumedSession: canResumeSession });
     const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
     const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
