@@ -53,6 +53,29 @@ Worked examples:
   `credentials.json` from the sandbox image's own `$HOME/.claude`. The
   snapshot's Claude login is the credential source for the run.
 
+### Working directory (`cwd`) on remote targets
+
+The `cwd` in an adapter's config (`adapterConfig.cwd`) is interpreted relative
+to **where the CLI actually runs**:
+
+- **Local targets** — `adapterConfig.cwd` is the local working directory the
+  CLI is launched in (created if missing).
+- **Remote targets (SSH / managed sandbox)** — the remote working directory
+  comes from the environment's `remoteWorkspacePath`, **not** from
+  `adapterConfig.cwd`. On every run Paperclip stages the agent's local
+  workspace/agent-home, syncs it into
+  `<remoteWorkspacePath>/.paperclip-runtime/runs/<runId>/workspace`, runs there,
+  and syncs changes back. For a remote target `adapterConfig.cwd` is therefore
+  **not** used as a local filesystem path.
+
+Do not set `adapterConfig.cwd` to a path that only exists on the remote host
+expecting it to select the remote directory — use the environment's
+`remoteWorkspacePath` for that. A remote-only `cwd` is ignored for local
+filesystem purposes: it is never `mkdir`-ed on the Paperclip host and never used
+as the local staging source. (Previously a remote-only `cwd` caused the run
+to `mkdir` that path on the Paperclip host and die with `EACCES` before any SSH
+connection was made.)
+
 ### Hermes local vs gateway
 
 Use `hermes_local` when Paperclip should start the local `hermes` CLI on the

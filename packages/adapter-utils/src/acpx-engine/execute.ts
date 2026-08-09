@@ -1522,8 +1522,15 @@ async function buildRuntime(input: {
   const workspaceBranch = asString(workspaceContext.branchName, "");
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: input.ctx.executionTarget,
+    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
+  });
+  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
+  const executionTargetIsRemote = remoteExecutionIdentity !== null;
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome =
+    !executionTargetIsRemote && workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   // Referenced (additional) projects to stage into the sandbox alongside the
@@ -1572,16 +1579,10 @@ async function buildRuntime(input: {
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
       )
     : [];
-  const executionTarget = readAdapterExecutionTarget({
-    executionTarget: input.ctx.executionTarget,
-    legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
-  });
-  const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const effectiveExecutionCwd =
     remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
-  const executionTargetIsRemote = remoteExecutionIdentity !== null;
   // Merge the injected tracer + root parent-context into every step option set,
   // so each boundary span parents to the root span. With no injected trace
   // context both fields are no-ops and the span path stays inert.
@@ -1604,8 +1605,11 @@ async function buildRuntime(input: {
   });
   // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
   // here on the awaited directory materialization.
-  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
-    ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", async () => {
+      if (!executionTargetIsRemote) {
+        await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+      }
+    },
     stepMetrics,
   );
 

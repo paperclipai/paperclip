@@ -1,6 +1,7 @@
 import type {
   CancelEnvironmentCustomImageSetupSession,
   Environment,
+  EnvironmentDeleteBlastRadius,
   EnvironmentCapabilities,
   EnvironmentLease,
   EnvironmentProbeResult,
@@ -112,6 +113,9 @@ export const environmentsApi = {
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
   secretRefs: (environmentId: string) =>
     api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
+  deleteBlastRadius: (environmentId: string) =>
+    api.get<EnvironmentDeleteBlastRadius>(`/environments/${environmentId}/delete-blast-radius`),
+  remove: (environmentId: string) => api.delete<Environment>(`/environments/${environmentId}`),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;
