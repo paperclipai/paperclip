@@ -4301,16 +4301,40 @@ export type ExecutionWorkspaceReuseRequestForIssue = {
   requestedExecutionWorkspaceId: string | null;
   requestedShouldReuseExisting: boolean;
   existingExecutionWorkspaceAvailable: boolean;
+  explicitReuseRequested: boolean;
+  automaticSharedReuseRequested: boolean;
 };
 
 export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   issueExecutionWorkspaceId?: string | null;
   issueExecutionWorkspacePreference?: string | null;
+  resolvedExecutionWorkspaceMode?: string | null;
+  resolvedProjectId?: string | null;
   existingExecutionWorkspaceStatus?: string | null;
+  existingExecutionWorkspaceClosedAt?: Date | string | null;
+  existingExecutionWorkspaceMode?: string | null;
+  existingExecutionWorkspaceProjectId?: string | null;
 }): ExecutionWorkspaceReuseRequestForIssue {
   const requestedExecutionWorkspaceId = readNonEmptyString(input.issueExecutionWorkspaceId);
-  const requestedShouldReuseExisting =
+  const explicitReuseRequested =
     input.issueExecutionWorkspacePreference === "reuse_existing" && requestedExecutionWorkspaceId !== null;
+  const existingStatusSupportsAutomaticReuse =
+    input.existingExecutionWorkspaceStatus === "active" ||
+    input.existingExecutionWorkspaceStatus === "idle" ||
+    input.existingExecutionWorkspaceStatus === "in_review";
+  const resolvedProjectIdNonEmpty = readNonEmptyString(input.resolvedProjectId);
+  const existingProjectIdNonEmpty = readNonEmptyString(input.existingExecutionWorkspaceProjectId);
+  const automaticSharedReuseRequested = Boolean(
+    requestedExecutionWorkspaceId &&
+    input.resolvedExecutionWorkspaceMode === "shared_workspace" &&
+    input.existingExecutionWorkspaceMode === "shared_workspace" &&
+    existingStatusSupportsAutomaticReuse &&
+    !input.existingExecutionWorkspaceClosedAt &&
+    resolvedProjectIdNonEmpty !== null &&
+    existingProjectIdNonEmpty !== null &&
+    resolvedProjectIdNonEmpty === existingProjectIdNonEmpty,
+  );
+  const requestedShouldReuseExisting = explicitReuseRequested || automaticSharedReuseRequested;
 
   return {
     requestedExecutionWorkspaceId,
@@ -4320,16 +4344,22 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
       input.existingExecutionWorkspaceStatus !== null &&
       input.existingExecutionWorkspaceStatus !== undefined &&
       input.existingExecutionWorkspaceStatus !== "archived",
+    explicitReuseRequested,
+    automaticSharedReuseRequested,
   };
 }
 
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   requestedShouldReuseExisting: boolean;
+  forceRestoreExisting?: boolean;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
 }): ExecutionWorkspaceReuseProvisioningPolicy {
-  const shouldRestoreExistingWorkspace = input.requestedShouldReuseExisting;
+  const forceRestoreExisting = input.forceRestoreExisting ?? input.requestedShouldReuseExisting;
+  const shouldRestoreExistingWorkspace =
+    forceRestoreExisting ||
+    (input.requestedShouldReuseExisting && input.workspaceConfigFreshness.shouldReuseExisting);
   const replacementClassDrift =
-    input.requestedShouldReuseExisting && input.workspaceConfigFreshness.action === "replace";
+    shouldRestoreExistingWorkspace && input.workspaceConfigFreshness.action === "replace";
 
   return {
     shouldRestoreExistingWorkspace,
@@ -4368,6 +4398,7 @@ function formatInheritedExecutionWorkspaceReuseFailure(input: {
 
 export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
   requestedShouldReuseExisting: boolean;
+  forceRestoreExisting?: boolean;
   existingExecutionWorkspaceId?: string | null;
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
@@ -4381,6 +4412,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
 }> {
   const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
     requestedShouldReuseExisting: input.requestedShouldReuseExisting,
+    forceRestoreExisting: input.forceRestoreExisting,
     workspaceConfigFreshness: input.workspaceConfigFreshness,
   });
 
@@ -13951,7 +13983,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
+      resolvedExecutionWorkspaceMode: requestedExecutionWorkspaceMode,
+      resolvedProjectId: issueRef?.projectId ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
+      existingExecutionWorkspaceClosedAt: existingExecutionWorkspace?.closedAt ?? null,
+      existingExecutionWorkspaceMode: existingExecutionWorkspace?.mode ?? null,
+      existingExecutionWorkspaceProjectId: existingExecutionWorkspace?.projectId ?? null,
     });
     const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
     const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
@@ -14428,6 +14465,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
       requestedShouldReuseExisting,
+      forceRestoreExisting: workspaceReuseRequest.explicitReuseRequested,
       workspaceConfigFreshness,
     });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -14448,6 +14486,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
       await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
+        forceRestoreExisting: workspaceReuseRequest.explicitReuseRequested,
         existingExecutionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
         issueRef,
         runId: run.id,

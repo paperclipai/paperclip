@@ -3335,6 +3335,7 @@ async function deleteGitBranchAtVerifiedTip(input: {
 export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
+    mode?: string | null;
     cwd: string | null;
     providerType: string;
     providerRef: string | null;
@@ -3386,6 +3387,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
+  const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
+  const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
+  const preservesSharedProjectWorkspace =
+    input.workspace.mode === "shared_workspace"
+    && resolvedWorkspacePath !== null
+    && projectWorkspaceCwd !== null
+    && resolvedWorkspacePath === projectWorkspaceCwd;
   const cleanupCommands = input.runCleanupCommands === false
     ? []
     : [
@@ -3508,9 +3516,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         }
       }
     }
-  } else if (input.workspace.providerType === "local_fs" && createdByRuntime && workspacePath) {
-    const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
-    const resolvedWorkspacePath = path.resolve(workspacePath);
+  } else if (
+    input.workspace.providerType === "local_fs"
+    && createdByRuntime
+    && workspacePath
+    && resolvedWorkspacePath
+    && !preservesSharedProjectWorkspace
+  ) {
     const containsProjectWorkspace = projectWorkspaceCwd
       ? (
           resolvedWorkspacePath === projectWorkspaceCwd ||
@@ -3542,6 +3554,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   const cleaned =
+    preservesSharedProjectWorkspace ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 

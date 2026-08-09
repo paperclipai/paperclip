@@ -3298,6 +3298,41 @@ describe("realizeExecutionWorkspace", () => {
     expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
   }, 10_000);
 
+  it("preserves a shared project workspace and reports logical cleanup complete", async () => {
+    const projectWorkspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-workspace-"));
+
+    try {
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace: {
+          id: "execution-workspace-shared",
+          mode: "shared_workspace",
+          cwd: projectWorkspaceCwd,
+          providerType: "local_fs",
+          providerRef: projectWorkspaceCwd,
+          branchName: null,
+          repoUrl: null,
+          baseRef: null,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          sourceIssueId: "issue-1",
+          metadata: { createdByRuntime: true },
+        },
+        projectWorkspace: {
+          cwd: projectWorkspaceCwd,
+          cleanupCommand: null,
+        },
+      });
+
+      expect(cleanup).toMatchObject({
+        cleaned: true,
+        warnings: [],
+      });
+      await expect(fs.stat(projectWorkspaceCwd)).resolves.toMatchObject({});
+    } finally {
+      await fs.rm(projectWorkspaceCwd, { recursive: true, force: true });
+    }
+  });
+
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
 
