@@ -104,6 +104,10 @@ export function deriveExecutionWorkspaceDeliveryState(input: {
   return "unknown";
 }
 
+export function shouldRequireTerminalWorkspaceDeliveryEvidence(mode: string): boolean {
+  return mode !== "shared_workspace";
+}
+
 export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
 
 export type ExecutionWorkspaceBranchReconcileActor = {
@@ -1132,7 +1136,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .catch(() => null)
       : null;
 
-    if (sourceIssueTerminal) {
+    if (sourceIssueTerminal && shouldRequireTerminalWorkspaceDeliveryEvidence(workspace.mode)) {
       const products = await listDeliveryPullRequestProducts(workspace);
       for (const product of products) {
         const references = extractGitHubPullRequestReferences([
@@ -2041,7 +2045,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           isNull(executionWorkspaces.closedAt),
           sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
         ))
-        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
+        .orderBy(
+          sql`CASE WHEN ${executionWorkspaces.mode} = 'shared_workspace' THEN 0 ELSE 1 END`,
+          asc(executionWorkspaces.updatedAt),
+          asc(executionWorkspaces.id),
+        )
         .limit(limit);
       const result = {
         checked: candidates.length,
@@ -2056,18 +2064,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git } = await inspectGitCloseReadiness(executionWorkspace);
+        const requiresDeliveryEvidence = shouldRequireTerminalWorkspaceDeliveryEvidence(workspace.mode);
+        const { git } = requiresDeliveryEvidence
+          ? await inspectGitCloseReadiness(executionWorkspace)
+          : { git: null };
         const assessment = await assessDelivery(workspace, git);
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        if (requiresDeliveryEvidence && assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          requiresDeliveryEvidence
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           result.skippedUndelivered += 1;
