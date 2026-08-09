@@ -95,6 +95,7 @@ import {
   type TaskCollectionPreferenceLocation,
 } from "../lib/task-collection-preferences";
 import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../lib/task-date-groups";
+import { entityStatusLabel } from "@/lib/entity-labels";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
@@ -133,13 +134,13 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
 }
 const boardIssueStatuses = ISSUE_STATUSES;
 const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
+  backlog: entityStatusLabel("backlog"),
+  todo: entityStatusLabel("todo"),
+  in_progress: entityStatusLabel("in_progress"),
+  in_review: entityStatusLabel("in_review"),
+  done: entityStatusLabel("done"),
+  blocked: entityStatusLabel("blocked"),
+  cancelled: entityStatusLabel("cancelled"),
 };
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",

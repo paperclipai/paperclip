@@ -4,12 +4,10 @@ import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { t } from "@/i18n";
+import { entityStatusLabel as statusLabel } from "@/lib/entity-labels";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface StatusIconProps {
   status: string;
@@ -22,7 +20,7 @@ interface StatusIconProps {
 }
 
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
-  if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
+  if (!blockerAttention || blockerAttention.state === "none") return t("status.blocked");
 
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
@@ -60,7 +58,7 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
     return `Blocked · ${attentionCopy}`;
   }
 
-  return "Blocked";
+  return t("status.blocked");
 }
 
 /**
