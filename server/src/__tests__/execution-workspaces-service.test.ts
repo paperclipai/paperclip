@@ -32,6 +32,7 @@ import {
   deriveExecutionWorkspaceDeliveryState,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
+  shouldRequireTerminalWorkspaceDeliveryEvidence,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
 import {
@@ -49,6 +50,12 @@ describe("execution workspace delivery state", () => {
     [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: true, isMergedIntoBase: false }, "unknown"],
   ] as const)("derives %s as %s", (input, expected) => {
     expect(deriveExecutionWorkspaceDeliveryState(input)).toBe(expected);
+  });
+
+  it("does not require issue-specific delivery evidence for shared project workspaces", () => {
+    expect(shouldRequireTerminalWorkspaceDeliveryEvidence("shared_workspace")).toBe(false);
+    expect(shouldRequireTerminalWorkspaceDeliveryEvidence("isolated_workspace")).toBe(true);
+    expect(shouldRequireTerminalWorkspaceDeliveryEvidence("operator_branch")).toBe(true);
   });
 });
 
