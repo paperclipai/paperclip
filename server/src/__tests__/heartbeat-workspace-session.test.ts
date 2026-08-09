@@ -245,6 +245,79 @@ function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; paren
 }
 
 describe("assertGitSensitiveAdapterWorkspaceValid", () => {
+  it("fails closed before launching an unprojected scoped issue from agent fallback cwd", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        adapterType: "hermes_local",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: null,
+          projectWorkspaceId: null,
+        },
+        resolvedWorkspace: buildResolvedWorkspace({
+          cwd: fallbackCwd,
+          source: "agent_home",
+          projectId: null,
+          workspaceId: null,
+        }),
+        executionWorkspace: {
+          ...buildWorkspaceValidationInput().executionWorkspace,
+          baseCwd: fallbackCwd,
+          source: "agent_home",
+          projectId: null,
+          workspaceId: null,
+          cwd: fallbackCwd,
+        },
+        persistedExecutionWorkspace: null,
+      }),
+      "missing_project_workspace",
+      "has no project or task workspace",
+    );
+  });
+
+  it("allows an unprojected recovery to reuse its persisted Hermes session in an approved company workspace", async () => {
+    const approvedCompanyCwd = "/var/paperclip/companies/company-1/work-products/TSM-6569";
+    const previousSessionParams = { sessionId: "20260601_141558_c861e4", cwd: approvedCompanyCwd };
+    const resolvedWorkspace = buildResolvedWorkspace({
+      cwd: approvedCompanyCwd,
+      source: "task_session",
+      projectId: null,
+      workspaceId: null,
+    });
+
+    await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+      adapterType: "hermes_local",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      resolvedWorkspace,
+      executionWorkspace: {
+        ...buildWorkspaceValidationInput().executionWorkspace,
+        baseCwd: approvedCompanyCwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+        cwd: approvedCompanyCwd,
+      },
+      persistedExecutionWorkspace: null,
+    }))).resolves.toBeUndefined();
+
+    expect(resolveRuntimeSessionParamsForWorkspace({
+      agentId: "agent-1",
+      previousSessionParams,
+      resolvedWorkspace,
+    }).sessionParams).toMatchObject({
+      sessionId: "20260601_141558_c861e4",
+      cwd: approvedCompanyCwd,
+    });
+  });
+
   it("rejects a project-workspace-linked issue that is missing its project id before adapter launch", async () => {
     await expectWorkspaceValidationFailure(
       buildWorkspaceValidationInput({
@@ -1641,6 +1714,18 @@ describe("shouldResetTaskSessionForWake", () => {
 
   it("does not reset for comment wakes", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
+  });
+
+  it("preserves a saved session for recovery-disposition continuations unless a reset is explicit", () => {
+    expect(shouldResetTaskSessionForWake({
+      wakeReason: "issue_continuation_needed",
+      recovery: { cause: "successful_run_missing_issue_disposition" },
+    })).toBe(false);
+    expect(shouldResetTaskSessionForWake({
+      wakeReason: "issue_continuation_needed",
+      recovery: { cause: "successful_run_missing_issue_disposition" },
+      forceFreshSession: true,
+    })).toBe(true);
   });
 
   it("does not reset when wake reason is missing", () => {

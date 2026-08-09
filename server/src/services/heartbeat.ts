@@ -2154,6 +2154,23 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     );
   }
 
+  // A scoped local-adapter issue with neither a project binding nor a saved
+  // task workspace must not spend a fresh agent session in the fallback home.
+  // That home cannot establish which OpCo/project source the work belongs to;
+  // failing before launch leaves a typed recovery signal instead of a
+  // misleading "source missing" agent result.
+  if (
+    !issue.projectId &&
+    !issue.projectWorkspaceId &&
+    !input.resolvedWorkspace.workspaceId &&
+    input.resolvedWorkspace.source === "agent_home"
+  ) {
+    fail(
+      "missing_project_workspace",
+      `Issue ${issue.identifier ?? issue.id} has no project or task workspace; refusing to launch ${input.adapterType} from fallback cwd.`,
+    );
+  }
+
   if (!input.executionTarget && environmentDriver !== "local" && leaseRemoteCwd) return;
 
   if (workspaceExpectation && !input.persistedExecutionWorkspace) {
@@ -16923,6 +16940,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         categories: sessionConfigMetadata.categories,
         reset: resetTaskSession,
         resetReasons: sessionConfigFreshness.reasons,
+        // This is intentionally a decision record, rather than an inference
+        // from the adapter result: a recovery handoff must make it clear
+        // whether Paperclip deliberately reset a saved task session before a
+        // provider could start a fresh session of its own.
+        reuseDecision: resetTaskSession
+          ? "reset"
+          : taskSessionForRun
+            ? "reuse_saved_task_session"
+            : "fresh_no_saved_task_session",
         changedCategories: sessionConfigFreshness.changedCategories,
         taskSessionAvailable: taskSession != null,
         taskSessionReused: taskSessionForRun != null,
@@ -16933,6 +16959,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         fingerprintVersion: latestWorkspaceConfigMetadata.version,
         categories: latestWorkspaceConfigMetadata.categories,
         action: workspaceConfigFreshness.action,
+        source: executionWorkspace.source,
         changedCategories: workspaceConfigFreshness.changedCategories,
         reasons: workspaceConfigFreshness.reasons,
         reuseRequested: requestedShouldReuseExisting,
