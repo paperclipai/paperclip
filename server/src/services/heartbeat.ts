@@ -3510,6 +3510,22 @@ export function normalizeModelProfileWakeContext(input: {
   return input.contextSnapshot;
 }
 
+/**
+ * Status-only recovery is deliberately dispatched on the cheap profile, but
+ * its own contract says that real work must resume on the normal model. That
+ * makes the recovery conversation an ephemeral side path: it must never
+ * replace the task's normal resumable session.
+ */
+export function isEphemeralStatusOnlyRecoverySession(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return contextSnapshot?.modelProfile === "cheap"
+    && contextSnapshot.recoveryIntent === "status_only"
+    && contextSnapshot.allowDeliverableWork === false
+    && contextSnapshot.allowDocumentUpdates === false
+    && contextSnapshot.resumeRequiresNormalModel === true;
+}
+
 function readAgentRuntimeModelProfile(
   runtimeConfig: unknown,
   key: ModelProfileKey,
@@ -16071,6 +16087,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
+    const ephemeralStatusOnlyRecoverySession = isEphemeralStatusOnlyRecoverySession(context);
     const previousSessionParams =
       explicitResumeSessionParams ??
       (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
@@ -17600,6 +17617,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const sessionReusedForUsage =
         runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null;
       const taskSessionReusedForUsage = taskSessionForRun != null;
+      // This is intentionally narrower than `freshSession`: it counts only a
+      // run for which a valid task session was retained and Paperclip made no
+      // deliberate reset/rotation decision. It therefore exposes real resume
+      // failures without conflating first touches or policy-driven freshness.
+      const resumeOpportunityForUsage = taskSessionForRun != null && !sessionCompaction.rotate;
+      const resumeOpportunityMissedForUsage =
+        resumeOpportunityForUsage && !sessionReusedForUsage;
       const persistedSessionIdForUsage =
         nextSessionState.displayId ?? nextSessionState.legacySessionId ?? null;
       const shouldClassifySessionForUsage =
@@ -17637,6 +17661,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     freshSession: !sessionReusedForUsage && !taskSessionReusedForUsage,
                     sessionRotated: sessionCompaction.rotate,
                     sessionRotationReason: sessionCompaction.reason,
+                    resumeOpportunity: resumeOpportunityForUsage,
+                    resumeOpportunityMissed: resumeOpportunityMissedForUsage,
+                    ...(ephemeralStatusOnlyRecoverySession
+                      ? { sessionPersistence: "preserved_normal_task_session" }
+                      : {}),
                   }
                 : {}),
               configFreshness: configFreshnessResultMetadata,
@@ -17836,7 +17865,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
-        if (taskKey) {
+        if (taskKey && !ephemeralStatusOnlyRecoverySession) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
@@ -17976,7 +18005,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           legacySessionId: runtimeForAdapter.sessionId,
         });
 
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+        if (
+          !isEphemeralStatusOnlyRecoverySession(context) &&
+          taskKey &&
+          (previousSessionParams || previousSessionDisplayId || taskSession)
+        ) {
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,

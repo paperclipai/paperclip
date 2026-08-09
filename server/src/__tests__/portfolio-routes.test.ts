@@ -144,7 +144,12 @@ describeEmbeddedPostgres("portfolio routes", () => {
         startedAt: new Date("2026-06-10T10:00:00.000Z"),
         finishedAt: new Date("2026-06-10T10:02:00.000Z"),
         contextSnapshot: { issueId: issueA },
-        usageJson: { freshSession: true, sessionReused: false },
+        usageJson: {
+          freshSession: true,
+          sessionReused: false,
+          resumeOpportunity: true,
+          resumeOpportunityMissed: true,
+        },
       },
       {
         id: runB,
@@ -155,7 +160,12 @@ describeEmbeddedPostgres("portfolio routes", () => {
         startedAt: new Date("2026-06-11T10:00:00.000Z"),
         finishedAt: new Date("2026-06-11T10:03:00.000Z"),
         contextSnapshot: { issueId: issueB },
-        usageJson: { freshSession: false, sessionReused: true },
+        usageJson: {
+          freshSession: false,
+          sessionReused: true,
+          resumeOpportunity: true,
+          resumeOpportunityMissed: false,
+        },
       },
       {
         id: runInFlight,
@@ -233,6 +243,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         "runs_fresh_session",
         "runs_reused_session",
         "fresh_session_ratio",
+        "runs_resume_opportunity",
+        "runs_resume_opportunity_missed",
+        "resume_opportunity_miss_ratio",
       ],
     });
     expect(res.body.rows).toEqual([
@@ -252,6 +265,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         runs_fresh_session: 1,
         runs_reused_session: 1,
         fresh_session_ratio: 0.5,
+        runs_resume_opportunity: 2,
+        runs_resume_opportunity_missed: 1,
+        resume_opportunity_miss_ratio: 0.5,
       },
     ]);
     expect(Object.keys(res.body.rows[0] ?? {})).toEqual([
@@ -270,6 +286,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "runs_fresh_session",
       "runs_reused_session",
       "fresh_session_ratio",
+      "runs_resume_opportunity",
+      "runs_resume_opportunity_missed",
+      "resume_opportunity_miss_ratio",
     ]);
     const row = res.body.rows[0];
     expect(row.runs_total).toBe(row.runs_succeeded + row.runs_failed + row.runs_other);
@@ -412,6 +431,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         runs_fresh_session: 1,
         runs_reused_session: 2,
         fresh_session_ratio: 0.3333,
+        runs_resume_opportunity: 0,
+        runs_resume_opportunity_missed: 0,
+        resume_opportunity_miss_ratio: 0,
       },
     ]);
   });

@@ -10,6 +10,7 @@ import {
   normalizeModelProfileWakeContext,
   readActiveForcedModelProfile,
   resolveModelProfileApplication,
+  isEphemeralStatusOnlyRecoverySession,
   isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
 
@@ -157,6 +158,24 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("marks status-only cheap recovery sessions as ephemeral", () => {
+    expect(isEphemeralStatusOnlyRecoverySession({
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    })).toBe(true);
+    expect(isEphemeralStatusOnlyRecoverySession({ modelProfile: "cheap" })).toBe(false);
+    expect(isEphemeralStatusOnlyRecoverySession({
+      modelProfile: "strong",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    })).toBe(false);
   });
 
   it("treats model resolution failures as non-retryable configuration failures", () => {

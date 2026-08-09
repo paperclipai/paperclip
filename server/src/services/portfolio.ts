@@ -58,7 +58,9 @@ export interface PortfolioRunsRow {
   unpriced_cost_event_count: number;
   /**
    * Runs that started with no prior session id (cold start). TSMC-20213 —
-   * visible fresh-vs-reused ratio; target fleet-wide fresh_session_ratio < 0.30.
+   * visible fresh-vs-reused ratio. This is a workload-mix indicator: it includes
+   * legitimate first touches, so use resume_opportunity_miss_ratio to assess
+   * continuation reliability.
    * Classification source (TSMC-20516): usage_json.freshSession when present,
    * else session_id_before IS NULL AND session_id_after IS NOT NULL.
    */
@@ -74,6 +76,12 @@ export interface PortfolioRunsRow {
    * neither bucket has classified runs in the window.
    */
   fresh_session_ratio: number;
+  /** Runs with a saved, policy-compatible task session that should have resumed. */
+  runs_resume_opportunity: number;
+  /** Resume opportunities for which Paperclip did not supply a reusable session. */
+  runs_resume_opportunity_missed: number;
+  /** Misses divided by opportunities, or 0 when the window has no opportunities. */
+  resume_opportunity_miss_ratio: number;
 }
 
 export interface PortfolioDigestCompanyRow {
@@ -303,7 +311,13 @@ export function portfolioService(db: Db) {
                     OR COALESCE(hr.usage_json ->> 'taskSessionReused', 'false') IN ('true', 't', '1')
                   ELSE hr.session_id_before IS NOT NULL
                 END
-            )::int AS runs_reused_session
+            )::int AS runs_reused_session,
+            COUNT(DISTINCT hr.id) FILTER (
+              WHERE COALESCE(hr.usage_json ->> 'resumeOpportunity', 'false') IN ('true', 't', '1')
+            )::int AS runs_resume_opportunity,
+            COUNT(DISTINCT hr.id) FILTER (
+              WHERE COALESCE(hr.usage_json ->> 'resumeOpportunityMissed', 'false') IN ('true', 't', '1')
+            )::int AS runs_resume_opportunity_missed
           FROM heartbeat_runs hr
           WHERE
             hr.company_id IN (${companyIdsParam})
@@ -353,7 +367,17 @@ export function portfolioService(db: Db) {
                 4
               )::double precision
             ELSE 0::double precision
-          END AS fresh_session_ratio
+          END AS fresh_session_ratio,
+          COALESCE(r.runs_resume_opportunity, 0)::int AS runs_resume_opportunity,
+          COALESCE(r.runs_resume_opportunity_missed, 0)::int AS runs_resume_opportunity_missed,
+          CASE
+            WHEN COALESCE(r.runs_resume_opportunity, 0) > 0
+              THEN ROUND(
+                (r.runs_resume_opportunity_missed::numeric / r.runs_resume_opportunity::numeric),
+                4
+              )::double precision
+            ELSE 0::double precision
+          END AS resume_opportunity_miss_ratio
         FROM run_aggregated r
         FULL OUTER JOIN cost_aggregated c
           ON c.company_id = r.company_id AND c.agent_id = r.agent_id
@@ -377,6 +401,9 @@ export function portfolioService(db: Db) {
         runs_fresh_session: Number(row.runs_fresh_session ?? 0),
         runs_reused_session: Number(row.runs_reused_session ?? 0),
         fresh_session_ratio: Number(row.fresh_session_ratio ?? 0),
+        runs_resume_opportunity: Number(row.runs_resume_opportunity ?? 0),
+        runs_resume_opportunity_missed: Number(row.runs_resume_opportunity_missed ?? 0),
+        resume_opportunity_miss_ratio: Number(row.resume_opportunity_miss_ratio ?? 0),
       })) satisfies PortfolioRunsRow[];
     },
 
