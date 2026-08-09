@@ -1,11 +1,55 @@
-import { Bell, BellOff, Loader2, ShieldAlert, Smartphone } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bell, BellOff, Download, Loader2, ShieldAlert, Smartphone } from "lucide-react";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
+type BeforeInstallPromptEvent = Event & {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+
+function isAppleMobileBrowser() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function isInstalledPwa() {
+  return (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches)
+    || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
 
 export function PushNotificationSection() {
   const { state, isToggling, subscriptions, enable, disable } = usePushNotifications();
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(isInstalledPwa);
   const currentEndpoint = state.status === "subscribed" ? state.endpoint : null;
+  const requiresInstall = isAppleMobileBrowser() && !installed;
+
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onAppInstalled = () => {
+      setInstalled(true);
+      setInstallPrompt(null);
+    };
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
+  }, []);
+
+  async function install() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") setInstalled(true);
+    setInstallPrompt(null);
+  }
 
   return (
     <div className="space-y-3">
@@ -21,7 +65,18 @@ export function PushNotificationSection() {
 
       <Card>
         <CardContent className="py-3">
-          {state.status === "loading" ? (
+          {requiresInstall ? (
+            <div className="space-y-3 text-sm">
+              <div className="flex items-start gap-2 text-amber-600 dark:text-amber-500">
+                <Smartphone className="h-4 w-4 mt-0.5 shrink-0" />
+                <span>
+                  On iPhone and iPad, Web Push is available only from an installed Paperclip app.
+                  In Safari, tap Share, choose <strong>Add to Home Screen</strong>, then open Paperclip from
+                  the new Home Screen icon and enable notifications here.
+                </span>
+              </div>
+            </div>
+          ) : state.status === "loading" ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Checking push support…
@@ -55,7 +110,7 @@ export function PushNotificationSection() {
           ) : (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
                   <Bell className="h-4 w-4 text-muted-foreground shrink-0" />
                   <div className="space-y-0.5 min-w-0">
                     <p className="text-sm font-medium">Enable push notifications</p>
@@ -65,13 +120,20 @@ export function PushNotificationSection() {
                         : "This device will not receive push alerts."}
                     </p>
                   </div>
+                  </div>
+                <div className="flex items-center gap-2">
+                  {!installed && installPrompt ? (
+                    <Button type="button" variant="outline" size="sm" onClick={() => void install()}>
+                      <Download /> Install app
+                    </Button>
+                  ) : null}
+                  <ToggleSwitch
+                    checked={state.status === "subscribed"}
+                    onCheckedChange={state.status === "subscribed" ? disable : enable}
+                    disabled={isToggling}
+                    aria-label="Toggle push notifications"
+                  />
                 </div>
-                <ToggleSwitch
-                  checked={state.status === "subscribed"}
-                  onCheckedChange={state.status === "subscribed" ? disable : enable}
-                  disabled={isToggling}
-                  aria-label="Toggle push notifications"
-                />
               </div>
               <div className="border-t pt-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">

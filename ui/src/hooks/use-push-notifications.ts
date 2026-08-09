@@ -35,8 +35,6 @@ export function usePushNotifications() {
 
     async function load() {
       try {
-        const serverSubscriptions = await refreshSubscriptions();
-
         if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
           if (!cancelled) setState({ status: "unsupported" });
           return;
@@ -45,6 +43,8 @@ export function usePushNotifications() {
           if (!cancelled) setState({ status: "insecure" });
           return;
         }
+
+        const serverSubscriptions = await refreshSubscriptions();
 
         const reg = await navigator.serviceWorker.ready;
         const existing = await reg.pushManager.getSubscription();
@@ -102,11 +102,15 @@ export function usePushNotifications() {
 
       const json = sub.toJSON();
       const keys = json.keys ?? {};
+      if (!keys.p256dh || !keys.auth) {
+        await sub.unsubscribe().catch(() => undefined);
+        throw new Error("Browser returned an invalid push subscription");
+      }
       try {
         await pushApi.subscribe({
           endpoint: sub.endpoint,
-          p256dh: keys.p256dh ?? "",
-          auth: keys.auth ?? "",
+          p256dh: keys.p256dh,
+          auth: keys.auth,
           deviceLabel: navigator.userAgent.slice(0, 120),
         });
       } catch (err) {
