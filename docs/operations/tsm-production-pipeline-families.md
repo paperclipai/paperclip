@@ -58,11 +58,25 @@ No fleet-wide resume is part of this sequence.
    `grok-imagine-video-1.5`, reused its source still, and returned 6.04 seconds
    of H.264 video. Future pilots retain the same one-call/no-retry evidence
    contract: attach both assets, record requested/served model, resolution,
-   elapsed time, tool result, and Paperclip heartbeat token counts.
+   elapsed time, tool result, and Paperclip heartbeat token counts. In a
+   Paperclip-managed Hermes run the xAI provider now attaches the cached MP4 to
+   the owning issue before it can report success; that attachment is the first
+   durable handoff and X10 custody mirrors it. A cache path or temporary xAI URL
+   alone is never closeout evidence.
 4. **Faceless full-route proof:** use one bounded Stack Lab source package through
    the shared Mini/deck/rejection-QA path. It must carry normal brand marks via the
    deterministic brand layer, not AI-generated text.
-5. **Verdict:** only a complete `execution-ledger.json` and passing route-specific
+5. **Animated-serial provenance proof:** before a JJ Mini render, validate its
+   character/source package without applying faceless controls:
+
+   ```bash
+   python3 scripts/validate-tsm-animated-serial-package.py \
+     <serial-output-root>/provenance-manifest.json
+   ```
+
+   The gate checks source references and exact hashes of each governed asset. It
+   does not make an old demo package an approval to render a new episode.
+6. **Verdict:** only a complete `execution-ledger.json` and passing route-specific
    evidence promotes a provider/route to the next pilot. A failure opens one
    scoped repair/re-scope issue; it does not create repeated generation attempts.
 

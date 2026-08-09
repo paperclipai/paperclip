@@ -43,7 +43,8 @@ Commands:
                             (requires --allow-live-pointer and ALLOW_LIVE=1;
                             re-asserts .paperclip/.env on the staged tree)
   promote-and-restart       promote-pointer then kickstart deploy LaunchAgent
-                            (same dual allow flags; sanctioned single door)
+                            with a zero-loss live-run handoff (same dual allow
+                            flags; sanctioned single door)
   rollback-drill            Non-production pointer swap drill under STATE_DIR/drill
   lint-plists               Render+plutil templates via pinned-deploy-verify.sh
   uq-fixture                Disposable unique-index duplicate reject smoke
@@ -56,6 +57,8 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE=1   # required with --allow-live-pointer
   PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY=1   # tests only
   PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL  # default ie.thinkstack.paperclip-deploy
+  PAPERCLIP_PINNED_DEPLOY_API_URL        # default http://127.0.0.1:3100
+  PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
 USAGE
 }
 
@@ -426,10 +429,119 @@ NODE
   log "NOTE: promote-pointer does not reload launchd; use promote-and-restart for the sanctioned single door"
 }
 
-# Single sanctioned door: pointer flip + deploy LaunchAgent kickstart (TSMC-20021).
+# A hot restart marker is written only after the pointer is safely promoted and
+# immediately before launchd receives its restart signal.  The old server then
+# snapshots live children and the new process adopts them.  This is deliberately
+# part of the single sanctioned deploy door: a raw kickstart previously stranded
+# active runners during an otherwise healthy release.
+live_api_base() {
+  local raw="${PAPERCLIP_PINNED_DEPLOY_API_URL:-http://127.0.0.1:3100}"
+  raw="${raw%/}"
+  echo "${raw%/api}"
+}
+
+read_live_server_pid() {
+  local api_base="$1"
+  curl -fsS --max-time 5 "$api_base/api/health" \
+    | node -e '
+      let raw = "";
+      process.stdin.on("data", (chunk) => { raw += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const body = JSON.parse(raw);
+          const pid = Number(body?.instance?.pid);
+          if (!Number.isInteger(pid) || pid <= 0) process.exit(2);
+          process.stdout.write(String(pid));
+        } catch { process.exit(2); }
+      });
+    '
+}
+
+request_hot_restart_handoff() {
+  local api_base="$1" old_pid="$2"
+  [ -f "$SOURCE_ROOT/scripts/request-hot-restart.ts" ] \
+    || fail "promote-and-restart: hot-restart request script missing from source tree"
+  log "writing hot-restart handoff intent for live server pid $old_pid"
+  (
+    cd "$SOURCE_ROOT"
+    PAPERCLIP_API_URL="$api_base" node --import tsx scripts/request-hot-restart.ts --server-pid "$old_pid"
+  ) || fail "promote-and-restart: could not write hot-restart handoff intent"
+}
+
+record_hot_restart_report() {
+  local report="$1" old_pid="$2"
+  [ -f "$(working_receipt_path)" ] || fail "no working receipt while recording hot-restart report"
+  node - "$(working_receipt_path)" "$report" "$old_pid" <<'NODE'
+const fs = require("fs");
+const [receiptPath, reportPath, expectedOldPid] = process.argv.slice(2);
+const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+if (Number(report.previousServerPid) !== Number(expectedOldPid)) {
+  throw new Error(`hot restart report targets ${report.previousServerPid}, expected ${expectedOldPid}`);
+}
+receipt.hotRestart = {
+  reportPath,
+  previousServerPid: report.previousServerPid,
+  newServerPid: report.newServerPid,
+  adoptedRunIds: Array.isArray(report.adoptedRunIds) ? report.adoptedRunIds : [],
+  finalizedWhileDownRunIds: Array.isArray(report.finalizedWhileDownRunIds) ? report.finalizedWhileDownRunIds : [],
+  lostRunIds: Array.isArray(report.lostRunIds) ? report.lostRunIds : [],
+  completedAt: report.completedAt || null,
+};
+const body = JSON.stringify(receipt, null, 2) + "\n";
+fs.writeFileSync(receiptPath, body);
+// The pointer transition writes these receipts before the service restart.
+// Bring every receipt copy forward so a later audit cannot mistake an
+// unverified restart for an older promotion record.
+for (const path of [receipt.currentReceiptPath, receipt.durableReceiptPath]) {
+  if (typeof path === "string" && path.length > 0) fs.writeFileSync(path, body);
+}
+if (receipt.hotRestart.lostRunIds.length > 0) {
+  console.error(JSON.stringify(receipt.hotRestart, null, 2));
+  process.exit(3);
+}
+NODE
+}
+
+wait_for_hot_restart_report() {
+  local api_base="$1" old_pid="$2"
+  local instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
+  local paperclip_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+  local report="$paperclip_home/instances/$instance_id/hot-restart-report.json"
+  local timeout="${PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS:-150}"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if [ -f "$report" ] && node - "$report" "$old_pid" <<'NODE'
+const fs = require("fs");
+const [path, oldPid] = process.argv.slice(2);
+try {
+  const report = JSON.parse(fs.readFileSync(path, "utf8"));
+  const matchesOld = Number(report.previousServerPid) === Number(oldPid);
+  const hasNew = Number.isInteger(Number(report.newServerPid)) && Number(report.newServerPid) > 0;
+  process.exit(matchesOld && hasNew ? 0 : 1);
+} catch { process.exit(1); }
+NODE
+    then
+      record_hot_restart_report "$report" "$old_pid" \
+        || fail "promote-and-restart: continuity failure recorded in $report"
+      log "hot-restart continuity verified; report=$report"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  fail "promote-and-restart: no matching hot-restart report after ${timeout}s; deployment continuity is unverified"
+}
+
+# Single sanctioned door: pointer flip + zero-loss LaunchAgent handoff.
 # Still requires dual allow flags; never touches source coexist agents.
 cmd_promote_and_restart() {
   cmd_promote_pointer "$@"
+  local api_base old_pid
+  api_base="$(live_api_base)"
+  old_pid="$(read_live_server_pid "$api_base")" \
+    || fail "promote-and-restart: live health did not expose a valid server pid at $api_base"
+  request_hot_restart_handoff "$api_base" "$old_pid"
   local label="${PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL:-ie.thinkstack.paperclip-deploy}"
   local uid domain target
   uid="$(id -u)"
@@ -443,6 +555,7 @@ cmd_promote_and_restart() {
     launchctl kickstart -k "$target" \
       || fail "promote-and-restart: launchctl kickstart failed for $target"
     log "promote-and-restart: kickstart issued for $target"
+    wait_for_hot_restart_report "$api_base" "$old_pid"
   else
     fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then kickstart manually)"
   fi

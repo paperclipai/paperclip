@@ -21,8 +21,11 @@ Grok Imagine model-routing note (validated 2026-08-09):
 - A moving asset means the `video_generate` tool. Never use `image_generate` with an
   image input as a substitute; that is an image edit and must fail the media gate.
 - Hermes caches completed xAI video locally and provider public storage is off by default.
-  Copy/attach the cached asset into the governed package promptly; do not depend on a
-  temporary xAI URL or re-enable permanent public URLs without a retention owner.
+  In a Paperclip-managed Hermes run, the provider itself attaches that cached MP4 to the
+  owning issue before returning success; a delivery failure is a hard tool failure. The
+  agent must still attach any derived final render and evidence packet, but must not rely
+  on a cache path or temporary xAI URL. Do not re-enable permanent public URLs without a
+  retention owner.
 - xAI may return a 1920x1088 padded stream while declaring 1080p. The Mini assembly
   handler deterministically normalizes text-free motion B-roll to 1920x1080 and records
   the source/delivery geometry. It is not an upscale or a reason to regenerate.
@@ -40,8 +43,9 @@ Grok Imagine model-routing note (validated 2026-08-09):
    - Call `video_generate` with an art-directed prompt (state subject, camera movement,
      lighting, palette, aspect ratio, duration *inside the prompt*).
    - The tool writes the clip under `~/.hermes/cache/` (video alongside the image cache).
-     **The asset is NOT delivered until you ATTACH that file to the issue** — leaving it
-     in the cache is an INCOMPLETE disposition. Attach it:
+     For a Paperclip-managed Hermes run, the original MP4 is automatically attached before
+     this call returns success. Verify that attachment; do not re-upload the same original.
+     A manual/local Hermes run is **not delivered** until you attach that file to the issue:
      ```bash
      curl -sS -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
        -F "file=@<the-generated-clip-path>;type=video/mp4" \
