@@ -100,6 +100,21 @@ export interface IssueToolRequirements {
   suggestsMediaTools: boolean;
 }
 
+/**
+ * Explicit directives for work whose execution is intentionally deterministic.
+ *
+ * This is deliberately opt-in: a benchmark model cell still needs an LLM,
+ * while its reporting, aggregation, packaging, and scheduling work does not.
+ * The assignment guard lives in issues.ts; keeping the parser here makes the
+ * protocol testable and avoids fragile title matching.
+ */
+export function requiresDeterministicShellHandler(input: Pick<IssueCapabilityRoutingInput, "title" | "description">) {
+  const text = stripCodeFences(`${input.title ?? ""}\n${input.description ?? ""}`);
+  return /\broutine-op\s*:\s*[a-z0-9][a-z0-9-]*\b/i.test(text)
+    || /\bbenchmark-op\s*:\s*(?:orchestrate|report|aggregate|package)\b/i.test(text)
+    || /\bexecution-mode\s*:\s*deterministic\b/i.test(text);
+}
+
 export interface AgentCapabilityRoutingInput {
   id: string;
   name: string;

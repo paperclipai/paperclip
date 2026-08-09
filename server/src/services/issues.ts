@@ -116,6 +116,7 @@ import {
   compareAgentsByIssueToolRequirements,
   describeIssueToolRequirements,
   inferIssueToolRequirements,
+  requiresDeterministicShellHandler,
   type AgentCapabilityRoutingInput,
 } from "./issue-capability-routing.js";
 import {
@@ -5319,6 +5320,23 @@ export function issueService(db: Db) {
     const isIntakeOrAsk = titleLower.startsWith("portfolio intake") || titleLower.startsWith("ask from ");
     if (isIntakeOrAsk) return;
 
+    const candidateAgents = await listCapabilityRoutingAgents(input.companyId, input.dbOrTx ?? db);
+    const assignee = candidateAgents.find((agent) => agent.id === input.assigneeAgentId) ?? null;
+    if (requiresDeterministicShellHandler(input)) {
+      if (assignee?.adapterType !== "paperclip_shell_handler") {
+        const suggestedAgentIds = candidateAgents
+          .filter((agent) => agent.adapterType === "paperclip_shell_handler")
+          .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+          .map((agent) => agent.id);
+        throw unprocessable("Deterministic issue directives require a paperclip shell-handler assignee", {
+          issueId: input.issueId ?? null,
+          assigneeAgentId: input.assigneeAgentId,
+          requiredAdapterType: "paperclip_shell_handler",
+          suggestedAgentIds,
+        });
+      }
+    }
+
     const requirements = inferIssueToolRequirements({
       title: input.title,
       description: input.description,
@@ -5326,8 +5344,6 @@ export function issueService(db: Db) {
     });
     if (!requirements.requiresMediaTools) return;
 
-    const candidateAgents = await listCapabilityRoutingAgents(input.companyId, input.dbOrTx ?? db);
-    const assignee = candidateAgents.find((agent) => agent.id === input.assigneeAgentId) ?? null;
     if (assignee && agentSatisfiesIssueToolRequirements(assignee, requirements)) return;
 
     const suggestedAgentIds = candidateAgents

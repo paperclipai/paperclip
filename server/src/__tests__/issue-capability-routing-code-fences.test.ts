@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { inferIssueToolRequirements } from "../services/issue-capability-routing.ts";
+import {
+  inferIssueToolRequirements,
+  requiresDeterministicShellHandler,
+} from "../services/issue-capability-routing.ts";
 
 /**
  * Regression cover for 2026-07-25 (fences) + TSMC-18607 (prose demotion).
@@ -100,5 +103,18 @@ describe("issue capability routing — fenced code blocks are data, not routing 
 
     expect(result.requiredToolsets).toEqual([]);
     expect(result.suggestedToolsets).toEqual([]);
+  });
+});
+
+describe("deterministic shell-handler routing", () => {
+  it("requires a shell handler for explicit TSM and benchmark mechanical directives", () => {
+    expect(requiresDeterministicShellHandler({ description: "routine-op: video-assembly" })).toBe(true);
+    expect(requiresDeterministicShellHandler({ description: "benchmark-op: aggregate" })).toBe(true);
+    expect(requiresDeterministicShellHandler({ description: "execution-mode: deterministic" })).toBe(true);
+  });
+
+  it("does not mistake a model benchmark cell or quoted directive for mechanical work", () => {
+    expect(requiresDeterministicShellHandler({ title: "Run benchmark model cell" })).toBe(false);
+    expect(requiresDeterministicShellHandler({ description: "```\nroutine-op: video-assembly\n```" })).toBe(false);
   });
 });
