@@ -550,5 +550,33 @@ describeEmbeddedPostgres("agent-ownership enforcement (TECH-4930 stage 2)", () =
       expect(report.unownedAgents).toEqual([]);
       expect(report.impactedAgents).toEqual([]);
     });
+
+    it("counts an active member with no membershipRole set as a non-viewer member, not as absent", async () => {
+      // `activeMembership()` above always sets an explicit role, so it can
+      // never exercise this branch. A member with membershipRole = NULL
+      // (no role assigned at all) is not the same as an explicit "viewer"
+      // and must still show up in wouldLoseAccess -- this pins the
+      // isActiveNonViewerMember() predicate's NULL-role handling for THIS
+      // function specifically, mirroring the equivalent bootstrapOwnership
+      // test in agent-ownership-service.test.ts. A bare
+      // ne(membershipRole, "viewer") (this function's pre-fix state) would
+      // silently drop this user from nonViewerMembers, making the report
+      // under-count who would lose access.
+      const companyId = await seedCompany({ enforceAgentOwnership: false });
+      const ownedAgentId = await seedAgent(companyId, "Owned");
+      await grantOwner(companyId, ownedAgentId, "the-owner");
+      await activeMembership(companyId, "the-owner", "member");
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: "no-role-member",
+        status: "active",
+      });
+
+      const report = await agentOwnershipService(db).buildEnforcementDryRunReport(companyId);
+
+      const ownedEntry = report.impactedAgents.find((a) => a.agentId === ownedAgentId);
+      expect(ownedEntry?.wouldLoseAccess.map((row) => row.userId)).toEqual(["no-role-member"]);
+    });
   });
 });

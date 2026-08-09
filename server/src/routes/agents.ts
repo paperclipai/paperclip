@@ -4338,6 +4338,39 @@ export function agentRoutes(
     res.status(204).end();
   });
 
+  // Instance-admin one-time backfill for agents that predate TECH-4929
+  // write-on-create and so have zero ownership grants at all -- the only
+  // path that can create a *first* owner grant post-hoc (see
+  // agentOwnershipService(db).bootstrapOwnership's comment for why neither
+  // setRole nor the transfer flows can). `assertInstanceAdmin` calls
+  // `assertBoard` internally, so this is unreachable by agent-type actors
+  // too. Always logged -- like force-transfer, this must never be silent.
+  router.post("/agents/:id/ownership/bootstrap", async (req, res) => {
+    assertInstanceAdmin(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    const ownerUserId = typeof req.body?.ownerUserId === "string" ? req.body.ownerUserId.trim() : "";
+    if (!ownerUserId) throw unprocessable("ownerUserId is required");
+    const grant = await ownership.bootstrapOwnership({
+      companyId: agent.companyId,
+      agentId: id,
+      ownerUserId,
+      instanceAdminUserId: actor.actorId,
+    });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: "agent.ownership_bootstrapped",
+      entityType: "agent",
+      entityId: id,
+      details: { ownerUserId, isInstanceAdminOverride: true },
+    });
+    res.status(201).json(grant);
+  });
+
   // Instance-admin break-glass: force ownership without acceptance, for
   // offboarding/recovery. `assertInstanceAdmin` calls `assertBoard`
   // internally, so this is unreachable by agent-type actors too. Always
