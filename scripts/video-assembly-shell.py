@@ -82,7 +82,7 @@ for index, clip in enumerate(clips):
     parts.append(target)
     plan.append({"index": index, "src": clip["src"], "duration_s": seconds, "sha256": digest(source)})
 concat = work / "concat.txt"
-concat.write_text("".join(f"file '{part.resolve()}'\\n" for part in parts))
+concat.write_text("".join(f"file '{part.resolve()}'\n" for part in parts))
 timeline = work / "timeline.mp4"
 run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(timeline)])
 final = out / "final.mp4"
@@ -104,8 +104,8 @@ qa.mkdir(exist_ok=True)
 for label, at in (("start", .1), ("mid", max(.1, total / 2)), ("end", max(.1, total - .15))):
     run(["ffmpeg", "-y", "-ss", f"{at:.3f}", "-i", str(final), "-frames:v", "1", str(qa / f"{label}.png")])
 metrics = {"stage": "assembly", "handler": "scripts/video-assembly-shell.py", "llm_tokens": 0, "llm_input_tokens": 0, "llm_output_tokens": 0, "title": manifest.get("title"), "width": width, "height": height, "fps": fps, "clip_count": len(parts), "duration_s": total, "final_mp4": str(final), "final_sha256": digest(final), "final_bytes": final.stat().st_size, "plan": plan, "qa_frames": [str(path) for path in sorted(qa.glob("*.png"))], "elapsed_s": round(time.time() - started, 3)}
-(out / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\\n")
-(out / "cut-map.json").write_text(json.dumps({"method": "manifest-hard-cut", "segments": plan, "final_sha256": metrics["final_sha256"], "duration_s": total}, indent=2) + "\\n")
+(out / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+(out / "cut-map.json").write_text(json.dumps({"method": "manifest-hard-cut", "segments": plan, "final_sha256": metrics["final_sha256"], "duration_s": total}, indent=2) + "\n")
 '''
 
 
