@@ -461,10 +461,19 @@ request_hot_restart_handoff() {
   local api_base="$1" old_pid="$2"
   [ -f "$SOURCE_ROOT/scripts/request-hot-restart.ts" ] \
     || fail "promote-and-restart: hot-restart request script missing from source tree"
+  # `tsx` is a package-scoped development dependency, not a root dependency.
+  # Resolve the checked-in package binary explicitly so the production launcher
+  # never depends on an incidental global install or a root node_modules layout.
+  local tsx_bin="$SOURCE_ROOT/packages/db/node_modules/.bin/tsx"
+  if [ ! -x "$tsx_bin" ]; then
+    tsx_bin="$SOURCE_ROOT/cli/node_modules/tsx/dist/cli.mjs"
+  fi
+  [ -f "$tsx_bin" ] || [ -x "$tsx_bin" ] \
+    || fail "promote-and-restart: tsx runtime unavailable for hot-restart handoff"
   log "writing hot-restart handoff intent for live server pid $old_pid"
   (
     cd "$SOURCE_ROOT"
-    PAPERCLIP_API_URL="$api_base" node --import tsx scripts/request-hot-restart.ts --server-pid "$old_pid"
+    PAPERCLIP_API_URL="$api_base" "$tsx_bin" scripts/request-hot-restart.ts --server-pid "$old_pid"
   ) || fail "promote-and-restart: could not write hot-restart handoff intent"
 }
 
