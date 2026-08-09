@@ -46,6 +46,23 @@ function baseContext(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+test("prefixes fresh prompts with an agent/run-unique Hermes title line", () => {
+  const firstPrompt = buildPrompt(baseContext(), {});
+  const secondContext = baseContext();
+  secondContext.agent.id = "agent-2";
+  secondContext.runId = "run-2";
+  const secondPrompt = buildPrompt(secondContext, {});
+
+  expect(firstPrompt.split("\n", 1)[0]).toBe(
+    "# Paperclip Hermes session — agent-1 — issue-1 — run-1",
+  );
+  expect(secondPrompt.split("\n", 1)[0]).toBe(
+    "# Paperclip Hermes session — agent-2 — issue-1 — run-2",
+  );
+  expect(firstPrompt.startsWith("## Paperclip Wake Payload")).toBe(false);
+  expect(firstPrompt).not.toBe(secondPrompt);
+});
+
 test("renders standard assignment wake with task authority and no backlog discovery guidance", () => {
   const prompt = buildPrompt(baseContext({
     paperclipWake: {

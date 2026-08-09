@@ -139,6 +139,18 @@ function renderConditionalSections(template: string, vars: Record<string, unknow
   );
 }
 
+function buildInstantTitlePreamble(
+  ctx: AdapterExecutionContext,
+  taskId: string | undefined,
+): string {
+  // Hermes derives and reserves the initial session title from the first
+  // non-empty prompt line. Keep this stable for the run, but distinct across
+  // agents/runs so a shared instruction preamble cannot collide globally.
+  const agentIdentity = ctx.agent?.id || ctx.agent?.name || "unknown-agent";
+  const runIdentity = ctx.runId || new Date().toISOString();
+  return `# Paperclip Hermes session — ${agentIdentity} — ${taskId || "no-task"} — ${runIdentity}`;
+}
+
 export function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
@@ -200,12 +212,13 @@ export function buildPrompt(
   };
 
   const rendered = renderTemplate(renderConditionalSections(template, vars), vars);
-  return joinPromptSections([
+  const prompt = joinPromptSections([
     wakePrompt,
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
     rendered,
   ]);
+  return options.resumedSession ? prompt : `${buildInstantTitlePreamble(ctx, taskId)}\n\n${prompt}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +423,7 @@ export async function execute(
   // ── Build prompt ───────────────────────────────────────────────────────
   let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
   if (agentInstructions) {
-    prompt = agentInstructions + "\n\n---\n\n" + prompt;
+    prompt = prompt + "\n\n---\n\n" + agentInstructions;
   }
 
   // ── Build command args ─────────────────────────────────────────────────
