@@ -259,7 +259,9 @@ function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCa
         family: interaction.kind,
         title: interaction.payload.title,
         technicalDetails: [
-          ...(isActionCardTechnicalText(interaction.title) ? [interaction.title] : []),
+          ...(isActionCardTechnicalText(interaction.title)
+            ? [interaction.title].filter((value): value is string => value != null)
+            : []),
           ...interaction.payload.questions.flatMap((question) => [
             question.id,
             ...question.options.map((option) => option.id),
@@ -285,7 +287,7 @@ function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCa
               interaction.payload.target?.revisionId ?? "",
               interaction.payload.target?.key ?? "",
               ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
-                ? [interaction.payload.detailsMarkdown]
+                ? [interaction.payload.detailsMarkdown].filter((value): value is string => value != null)
                 : []),
             ],
       };
@@ -301,7 +303,7 @@ function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCa
           ...interaction.payload.options.flatMap((option) => [option.id]),
           interaction.payload.target?.revisionId ?? "",
           ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
-            ? [interaction.payload.detailsMarkdown]
+            ? [interaction.payload.detailsMarkdown].filter((value): value is string => value != null)
             : []),
         ],
       };
@@ -318,7 +320,7 @@ function interactionLanguageInput(interaction: IssueThreadInteraction): ActionCa
           ]),
           interaction.payload.target?.revisionId ?? "",
           ...(isActionCardTechnicalText(interaction.payload.detailsMarkdown)
-            ? [interaction.payload.detailsMarkdown]
+            ? [interaction.payload.detailsMarkdown].filter((value): value is string => value != null)
             : []),
         ],
         primaryLabel: "Apply decisions",
