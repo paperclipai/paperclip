@@ -1,5 +1,16 @@
 # Token-cap exceptions
 
+## Deterministic handler map
+
+| Work class | Required directive and assignee | What it does | Forbidden fallback |
+| --- | --- | --- | --- |
+| TSM video assembly | routine-op: video-assembly → TSM RoutineOps | Calls scripts/video-assembly-shell.py, which sends the self-contained ffmpeg job through ~/scripts/mini-render.sh to mac-mini.tail3ef4e9.ts.net. The emitted metrics.json records renderer_host, renderer_route, and zero LLM-token fields. | No local Studio ffmpeg and no LLM assembly fallback. A Mini failure is a visible blocker with the job path and queue evidence. |
+| TSBC completed-benchmark evidence | benchmark-op: report, aggregate, or package plus a safe benchmark-run-id → TSBC BenchmarkOps | Re-runs only the existing report/cost aggregation/package commands against completed benchmark evidence. | No model CLI, no sweep/orchestration, no benchmark retry. benchmark-op: orchestrate remains a scoped benchmark-manager responsibility. |
+
+When an explicitly marked deterministic issue is aimed at an LLM assignee,
+Paperclip rejects the assignment and returns eligible shell-handler suggestions.
+Do not remove the directive to bypass that refusal.
+
 Normal LLM work is capped at 400,000 tokens per run. The first run at or above
 one million input tokens is automatically routed to split/route review; a
 second on the same issue is blocked for a board decision.

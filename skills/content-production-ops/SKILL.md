@@ -52,6 +52,12 @@ Chart-and-narrate renders additionally go through `packages/chart-and-narrate`: 
 
 ## Mac Mini render route
 
+For a Paperclip assembly task, use routine-op: video-assembly and assign **TSM
+RoutineOps**. It invokes the zero-LLM scripts/video-assembly-shell.py wrapper,
+which records renderer_host, renderer_route, and zero-token fields in
+metrics.json. Do not replace this route with a Studio-local ffmpeg call or an
+LLM recovery pass.
+
 For TSM episode/content renders, especially Stack Lab, treat the local Mac Mini render node as the default production route. GitHub Actions is a fallback/CI evidence lane, not the first place to burn production retries.
 
 - Deck/body render scripts already default to Mini offload through `~/scripts/deck/mini-offload-lib.sh`; use `~/scripts/deck/build-deck.sh` or `~/scripts/deck/build-episode.sh` without setting `MINI_RENDER=0`.
