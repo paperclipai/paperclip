@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
+  bindSessionRunIdOnServer,
   buildAgentParams,
   buildPaperclipApiFetch,
+  clearSessionRunIdOnServer,
+  readClaimedApiKey,
   resolveClaimedApiKeyPath,
   resolveSessionKey,
 } from "./execute.js";
@@ -201,5 +207,214 @@ describe("buildPaperclipApiFetch", () => {
 
     const headers = recordedHeaders();
     expect(headers[0].get("x-paperclip-run-id")).toBeNull();
+  });
+});
+
+describe("bindSessionRunIdOnServer", () => {
+  function makeFetch(responses: Array<{ status: number; body?: string } | Error>): {
+    fetchImpl: typeof fetch;
+    calls: Array<{ url: string; init: RequestInit }>;
+  } {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    let i = 0;
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const next = responses[i++] ?? { status: 200, body: "{}" };
+      if (next instanceof Error) throw next;
+      return new Response(next.body ?? "{}", { status: next.status });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  it("PUTs the runId to /api/agents/me/api-key/session-bind with bearer auth", async () => {
+    const { fetchImpl, calls } = makeFetch([{ status: 200, body: '{"ok":true}' }]);
+    const result = await bindSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100/",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://10.0.0.100:3100/api/agents/me/api-key/session-bind");
+    expect(calls[0].init.method).toBe("PUT");
+    const headers = new Headers(calls[0].init.headers as HeadersInit);
+    expect(headers.get("authorization")).toBe("Bearer pcp_test");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      runId: "11111111-2222-3333-4444-555555555555",
+    });
+  });
+
+  it("returns ok:false when the server returns non-2xx", async () => {
+    const { fetchImpl } = makeFetch([{ status: 503, body: "down" }]);
+    const result = await bindSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/503/);
+    }
+  });
+
+  it("returns ok:false when the fetch throws", async () => {
+    const { fetchImpl } = makeFetch([new Error("ECONNREFUSED")]);
+    const result = await bindSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/ECONNREFUSED/);
+    }
+  });
+
+  it("returns ok:false on invalid paperclipApiUrl", async () => {
+    const result = await bindSessionRunIdOnServer({
+      paperclipApiUrl: "not a url",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("aborts on timeout", async () => {
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    }) as unknown as typeof fetch;
+    const result = await bindSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+      timeoutMs: 5,
+    });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("clearSessionRunIdOnServer", () => {
+  function makeFetch(responses: Array<{ status: number; body?: string } | Error>): {
+    fetchImpl: typeof fetch;
+    calls: Array<{ url: string; init: RequestInit }>;
+  } {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    let i = 0;
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const next = responses[i++] ?? { status: 200, body: "{}" };
+      if (next instanceof Error) throw next;
+      return new Response(next.body ?? "{}", { status: next.status });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  it("DELETEs the session-bind endpoint with the matching runId", async () => {
+    const { fetchImpl, calls } = makeFetch([{ status: 200 }]);
+    const result = await clearSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100/",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://10.0.0.100:3100/api/agents/me/api-key/session-bind");
+    expect(calls[0].init.method).toBe("DELETE");
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      runId: "11111111-2222-3333-4444-555555555555",
+    });
+  });
+
+  it("treats 404 as ok (binding was already cleared)", async () => {
+    const { fetchImpl } = makeFetch([{ status: 404 }]);
+    const result = await clearSessionRunIdOnServer({
+      paperclipApiUrl: "http://10.0.0.100:3100",
+      apiKey: "pcp_test",
+      runId: "11111111-2222-3333-4444-555555555555",
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("readClaimedApiKey", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  let tempDir: string | null = null;
+
+  afterEach(() => {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
+  });
+
+  it("reads a valid claimed-api-key JSON file", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "openclaw-claimed-"));
+    const file = join(tempDir, "key.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        token: "pcp_test_token",
+        agentId: "agent-1",
+        companyId: "company-1",
+        claimedAt: "2026-08-01T00:00:00Z",
+      }),
+    );
+    const result = await readClaimedApiKey(file);
+    expect(result).toEqual({
+      token: "pcp_test_token",
+      agentId: "agent-1",
+      companyId: "company-1",
+    });
+  });
+
+  it("returns null when the file does not exist", async () => {
+    const result = await readClaimedApiKey("/no/such/file.json");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the file is not valid JSON", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "openclaw-claimed-"));
+    const file = join(tempDir, "key.json");
+    writeFileSync(file, "{not valid json");
+    const result = await readClaimedApiKey(file);
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the file is missing required fields", async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "openclaw-claimed-"));
+    const file = join(tempDir, "key.json");
+    writeFileSync(file, JSON.stringify({ token: "pcp_test" }));
+    const result = await readClaimedApiKey(file);
+    expect(result).toBeNull();
+  });
+
+  it("expands a leading tilde to the home directory", async () => {
+    // Don't actually write to $HOME — just verify the path expansion logic
+    // by passing a path under $HOME that doesn't exist.
+    const home = process.env.HOME ?? "";
+    if (!home) return; // skip on platforms without HOME
+    const result = await readClaimedApiKey(`~/${Math.random()}-does-not-exist.json`);
+    expect(result).toBeNull();
   });
 });

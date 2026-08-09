@@ -16,6 +16,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
+  bindAgentSessionRunIdSchema,
+  clearAgentSessionRunIdSchema,
   testAdapterEnvironmentSchema,
   type AgentDesiredSkillEntry,
   type AgentSkillSnapshot,
@@ -74,6 +76,10 @@ import type {
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  bindSessionRunId,
+  clearSessionRunId,
+} from "../services/agent-session-bind.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -2303,6 +2309,78 @@ export function agentRoutes(
     });
 
     res.json(rows);
+  });
+
+  /**
+   * PHA-1845 — Bind the calling agent's `runId` to its API key so that
+   * subsequent outbound HTTP requests from this key can omit
+   * `X-Paperclip-Run-Id` without being rejected by the auth middleware
+   * (the agent's outbound HTTP runs in the OpenClaw runtime process, where
+   * the adapter cannot inject headers). The openclaw-gateway adapter calls
+   * this after the WS session establishment. The matching `DELETE` is
+   * called when the WS session ends. Idempotent: re-binding to the same
+   * runId just refreshes the timestamp.
+   */
+  router.put(
+    "/agents/me/api-key/session-bind",
+    validate(bindAgentSessionRunIdSchema),
+    async (req, res) => {
+      if (
+        req.actor.type !== "agent" ||
+        !req.actor.agentId ||
+        !req.actor.keyId ||
+        !req.actor.companyId
+      ) {
+        res.status(401).json({ error: "Run-bound agent key authentication required" });
+        return;
+      }
+      const companyId = req.actor.companyId;
+      await bindSessionRunId(db, { keyId: req.actor.keyId, runId: req.body.runId });
+      await logActivity(db, {
+        companyId,
+        actorType: "agent",
+        actorId: req.actor.agentId,
+        action: "agent.session_bound_run_id_set",
+        entityType: "agent_api_key",
+        entityId: req.actor.keyId,
+        runId: req.body.runId,
+        details: { runId: req.body.runId },
+      });
+      res.json({ keyId: req.actor.keyId, runId: req.body.runId, bound: true });
+    },
+  );
+
+  /**
+   * PHA-1845 — Clear the session-bound runId on this API key. Called by the
+   * openclaw-gateway adapter after the WS session ends. If `runId` is
+   * supplied, the binding is only cleared if the currently-bound value
+   * matches — this prevents a slow unbind from a prior run from wiping a
+   * newer run's binding.
+   */
+  router.delete("/agents/me/api-key/session-bind", async (req, res) => {
+    if (
+      req.actor.type !== "agent" ||
+      !req.actor.agentId ||
+      !req.actor.keyId ||
+      !req.actor.companyId
+    ) {
+      res.status(401).json({ error: "Run-bound agent key authentication required" });
+      return;
+    }
+    const companyId = req.actor.companyId;
+    const body = clearAgentSessionRunIdSchema.parse(req.body ?? {});
+    await clearSessionRunId(db, { keyId: req.actor.keyId, runId: body.runId });
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: req.actor.agentId,
+      action: "agent.session_bound_run_id_cleared",
+      entityType: "agent_api_key",
+      entityId: req.actor.keyId,
+      runId: body.runId ?? null,
+      details: { runId: body.runId ?? null },
+    });
+    res.json({ keyId: req.actor.keyId, cleared: true });
   });
 
   router.get("/agents/:id", async (req, res) => {

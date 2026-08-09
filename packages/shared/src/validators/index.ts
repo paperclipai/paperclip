@@ -343,6 +343,8 @@ export {
   agentMineInboxQuerySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  bindAgentSessionRunIdSchema,
+  clearAgentSessionRunIdSchema,
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
@@ -361,6 +363,8 @@ export {
   type AgentMineInboxQuery,
   type WakeAgent,
   type ResetAgentSession,
+  type BindAgentSessionRunId,
+  type ClearAgentSessionRunId,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
 } from "./agent.js";

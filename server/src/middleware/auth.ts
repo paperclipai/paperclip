@@ -19,6 +19,7 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { isSessionBoundRunIdFresh } from "../services/agent-session-bind.js";
 import { forbidden, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -160,6 +161,35 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+}
+
+/**
+ * Resolve the run id carried by an agent-key actor.
+ *
+ * Priority:
+ *  1. Explicit `X-Paperclip-Run-Id` header (defense-in-depth — the agent
+ *     shipping the header is the most authoritative source).
+ *  2. The `sessionBoundRunId` stored on the API key by the openclaw-gateway
+ *     adapter at WS session establishment (PHA-1845). This is a backstop so
+ *     agents running in a separate process (where the adapter cannot
+ *     intercept outbound HTTP) can still satisfy the run-id requirement
+ *     without the header. The binding is ignored if it is older than
+ *     `SESSION_BOUND_RUN_ID_TTL_MS` — prevents stale bindings from prior
+ *     runs from acting as a foothold.
+ *
+ * Returns `undefined` when neither source is usable. Downstream handlers
+ * decide what to do (typical: 401 for mutating, accept for read).
+ */
+export function resolveAgentKeyRunId(input: {
+  runIdHeader: string | null | undefined;
+  sessionBoundRunId: string | null | undefined;
+  sessionBoundAt: Date | null | undefined;
+}): string | undefined {
+  const header = normalizeOptionalString(input.runIdHeader ?? null);
+  if (header) return header;
+  if (!isSessionBoundRunIdFresh(input.sessionBoundAt)) return undefined;
+  const bound = normalizeOptionalString(input.sessionBoundRunId ?? null);
+  return bound ?? undefined;
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
@@ -379,7 +409,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         companyId: key.companyId,
         userId: responsibleUserId,
       }),
-      runId: runIdHeader || undefined,
+      runId: resolveAgentKeyRunId({
+        runIdHeader,
+        sessionBoundRunId: key.sessionBoundRunId,
+        sessionBoundAt: key.sessionBoundAt,
+      }),
       source: "agent_key",
     };
 

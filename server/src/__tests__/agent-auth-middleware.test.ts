@@ -32,7 +32,15 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: {
+    id: string;
+    agentId: string;
+    companyId: string;
+    keyHash: string;
+    responsibleUserId?: string | null;
+    sessionBoundRunId?: string | null;
+    sessionBoundAt?: Date | null;
+  };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
 }) {
   const activity: Array<Record<string, unknown>> = [];
@@ -50,6 +58,8 @@ function createDbState(input: {
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
         revokedAt: null,
         scopeConfig: null,
+        sessionBoundRunId: input.agentKey.sessionBoundRunId ?? null,
+        sessionBoundAt: input.agentKey.sessionBoundAt ?? null,
       }
     : null;
   const runRow = input.run
@@ -377,5 +387,152 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+});
+
+describe("agent-key session-bound run id (PHA-1845)", () => {
+  const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+
+  beforeEach(() => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "auth-middleware-secret";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+  });
+
+  afterEach(() => {
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+  });
+
+  function makeKeyWithBinding(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    sessionBoundRunId?: string | null;
+    sessionBoundAt?: Date | null;
+  }) {
+    const { db } = createDbState({
+      agent: { id: input.agentId, companyId: input.companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId: input.agentId,
+        companyId: input.companyId,
+        keyHash: hashToken("pcp_session_bound_key"),
+        responsibleUserId: "user-key",
+        sessionBoundRunId: input.sessionBoundRunId ?? null,
+        sessionBoundAt: input.sessionBoundAt ?? null,
+      },
+    });
+    return { db };
+  }
+
+  it("falls back to the session-bound run id when the header is absent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = makeKeyWithBinding({
+      companyId,
+      agentId,
+      runId,
+      sessionBoundRunId: runId,
+      sessionBoundAt: new Date(),
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_session_bound_key");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+      runId,
+      onBehalfOfUserId: "user-key",
+      source: "agent_key",
+    });
+  });
+
+  it("prefers an explicit X-Paperclip-Run-Id header over the session-bound run id", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const boundRunId = randomUUID();
+    const headerRunId = randomUUID();
+    const { db } = makeKeyWithBinding({
+      companyId,
+      agentId,
+      runId: boundRunId,
+      sessionBoundRunId: boundRunId,
+      sessionBoundAt: new Date(),
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_session_bound_key")
+      .set("X-Paperclip-Run-Id", headerRunId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBe(headerRunId);
+  });
+
+  it("ignores a session-bound run id older than the TTL (defaults to undefined)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const staleAt = new Date(Date.now() - 7 * 60 * 60 * 1000); // 7h ago, beyond 6h TTL
+    const { db } = makeKeyWithBinding({
+      companyId,
+      agentId,
+      runId,
+      sessionBoundRunId: runId,
+      sessionBoundAt: staleAt,
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_session_bound_key");
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("uses the session-bound run id when the binding is fresh (within TTL)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const recentAt = new Date(Date.now() - 30 * 60 * 1000); // 30 min ago
+    const { db } = makeKeyWithBinding({
+      companyId,
+      agentId,
+      runId,
+      sessionBoundRunId: runId,
+      sessionBoundAt: recentAt,
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_session_bound_key");
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBe(runId);
+  });
+
+  it("ignores a session-bound run id when the binding has no timestamp", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = makeKeyWithBinding({
+      companyId,
+      agentId,
+      runId,
+      sessionBoundRunId: runId,
+      sessionBoundAt: null,
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_session_bound_key");
+
+    expect(res.status).toBe(200);
+    expect(res.body.runId).toBeUndefined();
   });
 });

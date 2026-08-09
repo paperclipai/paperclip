@@ -209,6 +209,33 @@ export const resetAgentSessionSchema = z.object({
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
+/**
+ * Body for `PUT /api/agents/me/api-key/session-bind` (PHA-1845).
+ *
+ * The openclaw-gateway adapter calls this at WS session establishment to
+ * bind the wake's runId to the calling API key. When the agent omits the
+ * `X-Paperclip-Run-Id` header on a mutating request, the server falls back
+ * to this binding rather than rejecting the call. The adapter issues the
+ * matching DELETE when the WS session ends.
+ */
+export const bindAgentSessionRunIdSchema = z.object({
+  runId: z.string().uuid(),
+});
+
+export type BindAgentSessionRunId = z.infer<typeof bindAgentSessionRunIdSchema>;
+
+/**
+ * Body for `DELETE /api/agents/me/api-key/session-bind` (PHA-1845).
+ * If `runId` matches the currently bound value, the binding is cleared.
+ * Mismatched `runId` is a no-op (returns the current binding unchanged) so
+ * a slow unbind from a previous run cannot wipe a newer run's binding.
+ */
+export const clearAgentSessionRunIdSchema = z.object({
+  runId: z.string().uuid().optional(),
+});
+
+export type ClearAgentSessionRunId = z.infer<typeof clearAgentSessionRunIdSchema>;
+
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**

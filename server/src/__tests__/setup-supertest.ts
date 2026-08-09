@@ -31,6 +31,12 @@ if (!process.env.CODEX_HOME) {
 }
 
 if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
+  // Patched to default to the IPv4 loopback (127.0.0.1). Some test
+  // environments — Docker without IPv6 routes, unprivileged user namespaces
+  // — can bind dual-stack on "::" but cannot actually connect to [::1].
+  // The base implementation uses [::1] verbatim, which fails those envs.
+  // We keep the same dual-stack listen (it is sync) and rewrite the host
+  // to 127.0.0.1 so the generated URL reaches the listening socket.
   SupertestTest.prototype.serverAddress = function serverAddress(app, path) {
     const addr = app.address();
 
@@ -43,11 +49,9 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
       throw new Error("Expected Supertest server to listen on a TCP port");
     }
 
-    const host = listeningAddress.address === "::"
-      ? "[::1]"
-      : listeningAddress.address === "0.0.0.0"
-        ? "127.0.0.1"
-        : listeningAddress.address;
+    let host = listeningAddress.address;
+    if (host === "::" || host === "::1") host = "127.0.0.1";
+    else if (host === "0.0.0.0") host = "127.0.0.1";
     const protocol = app instanceof TlsServer ? "https" : "http";
     return `${protocol}://${host}:${listeningAddress.port}${path}`;
   };

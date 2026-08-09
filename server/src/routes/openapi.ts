@@ -1731,6 +1731,47 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// PHA-1845 — openclaw-gateway adapter calls these at WS session boundaries
+// so that subsequent outbound HTTP from the agent (which lives in a
+// separate process and cannot be header-wrapped by the adapter) can omit
+// `X-Paperclip-Run-Id` without the server rejecting the request.
+registry.registerPath({
+  method: "put",
+  path: "/api/agents/me/api-key/session-bind",
+  tags: ["agents"],
+  summary: "Bind the current run id to the calling agent API key",
+  description:
+    "PHA-1845. Called by the openclaw-gateway adapter after WebSocket session establishment. While the binding is in effect and not expired, requests authenticated by this API key that omit `X-Paperclip-Run-Id` will resolve the bound run id from this row. The matching DELETE is called when the WS session ends.",
+  request: {
+    body: {
+      content: { "application/json": { schema: z.object({ runId: z.string().uuid() }) } },
+    },
+  },
+  responses: {
+    200: { description: "Binding recorded", content: { "application/json": { schema: z.object({ keyId: z.string().uuid(), runId: z.string().uuid(), bound: z.literal(true) }) } } },
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/agents/me/api-key/session-bind",
+  tags: ["agents"],
+  summary: "Clear the session-bound run id on the calling agent API key",
+  description:
+    "PHA-1845. Called by the openclaw-gateway adapter after the WS session ends. If `runId` is supplied, the binding is only cleared when the currently-bound value matches — protects against a slow unbind from a prior run wiping a newer binding.",
+  request: {
+    body: {
+      required: false,
+      content: { "application/json": { schema: z.object({ runId: z.string().uuid().optional() }) } },
+    },
+  },
+  responses: {
+    200: { description: "Binding cleared (or no-op if mismatch)", content: { "application/json": { schema: z.object({ keyId: z.string().uuid(), cleared: z.literal(true) }) } } },
+    401: r.unauthorized,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/agents/{id}",

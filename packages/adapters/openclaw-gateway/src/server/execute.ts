@@ -13,6 +13,8 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -418,6 +420,186 @@ export function buildPaperclipApiFetch(ctx: AdapterExecutionContext): typeof fet
   };
 }
 
+/**
+ * Bind the wake's runId to the calling agent API key on the Paperclip server
+ * (PHA-1845).
+ *
+ * The openclaw-gateway adapter is a separate process from the OpenClaw agent
+ * runtime — it cannot intercept the agent's outbound HTTP to inject the
+ * `X-Paperclip-Run-Id` header on each call. To work around that without
+ * requiring the runtime to ship a wrapper, the adapter records the binding
+ * on the server right after WebSocket session establishment: subsequent
+ * requests from the same API key that omit the header fall back to this
+ * stored runId. The matching `clearSessionRunIdOnServer` call is issued when
+ * the wake loop exits so a stale binding cannot outlive its run.
+ *
+ * Best-effort: any failure logs and returns silently. The adapter must
+ * never abort the wake on a bind/unbind failure — the request still works
+ * as before (with `X-Paperclip-Run-Id` set in the wake prompt as
+ * defense-in-depth).
+ */
+export async function bindSessionRunIdOnServer(input: {
+  paperclipApiUrl: string;
+  apiKey: string;
+  runId: string;
+  onLog?: (stream: "stdout" | "stderr", text: string) => Promise<void> | void;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { paperclipApiUrl, apiKey, runId, onLog, timeoutMs, fetchImpl } = input;
+  const url = joinUrlPath(paperclipApiUrl, "/api/agents/me/api-key/session-bind");
+  if (!url) return { ok: false, error: "invalid paperclipApiUrl" };
+  const doFetch = fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs ?? 5_000);
+  try {
+    const res = await doFetch(url, {
+      method: "PUT",
+      headers: {
+        authorization: toAuthorizationHeaderValue(apiKey),
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({ runId }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      const error = `PUT /api/agents/me/api-key/session-bind returned ${res.status}: ${truncateForLog(errorText, 200)}`;
+      if (onLog) {
+        await onLog("stderr", `[openclaw-gateway] session-bind failed: ${error}\n`);
+      }
+      return { ok: false, error };
+    }
+    if (onLog) {
+      await onLog(
+        "stdout",
+        `[openclaw-gateway] session-bound runId=${runId} via PUT ${url}\n`,
+      );
+    }
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const error = `PUT /api/agents/me/api-key/session-bind threw: ${message}`;
+    if (onLog) {
+      await onLog("stderr", `[openclaw-gateway] session-bind failed: ${error}\n`);
+    }
+    return { ok: false, error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Clear the wake's session-bound runId on the calling agent API key
+ * (PHA-1845). Best-effort: failures are logged but never throw. The server
+ * only clears when the currently-bound runId matches `runId`, so a slow
+ * unbind from a previous run cannot wipe a newer run's binding.
+ */
+export async function clearSessionRunIdOnServer(input: {
+  paperclipApiUrl: string;
+  apiKey: string;
+  runId: string;
+  onLog?: (stream: "stdout" | "stderr", text: string) => Promise<void> | void;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { paperclipApiUrl, apiKey, runId, onLog, timeoutMs, fetchImpl } = input;
+  const url = joinUrlPath(paperclipApiUrl, "/api/agents/me/api-key/session-bind");
+  if (!url) return { ok: false, error: "invalid paperclipApiUrl" };
+  const doFetch = fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs ?? 5_000);
+  try {
+    const res = await doFetch(url, {
+      method: "DELETE",
+      headers: {
+        authorization: toAuthorizationHeaderValue(apiKey),
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({ runId }),
+      signal: controller.signal,
+    });
+    if (!res.ok && res.status !== 404) {
+      const errorText = await res.text().catch(() => "");
+      const error = `DELETE /api/agents/me/api-key/session-bind returned ${res.status}: ${truncateForLog(errorText, 200)}`;
+      if (onLog) {
+        await onLog("stderr", `[openclaw-gateway] session-unbind failed: ${error}\n`);
+      }
+      return { ok: false, error };
+    }
+    if (onLog) {
+      await onLog(
+        "stdout",
+        `[openclaw-gateway] session-unbound runId=${runId} via DELETE ${url}\n`,
+      );
+    }
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const error = `DELETE /api/agents/me/api-key/session-bind threw: ${message}`;
+    if (onLog) {
+      await onLog("stderr", `[openclaw-gateway] session-unbind failed: ${error}\n`);
+    }
+    return { ok: false, error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Compose a URL with the given path appended to the base, handling trailing
+ * slashes on the base and leading slashes on the path.
+ */
+function joinUrlPath(base: string, path: string): string | null {
+  try {
+    const parsed = new URL(base);
+    const trimmedPath = path.startsWith("/") ? path : `/${path}`;
+    parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}${trimmedPath}`;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the claimed Paperclip API key from the on-disk JSON file (PHA-1845).
+ * The agent runtime reads the same file for its outbound HTTP, so the
+ * adapter can authenticate to `PUT/DELETE /api/agents/me/api-key/session-bind`
+ * with the same identity.
+ *
+ * Returns `null` when the file is missing or malformed; callers should treat
+ * that as "cannot bind this run" and continue without session-bind (the wake
+ * still works via the `X-Paperclip-Run-Id` header set in the wake prompt).
+ */
+export async function readClaimedApiKey(
+  rawPath: string,
+): Promise<{ token: string; agentId: string; companyId: string } | null> {
+  const expanded = rawPath.startsWith("~/")
+    ? `${homedir()}${rawPath.slice(1)}`
+    : rawPath;
+  let raw: string;
+  try {
+    raw = await readFile(expanded, "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const token = nonEmpty(record.token);
+  const agentId = nonEmpty(record.agentId);
+  const companyId = nonEmpty(record.companyId);
+  if (!token || !agentId || !companyId) return null;
+  return { token, agentId, companyId };
+}
+
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
 export function resolveClaimedApiKeyPath(value: unknown): string {
@@ -499,10 +681,11 @@ function buildWakeText(
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
-    "- (Advisory) Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call. " +
-      "The openclaw-gateway adapter auto-injects this header on outbound calls to the " +
-      "Paperclip API origin via `buildPaperclipApiFetch(ctx)`, so omitting it is safe — but " +
-      "explicit values are still recommended for clarity and audit consistency.",
+    "- (Optional) Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call. " +
+      "The openclaw-gateway adapter records a session-bound runId on the API key " +
+      "at WS session establishment (PHA-1845); when the header is absent, the " +
+      "auth middleware falls back to that binding. Explicit headers are still " +
+      "preferred for clarity and take precedence over the bound value.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
     "",
@@ -1373,6 +1556,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
+      // PHA-1845: bind this wake's runId to the calling API key on the server
+      // so the agent's outbound HTTP (in a separate OpenClaw runtime process)
+      // can omit `X-Paperclip-Run-Id` without being rejected. Best-effort: a
+      // bind failure logs and continues. The 6h server-side TTL is the
+      // backstop so a missing unbind cannot stale-bind future runs.
+      const paperclipApiUrlForBind = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+      if (paperclipApiUrlForBind) {
+        const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+        const claimed = await readClaimedApiKey(claimedApiKeyPath);
+        if (claimed) {
+          await bindSessionRunIdOnServer({
+            paperclipApiUrl: paperclipApiUrlForBind,
+            apiKey: claimed.token,
+            runId: ctx.runId,
+            onLog: ctx.onLog,
+          });
+        } else {
+          await ctx.onLog(
+            "stderr",
+            `[openclaw-gateway] session-bind skipped: could not load claimed API key from ${claimedApiKeyPath}\n`,
+          );
+        }
+      }
+
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
       });
@@ -1479,6 +1686,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[openclaw-gateway] run completed runId=${Array.from(trackedRunIds).join(",")} status=ok\n`,
       );
+
+      // PHA-1845: clear the session-bound runId on the API key now that the
+      // wake has completed. Best-effort; a stale binding is bounded by the
+      // 6h server-side TTL anyway.
+      if (paperclipApiUrlForBind) {
+        const claimedApiKeyPath2 = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+        const claimed2 = await readClaimedApiKey(claimedApiKeyPath2);
+        if (claimed2) {
+          await clearSessionRunIdOnServer({
+            paperclipApiUrl: paperclipApiUrlForBind,
+            apiKey: claimed2.token,
+            runId: ctx.runId,
+            onLog: ctx.onLog,
+          });
+        }
+      }
 
       return {
         exitCode: 0,
