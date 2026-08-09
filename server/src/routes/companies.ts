@@ -25,6 +25,7 @@ import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
+  agentOwnershipService,
   agentService,
   budgetService,
   buildExportFidelityReport,
@@ -188,6 +189,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
+  const agentOwnership = agentOwnershipService(db);
   const budgets = budgetService(db);
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
@@ -730,6 +732,22 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       details: body,
     });
     res.json(company);
+  });
+
+  /**
+   * TECH-4930 stage 2: dry-run report for `PATCH /:companyId` with
+   * `{ enforceAgentOwnership: true }`. Lets an admin see exactly who would
+   * lose access to what -- rather than finding out from the PATCH's refusal
+   * error (if any agent is unowned) or from support tickets after the flag
+   * is already on. Read-only; changes nothing. Board-only, same boundary as
+   * every other company-settings read in this file.
+   */
+  router.get("/:companyId/agent-ownership/enforcement-dry-run", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const report = await agentOwnership.buildEnforcementDryRunReport(companyId);
+    res.json(report);
   });
 
   router.post("/:companyId/archive", async (req, res) => {

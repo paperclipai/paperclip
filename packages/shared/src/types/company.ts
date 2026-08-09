@@ -28,6 +28,7 @@ export interface Company {
   attachmentMaxBytes: number;
   defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  enforceAgentOwnership: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;

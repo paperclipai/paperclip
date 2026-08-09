@@ -1325,7 +1325,7 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
   });
 
-  it("keeps denying self-gated null-mapped actions for board members", async () => {
+  it("keeps denying null-mapped issue:mutate for board members (agent:wake is now allowed at this base layer; see TECH-4930)", async () => {
     const company = await createCompany(db, "BoardWakeDenied");
     const userId = `user-${randomUUID()}`;
     const targetAgent = await createAgent(db, company.id, { role: "engineer" });
@@ -1339,13 +1339,25 @@ describeEmbeddedPostgres("authorization service", () => {
 
     const authorization = authorizationService(db);
 
+    // TECH-4930 stage 2: "agent:wake" moved out of this test's premise.
+    // Before this ticket, no route ever called `decide()` with this action
+    // for a board actor, so it fell through decideBase's board branch to
+    // `deny_unsupported_action` by default -- which is what this test used
+    // to pin. Six routes now call `decide()` with exactly this action/
+    // resource shape (see authorization.ts's `applyAgentOwnershipEnforcement`
+    // doc comment for the full list), so decideBase's board branch grew a
+    // real, intentional `agent:wake` case that allows unconditionally at
+    // this layer -- deliberately, so that flag-off stays byte-identical to
+    // the pre-existing per-route gates those six callers already had. The
+    // actual narrowing this ticket adds lives entirely in the ownership
+    // intersection tested in agent-ownership-enforcement.test.ts, not here.
     await expect(authorization.decide({
       actor: { type: "board", userId, source: "session" },
       action: "agent:wake",
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
     })).resolves.toMatchObject({
-      allowed: false,
-      reason: "deny_unsupported_action",
+      allowed: true,
+      reason: "allow_simple_company_member",
     });
     const issue = await createIssue(db, company.id, { title: "Wake denied issue" });
     await expect(authorization.decide({

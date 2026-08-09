@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db, AgentOwnershipPrincipalType, AgentOwnershipRole, AgentOwnershipSource } from "@paperclipai/db";
-import { agentOwnershipGrants, agentOwnershipTransfers } from "@paperclipai/db";
+import { agentOwnershipGrants, agentOwnershipTransfers, agents, companyMemberships } from "@paperclipai/db";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 /**
@@ -421,6 +421,148 @@ export function agentOwnershipService(db: Db) {
     });
   }
 
+  /**
+   * TECH-4930 stage 2: does `principalId` hold any active (non-revoked)
+   * role -- owner, admin, or user -- on `agentId`? This is the single
+   * predicate `server/src/services/authorization.ts#applyAgentOwnershipEnforcement`
+   * and the `responsibleUserId` ownership check consult; any active row
+   * counts; the caller decides whether a specific role is required.
+   */
+  async function hasActiveGrant(
+    agentId: string,
+    principalType: AgentOwnershipPrincipalType,
+    principalId: string,
+  ): Promise<boolean> {
+    const row = await db
+      .select({ id: agentOwnershipGrants.id })
+      .from(agentOwnershipGrants)
+      .where(
+        and(
+          eq(agentOwnershipGrants.agentId, agentId),
+          eq(agentOwnershipGrants.principalType, principalType),
+          eq(agentOwnershipGrants.principalId, principalId),
+          isNull(agentOwnershipGrants.revokedAt),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
+  /**
+   * Agents in `companyId` with zero active `role = 'owner'` grants -- the
+   * exact "incomplete data" set that must block enabling enforcement
+   * (`companyService.update` calls the equivalent query in the same
+   * transaction before flipping `companies.enforce_agent_ownership`; this
+   * standalone version backs the dry-run report and tests). A LEFT JOIN
+   * against the partial-unique "one active owner" index, filtered to rows
+   * where the join found nothing.
+   */
+  async function listUnownedAgents(companyId: string): Promise<Array<{ id: string; name: string }>> {
+    return db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .leftJoin(
+        agentOwnershipGrants,
+        and(
+          eq(agentOwnershipGrants.agentId, agents.id),
+          eq(agentOwnershipGrants.role, "owner"),
+          isNull(agentOwnershipGrants.revokedAt),
+        ),
+      )
+      .where(and(eq(agents.companyId, companyId), isNull(agentOwnershipGrants.id)));
+  }
+
+  /**
+   * Dry-run report for an admin deciding whether to flip
+   * `companies.enforce_agent_ownership` on. Answers two questions:
+   *
+   *  1. Would enabling be refused outright? (`readyToEnable` /
+   *     `unownedAgents` -- mirrors the check `companyService.update` runs
+   *     for real.)
+   *  2. For every agent that *does* have an owner, which currently-active
+   *     non-viewer company members would lose the ability to drive it?
+   *
+   * (2) exists because today -- see the six paths in TECH-4930 -- any
+   * active non-viewer company member can trigger a run on any agent in the
+   * company (comment on its issue, hit /wakeup, checkout when already
+   * assignee, retry-now, resolve an approval that wakes it, or assert its
+   * responsibleUserId). Enforcement narrows that to principals holding an
+   * active ownership grant on the specific agent. So "who currently has
+   * access that would be revoked" is exactly "active non-viewer members
+   * minus principals with an active grant on this agent" -- there is no
+   * narrower existing ACL to diff against, because none exists yet. This
+   * is why the report is agent-by-agent rather than permission-by-permission:
+   * the only permission being narrowed is "member of the company", and the
+   * report's job is to make that narrowing's blast radius legible before
+   * an admin flips the flag, not to enumerate every route path.
+   */
+  async function buildEnforcementDryRunReport(companyId: string): Promise<AgentOwnershipDryRunReport> {
+    const [allAgents, activeGrants, nonViewerMembers] = await Promise.all([
+      db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, companyId)),
+      db
+        .select()
+        .from(agentOwnershipGrants)
+        .where(and(eq(agentOwnershipGrants.companyId, companyId), isNull(agentOwnershipGrants.revokedAt))),
+      db
+        .select({ principalId: companyMemberships.principalId, membershipRole: companyMemberships.membershipRole })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.status, "active"),
+            ne(companyMemberships.membershipRole, "viewer"),
+          ),
+        ),
+    ]);
+
+    const grantsByAgent = new Map<string, typeof activeGrants>();
+    for (const grant of activeGrants) {
+      const list = grantsByAgent.get(grant.agentId) ?? [];
+      list.push(grant);
+      grantsByAgent.set(grant.agentId, list);
+    }
+
+    const unownedAgents = allAgents.filter((agent) => {
+      const grants = grantsByAgent.get(agent.id) ?? [];
+      return !grants.some((grant) => grant.role === "owner");
+    });
+
+    const impactedAgents = allAgents
+      .filter((agent) => !unownedAgents.some((unowned) => unowned.id === agent.id))
+      .map((agent) => {
+        const grants = grantsByAgent.get(agent.id) ?? [];
+        const ownerGrant = grants.find((grant) => grant.role === "owner") ?? null;
+        const grantedUserIds = new Set(
+          grants.filter((grant) => grant.principalType === "user").map((grant) => grant.principalId),
+        );
+        const wouldLoseAccess = nonViewerMembers
+          .filter((member) => !grantedUserIds.has(member.principalId))
+          .map((member) => ({
+            userId: member.principalId,
+            membershipRole: member.membershipRole,
+            reason:
+              "Currently has agent-wake/comment/checkout/retry/approval-resolve access to this agent via " +
+              "active non-viewer company membership alone; holds no ownership grant on this specific agent.",
+          }));
+        return {
+          agentId: agent.id,
+          agentName: agent.name,
+          ownerUserId: ownerGrant?.principalId ?? null,
+          wouldLoseAccess,
+        };
+      })
+      .filter((entry) => entry.wouldLoseAccess.length > 0);
+
+    return {
+      companyId,
+      generatedAt: new Date().toISOString(),
+      readyToEnable: unownedAgents.length === 0,
+      unownedAgents,
+      impactedAgents,
+    };
+  }
+
   return {
     writeInitialOwnership,
     getActiveOwner,
@@ -431,7 +573,24 @@ export function agentOwnershipService(db: Db) {
     acceptTransfer,
     declineOrCancelTransfer,
     forceTransferByInstanceAdmin,
+    hasActiveGrant,
+    listUnownedAgents,
+    buildEnforcementDryRunReport,
   };
+}
+
+export interface AgentOwnershipDryRunReport {
+  companyId: string;
+  generatedAt: string;
+  /** If false, `companyService.update` will refuse to enable enforcement. */
+  readyToEnable: boolean;
+  unownedAgents: Array<{ id: string; name: string }>;
+  impactedAgents: Array<{
+    agentId: string;
+    agentName: string;
+    ownerUserId: string | null;
+    wouldLoseAccess: Array<{ userId: string; membershipRole: string | null; reason: string }>;
+  }>;
 }
 
 export type AgentOwnershipService = ReturnType<typeof agentOwnershipService>;

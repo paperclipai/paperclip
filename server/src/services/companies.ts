@@ -32,6 +32,7 @@ import {
   routineTriggers,
   routineRevisions,
   routines,
+  agentOwnershipGrants,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
@@ -139,6 +140,7 @@ export function companyService(db: Db) {
     attachmentMaxBytes: companies.attachmentMaxBytes,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    enforceAgentOwnership: companies.enforceAgentOwnership,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
@@ -293,6 +295,40 @@ export function companyService(db: Db) {
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
+
+        // TECH-4930 stage 2: refuse to flip agent-ownership enforcement on
+        // while any agent in this company has zero active owner grants.
+        // Agents created before TECH-4929 (stage 1) shipped have no owner
+        // row at all -- enabling enforcement against them would either lock
+        // every action on those agents out (fail closed on missing data,
+        // which is worse than not shipping the flag) or -- far worse --
+        // silently treat "no owner" as "no restriction" if a future edit
+        // gets this check wrong. Failing the PATCH with the concrete list
+        // lets an admin either backfill ownership or exclude those agents
+        // before opting in; see agentOwnershipService(db)
+        // .buildEnforcementDryRunReport() for the read-only preview of the
+        // same data an admin should check before calling this.
+        if (companyPatch.enforceAgentOwnership === true && !existing.enforceAgentOwnership) {
+          const unownedAgents = await tx
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .leftJoin(
+              agentOwnershipGrants,
+              and(
+                eq(agentOwnershipGrants.agentId, agents.id),
+                eq(agentOwnershipGrants.role, "owner"),
+                isNull(agentOwnershipGrants.revokedAt),
+              ),
+            )
+            .where(and(eq(agents.companyId, id), isNull(agentOwnershipGrants.id)));
+          if (unownedAgents.length > 0) {
+            throw unprocessable(
+              `Cannot enable agent-ownership enforcement: ${unownedAgents.length} agent(s) have no active owner ` +
+                `grant (${unownedAgents.map((row) => `${row.name} (${row.id})`).join(", ")}). ` +
+                `Grant an owner to each agent first -- see agentOwnershipService(db).buildEnforcementDryRunReport().`,
+            );
+          }
+        }
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx

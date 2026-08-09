@@ -1278,6 +1278,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-ownership/enforcement-dry-run",
+  tags: ["companies"],
+  summary: "Preview the impact of enabling agent-ownership enforcement",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}",
   tags: ["companies"],
