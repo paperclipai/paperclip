@@ -529,6 +529,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     dependencyPath: IssueLivenessIssueInput[],
   ): IssueLivenessFinding | null {
     if (reviewIssue.status !== "in_review") return null;
+    if (routineBackedIssueIds.has(reviewIssue.id)) return null;
     if (classifyIssueReviewPaths(input, reviewIssue).length > 0) return null;
 
     const ownerCandidates = ownerCandidatesForRecoveryIssue(reviewIssue, input.agents, agentsById, {
