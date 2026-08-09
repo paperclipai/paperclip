@@ -36,7 +36,7 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, isCodexContextCompactionFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -292,15 +292,35 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
 }
 
 function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
-  if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
-  const authFailure = classifyCodexAuthRefreshFailure({
-    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n"),
-  });
+  const terminalText = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  // ACP's remote compactor sometimes reports its terminal failure as an output
+  // message followed by `completed/end_turn`. Treat that as a real failed run:
+  // a success would otherwise trigger a successful-handoff/recovery loop on a
+  // session that cannot compact any further.
+  if (isCodexContextCompactionFailure({ errorMessage: terminalText })) {
+    return {
+      ...result,
+      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+      errorMessage: result.errorMessage ?? terminalText,
+      errorCode: "codex_context_compaction",
+      errorFamily: null,
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        stopReason: "codex_context_compaction",
+        contextCompactionFailure: true,
+      },
+      clearSession: true,
+    };
+  }
+
+  if ((result.exitCode ?? 0) === 0) return result;
+  const authFailure = classifyCodexAuthRefreshFailure({ errorMessage: terminalText });
   if (!authFailure) return result;
 
   return {

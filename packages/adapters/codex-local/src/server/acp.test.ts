@@ -1024,6 +1024,37 @@ describe("codex_local ACP lane", () => {
     expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
+  it("fails a completed ACP turn that reports remote context-compaction failure in its output", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-context-compaction-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [
+          {
+            type: "text_delta",
+            text: "Error running remote compact task: Codex ran out of room in the model's context window.\n",
+            stream: "output",
+            tag: "agent_message_chunk",
+          },
+        ],
+        { status: "completed", stopReason: "end_turn" },
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "codex_context_compaction",
+      clearSession: true,
+      resultJson: {
+        stopReason: "codex_context_compaction",
+        contextCompactionFailure: true,
+      },
+    });
+    expect(result.errorMessage).toContain("remote compact task");
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];

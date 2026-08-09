@@ -379,6 +379,23 @@ export function isCodexTransientUpstreamError(input: {
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
 }
 
+/**
+ * Codex ACP can emit a completed `end_turn` wrapper after its remote context
+ * compaction has failed. The actual failure is delivered as final output text,
+ * not as the terminal turn status, so it must be detected separately from the
+ * ordinary transient-upstream classification. Retrying that same poisoned
+ * session only repeats the compaction failure.
+ */
+export function isCodexContextCompactionFailure(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildCodexErrorHaystack(input);
+  return CODEX_REMOTE_COMPACTION_RE.test(haystack)
+    && /(?:ran\s+out\s+of\s+room|context\s+window|context\s+limit)/i.test(haystack);
+}
+
 export function isCodexProviderQuotaError(input: {
   stdout?: string | null;
   stderr?: string | null;
