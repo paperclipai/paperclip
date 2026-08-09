@@ -5819,6 +5819,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
+  it("does not re-enqueue terminalization after a board cancels the issue-bound heartbeat run", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "operator_interrupted",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          operatorInterrupted: true,
+          interruptionSource: "heartbeat_run_cancel",
+          interruptedIssueId: issueId,
+          cancelledByActorType: "user",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(result.issueIds).toEqual([]);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
   it("keeps ordinary unfinished recovery when operator-interrupt metadata is not verified for the issue", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

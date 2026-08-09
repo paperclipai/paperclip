@@ -153,6 +153,8 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
   if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
+  const taskId = context?.taskId;
+  if (typeof taskId === "string" && isUuidLike(taskId)) return taskId;
   const paperclipIssue = readObject(context?.paperclipIssue);
   const nestedIssueId = paperclipIssue?.id;
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
@@ -4316,13 +4318,25 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
-    // Stamp the cancellation as operator-initiated (this route is board-only).
-    // Recovery reads this to stand down instead of classifying the cancelled
-    // run as agent stranding and re-waking the agent the operator just stopped.
+    const interruptedIssueId = readRunIssueId(readObject(existing.contextSnapshot));
+    // A board cancellation of an issue-bound run is an explicit stop decision,
+    // not a stranded execution. Preserve the same verified provenance that the
+    // recovery reconciler requires, otherwise it can re-route the work the
+    // operator deliberately stopped.
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      ...(interruptedIssueId ? { errorCode: "operator_interrupted" } : {}),
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,
+        ...(interruptedIssueId
+          ? {
+              operatorInterrupted: true,
+              interruptionSource: "heartbeat_run_cancel",
+              interruptedIssueId,
+              interruptedByActorType: "user",
+              interruptedByActorId: req.actor.userId ?? null,
+            }
+          : {}),
       },
     });
 

@@ -1883,4 +1883,47 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("marks a board-cancelled issue run as an operator interruption", async () => {
+    const issueId = "33333333-3333-4333-8333-333333333333";
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { taskId: issueId },
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "run-1",
+      companyId,
+      agentId,
+      status: "cancelled",
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}));
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      "Cancelled by a board operator",
+      expect.objectContaining({
+        errorCode: "operator_interrupted",
+        resultJson: expect.objectContaining({
+          operatorInterrupted: true,
+          interruptionSource: "heartbeat_run_cancel",
+          interruptedIssueId: issueId,
+          cancelledByActorType: "user",
+          cancelledByUserId: "board-user",
+        }),
+      }),
+    );
+  });
 });

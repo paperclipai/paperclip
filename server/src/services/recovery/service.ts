@@ -438,9 +438,10 @@ function isVerifiedOperatorInterruptedRunForIssue(latestRun: LatestIssueRun, iss
   if (latestRun?.status !== "cancelled" || latestRun.errorCode !== "operator_interrupted") return false;
 
   const result = parseObject(latestRun.resultJson);
+  const interruptionSource = readNonEmptyString(result.interruptionSource);
   return (
     asBoolean(result.operatorInterrupted, false) === true &&
-    readNonEmptyString(result.interruptionSource) === "issue_comment_interrupt" &&
+    (interruptionSource === "issue_comment_interrupt" || interruptionSource === "heartbeat_run_cancel") &&
     readNonEmptyString(result.interruptedIssueId) === issueId
   );
 }
