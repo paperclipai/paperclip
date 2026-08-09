@@ -548,6 +548,16 @@ function summarizeImportAgentResults(agents: CompanyPortabilityImportResult["age
   return `${agents.length} ${pluralize(agents.length, "agent")} total (${parts.join(", ")})`;
 }
 
+function summarizeImportSkillResults(skills: CompanyPortabilityImportResult["skills"]): string {
+  if (skills.length === 0) return "0 skills changed";
+  const actions = ["created", "renamed", "replaced", "skipped"] as const;
+  const parts = actions.flatMap((action) => {
+    const count = skills.filter((skill) => skill.action === action).length;
+    return count > 0 ? [`${count} ${action}`] : [];
+  });
+  return `${skills.length} ${pluralize(skills.length, "skill")} total (${parts.join(", ")})`;
+}
+
 function summarizeImportProjectResults(projects: CompanyPortabilityImportResult["projects"]): string {
   if (projects.length === 0) return "0 projects changed";
   const created = projects.filter((project) => project.action === "created").length;
@@ -681,10 +691,12 @@ export function renderCompanyImportResult(
   result: CompanyPortabilityImportResult,
   meta: { targetLabel: string; companyUrl?: string; infoMessages?: string[] },
 ): string {
+  const skills = result.skills ?? [];
   const lines: string[] = [
     `${pc.bold("Target")}  ${meta.targetLabel}`,
     `${pc.bold("Company")} ${result.company.name} (${actionChip(result.company.action)})`,
     `${pc.bold("Agents")}  ${summarizeImportAgentResults(result.agents)}`,
+    `${pc.bold("Skills")}  ${summarizeImportSkillResults(skills)}`,
     `${pc.bold("Projects")} ${summarizeImportProjectResults(result.projects)}`,
   ];
 
@@ -699,6 +711,15 @@ export function renderCompanyImportResult(
       action: agent.action,
       label: `${agent.slug} -> ${agent.name}`,
       reason: agent.reason,
+    })),
+  );
+  appendPreviewExamples(
+    lines,
+    "Skill results",
+    skills.map((skill) => ({
+      action: skill.action,
+      label: `${skill.originalSlug} -> ${skill.slug}`,
+      reason: skill.reason,
     })),
   );
   appendPreviewExamples(

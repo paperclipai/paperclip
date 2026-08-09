@@ -671,6 +671,20 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session.
+   *
+   * The host sets this flag on a command that runs before the run's agent work,
+   * for example the workspace provision command. A provider that opens a
+   * persistent session on the first command must NOT open the session for such a
+   * command; it runs the command one-shot and leaves the session closed. The
+   * session then opens on the first in-run command instead. A provider that does
+   * not use a persistent session ignores this flag.
+   *
+   * The default (absent or `false`) keeps the session path, so a normal in-run
+   * command opens and reuses the session as before.
+   */
+  bypassSession?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -1912,6 +1926,29 @@ export interface WorkerToHostNotifications {
   "streams.close": {
     channel: string;
     companyId: string;
+  };
+
+  /**
+   * Deliver one incremental output chunk of the active `environmentExecute`
+   * call to the host runner log sink.
+   *
+   * The worker emits this notification for each new `stdout` or `stderr` chunk
+   * while one execute call runs. The host reads the active invocation id from
+   * the envelope field `paperclipInvocationId`, which the worker RPC host stamps
+   * from the active invocation context. The host correlates the chunk to the
+   * host-owned execute route for that id and delivers it to that route's
+   * `onLog` callback.
+   *
+   * Security: the notification carries no company id on purpose. The
+   * invocation-to-company binding on the host execute route is authoritative.
+   * The host never reads a company id from this payload to select the route or
+   * to grant access. The `chunk` is a text string, because JSON-RPC cannot
+   * carry raw bytes; the host drops a chunk that is not a bounded non-empty
+   * string or whose stream name is not exactly `stdout` or `stderr`.
+   */
+  "execute.log": {
+    stream: "stdout" | "stderr";
+    chunk: string;
   };
 }
 

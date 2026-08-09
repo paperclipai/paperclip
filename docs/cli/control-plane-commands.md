@@ -91,7 +91,7 @@ pnpm paperclipai skills import ./skills/my-skill --company-id <company-id>
 pnpm paperclipai skills import owner/repo/path/to/skill --company-id <company-id>
 
 # Attach desired company skills to an agent after install/import
-pnpm paperclipai skills agent sync <agent-id> --skill github-pr-workflow --company-id <company-id>
+pnpm paperclipai skills agent sync <agent-id> --skill github-pr-workflow --mode add --company-id <company-id>
 ```
 
 ## Approval Commands

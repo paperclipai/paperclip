@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import type { AppDetailSectionProps } from "./types";
 
 export function AdvancedPanel({
@@ -85,14 +86,43 @@ export function ReconnectCard({
   galleryEntry: AppDefinition | null;
   onReconnected: () => void;
 }) {
+  const { pushToast } = useToast();
+  const reconnectOAuth = useMutation({
+    mutationFn: () => toolsApi.startOAuth(connection.id),
+    onSuccess: ({ authorizationUrl }) => navigateTopLevel(authorizationUrl),
+    onError: (error) =>
+      pushToast({
+        title: "Couldn’t start sign-in",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+  const oauth = connection.authKind === "oauth";
+
   return (
     <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-5">
-      <h2 className="text-sm font-bold text-amber-900 dark:text-amber-100">This app needs reconnecting</h2>
+      <h2 className="text-sm font-bold text-amber-900 dark:text-amber-100">
+        {oauth ? "Reconnect required" : "This app needs reconnecting"}
+      </h2>
       <p className="mt-1 text-sm text-amber-800 dark:text-amber-200">
-        {connection.healthMessage?.trim() || "The key stopped working. Paste a new one to get it back online."}
+        {connection.healthMessage?.trim() || (oauth
+          ? "Authorization expired or was revoked. Sign in again to restore access."
+          : "The key stopped working. Paste a new one to get it back online.")}
       </p>
       <div className="mt-3">
-        <ReconnectForm connection={connection} galleryEntry={galleryEntry} onReconnected={onReconnected} />
+        {oauth ? (
+          <Button
+            type="button"
+            size="sm"
+            disabled={reconnectOAuth.isPending}
+            onClick={() => reconnectOAuth.mutate()}
+          >
+            {reconnectOAuth.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            {reconnectOAuth.isPending ? "Opening sign-in…" : "Reconnect"}
+          </Button>
+        ) : (
+          <ReconnectForm connection={connection} galleryEntry={galleryEntry} onReconnected={onReconnected} />
+        )}
       </div>
     </div>
   );

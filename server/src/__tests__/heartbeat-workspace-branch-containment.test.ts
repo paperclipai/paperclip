@@ -37,6 +37,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -221,7 +222,7 @@ async function waitForContainmentSideEffects(input: {
     const hasRecoveryActionComment = recoveryActionId
       ? comments.some((comment) =>
           comment.issueId === input.sourceIssueId &&
-          comment.body.includes(`Recovery action: \`${recoveryActionId}\``))
+          noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryActionId))
       : false;
     if (
       source?.status === "blocked" &&
@@ -685,7 +686,10 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
   });
 
-  expect(comments.filter((comment) => comment.issueId === input.sourceIssueId && comment.body.includes(`Recovery action: \`${action.id}\``))).toHaveLength(1);
+  expect(comments.filter((comment) =>
+    comment.issueId === input.sourceIssueId &&
+    noticeMetadataReferencesRecoveryAction(comment.metadata, action.id),
+  )).toHaveLength(1);
   expect(comments.filter((comment) => comment.issueId === input.sameWorkspaceSiblingId)).toHaveLength(0);
   expect(comments.filter((comment) => comment.issueId === input.otherWorkspaceSiblingId)).toHaveLength(0);
 }
@@ -812,14 +816,10 @@ async function expectForwardBranchReconciled(input: {
       ]),
     );
     if (resolvedRecoveryActionId) {
-      expect(comments).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            authorType: "system",
-            body: expect.stringContaining(`Recovery action: \`${resolvedRecoveryActionId}\``),
-          }),
-        ]),
-      );
+      expect(comments.some((comment) =>
+        comment.authorType === "system" &&
+        noticeMetadataReferencesRecoveryAction(comment.metadata, resolvedRecoveryActionId),
+      )).toBe(true);
     }
 
     const activities = await input.db

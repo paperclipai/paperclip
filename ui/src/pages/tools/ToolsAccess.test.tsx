@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolsAccess } from "./ToolsAccess";
@@ -52,6 +52,14 @@ vi.mock("./RunYourOwnTab", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   await Promise.resolve();
   await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -88,7 +96,7 @@ describe("ToolsAccess", () => {
       mockParams.tab = tab;
       await render();
 
-      expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps", replace: true }));
+      expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/connections", replace: true }));
     },
   );
 

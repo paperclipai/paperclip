@@ -1603,6 +1603,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           status: input.status ?? "todo",
           workMode: "standard",
           priority: input.priority ?? "medium",
+          reviewPolicy: null,
           assigneeAgentId: input.assigneeAgentId ?? null,
           assigneeUserId: input.assigneeUserId ?? null,
           checkoutRunId: null,
@@ -2472,6 +2473,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       };
     })(),
+    execution: {
+      log(_stream: "stdout" | "stderr", _chunk: string) {
+        // No-op in test harness — the host runner log sink is not wired here.
+      },
+    },
     tools: {
       register(name, _decl, fn) {
         requireCapability(manifest, capabilitySet, "agent.tools.register");

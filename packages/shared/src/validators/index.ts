@@ -282,6 +282,7 @@ export {
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
+  agentSkillAssignmentModeSchema,
   agentDesiredSkillEntrySchema,
   agentDesiredSkillSelectionSchema,
   agentSkillEntrySchema,
@@ -549,6 +550,7 @@ export {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceDeliveryStateSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,

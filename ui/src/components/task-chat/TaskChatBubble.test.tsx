@@ -66,6 +66,48 @@ describe("TaskChatBubble attachment chips", () => {
   });
 });
 
+describe("TaskChatBubble accent-bubble text color", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    root = null;
+    container.remove();
+  });
+
+  function render(item: TaskChatMessageItem) {
+    flushSync(() =>
+      root!.render(
+        <ThemeProvider>
+          <TaskChatBubble item={item} />
+        </ThemeProvider>,
+      ),
+    );
+  }
+
+  it("marks the human bubble's markdown as on-accent so prose text follows text-white", () => {
+    render({ id: "m1", kind: "message", author: "human", text: "when a new task is created…" });
+    const body = container.querySelector(".paperclip-markdown");
+    expect(body).not.toBeNull();
+    // Without this class the light-mode prose body color reads as black on blue.
+    expect(body?.className).toContain("paperclip-markdown-on-accent");
+  });
+
+  it("leaves the neutral agent bubble on default prose colors", () => {
+    render({ id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Final reply." });
+    const body = container.querySelector(".paperclip-markdown");
+    expect(body).not.toBeNull();
+    expect(body?.className).not.toContain("paperclip-markdown-on-accent");
+  });
+});
+
 describe("TaskChatBubble interstitial self-talk (PAP-357)", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
@@ -165,5 +207,64 @@ describe("TaskChatBubble footer line (round 9)", () => {
     // The plain footer timestamp is replaced (the attached line carries it).
     const plain = [...container.querySelectorAll("span")].filter((el) => el.textContent === "2:34 PM");
     expect(plain).toHaveLength(0);
+  });
+});
+
+describe("TaskChatBubble footer actions (PAP-413)", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    root = null;
+    container.remove();
+  });
+
+  function render(item: TaskChatMessageItem, opts?: { attachedTurn?: ReactNode; actions?: ReactNode }) {
+    flushSync(() =>
+      root!.render(
+        <ThemeProvider>
+          <TaskChatBubble item={item} attachedTurn={opts?.attachedTurn} actions={opts?.actions} />
+        </ThemeProvider>,
+      ),
+    );
+  }
+
+  const actions = <div data-testid="fake-actions">actions</div>;
+
+  it("hands actions to the attached turn (not this wrapper) so they ride the summary row", () => {
+    render(
+      { id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Done.", timestamp: "2:34 PM" },
+      { attachedTurn: <div data-testid="fake-attached-turn">2:34 PM · Worked</div>, actions },
+    );
+    const slot = container.querySelector('[data-testid="task-chat-bubble-attached-turn"]');
+    expect(slot).not.toBeNull();
+    // The turn owns the footer line; the bubble no longer places actions beside
+    // it (they ride the turn's `leading` slot, anchored to the summary line).
+    expect(slot?.querySelector('[data-testid="fake-attached-turn"]')).not.toBeNull();
+    expect(slot?.querySelector('[data-testid="fake-actions"]')).toBeNull();
+  });
+
+  it("leads a runless agent reply with actions, timestamp trailing", () => {
+    render(
+      { id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Done.", timestamp: "2:34 PM" },
+      { actions },
+    );
+    expect(container.querySelector('[data-testid="fake-actions"]')).not.toBeNull();
+    const stamp = [...container.querySelectorAll("span")].find((el) => el.textContent === "2:34 PM");
+    expect(stamp).not.toBeNull();
+  });
+
+  it("omits the actions row entirely when none are supplied (human bubble)", () => {
+    render({ id: "m1", kind: "message", author: "human", text: "Hi", timestamp: "2:34 PM" });
+    expect(container.querySelector('[data-testid="fake-actions"]')).toBeNull();
+    const stamp = [...container.querySelectorAll("span")].find((el) => el.textContent === "2:34 PM");
+    expect(stamp).not.toBeNull();
   });
 });

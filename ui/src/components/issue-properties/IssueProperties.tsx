@@ -44,6 +44,7 @@ import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
 import { PriorityIcon } from "../PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
@@ -186,8 +187,9 @@ export function IssueProperties({
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
   }, [taskChatRedesignEnabled, inline]);
-  // Plan/Artifacts only earn a tab when they have content; with neither, the
-  // header bar shows a plain "Properties" title instead of a one-tab strip.
+  // Plan earns a tab as soon as an issue is in planning mode, even before the
+  // plan document arrives. This keeps an expected plan surface visible and
+  // lets its diagnostic empty state explain what is missing.
   // Same query keys as the tab bodies, so these share their cached fetches.
   const { data: paneTabPlanDocument } = useIssuePlanDocument(
     taskChatRedesignEnabled ? issue.id : null,
@@ -202,7 +204,10 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatRedesignEnabled,
   });
-  const hasPlanTab = Boolean(paneTabPlanDocument) || (paneTabAcceptedPlans?.length ?? 0) > 0;
+  const hasPlanTab =
+    Boolean(paneTabPlanDocument)
+    || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || issue.workMode === "planning";
   const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
   const [paneTab, setPaneTab] = useState("properties");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
@@ -2022,13 +2027,16 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => onUpdate({ priority })}
-            showLabel
-          />
-        </PropertyRow>
+        {/* PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI. Revive by flipping the flag. */}
+        {SHOW_TASK_PRIORITY_UI && (
+          <PropertyRow label="Priority">
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => onUpdate({ priority })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyPicker
           inline={inline}

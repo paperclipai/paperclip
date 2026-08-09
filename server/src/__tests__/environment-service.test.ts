@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
+  builtInManagedResources,
   companies,
   companySecretBindings,
   companySecrets,
@@ -44,6 +46,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(companySecretBindings);
     await db.delete(environmentCustomImageSetupSessions);
     await db.delete(environmentLeases);
@@ -113,6 +116,18 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
 
     return { companyId, agentId, environmentId, runId };
+  }
+
+  async function seedCompany(name = "Acme") {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return companyId;
   }
 
   it("acquires and releases a lease for a run", async () => {
@@ -704,12 +719,16 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   it("ensures and refreshes a managed sandbox environment for an arbitrary provider", async () => {
-    const created = await svc.ensureManagedSandboxEnvironment({
+    const companyId = await seedCompany();
+    const createdResult = await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       description: "Managed Daytona sandbox environment.",
       provider: "daytona",
       config: { target: "us" },
     });
+    const created = createdResult.environment;
+    expect(createdResult).toMatchObject({ action: "added", stockStatus: "missing" });
 
     expect(created.driver).toBe("sandbox");
     expect(created.name).toBe("Daytona");
@@ -718,17 +737,44 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(created.metadata?.managedByPaperclip).toBe(true);
     expect(created.metadata?.managedSandboxProvider).toBe("daytona");
 
-    // Idempotent: a second call refreshes config and name in place, and a
-    // description omitted from the spec is cleared, not pinned forever.
-    const refreshed = await svc.ensureManagedSandboxEnvironment({
+    // A stock update advances config and name in place, and a description
+    // omitted from the spec is cleared rather than pinned forever.
+    const refreshedResult = await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona (EU)",
       provider: "daytona",
       config: { target: "eu" },
+    });
+    const refreshed = refreshedResult.environment;
+    expect(refreshedResult).toMatchObject({
+      action: "updated",
+      stockStatus: "stock_update_available",
     });
     expect(refreshed.id).toBe(created.id);
     expect(refreshed.name).toBe("Daytona (EU)");
     expect(refreshed.config.target).toBe("eu");
     expect(refreshed.description).toBeNull();
+
+    const [binding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(and(
+        eq(builtInManagedResources.companyId, companyId),
+        eq(builtInManagedResources.resourceKind, "environment"),
+      ));
+    expect(binding).toMatchObject({
+      resourceId: created.id,
+      stockHash: refreshedResult.stockHash,
+    });
+    const activity = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(activityLog.createdAt);
+    expect(activity.map((entry) => entry.action)).toEqual([
+      "environment.managed_stock_added",
+      "environment.managed_stock_updated",
+    ]);
 
     const rows = await db
       .select()
@@ -737,15 +783,136 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("treats stock_current as an environment-row no-op and preserves user-owned fields", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    const operatorUpdatedAt = new Date("2026-08-06T12:00:00.000Z");
+    await db
+      .update(environments)
+      .set({
+        envVars: { OPERATOR_FLAG: "kept" },
+        metadata: {
+          ...created.environment.metadata,
+          operatorNote: "keep me",
+        },
+        updatedAt: operatorUpdatedAt,
+      })
+      .where(eq(environments.id, created.environment.id));
+    const [bindingBefore] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    const activityBefore = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    const [bindingAfter] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+
+    expect(reconciled).toMatchObject({
+      action: "unchanged",
+      stockStatus: "stock_current",
+      updateAvailable: false,
+    });
+    expect(reconciled.environment.updatedAt).toEqual(operatorUpdatedAt);
+    expect(reconciled.environment.envVars).toEqual({ OPERATOR_FLAG: "kept" });
+    expect(reconciled.environment.metadata?.operatorNote).toBe("keep me");
+    expect(bindingAfter?.updatedAt).toEqual(bindingBefore?.updatedAt);
+    const activityAfter = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+    expect(activityAfter).toHaveLength(activityBefore.length);
+  });
+
+  it("classifies operator drift, preserves the row, and exposes the pending stock update", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    const [bindingBefore] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    const operatorUpdatedAt = new Date("2026-08-06T12:01:00.000Z");
+    await db
+      .update(environments)
+      .set({
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator" },
+        updatedAt: operatorUpdatedAt,
+      })
+      .where(eq(environments.id, created.environment.id));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona v2",
+      description: "Managed stock v2",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+    });
+    const [bindingAfter] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+
+    expect(reconciled).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+    });
+    expect(reconciled.environment).toMatchObject({
+      name: "Daytona",
+      description: "Operator description",
+      config: { provider: "daytona", target: "operator" },
+      updatedAt: operatorUpdatedAt,
+    });
+    expect(bindingAfter?.stockHash).toBe(bindingBefore?.stockHash);
+    expect(bindingAfter?.stockVersion).toBe("v1");
+    expect(reconciled.stockHash).not.toBe(bindingAfter?.stockHash);
+    const activity = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(activityLog.createdAt);
+    expect(activity.at(-1)?.action).toBe("environment.managed_stock_skipped");
+  });
+
   it("adopts the managed slot on a provider switch and drops the stale kubernetes marker", async () => {
-    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    const companyId = await seedCompany();
+    const kubernetes = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" });
     expect(kubernetes.metadata?.managedKubernetesSandbox).toBe(true);
 
-    const daytona = await svc.ensureManagedSandboxEnvironment({
+    const daytona = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "us" },
-    });
+    })).environment;
 
     expect(daytona.id).toBe(kubernetes.id);
     expect(daytona.name).toBe("Daytona");
@@ -756,20 +923,22 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(await svc.findKubernetesEnvironment()).toBeNull();
 
     // And back: the kubernetes wrapper re-adopts the same row.
-    const restored = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    const restored = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" });
     expect(restored.id).toBe(kubernetes.id);
     expect(restored.metadata?.managedKubernetesSandbox).toBe(true);
   });
 
   it("archives the managed sandbox row only for its own provider and reactivates on ensure", async () => {
+    const companyId = await seedCompany();
     // Nothing provisioned yet: archiving is a no-op.
     expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
 
-    const created = await svc.ensureManagedSandboxEnvironment({
+    const created = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "us" },
-    });
+    })).environment;
     expect(created.status).toBe("active");
 
     // Another provider's unavailability leaves this provider's row alone.
@@ -778,21 +947,121 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const archived = await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
     expect(archived?.id).toBe(created.id);
     expect(archived?.status).toBe("archived");
+    const archiveActivity = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, created.id),
+      ))
+      .orderBy(activityLog.createdAt);
+    expect(archiveActivity.at(-1)?.action).toBe(
+      "environment.managed_provider_unavailable_archived",
+    );
 
     // Already archived: a repeat call is a no-op.
     expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
 
     // The next healthy boot's ensure re-activates the same row.
-    const restored = await svc.ensureManagedSandboxEnvironment({
+    const restored = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "us" },
-    });
+    })).environment;
     expect(restored.id).toBe(created.id);
     expect(restored.status).toBe("active");
   });
 
-  it("adopts an existing unmanaged sandbox row holding the desired name", async () => {
+  it("reactivates a reconciler-archived row without replacing operator drift", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    await db
+      .update(environments)
+      .set({
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator" },
+      })
+      .where(eq(environments.id, created.environment.id));
+
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
+      .toBe("archived");
+    const [archivedBinding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(archivedBinding?.defaultsJson).toMatchObject({
+      description: "Managed stock",
+      status: "archived",
+    });
+
+    const restored = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona v2",
+      description: "Managed stock v2",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+    });
+    expect(restored).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: {
+        status: "active",
+        name: "Daytona",
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator" },
+      },
+    });
+    const [reactivatedBinding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(reactivatedBinding?.defaultsJson).toMatchObject({
+      description: "Managed stock",
+      status: "active",
+    });
+    expect(reactivatedBinding?.stockVersion).toBe("v1");
+    expect(restored.stockHash).not.toBe(reactivatedBinding?.stockHash);
+  });
+
+  it("preserves an operator archive decision made after provider archival", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
+      .toBe("archived");
+    expect((await svc.update(created.environment.id, { status: "archived" }))?.status)
+      .toBe("archived");
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(reconciled).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: { status: "archived" },
+    });
+  });
+
+  it("preserves an existing unmanaged sandbox row holding the desired name", async () => {
+    const companyId = await seedCompany();
     const handMade = await svc.create({
       name: "Daytona",
       driver: "sandbox",
@@ -801,15 +1070,20 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
 
-    const adopted = await svc.ensureManagedSandboxEnvironment({
+    const reconciliation = await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "eu" },
     });
-    expect(adopted.id).toBe(handMade.id);
-    expect(adopted.config.target).toBe("eu");
-    expect(adopted.metadata?.managedByPaperclip).toBe(true);
-    expect(adopted.metadata?.managedSandboxProvider).toBe("daytona");
+    expect(reconciliation).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+    });
+    expect(reconciliation.environment.id).toBe(handMade.id);
+    expect(reconciliation.environment.config.target).toBe("us");
+    expect(reconciliation.environment.metadata?.managedByPaperclip).toBeUndefined();
 
     const rows = await db
       .select()
@@ -819,6 +1093,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   it("keeps the current name when the desired name belongs to another row", async () => {
+    const companyId = await seedCompany();
     await svc.create({
       name: "Daytona",
       driver: "ssh",
@@ -830,15 +1105,16 @@ describeEmbeddedPostgres("environmentService leases", () => {
         remoteWorkspacePath: "/srv/paperclip",
       },
     });
-    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true });
+    const kubernetes = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true });
 
     // The managed slot is adopted, but the rename would collide with the ssh
     // row on environments_name_idx; the ensure keeps the existing name.
-    const adopted = await svc.ensureManagedSandboxEnvironment({
+    const adopted = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "us" },
-    });
+    })).environment;
     expect(adopted.id).toBe(kubernetes.id);
     expect(adopted.name).toBe(kubernetes.name);
     expect(adopted.config.provider).toBe("daytona");

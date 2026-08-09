@@ -48,7 +48,9 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
+import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
+import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -93,6 +95,29 @@ export interface ApplyManagedEnvironmentsOptions {
   }) => Promise<{ plugin: { id: string; pluginKey: string; status: string } } | null>;
 }
 
+export interface ManagedEnvironmentReconciliationOutcome {
+  environmentId: string;
+  name: string;
+  provider: string;
+  action: ManagedSandboxEnvironmentReconcileAction;
+  stockStatus: ManagedResourceStockStatus;
+  updateAvailable: boolean;
+}
+
+export interface ApplyManagedEnvironmentsResult {
+  ensured: number;
+  failed: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  /** Managed reconciliation never removes rows in preserve-only mode. */
+  removed: number;
+  /** Preserve-only reconciliation never creates replacement backups. */
+  backedUp: number;
+  outcomes: ManagedEnvironmentReconciliationOutcome[];
+}
+
 /**
  * Ensure every environment declared in the managed-config document. Returns
  * null when there is nothing to do (self-hosted, or no `environments`
@@ -103,7 +128,7 @@ export async function applyManagedEnvironments(
   db: Db,
   managedConfig: ManagedInstanceConfig | null,
   opts: ApplyManagedEnvironmentsOptions = {},
-): Promise<{ ensured: number; failed: number } | null> {
+): Promise<ApplyManagedEnvironmentsResult | null> {
   if (!managedConfig || managedConfig.environments.length === 0) return null;
 
   // The forced-execution-mode bootstrap (`PAPERCLIP_EXECUTION_MODE=kubernetes`)
@@ -155,10 +180,18 @@ export async function applyManagedEnvironments(
           description: spec.description,
           provider: spec.provider,
           config: { ...spec.config },
+          stockVersion: managedConfig.catalogVersion,
         })
-        .then((environment) => {
+        .then((result) => {
           logger.info(
-            { environmentId: environment.id, name: spec.name, provider: spec.provider },
+            {
+              environmentId: result.environment.id,
+              name: spec.name,
+              provider: spec.provider,
+              action: result.action,
+              stockStatus: result.stockStatus,
+              updateAvailable: result.updateAvailable,
+            },
             "managed sandbox environment reactivated after provider worker recovery",
           );
         })
@@ -175,6 +208,11 @@ export async function applyManagedEnvironments(
 
   let ensured = 0;
   let failed = 0;
+  let added = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let skipped = 0;
+  const outcomes: ManagedEnvironmentReconciliationOutcome[] = [];
   for (const spec of managedConfig.environments) {
     try {
       const resolved = await resolveDriver({ db, driverKey: spec.provider });
@@ -216,17 +254,44 @@ export async function applyManagedEnvironments(
         }
         continue;
       }
-      const environment = await environments.ensureManagedSandboxEnvironment({
+      const reconciliation = await environments.ensureManagedSandboxEnvironment({
         name: spec.name,
         description: spec.description,
         provider: spec.provider,
         config: { ...spec.config },
+        stockVersion: managedConfig.catalogVersion,
       });
-      ensured += 1;
-      logger.info(
-        { environmentId: environment.id, name: environment.name, provider: spec.provider },
-        "managed sandbox environment ensured",
-      );
+      if (reconciliation.action === "skipped") skipped += 1;
+      else {
+        ensured += 1;
+        if (reconciliation.action === "added") added += 1;
+        else if (reconciliation.action === "updated") updated += 1;
+        else unchanged += 1;
+      }
+      outcomes.push({
+        environmentId: reconciliation.environment.id,
+        name: reconciliation.environment.name,
+        provider: spec.provider,
+        action: reconciliation.action,
+        stockStatus: reconciliation.stockStatus,
+        updateAvailable: reconciliation.updateAvailable,
+      });
+      const logContext = {
+        environmentId: reconciliation.environment.id,
+        name: reconciliation.environment.name,
+        provider: spec.provider,
+        action: reconciliation.action,
+        stockStatus: reconciliation.stockStatus,
+        updateAvailable: reconciliation.updateAvailable,
+      };
+      if (reconciliation.action === "skipped") {
+        logger.warn(
+          logContext,
+          "managed sandbox environment has operator modifications; preserving row and skipping stock update",
+        );
+      } else {
+        logger.info(logContext, "managed sandbox environment reconciled");
+      }
     } catch (err) {
       failed += 1;
       logger.error(
@@ -235,5 +300,15 @@ export async function applyManagedEnvironments(
       );
     }
   }
-  return { ensured, failed };
+  return {
+    ensured,
+    failed,
+    added,
+    updated,
+    unchanged,
+    skipped,
+    removed: 0,
+    backedUp: 0,
+    outcomes,
+  };
 }

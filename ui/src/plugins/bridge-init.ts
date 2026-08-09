@@ -289,13 +289,12 @@ function PluginSdkIssuesList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: issuesQueryKey,
     queryFn: () => issuesApi.list(companyId!, issueFilters),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>

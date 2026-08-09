@@ -34,10 +34,13 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
 }
 
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
+  // System authorship wins over any derivable run→agent linkage (PAP-443):
+  // recovery notices carry a derivedAuthorAgentId but must not render as
+  // agent bubbles.
+  if (comment.authorType === "system") return "system";
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
-  if (comment.authorType === "agent") return "agent";
-  return "system";
+  return "agent";
 }
 
 /** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
@@ -79,6 +82,12 @@ export function commentsToTaskChatItems(
         : comment.clientStatus === "pending"
           ? "pending"
           : undefined;
+    const createdAtIso =
+      comment.createdAt instanceof Date
+        ? comment.createdAt.toISOString()
+        : comment.createdAt
+          ? String(comment.createdAt)
+          : undefined;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
       kind: "message",
@@ -90,6 +99,12 @@ export function commentsToTaskChatItems(
       agentIcon,
       onBehalfOfUserName,
       modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,
+      // System notices carry their structured hints through to the render
+      // layer (PAP-443); other authors keep the item lean.
+      presentation: kind === "system" ? comment.presentation ?? null : undefined,
+      metadata: kind === "system" ? comment.metadata ?? null : undefined,
+      runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
+      createdAtIso: kind === "system" ? createdAtIso : undefined,
     });
   }
   return items;

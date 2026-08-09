@@ -1455,6 +1455,7 @@ export function CompanyImport() {
 
   if (importOutcome) {
     const { result, dashboardPath } = importOutcome;
+    const skillResults = result.skills ?? [];
     const activationItems = importOutcome.pausedAutomations ? buildActivationItems(result) : [];
     const pendingCount = activationItems.filter(
       (item) => activationChecked.has(item.key) && !activatedKeys.has(item.key),
@@ -1465,10 +1466,30 @@ export function CompanyImport() {
           <h2 className="text-base font-semibold">Import complete</h2>
           <p className="text-xs text-muted-foreground mt-1">
             {result.company.name}: {result.agents.length} agent{result.agents.length === 1 ? "" : "s"},{" "}
+            {skillResults.length} skill{skillResults.length === 1 ? "" : "s"},{" "}
             {result.projects.length} project{result.projects.length === 1 ? "" : "s"}, and{" "}
             {result.routines.length} routine{result.routines.length === 1 ? "" : "s"} processed.
           </p>
         </div>
+
+        {skillResults.length > 0 && (
+          <div className="rounded-md border border-border">
+            <div className="border-b border-border px-4 py-2.5">
+              <h3 className="text-sm font-medium">Skill import results</h3>
+            </div>
+            <div className="divide-y divide-border">
+              {skillResults.map((skill) => (
+                <div key={`${skill.originalKey}:${skill.id}`} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                  <span className="min-w-0 flex-1 truncate">{skill.originalSlug}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{skill.action}</span>
+                  {skill.slug !== skill.originalSlug && (
+                    <span className="shrink-0 text-xs text-muted-foreground">as {skill.slug}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {result.warnings.length > 0 && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">

@@ -12,6 +12,13 @@ export const executionWorkspaceStatusSchema = z.enum([
   "cleanup_failed",
 ]);
 
+export const executionWorkspaceDeliveryStateSchema = z.enum([
+  "merged_via_pr",
+  "merged_by_ancestry",
+  "unmerged",
+  "unknown",
+]);
+
 const workspaceOverviewStatusFilterSchema = z.preprocess((value) => {
   if (value === undefined || value === null) return undefined;
   const rawValues = Array.isArray(value) ? value : [value];
@@ -124,6 +131,7 @@ export const workspaceRuntimeServiceSchema = z.object({
 }).strict();
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
+  deliveryState: executionWorkspaceDeliveryStateSchema,
   state: executionWorkspaceCloseReadinessStateSchema,
   blockingReasons: z.array(z.string()),
   warnings: z.array(z.string()),

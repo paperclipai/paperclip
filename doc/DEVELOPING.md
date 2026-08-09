@@ -336,6 +336,14 @@ Every local install keeps runtime state directly under the selected instance roo
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 
+Config updates preserve unrecognized top-level and nested keys so provider or
+plugin extensions survive `configure` and worktree port repair. Likely
+misspellings of known keys produce a warning but are not removed. If an
+existing `config.json` is malformed, `onboard` and `configure` first create a
+byte-for-byte sibling backup named `config.json.invalid-1` (then `-2`, and so
+on). Repair from defaults requires an interactive confirmation; non-interactive
+runs stop without replacing the original.
+
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
@@ -463,6 +471,7 @@ The default `worktree init` still seeds eagerly and writes `seed-complete` immed
 
 - `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: a present `seed-complete` marker or a missing `seed-pending` marker short-circuits it, so it is safe to call repeatedly and from concurrent processes. It reads the source instance from the `seed-pending` marker unless you pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot, so `run` transparently seeds a lean worktree on first launch.
+- Managed git-worktree runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when a legacy workspace policy has no explicit runtime provision command and the worktree is still `seed-pending`. An explicitly configured runtime provision command always takes precedence.
 - Worktrees created before lazy seeding shipped have neither marker; they are treated as already-seeded for backward compatibility (never re-cloned).
 
 **Seed-pending guard.** `pnpm dev` (the dev-runner) refuses to boot a worktree whose database is still `seed-pending` and points you at the fix:

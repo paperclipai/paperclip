@@ -14,6 +14,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { extractAttachmentRefs, fileKindForName } from "./task-chat-attachments";
+import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
@@ -25,6 +26,13 @@ interface TaskChatBubbleProps {
    * Supplied by TaskChatThreadView when `item.attachedTurn` is set.
    */
   attachedTurn?: ReactNode;
+  /**
+   * copy · 👍 · 👎 controls for an agent bubble's footer line (PAP-413).
+   * Rendered here only for a runless reply (leading the bare timestamp); when
+   * an attached turn is present it owns these via its `leading` slot instead,
+   * so this bubble skips them. Human/system bubbles pass nothing.
+   */
+  actions?: ReactNode;
 }
 
 function initialsForName(name: string) {
@@ -41,7 +49,7 @@ function initialsForName(name: string) {
  * bubble with an avatar author header (the agent's assigned icon + name · mode
  * chip); system notices are centered and recede.
  */
-export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
+export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubbleProps) {
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -51,11 +59,8 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
   }
 
   if (item.author === "system") {
-    return (
-      <div className="tc-enter-bubble flex justify-center py-1">
-        <p className="max-w-(--pct-85) text-center text-xs text-muted-foreground">{item.text}</p>
-      </div>
-    );
+    // Collapsed humanized one-liner, expandable to the full detail (PAP-443).
+    return <TaskChatSystemNotice item={item} />;
   }
 
   const isHuman = item.author === "human";
@@ -99,7 +104,17 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
             item.optimistic ? "opacity-80" : null,
           )}
         >
-          <MarkdownBody softBreaks linkIssueReferences>
+          <MarkdownBody
+            // The human bubble sits on the solid --liveness-blue accent, so the
+            // prose body text must follow the bubble's `text-white` rather than
+            // the default light-mode prose color (which reads as black on blue).
+            // `paperclip-markdown-on-accent` flips prose tokens to currentColor
+            // (== inherited white) in both themes; dark mode was already correct
+            // only because `prose-invert` happened to lighten the text.
+            className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+            softBreaks
+            linkIssueReferences
+          >
             {bodyText}
           </MarkdownBody>
         </div>
@@ -136,9 +151,23 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
         </span>
       ) : attachedTurn ? (
         // The settled turn takes over the footer line: timestamp + "✓ Worked"
-        // summary, always visible; expanding stretches beneath the bubble.
+        // summary, always visible; expanding stretches beneath the bubble. The
+        // copy/👍/👎 actions (PAP-413) ride the turn's summary row via its
+        // `leading` slot — not this wrapper — so they stay anchored to the
+        // summary line when the tool history expands beneath it.
         <div className="self-stretch" data-testid="task-chat-bubble-attached-turn">
           {attachedTurn}
+        </div>
+      ) : actions ? (
+        // Agent reply without run activity: the actions still lead the footer,
+        // with the always-visible timestamp trailing (PAP-413).
+        <div className="flex items-center gap-1">
+          {actions}
+          {item.timestamp ? (
+            <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+              {item.timestamp}
+            </span>
+          ) : null}
         </div>
       ) : item.timestamp ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.

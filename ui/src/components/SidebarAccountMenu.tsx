@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
   LogOut,
@@ -12,7 +12,7 @@ import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
-import { navigateTopLevel } from "@/lib/browserNavigation";
+import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -25,7 +25,6 @@ const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
 const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
-const MANAGED_SIGN_OUT_PATH = "/cloud/logout";
 const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
 interface SidebarAccountMenuProps {
@@ -119,7 +118,6 @@ export function SidebarAccountMenu({
   version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
@@ -130,18 +128,7 @@ export function SidebarAccountMenu({
     retry: false,
   });
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async (result) => {
-      setOpen(false);
-      if (deploymentMode === "authenticated") {
-        navigateTopLevel(result?.redirectTo?.trim() || MANAGED_SIGN_OUT_PATH);
-        return;
-      }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
@@ -159,6 +146,10 @@ export function SidebarAccountMenu({
   function closeNavigationChrome() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
+  }
+
+  function handleSignOut() {
+    signOutMutation.mutate();
   }
 
   return (
@@ -269,7 +260,7 @@ export function SidebarAccountMenu({
                     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
                     signOutMutation.isPending && "cursor-not-allowed opacity-60",
                   )}
-                  onClick={() => signOutMutation.mutate()}
+                  onClick={handleSignOut}
                   disabled={signOutMutation.isPending}
                 >
                   <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">

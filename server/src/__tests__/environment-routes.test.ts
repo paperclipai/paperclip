@@ -1587,6 +1587,64 @@ describe("environment routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
+  it("keeps host-owned stream flags when the provider plugin drops them from its normalized config", async () => {
+    // The host owns `streamRunLogs` and `streamAgentSessionOutput`. It reads
+    // them to select the run-log stream and the ACP session output stream. A
+    // provider plugin normalizes only its own driver fields, so it drops these
+    // host flags from its normalized config. The host must re-apply them, or the
+    // saved environment loses the operator opt-in and the streams never start.
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox-fake-plugin",
+      name: "Streamed Sandbox",
+      driver: "sandbox" as const,
+      config: { provider: "fake-plugin", image: "fake:test" },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ provider, config }) => {
+      // Drop the host flags to reproduce a plugin that allowlists driver fields.
+      const { streamRunLogs, streamAgentSessionOutput, ...driverConfig } =
+        config as Record<string, unknown>;
+      void streamRunLogs;
+      void streamAgentSessionOutput;
+      return {
+        normalizedConfig: driverConfig,
+        pluginId: `plugin-${provider}`,
+        pluginKey: `plugin.${provider}`,
+        driver: {
+          driverKey: provider,
+          kind: "sandbox_provider",
+          displayName: provider,
+          configSchema: { type: "object" },
+        },
+      };
+    });
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Streamed Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+          image: "fake:test",
+          streamRunLogs: false,
+          streamAgentSessionOutput: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    const persisted = mockEnvironmentService.create.mock.calls[0][0].config as Record<string, unknown>;
+    expect(persisted.streamAgentSessionOutput).toBe(true);
+    expect(persisted.streamRunLogs).toBe(false);
+  });
+
   it("creates a schema-driven sandbox environment with secret-ref fields persisted as secrets", async () => {
     const environment = {
       ...createEnvironment(),

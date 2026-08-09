@@ -143,6 +143,24 @@ describe("AuditFeed", () => {
     expect(container.textContent, `waiting for "${text}"`).toContain(text);
   }
 
+  /**
+   * Poll until `predicate` holds. The access-downgrade recovery settles across
+   * several dependent async steps (the 403 error, the filter reset, and the
+   * basic-tier refetch). A fixed flush count can end mid-chain on a slow runner,
+   * so wait for the settled state instead. `label` names the awaited condition
+   * in the timeout error.
+   */
+  async function waitForCondition(predicate: () => boolean, label: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      });
+    }
+    expect(predicate(), `waiting for ${label}`).toBe(true);
+  }
+
   function clickButton(text: string) {
     const btn = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
     expect(btn, `button "${text}"`).toBeTruthy();
@@ -230,16 +248,29 @@ describe("AuditFeed", () => {
       setInputValue!.call(fromDate, "2026-08-01");
       fromDate!.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await flushReact();
+    // The recovery settles across the 403, the filter reset, and the basic-tier
+    // refetch. The privileged filter fires first (from set), then the recovery
+    // refetch clears it (from undefined). Wait for that recovery refetch and the
+    // dropped filter chrome instead of a fixed flush count.
+    await waitForCondition(
+      () =>
+        listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)
+        && listAgentActionsMock.mock.calls.at(-1)?.[1]?.from === undefined
+        && !container.textContent?.includes("All agents"),
+      "the basic feed after the access downgrade",
+      20_000,
+    );
 
     expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
-    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
-      expect.objectContaining({ actorScope: "all", from: undefined }),
-    );
-    expect(container.textContent).toContain("commented on");
-    expect(container.textContent).not.toContain("Paperclip Enterprise view");
-    expect(container.textContent).not.toContain("All agents");
-    expect(container.textContent).not.toContain("Export CSV");
+    await vi.waitFor(() => {
+      expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+        expect.objectContaining({ actorScope: "all", from: undefined }),
+      );
+      expect(container.textContent).toContain("commented on");
+      expect(container.textContent).not.toContain("Paperclip Enterprise view");
+      expect(container.textContent).not.toContain("All agents");
+      expect(container.textContent).not.toContain("Export CSV");
+    });
   });
 
   it("drops cached privileged pages when pagination observes an access downgrade", async () => {
@@ -273,7 +304,16 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("Export CSV");
     permissionRevoked = true;
     await clickButton("Load more");
-    await flushReact();
+    // The basic second page and the recovery refetch settle across several async
+    // steps. Wait for the recovery refetch and the dropped attribution instead of
+    // a fixed flush count.
+    await waitForCondition(
+      () =>
+        listAgentActionsMock.mock.calls.at(-1)?.[1]?.cursor === undefined
+        && !container.textContent?.includes("on behalf of Dotta"),
+      "the basic feed after the pagination downgrade",
+      20_000,
+    );
 
     expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
       expect.objectContaining({ actorScope: "all", cursor: undefined }),

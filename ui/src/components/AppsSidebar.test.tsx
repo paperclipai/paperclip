@@ -126,16 +126,18 @@ describe("AppsSidebar", () => {
     // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922);
     // assert their absence at the item level below.
 
-    // Three peer consumer doors: Browse (store) · Connections · Review (PAP-13254).
+    // Consumer doors stay above the Developer boundary.
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/browse", label: "Browse" }),
+      expect.objectContaining({ to: "/apps", label: "Browse", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps", label: "Connections", end: true }),
+      expect.objectContaining({ to: "/apps/connections", label: "Connections", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/review", label: "Review" }),
     );
+    const sidebarText = container.textContent ?? "";
+    expect(sidebarText.indexOf("Connections")).toBeGreaterThan(sidebarText.indexOf("Developer"));
     // "Needs attention" is no longer a top-level door — it folds into Connections.
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ label: "Needs attention" }),

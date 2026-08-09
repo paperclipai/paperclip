@@ -31,6 +31,7 @@ import {
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
   resolvePnpmInstallInvocation,
+  resolveCurrentWorktreeEndpoint,
   resolveWorktreeSeedBackupEngine,
   resolveWorktreeMakeTargetPath,
   worktreeRepairCommand,
@@ -167,6 +168,49 @@ function buildSourceConfig(): PaperclipConfig {
 }
 
 describe("worktree helpers", () => {
+  it("uses the repo-local config for the current worktree", () => {
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-current-worktree-"));
+    try {
+      const localConfig = path.join(targetRoot, ".paperclip", "config.json");
+      fs.mkdirSync(path.dirname(localConfig), { recursive: true });
+      fs.writeFileSync(localConfig, "{}\n");
+      process.env.PAPERCLIP_CONFIG = "/tmp/ambient-paperclip/config.json";
+      process.chdir(targetRoot);
+
+      expect(resolveCurrentWorktreeEndpoint()).toMatchObject({
+        rootPath: targetRoot,
+        configPath: localConfig,
+        isCurrent: true,
+      });
+    } finally {
+      process.chdir(ORIGINAL_CWD);
+      fs.rmSync(targetRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the repository config from a nested working directory", () => {
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-current-worktree-nested-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: targetRoot });
+      const nestedDirectory = path.join(targetRoot, "packages", "example", "src");
+      const localConfig = path.join(targetRoot, ".paperclip", "config.json");
+      fs.mkdirSync(nestedDirectory, { recursive: true });
+      fs.mkdirSync(path.dirname(localConfig), { recursive: true });
+      fs.writeFileSync(localConfig, "{}\n");
+      process.env.PAPERCLIP_CONFIG = "/tmp/ambient-paperclip/config.json";
+      process.chdir(nestedDirectory);
+
+      expect(resolveCurrentWorktreeEndpoint()).toMatchObject({
+        rootPath: targetRoot,
+        configPath: localConfig,
+        isCurrent: true,
+      });
+    } finally {
+      process.chdir(ORIGINAL_CWD);
+      fs.rmSync(targetRoot, { recursive: true, force: true });
+    }
+  });
+
   it("sanitizes instance ids", () => {
     expect(sanitizeWorktreeInstanceId("feature/worktree-support")).toBe("feature-worktree-support");
     expect(sanitizeWorktreeInstanceId("  ")).toBe("worktree");

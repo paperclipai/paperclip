@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -6,6 +7,7 @@ import {
   type CSSProperties,
 } from "react";
 import { cn } from "@/lib/utils";
+import { DRAFT_DEBOUNCE_MS, clearDraft, loadDraft, saveDraft } from "@/lib/composer-draft";
 import { ArrowUp, Check, ChevronDown, Loader2, Plus, X } from "lucide-react";
 import {
   DropdownMenu,
@@ -55,6 +57,8 @@ interface TaskChatComposerProps {
   issueStatus?: string;
   /** Mobile document-flow host: 16px editor text so iOS doesn't zoom on focus. */
   mobile?: boolean;
+  /** Storage key used to restore, persist, and clear this task's text draft. */
+  draftKey?: string;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -146,16 +150,49 @@ export function TaskChatComposer({
   currentAssigneeValue = "",
   issueStatus,
   mobile = false,
+  draftKey,
 }: TaskChatComposerProps) {
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const pendingAssigneeRef = useRef(pendingAssignee);
+  pendingAssigneeRef.current = pendingAssignee;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    setBody(loadDraft(draftKey));
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => {
+      saveDraft(draftKey, body);
+    }, DRAFT_DEBOUNCE_MS);
+  }, [body, draftKey]);
+
+  useEffect(() => {
+    return () => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (draftKey) saveDraft(draftKey, bodyRef.current);
+    };
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    const flushDraft = () => saveDraft(draftKey, bodyRef.current);
+    window.addEventListener("beforeunload", flushDraft);
+    return () => window.removeEventListener("beforeunload", flushDraft);
+  }, [draftKey]);
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
@@ -278,7 +315,10 @@ export function TaskChatComposer({
   const uploadFailed = attachments.some((item) => item.status === "error");
 
   async function submit() {
-    const trimmed = bodyRef.current.trim();
+    const submittedBody = bodyRef.current;
+    const submittedAttachments = attachmentsRef.current;
+    const submittedAssignee = pendingAssigneeRef.current;
+    const trimmed = submittedBody.trim();
     if (
       (!trimmed && attachedRefs.length === 0) ||
       uploadPending ||
@@ -297,16 +337,32 @@ export function TaskChatComposer({
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
 
     setSubmitting(true);
-    setBody("");
     try {
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
       await onAdd(fullBody, reopen, reassignment);
-      setAttachments([]);
-      setPendingAssignee(null);
+      if (bodyRef.current === submittedBody) {
+        bodyRef.current = "";
+        if (draftTimer.current) {
+          clearTimeout(draftTimer.current);
+          draftTimer.current = null;
+        }
+        if (draftKey) clearDraft(draftKey);
+        setBody("");
+      } else if (draftKey) {
+        // The editor stays writable while the request is pending. Preserve
+        // text entered after this submission started as the next draft.
+        saveDraft(draftKey, bodyRef.current);
+      }
+      if (attachmentsRef.current === submittedAttachments) {
+        setAttachments([]);
+      }
+      if (pendingAssigneeRef.current === submittedAssignee) {
+        setPendingAssignee(null);
+      }
     } catch {
-      setBody(trimmed); // restore on failure (chips stay for retry)
+      // Keep the body and its draft available for retry.
     } finally {
       setSubmitting(false);
     }

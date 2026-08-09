@@ -189,6 +189,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableSimplifiedEnglishInteractions: {
+    title: "Simplified English Interactions",
+    description:
+      "Instruct agents to write user interactions (confirmations, questions, suggested tasks) in ASD-STE100 Simplified Technical English with brief decision context.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableServerInfoDebugView: {
     title: "Server Info Debug View",
     description:

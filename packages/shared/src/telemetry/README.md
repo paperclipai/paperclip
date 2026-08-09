@@ -93,10 +93,17 @@ absent, never a misleading `0`.
 | `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
 | `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
 | `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
-| `sandbox.exec` | One host-to-sandbox execution. | the active step span |
+| `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
+| `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
+| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
+| `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
-span that runs the execution, so each execution nests under its step. With no
+span that runs the execution, so each execution nests under its step. A run-time
+`sandbox.exec` span parents instead to the run-time wrapper span that runs it
+(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`, or
+`sandbox.callbackBridge.relayRequest`). Each run-time wrapper span parents to the
+live run span (`agent.turn` during the turn, `task.run` otherwise). With no
 active trace context the exec span opens unparented.
 
 The root span sets the error status when the bring-up fails. Each step span sets
@@ -172,7 +179,7 @@ the code first. Keep the attribute low-cardinality and free of user content.
 ### Provider spans
 
 A sandbox provider plugin also opens spans for its own sync steps. These spans
-use the `sandbox.provider.` name prefix. They share the
+use the `sandbox.daytona.` name prefix. They share the
 `paperclip.sandbox.startup.` attribute prefix and obey the same opt-in and
 no-user-content rules as the startup spans above.
 
@@ -183,15 +190,26 @@ before it records the span.
 
 | Span | Scope | Parent |
 | --- | --- | --- |
-| `sandbox.provider.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
-| `sandbox.provider.transfer` | The transfer step that uploads the files to the sandbox. | the active startup step span |
-| `sandbox.provider.other` | Any span name outside the known set. | the active startup step span |
+| `sandbox.daytona.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
+| `sandbox.daytona.transfer` | The transfer step that uploads the files to the sandbox. | the active startup step span |
+| `sandbox.daytona.ensureDirectory` | The `mkdir -p` step that ensures a directory exists before a write. | the active startup step span |
+| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use. | the active startup step span |
+| `sandbox.daytona.promote` | The atomic move of a staged temp onto its target via a pinned dir handle. | the active startup step span |
+| `sandbox.daytona.extractTarball` | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball. | the active startup step span |
+| `sandbox.daytona.postUploadCommand` | One caller-supplied post-upload command. | the active startup step span |
+| `sandbox.daytona.session.open` | The create of the one persistent session for a lease, on the first in-run command. | the active run span |
+| `sandbox.daytona.session.close` | The delete of that persistent session on lease release. | the active run span |
+| `sandbox.daytona.other` | Any span name outside the known set. | the active startup step span |
 
-The host clamps the span name to the closed set `pack` and `transfer`. The host
-maps a known name to `sandbox.provider.<name>`. The host maps any other value to
-`sandbox.provider.other`, so a span name never carries free-form data.
+The host clamps the span name to the closed set of leaf names above (`pack`,
+`transfer`, `ensureDirectory`, `checkSymlinkEscape`, `promote`, `extractTarball`,
+`postUploadCommand`, `session.open`, and `session.close`). The host maps a known
+name to `sandbox.daytona.<name>`. The host maps any other value to
+`sandbox.daytona.other`, so a span name never carries free-form data. Only the
+daytona provider emits these spans today, so the segment is the literal
+`daytona`.
 
-The `sandbox.provider.*` spans use this closed attribute allowlist. The host
+The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
 drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
 the attributes that the producer sends for one span.
@@ -200,9 +218,9 @@ the attributes that the producer sends for one span.
 | --- | --- | --- | --- |
 | `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
 | `paperclip.sandbox.startup.outcome` | string | yes | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.provider.pack` span. |
-| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.provider.transfer` span. |
-| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.provider.transfer` span. |
+| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span. |
+| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span. |
+| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
 
 The `span.record` host handler enforces the allowlist. It re-maps `provider`
 through the provider-family normalizer. It keeps `outcome` only when the value

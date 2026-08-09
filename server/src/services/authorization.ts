@@ -71,7 +71,8 @@ export type AuthorizationAction =
   | "issue:read"
   | "project:read"
   | "runtime:manage"
-  | "secrets:read";
+  | "secrets:read"
+  | "secrets:propose";
 
 export type AuthorizationResource =
   | { type: "company"; companyId: string }
@@ -155,7 +156,8 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     action === "issue:read" ||
     action === "project:read" ||
     action === "runtime:manage" ||
-    action === "secrets:read"
+    action === "secrets:read" ||
+    action === "secrets:propose"
   ) {
     return null;
   }
@@ -990,7 +992,8 @@ export function authorizationService(db: Db) {
       input.action === "skill_config:update" ||
       input.action === "inbox:manage" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return lowTrustDeny(
         `${LOW_TRUST_REVIEW_PRESET} agents cannot use company-wide or privileged ${input.action} APIs by default.`,
@@ -1163,7 +1166,8 @@ export function authorizationService(db: Db) {
       input.action === "agent:wake" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return denyBridge("Task bridge keys cannot use company-wide, peer-agent, project, runtime, or secret APIs.");
     }
@@ -1233,6 +1237,7 @@ export function authorizationService(db: Db) {
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read" ||
+      input.action === "secrets:propose" ||
       input.action === "tasks:assign"
     ) {
       return denySkillTest("Skill-test run tokens cannot use company-wide, peer-agent, project, runtime, secret, or task-create APIs.");
@@ -1742,7 +1747,8 @@ export function authorizationService(db: Db) {
           input.action === "issue:read" ||
           input.action === "project:read" ||
           input.action === "runtime:manage" ||
-          input.action === "secrets:read"
+          input.action === "secrets:read" ||
+          input.action === "secrets:propose"
         ) {
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           // Mirroring the tasks:assign carve-out above, viewers keep the
@@ -1880,7 +1886,8 @@ export function authorizationService(db: Db) {
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
-        input.action === "secrets:read"
+        input.action === "secrets:read" ||
+        input.action === "secrets:propose"
       ) {
         return lowTrustDecision;
       }
@@ -2025,7 +2032,8 @@ export function authorizationService(db: Db) {
       input.action === "issue:read" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return allow({
         action: input.action,
