@@ -45,7 +45,9 @@ import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSour
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { assertBoardOrgAccess, assertInstanceAdmin, assertAgentReachableInstanceAdmin } from "./authz.js";
+import { REQUIRED_PLUGIN_KEYWORD, validateExternalPluginLoad } from "../services/adapter-plugin-validator.js";
+import type { FileFingerprint } from "../services/adapter-plugin-validator.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -249,7 +251,15 @@ export function adapterRoutes() {
    * - version?: string — target version for npm packages
    */
   router.post("/adapters/install", async (req, res) => {
-    assertInstanceAdmin(req);
+    // Agents can install + register external adapter plugins when the
+    // resulting package passes the plugin-load validator (see below).
+    // Reinstall stays Board-only because it pulls from npm and is the
+    // dangerous path; install + reload are the cheap paths and can be
+    // agent-reachable provided the constraint stack enforces the
+    // confused-deputy gates. Company-member board users (operator/
+    // viewer/member) still get 403 \u2014 only instance-admin board OR
+    // authenticated agent can call.
+    assertAgentReachableInstanceAdmin(req);
     assertAdapterCodeInstallAllowed();
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
@@ -279,13 +289,21 @@ export function adapterRoutes() {
       let moduleLocalPath: string | undefined;
 
       if (!isLocalPath) {
-        // npm install into the managed directory
+        // npm install into the managed directory.
+        //
+        // --ignore-scripts is REQUIRED for agent-reachable installs: any
+        // lifecycle script (preinstall / install / postinstall) executes
+        // arbitrary code in the server process before our plugin-load
+        // validator ever runs, which defeats the confused-deputy gates.
+        // Instance-admin / reinstall endpoints can opt back into scripts
+        // because they require Board credentials and are the explicitly-
+        // trusted path; this route is the cheap, agent-reachable one.
         const pluginsDir = getAdapterPluginsDir();
         const spec = explicitVersion ? `${canonicalName}@${explicitVersion}` : canonicalName;
 
-        logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
+        logger.info({ spec, pluginsDir }, "Installing adapter package via npm (ignore-scripts)");
 
-        await execFileAsync("npm", ["install", "--no-save", spec], {
+        await execFileAsync("npm", ["install", "--no-save", "--ignore-scripts", spec], {
           cwd: pluginsDir,
           timeout: 120_000,
         });
@@ -316,8 +334,59 @@ export function adapterRoutes() {
         }
       }
 
-      // Load and register the adapter (use canonicalName for path resolution)
-      const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
+      // Constraint gate: external plugins can only be loaded if their
+      // resolved package directory is inside the managed plugins dir,
+      // their package.json declares the required keyword, and the
+      // manifest file is older than the 2-second mtime floor. The auth
+      // gate is `assertBoardOrAgent` above; this is additive. We run
+      // this BEFORE any registry mutation so a reject leaves state
+      // untouched.
+      const packageDir = moduleLocalPath
+        ? moduleLocalPath
+        : path.join(getAdapterPluginsDir(), "node_modules", canonicalName);
+      const preflight = validateExternalPluginLoad(packageDir);
+      if (!preflight.ok) {
+        logger.warn(
+          { packageName: canonicalName, reason: preflight.reason, detail: preflight.detail },
+          "External adapter install rejected by plugin-load validator",
+        );
+        res.status(403).json({
+          error: `Plugin load rejected: ${preflight.reason}`,
+          detail: preflight.detail,
+        });
+        return;
+      }
+
+      // Load and register the adapter. Pass the validator's
+      // canonicalDir (NOT the original mutable packageDir) so the
+      // loader doesn't re-resolve and re-introduce the symlink /
+      // TOCTOU bypass. canonicalDir is the realpath of the package
+      // root that was just validated; the loader additionally
+      // re-verifies the resolved entry point is inside canonicalDir.
+      // The four fingerprints (canonicalDirIdentity,
+      // canonicalManifestIdentity, canonicalEntryIdentity, optional
+      // canonicalUiParserIdentity) are multi-field
+      // (dev/ino/ctime/mtime/size) identities captured by the
+      // validator at validation time and re-checked at load time.
+      // Rejecting on any mismatch closes BOTH the path-name TOCTOU
+      // (round 3/4) AND the file-mutation bypass (round 5) where
+      // the agent overwrites package.json or the entry file inside
+      // the same directory. canonicalEntryPath is the validator's
+      // pre-resolved entry path; the loader uses it directly
+      // instead of re-resolving from the manifest, so a manifest
+      // mutation between validation and load cannot redirect the
+      // import.
+      const adapterModule = await loadExternalAdapterPackage(
+        canonicalName,
+        moduleLocalPath,
+        preflight.canonicalDir,
+        preflight.canonicalDirIdentity,
+        preflight.canonicalManifestIdentity,
+        preflight.canonicalEntryIdentity,
+        preflight.canonicalEntryPath,
+        preflight.canonicalUiParserPath,
+        preflight.canonicalUiParserIdentity,
+      );
 
       // External adapters may intentionally override built-in adapter types.
       // registerServerAdapter preserves the built-in as a fallback so pausing or
@@ -535,7 +604,13 @@ export function adapterRoutes() {
    * Cannot be used on built-in adapter types.
    */
   router.post("/adapters/:type/reload", async (req, res) => {
-    assertInstanceAdmin(req);
+    // Agents can reload an already-installed external adapter plugin
+    // when the resulting package passes the plugin-load validator.
+    // The store already requires the plugin to be recorded; this
+    // gate enforces that the on-disk package still meets the
+    // confused-deputy guardrails. Company-member board users still
+    // get 403 \u2014 only instance-admin board OR authenticated agent.
+    assertAgentReachableInstanceAdmin(req);
 
     const type = req.params.type;
 
@@ -545,9 +620,66 @@ export function adapterRoutes() {
       return;
     }
 
+    // Constraint gate (reload): validate the on-disk package BEFORE we
+    // bust the ESM cache or touch the registry. The store record tells
+    // us where the package lives; if the validator rejects, we never
+    // run the reload path. This is the same confused-deputy stack as
+    // install — additive to `assertBoardOrAgent` above.
+    const pluginRecord = getAdapterPluginByType(type);
+    const packageDir = pluginRecord
+      ? (pluginRecord.localPath
+          ? pluginRecord.localPath
+          : path.join(getAdapterPluginsDir(), "node_modules", pluginRecord.packageName))
+      : undefined;
+    let canonicalPackageDir: string | undefined;
+    let canonicalDirIdentity: FileFingerprint | undefined;
+    let canonicalManifestIdentity: FileFingerprint | undefined;
+    let canonicalEntryIdentity: FileFingerprint | undefined;
+    let canonicalEntryPath: string | undefined;
+    let canonicalUiParserPath: string | undefined;
+    let canonicalUiParserIdentity: FileFingerprint | undefined;
+    if (packageDir) {
+      const preflight = validateExternalPluginLoad(packageDir);
+      if (!preflight.ok) {
+        logger.warn(
+          { type, reason: preflight.reason, detail: preflight.detail },
+          "External adapter reload rejected by plugin-load validator (pre-reload)",
+        );
+        res.status(403).json({
+          error: `Plugin load rejected: ${preflight.reason}`,
+          detail: preflight.detail,
+        });
+        return;
+      }
+      logger.info(
+        { type, manifestName: preflight.manifest.name, keyword: REQUIRED_PLUGIN_KEYWORD },
+        "External adapter manifest passed plugin-load validator (reload)",
+      );
+      // Capture the canonical dir + fingerprints from the validator
+      // so the loader doesn't re-resolve the mutable path (which
+      // would re-introduce the TOCTOU race) AND so the loader can
+      // detect file mutations between validation and reload.
+      canonicalPackageDir = preflight.canonicalDir;
+      canonicalDirIdentity = preflight.canonicalDirIdentity;
+      canonicalManifestIdentity = preflight.canonicalManifestIdentity;
+      canonicalEntryIdentity = preflight.canonicalEntryIdentity;
+      canonicalEntryPath = preflight.canonicalEntryPath;
+      canonicalUiParserPath = preflight.canonicalUiParserPath;
+      canonicalUiParserIdentity = preflight.canonicalUiParserIdentity;
+    }
+
     // Reload the adapter module (busts ESM cache, re-imports)
     try {
-      const newModule = await reloadExternalAdapter(type);
+      const newModule = await reloadExternalAdapter(
+        type,
+        canonicalPackageDir,
+        canonicalDirIdentity,
+        canonicalManifestIdentity,
+        canonicalEntryIdentity,
+        canonicalEntryPath,
+        canonicalUiParserPath,
+        canonicalUiParserIdentity,
+      );
 
       // Not found in the external adapter store
       if (!newModule) {
