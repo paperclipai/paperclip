@@ -3134,6 +3134,9 @@ export function issueRoutes(
     if (input.blockedToTodoRecovery === true) {
       return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
     }
+    if (input.assigneeChanged === true) {
+      return "Recovery action became stale because the source issue assignee changed.";
+    }
 
     if (input.trigger === "read_projection") return null;
     if (
@@ -3147,7 +3150,6 @@ export function issueRoutes(
 
     const durableSourceChange =
       input.statusChanged === true ||
-      input.assigneeChanged === true ||
       input.blockersChanged === true ||
       input.executionPolicyChanged === true ||
       input.monitorChanged === true ||

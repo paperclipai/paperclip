@@ -3747,7 +3747,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  async function foldStaleSourceRecoveryActionsOnAssigneeChange() {
+    const candidates = await db
+      .select({
+        action: issueRecoveryActions,
+        sourceIssue: issues,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(issues, eq(issueRecoveryActions.sourceIssueId, issues.id))
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          isNull(issues.hiddenAt),
+          isNotNull(issueRecoveryActions.previousOwnerAgentId),
+        ),
+      );
+
+    const result = {
+      folded: 0,
+      issueIds: [] as string[],
+    };
+    for (const candidate of candidates) {
+      if (candidate.action.previousOwnerAgentId === candidate.sourceIssue.assigneeAgentId) continue;
+
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: candidate.action.companyId,
+        sourceIssueId: candidate.action.sourceIssueId,
+        actionId: candidate.action.id,
+        status: "cancelled",
+        outcome: "cancelled",
+        resolutionNote: "Recovery action became stale because the source issue assignee changed.",
+      });
+      if (!resolved) continue;
+
+      result.folded += 1;
+      result.issueIds.push(candidate.sourceIssue.id);
+      await logActivity(db, {
+        companyId: candidate.action.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: candidate.sourceIssue.id,
+        details: {
+          identifier: candidate.sourceIssue.identifier,
+          recoveryActionId: resolved.id,
+          recoveryActionStatus: resolved.status,
+          outcome: resolved.outcome,
+          sourceIssueStatus: candidate.sourceIssue.status,
+          resolutionNote: resolved.resolutionNote,
+          source: "source_revalidation",
+          trigger: "recovery_reconciliation",
+        },
+      });
+    }
+
+    return result;
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const recoveryActionFreshness = await foldStaleSourceRecoveryActionsOnAssigneeChange();
     const candidates = await db
       .select()
       .from(issues)
@@ -3777,9 +3838,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      recoveryActionsFolded: recoveryActionFreshness.folded,
       skipped: 0,
       issueIds: [] as string[],
     };
+    result.issueIds.push(...recoveryActionFreshness.issueIds);
 
     for (const issue of candidates) {
       const executionState = issue.status === "in_review"
