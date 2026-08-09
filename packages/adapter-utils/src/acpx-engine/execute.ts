@@ -2508,6 +2508,31 @@ function usdCostAmount(cost: AcpRuntimeUsageCost | null | undefined): number | n
   return cost.amount;
 }
 
+/**
+ * ACP adapters report a per-turn usage breakdown while a turn is in flight.
+ * Use totalTokens when the runtime provides it; otherwise include every token
+ * category that is billable or consumes a subscription allowance.  This is
+ * deliberately a run budget, not a session budget: a healthy persisted session
+ * must be able to continue on a later, separately-budgeted Paperclip run.
+ */
+function usageBreakdownTotalTokens(breakdown: AcpRuntimeUsageBreakdown | null | undefined): number {
+  if (!breakdown) return 0;
+  const reportedTotal = Math.floor(asNumber(breakdown.totalTokens, 0));
+  if (reportedTotal > 0) return reportedTotal;
+  return Math.max(0, Math.floor(
+    asNumber(breakdown.inputTokens, 0) +
+    asNumber(breakdown.outputTokens, 0) +
+    asNumber(breakdown.cachedReadTokens, 0) +
+    asNumber(breakdown.cachedWriteTokens, 0) +
+    asNumber(breakdown.thoughtTokens, 0),
+  ));
+}
+
+function resolveMaxTokensPerRun(config: Record<string, unknown>): number {
+  const configured = Math.floor(asNumber(config.maxTokensPerRun, 0));
+  return configured > 0 ? configured : 0;
+}
+
 async function readRuntimeStatus(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
@@ -3363,6 +3388,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let controller: AbortController | null = null;
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
+    const maxTokensPerRun = resolveMaxTokensPerRun(ctx.config);
+    let tokenBudgetExhausted = false;
+    let tokenBudgetObserved = 0;
     const textParts: string[] = [];
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
@@ -3396,6 +3424,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+          const observed = usageBreakdownTotalTokens(event.breakdown);
+          if (!tokenBudgetExhausted && maxTokensPerRun > 0 && observed > maxTokensPerRun) {
+            tokenBudgetExhausted = true;
+            tokenBudgetObserved = observed;
+            await cancelActiveTurn?.(
+              `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}).`,
+            );
+          }
         }
         await emitRuntimeEvent(ctx, event, toolTitles);
       }
@@ -3409,6 +3445,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         eventBreakdown,
         eventCostUsd,
       });
+      const discardPersistentState = (terminal.status === "cancelled" && !tokenBudgetExhausted) || timedOut;
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
@@ -3417,13 +3454,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             key: prepared.sessionKey,
             entry: existing,
             reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
+            discardPersistentState,
           });
         } else {
           await runtime.close({
             handle: sessionHandle,
             reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-            discardPersistentState: terminal.status === "cancelled" || timedOut,
+            discardPersistentState,
           }).catch(() => {});
         }
       } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
@@ -3481,10 +3518,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       }
 
-      const errorMessage = timedOut
+      const tokenBudgetMessage = tokenBudgetExhausted
+        ? `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`
+        : null;
+      const errorMessage = tokenBudgetMessage ?? (timedOut
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-        : surfaceLimitTextThroughOpaqueError(resultErrorMessage(terminal), textParts);
-      const terminalStopReason = terminal.status === "failed"
+        : surfaceLimitTextThroughOpaqueError(resultErrorMessage(terminal), textParts));
+      const terminalStopReason = tokenBudgetExhausted
+        ? "token_budget_exhausted"
+        : terminal.status === "failed"
         ? (errorMessage ?? terminal.error.message)
         : terminal.stopReason;
       await emitAcpxLog(ctx, {
@@ -3500,7 +3542,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        errorCode: tokenBudgetExhausted
+          ? "token_budget_exhausted"
+          : terminal.status === "failed"
+            ? "acpx_turn_failed"
+            : timedOut
+              ? "acpx_timeout"
+              : null,
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -3511,7 +3559,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         costUsd: turnUsage.costUsd,
         resultJson: {
           status: terminal.status,
-          stopReason: terminalStopReason,
+          ...(tokenBudgetExhausted
+            ? {
+                stopReason: "token_budget_exhausted",
+                maxTokensPerRun,
+                observedTokens: tokenBudgetObserved,
+              }
+            : { stopReason: terminalStopReason }),
           permissionMode: prepared.permissionMode,
           mode: prepared.mode,
           requestedModel: prepared.requestedModel || null,

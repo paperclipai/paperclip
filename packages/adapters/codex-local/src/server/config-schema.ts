@@ -68,6 +68,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Defaults to 0, which closes the ACP process after each run while retaining persistent session state.",
         meta: acpVisible,
       },
+      {
+        key: "maxTokensPerRun",
+        label: "Maximum tokens per run",
+        type: "number",
+        default: 1000000,
+        hint: "Paperclip stops an ACP run once this per-run token allowance is exceeded. A later run can resume its session.",
+        meta: acpVisible,
+      },
     ],
   };
 }

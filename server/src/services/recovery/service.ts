@@ -464,6 +464,10 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  // Per-run adapter governors are a deliberate stop, not a transient failure.
+  // Re-running the same large prompt automatically would only burn another
+  // allowance; a human or manager must split/re-scope the work first.
+  "token_budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
   "gemini_quota_exhausted",

@@ -47,6 +47,7 @@ import {
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
 const MIN_ACP_NODE_VERSION = "22.13.0";
+const DEFAULT_CODEX_MAX_TOKENS_PER_RUN = 1_000_000;
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -159,6 +160,10 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    // A session can continue later, but a single unattended run must not be
+    // allowed to consume an unbounded share of the subscription.  Explicit
+    // per-agent values remain possible for reviewed exceptional work.
+    maxTokensPerRun: Math.max(1, Math.floor(asNumber(config.maxTokensPerRun, DEFAULT_CODEX_MAX_TOKENS_PER_RUN))),
     ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
