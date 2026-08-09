@@ -47,7 +47,10 @@ import {
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
 const MIN_ACP_NODE_VERSION = "22.13.0";
-const DEFAULT_CODEX_MAX_TOKENS_PER_RUN = 1_000_000;
+// The normal operating budget. Larger per-agent values remain supported for
+// reviewed, bounded exceptions; the heartbeat guard pauses the first ≥1M task
+// run and blocks the second rather than silently funding repeated context.
+const DEFAULT_CODEX_MAX_TOKENS_PER_RUN = 400_000;
 
 export type CodexExecutionEngine = "cli" | "acp";
 
