@@ -74,7 +74,11 @@ and licence-filter flags: **references/api-reference.md**.
 
 ## Quality bar
 
-- Match or exceed the deliverable spec resolution; never upscale b-roll.
+- Match or exceed the deliverable spec resolution. Prefer native resolution. Existing
+  720p b-roll may be Mini-upscaled only when it is short, non-text, non-hero background
+  footage and the manifest records its original dimensions/hash, target dimensions/hash,
+  intended use, and passing visual QA. Never upscale UI/capture proof, charts, readable
+  text, evidence, or hero footage.
 - Reject clips with visible logos, identifiable private individuals in sensitive
   contexts, or watermarks — even when the licence technically allows them.
 - Music/audio beds: Pixabay music or other explicit-licence sources only; "found it

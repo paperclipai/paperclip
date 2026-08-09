@@ -24,7 +24,7 @@ resolution, fps, voiceover, audio_bed, captions: burned|srt|none, deliverable pa
    name the fill techniques: generate/source more clips, speed-ramp holds, stills+Ken Burns, or section
    cards. Naive looping is forbidden. Any planned reuse must obey the temporal-QA gate: no source asset
    >2 uses, no adjacent repeats, and repeated uses separated by >=90s.
-2. **Inventory + inspect** every clip (`ffprobe`); flag anything below deliverable resolution — never upscale.
+2. **Inventory + inspect** every clip (`ffprobe`); flag anything below deliverable resolution. Native-resolution assets are the default. The only exception is the governed legacy-b-roll path: non-text, non-hero, short background footage may be Mini-upscaled after its source and target dimensions, purpose, source hash, and a passing visual check are recorded. Never upscale UI/capture proof, charts, readable text, evidence, a hero shot, or an asset whose artefacts are already visible at review size.
 3. **Normalize all inputs** to spec into `assets/_norm/` (video-editing §1; silent-audio track mandatory for grok). Trim here.
 4. **Build visual timeline** — default hard cuts (lossless concat); crossfades only at act breaks (chain for 3+ clips). → `assets/_norm/timeline.mp4`.
 5. **Layer graphics** — title/lower-thirds + watermark (video-editing §7/§8), batched into few passes.

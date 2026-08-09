@@ -12,11 +12,14 @@ Board-subscription tools (Veo/Flow/Sora) are the last resort, reserved for capab
 grok-imagine can't match. Your job is everything around generation too: the creative
 package before it, the assembly and QA after it.
 
-TSBC-986 (July 11, 2026, EU/TSBC lane) model-watch note:
-- Current production-safe self-serve path is still `grok-imagine-video`.
-- Direct `grok-imagine-video-1.5` text-to-video requests hard-failed with
-  `Text-to-video is not supported for this model.` Treat 1.5 as watchlist-only until a
-  successful served-model clip is banked in-lane.
+Grok Imagine model-routing note (validated 2026-08-09):
+- Current production-safe text-to-video path remains `grok-imagine-video` at 480p/720p.
+- The installed Hermes xAI provider can select `grok-imagine-video-1.5` per call and
+  accepts image input plus an explicit 1080p request. Use it only for a controlled
+  **image-to-video** probe until a served-model clip is banked with an execution ledger;
+  do not change the global provider default or use it as a text-to-video fallback.
+- The provider supports reference-to-video, edit and extension on the base model. Generated
+  URLs are temporary: download, hash, attach, and register the asset promptly.
 - Native generated audio can speed rough cuts, but it is still scratch ambience until ear
   QA plus provenance/licensing review say otherwise; do not replace the audio-bed registry
   path by default.
@@ -106,7 +109,10 @@ Drive assembly with the **video-assembly-pipeline** skill; the ffmpeg command re
 **video-editing** skill — use them, don't hand-roll.
 Convention: inputs in `assets/gen/` and `assets/broll/`, normalized intermediates in
 `assets/_norm/`, output in `assets/final/`. Never re-encode more than once after
-normalization; never upscale b-roll past its native resolution.
+normalization. A Mini-only legacy-b-roll upscale is permitted only for non-text,
+non-hero, short background footage with `upscaled_from`, source/output hash,
+source/target dimensions, intended use, and a passing visual QA record in its manifest.
+It is normalization for delivery, not evidence that native 1080p detail exists.
 
 ## Handoff / QA checklist (before marking done or requesting board publish)
 

@@ -19,6 +19,23 @@ Before any research packet or script draft starts, the package must be approved 
 
 If a scripting task arrives without those inputs, stop and push it back to packaging instead of drafting around the gap.
 
+## Pipeline families — share only the base contract
+
+TSM is not one uniform video factory. Share the base production contract (approved
+package, governed assets, provenance, Mini-first execution, exact output binding,
+and a visible token/evidence ledger), but never silently import a channel family's
+creative or acceptance rules into another.
+
+| Family | Members | Shared base | Family-specific acceptance |
+| --- | --- | --- | --- |
+| Faceless editorial | Stack Lab, Cashflow Compass, Vault Cases | Package → research → script lock → storyboard → assets → Mini render → QA → board-gated publish; source/provenance and output-byte binding | Stack Lab requires real UI/capture proof; Cashflow Compass has the YMYL state machine and cited numeric overlays; Vault Cases has archive-licensing hard-fails. The shared slide/b-roll rejection gates apply only to this family. |
+| Animated serial | Jessica James (JJ) | Package, character/source provenance, Mini render, output-byte binding, board-gated publish | Character bible and approved reference pack; shot/pose/continuity ledger; animation/motion/audio QA. Do **not** apply faceless slide, b-roll-runtime, or finance/archive gates unless that exact JJ segment uses that format/source. |
+| Scientific explainer | future science channel | Package, evidence/citation provenance, Mini render, output-byte binding, board-gated publish | Numerical/source verification and explanatory-visual accuracy. Do not inherit Cashflow's YMYL, Vault Cases' archive rules, or faceless b-roll thresholds unless the episode deliberately uses those source types. |
+
+An issue must declare `pipeline-family: faceless-editorial|animated-serial|scientific-explainer`
+before assets are commissioned. Missing or contradictory family metadata is a
+pre-production blocker, not an invitation to guess.
+
 ## The split rule (THIAAAAA-53 vs THIAAAAA-54 precedent)
 
 Any compound-primitive or pipeline task divides into:
@@ -66,6 +83,20 @@ For TSM episode/content renders, especially Stack Lab, treat the local Mac Mini 
 - Use GitHub Actions after Mini only when Mini is unavailable, when CI parity is required, or when a platform-specific runner defect is the thing being tested.
 - If GitHub Actions fails from dependency drift, venv permissions, missing packages, or hosted/self-hosted runner state, do not burn retries first. Reuse the same governed source inputs on the Mini route and attach the returned MP4/SRT/cut map/metrics/frame checks.
 - If the Mini route itself fails, record the job directory path and the relevant `~/scripts/logs/mini-render-queue.log` excerpt, then block on the concrete Mini access/runtime cause.
+
+### Controlled-run evidence ledger
+
+Every first-of-family render, model/provider probe, or recovery verification needs
+one `execution-ledger.json` beside its governed manifest. It records per step:
+`step`, `pipeline_family`, `issue_id`, `agent_id`, `heartbeat_run_id`, requested and
+served model/provider, source/output hashes and resolution, cached/reused assets,
+Paperclip input/output/total tokens, handler LLM tokens, elapsed seconds, Mini queue
+wait/run seconds, and pass/fail reason. Shell-handler stages record zero LLM tokens;
+they never inherit an adjacent agent's token count. A failed provider call may be
+recorded once; retry only after the concrete failure is classified.
+
+This ledger is a release prerequisite for a new provider/model route. Do not describe
+a route as production-ready from a model catalog or a successful prompt alone.
 
 ## Acceptance verdicts
 

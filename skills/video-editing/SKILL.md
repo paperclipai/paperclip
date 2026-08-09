@@ -246,7 +246,11 @@ after this cut-map and attach its verdict beside the JSON.
 
 ## Re-encode discipline
 Encode once after normalize, once at final export. Use `-c copy` for container-only steps (concat,
-watermark-over-encoded-timeline, remux). Never upscale b-roll; pad instead.
+watermark-over-encoded-timeline, remux). Pad by default. A Mini-only legacy-b-roll upscale is
+allowed for non-text, non-hero, short background footage when its native/target dimensions and
+hashes, intended use, and passing visual QA are recorded in the asset manifest. It cannot restore
+lost detail and must never be used for UI/capture proof, charts, readable text, evidence, or hero
+footage.
 ## Quality ceiling — when to stop and request premium
 grok clips are 8s/720p/no-audio. ffmpeg joins/captions/finishes them into a clean 1080p cut but
 can't add detail that isn't there. For shots >8s continuous, photoreal humans, or broadcast
