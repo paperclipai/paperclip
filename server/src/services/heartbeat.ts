@@ -350,6 +350,28 @@ const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 // pulling a long session's whole log into memory.
 const HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES = 256 * 1024;
 
+/**
+ * A normal agent turn should be substantially below this. Reaching one million
+ * input tokens on one task is a durable signal that the task must be split,
+ * routed to a deterministic handler, or explicitly approved as an exception.
+ */
+export const HIGH_INPUT_TOKEN_RUN_THRESHOLD = 1_000_000;
+
+export type HighInputTokenRunGuardDecision = "none" | "review" | "block";
+
+/**
+ * The first oversized run pauses for a split/route review. A second oversized
+ * run on the same issue is a stop, not another autonomous attempt. The count
+ * includes the run currently being finalized.
+ */
+export function decideHighInputTokenRunGuard(input: {
+  inputTokens: number;
+  highRunCount: number;
+}): HighInputTokenRunGuardDecision {
+  if (input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) return "none";
+  return input.highRunCount >= 2 ? "block" : "review";
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -9596,6 +9618,144 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  async function enforceHighInputTokenRunGuard(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    inputTokens: number;
+  }) {
+    const context = parseObject(input.run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!issueId || input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+      return { decision: "none" as const, highRunCount: 0 };
+    }
+
+    // Cost events are written immediately before this guard runs. Counting
+    // distinct runs therefore includes this run and stays correct if a provider
+    // emits more than one ledger row while an adapter implementation evolves.
+    const [highRunCountRow] = await db
+      .select({ count: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int` })
+      .from(costEvents)
+      .where(
+        and(
+          eq(costEvents.companyId, input.run.companyId),
+          eq(costEvents.issueId, issueId),
+          gte(costEvents.inputTokens, HIGH_INPUT_TOKEN_RUN_THRESHOLD),
+        ),
+      );
+    const highRunCount = Number(highRunCountRow?.count ?? 0);
+    const decision = decideHighInputTokenRunGuard({
+      inputTokens: input.inputTokens,
+      highRunCount,
+    });
+    if (decision === "none") return { decision, highRunCount };
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return { decision: "none" as const, highRunCount };
+
+    const millionTokens = (input.inputTokens / 1_000_000).toFixed(2);
+    const interactionsSvc = issueThreadInteractionService(db);
+    const isRepeat = decision === "block";
+    const action = isRepeat
+      ? "This is the second ≥1M-input run on this task. Automatic continuation is blocked."
+      : "This is the first ≥1M-input run on this task. Split or reroute it before more autonomous work.";
+    const interaction = await interactionsSvc.create(issue, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: `high_input_token_run:${issue.id}:${isRepeat ? "block" : "review"}:${input.run.id}`,
+      sourceRunId: input.run.id,
+      title: isRepeat ? "Second oversized run stopped" : "High-token run needs split / route review",
+      summary: action,
+      payload: {
+        version: 1,
+        prompt: isRepeat
+          ? "Approve a concrete split or non-LLM route before this task is resumed."
+          : "Confirm a concrete split or non-LLM route before this task is resumed.",
+        acceptLabel: "Resume with approved route",
+        rejectLabel: "Keep stopped",
+        rejectRequiresReason: true,
+        allowDeclineReason: true,
+        supersedeOnUserComment: false,
+        detailsMarkdown:
+          `Run ${input.run.id} recorded **${millionTokens}M input tokens**. `
+          + `${action}\n\n`
+          + "Required decision: split the task into bounded issues, route deterministic work to a shell handler/script, or document why this is an approved exception.",
+      },
+    }, { agentId: input.agent.id });
+
+    if (isRepeat) {
+      await issuesSvc.update(issue.id, {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Approve a split or deterministic route after the second oversized run, then explicitly resume the task.",
+        },
+        actorAgentId: input.agent.id,
+      });
+    } else {
+      await issuesSvc.update(issue.id, {
+        status: "in_review",
+        actorAgentId: input.agent.id,
+      });
+    }
+
+    await issuesSvc.addComment(
+      issue.id,
+      `## ${isRepeat ? "Second oversized run stopped" : "High-token run review required"}\n\n`
+        + `- Run: \`${input.run.id}\`\n`
+        + `- Input tokens: **${millionTokens}M**\n`
+        + `- Task threshold: **${(HIGH_INPUT_TOKEN_RUN_THRESHOLD / 1_000_000).toFixed(0)}M** input tokens\n`
+        + `- Action: ${action}\n`
+        + `- Review card: \`${interaction.id}\``,
+      { runId: input.run.id },
+      { authorType: "system" },
+    );
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: isRepeat
+        ? "Second oversized task run stopped pending board split/route decision"
+        : "Oversized task run paused pending split/route decision",
+      payload: {
+        inputTokens: input.inputTokens,
+        threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+        highRunCount,
+        interactionId: interaction.id,
+        issueId: issue.id,
+      },
+    });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.agent.id,
+      runId: input.run.id,
+      action: isRepeat ? "issue.high_input_run_blocked" : "issue.high_input_run_review_required",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        label: isRepeat ? "Second high-input run blocked" : "High-input run review required",
+        inputTokens: input.inputTokens,
+        threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+        highRunCount,
+        interactionId: interaction.id,
+        issue: issueUiLink(issue),
+      },
+    });
+
+    return { decision, highRunCount };
+  }
+
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     // POPULATION FIX (2026-08-05, TSMC-19765). Shell-handler runs execute scripts — they cannot
@@ -17777,6 +17937,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         const livenessRun = finalizedRun;
+        // Persist token usage before applying the task-level guard so the guard
+        // can use the ledger as its single source of truth, including this run.
+        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+          legacySessionId: nextSessionState.legacySessionId,
+        }, normalizedUsage);
+        const highTokenGuard = await enforceHighInputTokenRunGuard({
+          run: livenessRun,
+          agent,
+          inputTokens: normalizedUsage?.inputTokens ?? 0,
+        });
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
@@ -17795,7 +17965,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+        if (highTokenGuard.decision === "none" && outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
             await scheduleBoundedRetryForRun(livenessRun, agent, {
@@ -17816,21 +17986,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (highTokenGuard.decision === "none" && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
-        await handleSuccessfulRunHandoff(
-          issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
-            ? {
-              ...livenessRun,
-              issueCommentStatus: issueCommentPolicyResult.outcome,
-            }
-            : livenessRun,
-          agent,
-        );
+        if (highTokenGuard.decision === "none") {
+          await handleRunLivenessContinuation(livenessRun);
+          await handleSuccessfulRunHandoff(
+            issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
+              ? {
+                ...livenessRun,
+                issueCommentStatus: issueCommentPolicyResult.outcome,
+              }
+              : livenessRun,
+            agent,
+          );
+        }
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -17862,9 +18034,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
         if (taskKey && !ephemeralStatusOnlyRecoverySession) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {

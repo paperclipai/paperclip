@@ -122,6 +122,21 @@ import {
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+/**
+ * A board-triggered LLM wake without a task or stated purpose becomes an
+ * unscoped token-bearing run. Shell handlers are exempt because they have no
+ * model context to burn and are frequently used for tiny operational probes.
+ */
+function hasTraceableManualWakeScope(adapterType: string, body: unknown) {
+  if (adapterType === "paperclip_shell_handler") return true;
+  const value = readObject(body) ?? {};
+  const reason = typeof value.reason === "string" ? value.reason.trim() : "";
+  if (reason) return true;
+  const payload = readObject(value.payload) ?? {};
+  return [payload.issueId, payload.taskId, payload.taskKey]
+    .some((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+}
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -4012,6 +4027,16 @@ export function agentRoutes(
       });
       return;
     }
+    if (
+      (opts.source ?? "on_demand") === "on_demand"
+      && !hasTraceableManualWakeScope(agent.adapterType, req.body)
+    ) {
+      res.status(422).json({
+        error: "Manual LLM wakes require payload.issueId/taskId/taskKey or a non-empty reason",
+        code: "manual_wake_scope_required",
+      });
+      return;
+    }
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
@@ -4058,12 +4083,10 @@ export function agentRoutes(
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {
     // Legacy endpoint. Hardcodes `source: "on_demand"` (the prior behavior
-    // before the wakeup/invoke convergence). Reads scope fields directly off
-    // the body without `validate(wakeAgentSchema)` because callers — including
-    // the e2e suite — post an empty body, and the schema rejects undefined
-    // / missing bodies. Only forwards fields the caller actually supplied so
-    // an empty body produces the original fixed-arg `heartbeat.invoke()`
-    // shape exactly.
+    // before the wakeup/invoke convergence). It still reads scope fields
+    // directly because old callers do not use `wakeAgentSchema`, but unscoped
+    // LLM wakes are now rejected below rather than silently starting a broad
+    // token-bearing inbox sweep.
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
@@ -4090,6 +4113,13 @@ export function agentRoutes(
       forceFreshSession: unknown;
       triggerDetail: unknown;
     }>;
+    if (!hasTraceableManualWakeScope(agent.adapterType, body)) {
+      res.status(422).json({
+        error: "Manual LLM wakes require payload.issueId/taskId/taskKey or a non-empty reason",
+        code: "manual_wake_scope_required",
+      });
+      return;
+    }
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,

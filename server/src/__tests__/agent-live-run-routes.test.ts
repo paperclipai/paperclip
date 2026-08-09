@@ -624,7 +624,7 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
+  it("rejects an unscoped legacy manual LLM wake", async () => {
     const res = await requestApp(
       await createApp(),
       (baseUrl) => request(baseUrl)
@@ -632,17 +632,9 @@ describe("agent live run routes", () => {
         .send({}),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(202);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
-      source: "on_demand",
-      triggerDetail: "manual",
-      requestedByActorType: "user",
-      requestedByActorId: "local-board",
-      contextSnapshot: {
-        triggeredBy: "board",
-        actorId: "local-board",
-      },
-    });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ code: "manual_wake_scope_required" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("accepts free-text triggerDetail on the wakeup route", async () => {
