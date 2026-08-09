@@ -45,7 +45,7 @@ Grok Imagine model-routing note (validated 2026-08-09):
      ```bash
      curl -sS -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
        -F "file=@<the-generated-clip-path>" \
-       "$PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/issues/<this-issue-id>/attachments"
+       "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/<this-issue-id>/attachments"
      ```
    - Comment the exact prompt used and confirm the attachment, then set the disposition.
    - **Exception:** if the brief *explicitly* requires Veo, Flow, or Sora — capabilities
