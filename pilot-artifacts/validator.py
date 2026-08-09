@@ -202,7 +202,10 @@ def validate(row: dict[str, Any]) -> dict[str, Any]:
         if len(row["applications"]) < 1:
             errors.append("min_items:applications must have at least 1 item")
         seen = set()
-        for app in row["applications"]:
+        for index, app in enumerate(row["applications"]):
+            if not isinstance(app, str):
+                errors.append(f"type:applications item {index} must be string")
+                continue
             if app not in APPLICATIONS:
                 errors.append(f"enum:applications contains invalid value '{app}'")
             if app in seen:
@@ -216,7 +219,10 @@ def validate(row: dict[str, Any]) -> dict[str, Any]:
             errors.append("type:edge_profiles_available must be array or null")
         else:
             seen_ep = set()
-            for ep in eps:
+            for index, ep in enumerate(eps):
+                if not isinstance(ep, str):
+                    errors.append(f"type:edge_profiles_available item {index} must be string")
+                    continue
                 if ep not in EDGE_PROFILES:
                     errors.append(f"enum:edge_profiles_available invalid value '{ep}'")
                 if ep in seen_ep:
@@ -230,7 +236,10 @@ def validate(row: dict[str, Any]) -> dict[str, Any]:
             errors.append("type:certifications must be array or null")
         else:
             seen_cert = set()
-            for cert in certs:
+            for index, cert in enumerate(certs):
+                if not isinstance(cert, str):
+                    errors.append(f"type:certifications item {index} must be string")
+                    continue
                 if cert not in CERTIFICATIONS:
                     errors.append(f"enum:certifications invalid value '{cert}'")
                 if cert in seen_cert:
@@ -266,9 +275,10 @@ def validate(row: dict[str, Any]) -> dict[str, Any]:
             if len(thicknesses) < 1:
                 errors.append("min_items:thickness_options_mm must have at least 1 item")
             seen_thick = set()
-            for t in thicknesses:
-                if not isinstance(t, (int, float)):
-                    errors.append(f"type:thickness_options_mm item '{t}' must be number")
+            for index, t in enumerate(thicknesses):
+                if not isinstance(t, (int, float)) or isinstance(t, bool):
+                    errors.append(f"type:thickness_options_mm item {index} must be number")
+                    continue
                 elif not (6 <= t <= 60):
                     errors.append(f"range:thickness_options_mm {t}mm must be 6–60")
                 if t in seen_thick:

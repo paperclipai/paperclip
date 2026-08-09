@@ -242,6 +242,19 @@ class TestSchemaFail(unittest.TestCase):
         self.assertFalse(r["valid"])
         self.assertTrue(_has_error(r, "unique:applications"))
 
+    def test_unhashable_array_items_return_type_errors_not_exceptions(self):
+        cases = {
+            "applications": [{"value": "countertop"}],
+            "edge_profiles_available": [["eased"]],
+            "certifications": [{"name": "NSF_51"}],
+            "thickness_options_mm": [[20]],
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                result = validate(_base_row(**{field: value}))
+                self.assertFalse(result["valid"])
+                self.assertTrue(_has_error(result, f"type:{field} item"))
+
     def test_confidence_out_of_range_high(self):
         row = _base_row(enrichment_confidence=1.5)
         r = validate(row)
