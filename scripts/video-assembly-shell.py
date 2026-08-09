@@ -22,6 +22,134 @@ from pathlib import Path
 
 MINI_RENDER = Path.home() / "scripts" / "mini-render.sh"
 
+# Cashflow Compass has a higher source-truth bar than a generic clip concat.
+# The operator's EP-02 rejection showed that the assembly manifest could carry
+# technically valid media while omitting the evidence needed to prevent a bad
+# title card, accelerated/cut VO, repeated cyclone b-roll, Ken-Burns text
+# slides, or an unsupported numerical explanation.  Keep the contract next to
+# the one route that all zero-LLM Mini assemblies pass through.  It is checked
+# *before* staging or opening a Mini job: a missing/incomplete contract must be
+# an inexpensive, diagnostic failure rather than a rendered master to reject.
+CC_CHANNEL = "cashflow-compass"
+CC_BANNED_ASSET_TERMS = ("money-cyclone", "money_cyclone", "cyclone-bills", "cyclone_bills")
+
+
+def _nonempty_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _as_object(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def validate_cc_quality_contract(manifest: dict) -> dict:
+    """Validate the pre-render CC episode contract.
+
+    This deliberately validates source declarations and evidence references;
+    visual/audio inspection remains a later QA phase.  Requiring both turns the
+    operator's rejection rules into machine-enforced inputs without pretending a
+    JSON flag alone can prove the final pixels or waveform are good.
+    """
+    findings: list[str] = []
+    contract = _as_object(manifest.get("qualityContract"))
+    if contract.get("version") != 1:
+        findings.append("qualityContract.version must be 1")
+
+    audio = _as_object(contract.get("audio"))
+    if audio.get("playbackRate") != 1:
+        findings.append("audio.playbackRate must be exactly 1")
+    if audio.get("allSentencesAligned") is not True:
+        findings.append("audio.allSentencesAligned must be true")
+    if audio.get("finalSentenceComplete") is not True:
+        findings.append("audio.finalSentenceComplete must be true")
+    if not _nonempty_text(audio.get("alignmentEvidence")):
+        findings.append("audio.alignmentEvidence is required")
+
+    title = _as_object(contract.get("titleCard"))
+    if not _nonempty_text(title.get("episodeLabel")):
+        findings.append("titleCard.episodeLabel is required")
+    if title.get("lowerThirdExcluded") is not True:
+        findings.append("titleCard.lowerThirdExcluded must be true")
+    if title.get("approvedBrandFont") is not True:
+        findings.append("titleCard.approvedBrandFont must be true")
+    if title.get("episodePillCentered") is not True:
+        findings.append("titleCard.episodePillCentered must be true")
+
+    motion = _as_object(contract.get("motion"))
+    if motion.get("noKenBurnsOnTextOrDataSlides") is not True:
+        findings.append("motion.noKenBurnsOnTextOrDataSlides must be true")
+    if motion.get("fixedAnchorsVerified") is not True:
+        findings.append("motion.fixedAnchorsVerified must be true")
+    if motion.get("nativeBuildsOrApprovedTransitions") is not True:
+        findings.append("motion.nativeBuildsOrApprovedTransitions must be true")
+
+    broll = _as_object(contract.get("broll"))
+    if broll.get("noVisibleBlackOrJumpyJoins") is not True:
+        findings.append("broll.noVisibleBlackOrJumpyJoins must be true")
+    fingerprints: set[str] = set()
+    for index, clip in enumerate(manifest.get("clips") or []):
+        if not isinstance(clip, dict):
+            findings.append(f"clips[{index}] must be an object")
+            continue
+        identity = " ".join(str(clip.get(key) or "") for key in ("src", "assetId", "label")).lower()
+        if any(term in identity for term in CC_BANNED_ASSET_TERMS):
+            findings.append(f"clips[{index}] uses banned money/cyclone b-roll")
+        fingerprint = str(clip.get("visualFingerprint") or "").strip()
+        if not fingerprint:
+            findings.append(f"clips[{index}].visualFingerprint is required")
+        elif fingerprint in fingerprints and clip.get("intentionalLoop") is not True:
+            findings.append(f"clips[{index}] repeats visualFingerprint '{fingerprint}' without intentionalLoop=true")
+        elif fingerprint in fingerprints and not _nonempty_text(clip.get("seamEvidence")):
+            findings.append(f"clips[{index}] intentional loop needs seamEvidence")
+        fingerprints.add(fingerprint)
+        role = str(clip.get("role") or "").strip().lower()
+        motion_style = str(clip.get("motionStyle") or "").strip().lower()
+        if role in {"text-slide", "data-slide", "title-card"} and motion_style in {"ken-burns", "kenburns", "zoom-pan", "global-zoom"}:
+            findings.append(f"clips[{index}] uses banned {motion_style} on {role}")
+
+    numerical = contract.get("numericExamples")
+    if not isinstance(numerical, list) or not numerical:
+        findings.append("qualityContract.numericExamples must contain each spoken numerical example")
+    else:
+        for index, example in enumerate(numerical):
+            row = _as_object(example)
+            if not _nonempty_text(row.get("spokenClaim")):
+                findings.append(f"numericExamples[{index}].spokenClaim is required")
+            if not _nonempty_text(row.get("onScreenVisual")):
+                findings.append(f"numericExamples[{index}].onScreenVisual is required")
+            if not _nonempty_text(row.get("dataCite")):
+                findings.append(f"numericExamples[{index}].dataCite is required")
+            if row.get("readableAt1080p") is not True:
+                findings.append(f"numericExamples[{index}].readableAt1080p must be true")
+
+    cta = _as_object(contract.get("leadMagnetCta"))
+    if cta.get("approvedAssetShown") is not True:
+        findings.append("leadMagnetCta.approvedAssetShown must be true")
+    if not _nonempty_text(cta.get("useCaseShown")):
+        findings.append("leadMagnetCta.useCaseShown is required")
+    if not _nonempty_text(cta.get("assetEvidence")):
+        findings.append("leadMagnetCta.assetEvidence is required")
+
+    return {
+        "gate": "cashflowCompassQualityContract",
+        "status": "passed" if not findings else "failed",
+        "findings": findings,
+        "clipCount": len(manifest.get("clips") or []),
+        "enforcement": "pre-mini-stage",
+    }
+
+
+def preflight_quality_contract(manifest: dict, out_dir: Path) -> None:
+    """Emit an auditable preflight receipt and fail before Mini staging."""
+    if str(manifest.get("channel") or "").strip().lower() != CC_CHANNEL:
+        return
+    report = validate_cc_quality_contract(manifest)
+    receipt = out_dir / "quality-contract-report.json"
+    receipt.write_text(json.dumps(report, indent=2) + "\n")
+    if report["status"] != "passed":
+        detail = "; ".join(report["findings"][:8])
+        raise SystemExit(f"Cashflow Compass quality contract rejected before Mini staging: {detail}")
+
 
 RUNNER = r'''#!/usr/bin/env python3
 import argparse, hashlib, json, subprocess, time
@@ -203,6 +331,7 @@ def main() -> int:
     if not MINI_RENDER.is_file():
         raise SystemExit(f"Mini renderer is unavailable: {MINI_RENDER}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    preflight_quality_contract(json.loads(manifest.read_text()), out_dir)
     job = Path(tempfile.mkdtemp(prefix="mini-assembly-", dir=str(out_dir.parent)))
     build_job(manifest, job)
     result = subprocess.run([str(MINI_RENDER), str(job)], capture_output=True, text=True, timeout=840)
