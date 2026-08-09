@@ -1,0 +1,5 @@
+{
+  "target_sha": "e57450356",
+  "required_ancestors": ["e57450356"],
+  "note": "Laguna Hermes tool-call recovery fix; live verification is gated by SAG-8938."
+}
