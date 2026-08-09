@@ -77,6 +77,13 @@ metrics untouched. Render without this pass = drift.
 - Header: `# Name`, contact details and a bold role-tailored positioning line. Use one merged `## Professional Summary`; never add a separate Core Competencies section when that content belongs in the summary.
 - Entries: `**Company — Role | YYYY–YYYY**` (Company FIRST, em-dash, en-dash year range). Never company-as-section-header, never "2024 to 2025".
 - SoftCo MUST carry the canonical metrics bullet: "Improved CSAT by 15% and reduced backlog by 20% while support demand grew 30%". A CV omitting it is drift even though it cites nothing false.
+- **Role-bound facts must retain their source role.** For Davin, the AppleCare Excellence Award and
+  95 percent CSAT over 12 months belong only to `Apple Distribution International — Senior Technical
+  Support Advisor | 2015–2019` (TSR-5237 canon rule 12b), never the later Apple manager role. The
+  approved callback/profile outranks an older render or historical narrative when sources conflict.
+- A bundle with role-bound facts must include `candidate-claim-bindings.json`. Exemplar discovers it
+  automatically and the renderer refuses a CV that uses any bound term outside its approved company,
+  role and dates. A tailored CV may omit a bound fact; it may not reattribute it.
 - Early Career = one bulleted `Role, Company | YYYY–YYYY` line per role. It is not a dumping ground for substantive experience; those roles retain their own evidence-led Professional Experience entry.
 - Every application's CV = this structure with a role-tailored positioning line, summary, and bullet angle. 2026-07-19 audit result: only the reference CV was canon; the rest were rebuilt (v2/v3 on their issues).
 
