@@ -49,6 +49,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentOwnershipService: () => ({ buildEnforcementDryRunReport: vi.fn() }),
     agentService: () => mockAgentService,
     budgetService: () => mockBudgetService,
     companyArtifactsService: () => mockCompanyArtifactsService,

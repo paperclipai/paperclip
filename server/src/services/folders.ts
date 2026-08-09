@@ -10,17 +10,13 @@ import type {
   MoveFolderItem,
   UpdateFolder,
 } from "@paperclipai/shared";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, isPostgresError, notFound, unprocessable } from "../errors.js";
 
 const MAX_FOLDER_DEPTH = 4;
 const RESERVED_ROOT_SLUGS = new Set(["bundled", "my", "projects"]);
 const RESERVED_CHILD_ROOT_SYSTEM_KEYS = new Set(["my", "projects"]);
 
 type FolderRow = typeof folders.$inferSelect;
-
-function isPostgresError(error: unknown, code: string) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
-}
 
 function normalizeName(name: string) {
   return name.trim();

@@ -21,6 +21,17 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
+    // TECH-4930 stage 2: gates the agent-ownership enforcement added in
+    // server/src/services/authorization.ts (applyAgentOwnershipEnforcement).
+    // Defaults to false so existing companies see byte-identical behavior
+    // until an admin opts in. Enabling is refused by
+    // agentOwnershipService(db).assertReadyToEnableEnforcement() (called
+    // from companyService.update) whenever any agent in the company has
+    // zero active owner grants -- see agent_ownership_grants.ts for why
+    // agents created before TECH-4929 shipped may have none.
+    enforceAgentOwnership: boolean("enforce_agent_ownership")
+      .notNull()
+      .default(false),
     interactionResolverGovernance: jsonb("interaction_resolver_governance")
       .$type<InteractionResolverGovernance>()
       .notNull()

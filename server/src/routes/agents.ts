@@ -3636,6 +3636,22 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    // TECH-4930 stage 2: company-wide "agents:create" (above) says the
+    // caller may manage *some* agent in this company; it says nothing about
+    // whether they may drive *this* agent, which is the actual gap this
+    // route had (path 2 of 6 in the ticket). agent-ownership enforcement is
+    // a no-op until a company opts in (companies.enforce_agent_ownership,
+    // default false), so this is additive and does not change behavior for
+    // companies that haven't enabled it.
+    const wakeDecision = await access.decide({
+      actor: req.actor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: agent.companyId, agentId: id },
+    });
+    if (!wakeDecision.allowed) {
+      res.status(403).json({ error: wakeDecision.explanation, code: wakeDecision.code });
+      return;
+    }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
@@ -3705,6 +3721,22 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+    // TECH-4930 stage 2: company-wide "agents:create" (above) says the
+    // caller may manage *some* agent in this company; it says nothing about
+    // whether they may drive *this* agent, which is the actual gap this
+    // route had (path 2 of 6 in the ticket). agent-ownership enforcement is
+    // a no-op until a company opts in (companies.enforce_agent_ownership,
+    // default false), so this is additive and does not change behavior for
+    // companies that haven't enabled it.
+    const wakeDecision = await access.decide({
+      actor: req.actor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: agent.companyId, agentId: id },
+    });
+    if (!wakeDecision.allowed) {
+      res.status(403).json({ error: wakeDecision.explanation, code: wakeDecision.code });
+      return;
     }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({

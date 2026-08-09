@@ -21,6 +21,18 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  // TECH-4930 stage 2: routes/issues.ts now also calls `access.decide` with
+  // action "agent:wake" from the comment route and from checkout-when-
+  // already-assignee, to run the (default-off) agent-ownership enforcement
+  // check. Default to an unconditional allow so this file's existing
+  // scenarios -- none of which are about ownership enforcement -- stay
+  // byte-identical to before that call existed.
+  decide: vi.fn(async (input: { action?: string }) => ({
+    allowed: true,
+    action: input.action,
+    reason: "allow_test",
+    explanation: "Allowed by test mock.",
+  })),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -242,6 +254,83 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("closed workspace");
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  // TECH-4930 stage 2, path 1 of 6: the comment route previously called
+  // `addWakeup(assigneeId, ...)` unconditionally for a board actor
+  // commenting on an agent-assigned issue -- `assertAgentIssueCommentAllowed`
+  // short-circuited to `true` for any non-agent actor. This pins the new
+  // "agent:wake" gate added at the top of that function: `decide` denies
+  // specifically the assignee's wake, and the comment must never reach
+  // `addComment`. Reverting that gate (or the shared enforcement layer in
+  // authorization.ts it calls in production) makes this fall through to a
+  // 200/201.
+  it("blocks new issue comments when agent-ownership enforcement denies the assignee", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "agent:wake") {
+        return {
+          allowed: false,
+          action: "agent:wake",
+          reason: "deny_agent_ownership_required",
+          code: "AGENT_OWNERSHIP_REQUIRED",
+          explanation: `Principal has no active ownership grant on agent ${input.resource?.agentId}.`,
+        };
+      }
+      return { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed by test mock." };
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent:wake",
+        resource: expect.objectContaining({ type: "agent", agentId }),
+      }),
+    );
+  });
+
+  // TECH-4930 stage 2, path 3 of 6: checkout's `assertCanAssignTasks` call is
+  // inside `if (issue.assigneeAgentId !== req.body.agentId)`, so it is
+  // skipped in exactly the case where the agent already holds the issue --
+  // this fixture's issue is already assigned to `agentId`, and the checkout
+  // body below re-checks out that same agent, landing in the `else` branch
+  // this ticket added the ownership gate to. Reverting that gate makes this
+  // fall through to a successful checkout.
+  it("blocks checkout when agent-ownership enforcement denies the already-assigned agent", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "agent:wake") {
+        return {
+          allowed: false,
+          action: "agent:wake",
+          reason: "deny_agent_ownership_required",
+          code: "AGENT_OWNERSHIP_REQUIRED",
+          explanation: `Principal has no active ownership grant on agent ${input.resource?.agentId}.`,
+        };
+      }
+      return { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed by test mock." };
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent:wake",
+        resource: expect.objectContaining({ type: "agent", agentId }),
+      }),
+    );
   });
 
   it("still allows non-comment board updates so the issue can be moved to a new workspace", async () => {

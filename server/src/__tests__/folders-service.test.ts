@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   folderSlugSchema,
@@ -408,6 +408,126 @@ describeEmbeddedPostgres("folder service", () => {
     expect(rows.filter((row) => row.systemKey === "my")).toHaveLength(1);
     expect(rows.filter((row) => row.systemKey === "my:user-123")).toHaveLength(1);
     expect(rows.find((row) => row.systemKey === null)).toMatchObject({ name: "Squatted My" });
+  });
+
+  it("returns a 409 conflict (not an unhandled 500) when a real wrapped Postgres unique-violation hits the create() catch branch", async () => {
+    // folders.ts used to have its own local isPostgresError that only
+    // checked the top-level error's `.code`. drizzle-orm wraps the real pg
+    // error on `.cause`, so that check never matched and this catch branch
+    // was dead code. Now that isPostgresError walks the cause chain, this
+    // branch is live for the first time. Bypass the per-company advisory
+    // lock (by driving two `mutationLockHeld: true` service instances
+    // directly, skipping the `withCompanyFolderLock` wrapper that normally
+    // serializes creates) so two creates race past the app-level
+    // `assertNoSlugConflict` pre-check concurrently, forcing the database's
+    // unique index to reject the second insert with a genuine wrapped
+    // `cause.code === "23505"` error, matching how drizzle actually wraps
+    // Postgres errors (see built-in-agents.test.ts's equivalent race for
+    // the same wrapping shape).
+    //
+    // Racing alone isn't enough to prove *which* code path produced the
+    // 409, though: `assertNoSlugConflict`'s own pre-check throws an
+    // identically-shaped 409 ("Folder slug already exists under this
+    // parent"), and depending on scheduling it can win the race just as
+    // easily as the INSERT-level catch this test is actually meant to
+    // exercise. `assertNoSlugConflict` is a private closure inside
+    // folders.ts (not exported), so it can't be spied on directly. Instead,
+    // force it to be a no-op by intercepting its `db.select({ id:
+    // folders.id })` conflict-check query -- within this test's call path
+    // (a top-level `create()` with no `parentId`, so `validateParent` never
+    // queries) that exact `{ id: folders.id }` select shape is unique to
+    // `assertNoSlugConflict`, so making it always resolve to "no existing
+    // row found" guarantees `assertNoSlugConflict` can never be the source
+    // of the 409 -- any 409 that occurs must come from the real
+    // database-level unique-constraint catch in the INSERT's try/catch.
+    //
+    // The `{ id: folders.id }` shape isn't actually unique to
+    // `assertNoSlugConflict`, though -- e.g. `deleteFolder`'s child-row
+    // check builds the exact same shape. If some other code path the test
+    // doesn't intend to touch ever matched here, the mock would silently
+    // fake-empty it instead of hitting the real DB, and the test could
+    // still pass for the wrong reason. So this also counts every select
+    // call, both matched and total, and asserts the exact counts implied by
+    // this test's two racing `create()` calls (see the tally below) --
+    // if the mock ever intercepts more or fewer calls than expected, this
+    // fails loudly instead of silently passing.
+    const companyId = await seedCompany();
+
+    let matchedSelectCount = 0;
+    let totalSelectCount = 0;
+    const originalSelect = db.select.bind(db);
+    const selectSpy = vi.spyOn(db, "select").mockImplementation((...args: unknown[]) => {
+      totalSelectCount += 1;
+      const fields = args[0] as { id?: unknown } | undefined;
+      if (fields && Object.keys(fields).length === 1 && fields.id === folders.id) {
+        // This is `assertNoSlugConflict`'s pre-check query -- force it to
+        // see no conflicting row, so it can never itself throw the 409.
+        matchedSelectCount += 1;
+        return { from: () => ({ where: () => Promise.resolve([]) }) } as unknown as ReturnType<typeof db.select>;
+      }
+      return (originalSelect as (...args: unknown[]) => ReturnType<typeof db.select>)(...args);
+    });
+
+    // Uses `expect.soft()` for the outcome assertions below so a failure
+    // among them does not abort the test before the mock-call-count guards
+    // after them get a chance to run -- those guards must run
+    // unconditionally (see the comment further down) and would otherwise
+    // mask, or be skipped in favor of, whichever outcome assertion failed
+    // first. `expect.soft()` records failures instead of throwing
+    // immediately; vitest surfaces every recorded soft failure alongside any
+    // later hard `expect()` failure once the test finishes, so nothing gets
+    // silently hidden regardless of which assertions fail.
+    try {
+      const [first, second] = await Promise.allSettled([
+        folderService(db, true).create(companyId, { kind: "routine", name: "Racer", slug: "racer" }),
+        folderService(db, true).create(companyId, { kind: "routine", name: "Racer", slug: "racer" }),
+      ]);
+
+      const settled = [first, second];
+      const fulfilled = settled.filter((result) => result.status === "fulfilled");
+      const rejected = settled.filter((result) => result.status === "rejected");
+
+      expect.soft(fulfilled).toHaveLength(1);
+      expect.soft(rejected).toHaveLength(1);
+      expect.soft((rejected[0] as PromiseRejectedResult | undefined)?.reason).toMatchObject({
+        status: 409,
+        message: "Folder slug already exists under this parent",
+      });
+    } finally {
+      selectSpy.mockRestore();
+    }
+
+    // These count guards run after every `expect.soft()` failure above,
+    // because `expect.soft()` records a failure instead of throwing --
+    // execution falls through to here regardless of which soft assertions
+    // failed, so the guards still get a chance to catch the mock
+    // intercepting the wrong calls (exactly the kind of thing that could
+    // *cause* a soft assertion above to fail in the first place). This is
+    // NOT an unconditional guarantee, though: it only holds for `expect.soft()`
+    // failures specifically. Any ordinary (non-soft) exception thrown inside
+    // the `try` block above -- e.g. from `Promise.allSettled` itself, or a
+    // bug in the mock implementation -- still propagates past the `finally`
+    // and skips these guards entirely, same as it would without `expect.soft()`.
+
+    // Each of the two racing `create()` calls hits `assertNoSlugConflict`
+    // exactly once (no `parentId`, so `validateParent` never queries) --
+    // that's the only place this exact shape should ever be produced in
+    // this test. If it's ever more or less than 2, either this mock is
+    // catching a call it shouldn't (masking a real bug) or the
+    // implementation changed under it in a way this test no longer
+    // validates.
+    expect(matchedSelectCount).toBe(2);
+
+    // Total selects: each racing call does 1 matched (assertNoSlugConflict)
+    // + 1 unmatched (nextPosition's `{ value: max(...) }` select). The
+    // winner additionally runs `getFolder` after its insert succeeds,
+    // which issues 2 more unmatched selects (`getFolderRow`, `getRows`)
+    // -- the loser's insert throws before it ever gets there. That's
+    // (1 + 1) * 2 + 2 = 6 selects total, deterministically, regardless of
+    // which call wins the race. A different total means either an
+    // unexpected code path ran or this mock intercepted a call it
+    // shouldn't have.
+    expect(totalSelectCount).toBe(6);
   });
 
   it("rechecks nested folders after waiting for the company mutation lock", async () => {

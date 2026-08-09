@@ -3696,7 +3696,16 @@ export function issueRoutes(
   function issueWriteDenialCodeForDecision(
     decision: Awaited<ReturnType<typeof decideIssueAccess>>,
   ): IssueWriteDenialCode {
-    if (decision.code) return issueWriteDenialCodeForResponsibleUserDenial(decision.code);
+    // TECH-4930 stage 2 adds a third `decision.code`, AGENT_OWNERSHIP_REQUIRED,
+    // which isn't a responsible-user ceiling code and has no dedicated entry
+    // in this shared issue-write copy contract yet -- it falls through to the
+    // same generic "not visible" boundary copy every other non-responsible-user
+    // denial reason uses below, rather than mapping it into
+    // issueWriteDenialCodeForResponsibleUserDenial (whose signature is
+    // intentionally narrower than AuthorizationDecision["code"]).
+    if (decision.code === "RESPONSIBLE_USER_UNAUTHORIZED" || decision.code === "RESPONSIBLE_USER_UNAVAILABLE") {
+      return issueWriteDenialCodeForResponsibleUserDenial(decision.code);
+    }
     if (decision.reason === "deny_low_trust_boundary" || decision.reason === "deny_policy_restricted") {
       return "issue_write_actor_class_excluded";
     }
@@ -3788,7 +3797,36 @@ export function issueRoutes(
       identifier?: string | null;
     },
   ) {
-    if (req.actor.type !== "agent") return true;
+    // TECH-4930 stage 2, path 1 of 6: this function returns `true`
+    // unconditionally for board (human) actors immediately below, since
+    // board actors are otherwise trusted to comment on any issue they can
+    // see -- but the route always calls `addWakeup(assigneeId, ...)`
+    // unconditionally for an agent-assigned issue, so a board actor
+    // commenting was, in effect, an ungated way to make a "protected" agent
+    // run. Gate that specific effect -- waking the assignee -- for board
+    // actors only, before the `return true` below. Scoped to board actors
+    // deliberately: agent actors already go through the watchdog-scope and
+    // `decideIssueAccess("issue:comment")` / mention-grant boundary checks
+    // further down, which is a different (already-gated) surface than the
+    // one this ticket found ungated; folding this into that path too would
+    // double-count the same "may this agent act here" question against two
+    // different resources (the issue vs. the assignee agent) and risked
+    // false denials for legitimate mention-grant flows. No-op until a
+    // company opts into agent-ownership enforcement
+    // (companies.enforce_agent_ownership).
+    if (req.actor.type !== "agent") {
+      if (issue.assigneeAgentId) {
+        const commentWakeDecision = await access.decide({
+          actor: req.actor,
+          action: "agent:wake",
+          resource: { type: "agent", companyId: issue.companyId, agentId: issue.assigneeAgentId },
+        });
+        if (!commentWakeDecision.allowed) {
+          return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(commentWakeDecision));
+        }
+      }
+      return true;
+    }
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
@@ -8273,6 +8311,22 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
 
+    // TECH-4930 stage 2, path 4 of 6: previously gated only by `assertBoard`
+    // above -- any board actor, no role or ownership check at all -- even
+    // though this directly re-runs the issue's assignee agent. No-op until
+    // a company opts into agent-ownership enforcement.
+    if (issue.assigneeAgentId) {
+      const retryWakeDecision = await access.decide({
+        actor: req.actor,
+        action: "agent:wake",
+        resource: { type: "agent", companyId: issue.companyId, agentId: issue.assigneeAgentId },
+      });
+      if (!retryWakeDecision.allowed) {
+        res.status(403).json({ error: retryWakeDecision.explanation, code: retryWakeDecision.code });
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
       issueId: issue.id,
@@ -9974,6 +10028,23 @@ export function issueRoutes(
         assigneeAgentId: req.body.agentId,
         assigneeUserId: null,
       });
+    } else {
+      // TECH-4930 stage 2, path 3 of 6: this is exactly the case
+      // `assertCanAssignTasks` above is skipped for -- the agent already
+      // holds the issue, so no new assignment is happening -- which is
+      // precisely why it was ungated before this fix. Checking out re-wakes
+      // the assignee below (`shouldWakeAssigneeOnCheckout`), so gate it the
+      // same way as the other five run-triggering paths. No-op until a
+      // company opts into agent-ownership enforcement.
+      const checkoutWakeDecision = await access.decide({
+        actor: req.actor,
+        action: "agent:wake",
+        resource: { type: "agent", companyId: issue.companyId, agentId: req.body.agentId },
+      });
+      if (!checkoutWakeDecision.allowed) {
+        res.status(403).json({ error: checkoutWakeDecision.explanation, code: checkoutWakeDecision.code });
+        return;
+      }
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);

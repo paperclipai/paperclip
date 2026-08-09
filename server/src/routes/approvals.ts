@@ -173,6 +173,32 @@ export function approvalRoutes(
     return false;
   }
 
+  /**
+   * TECH-4930 stage 2, path 5 of 6: approve/reject was gated only by
+   * `assertBoard` plus company membership (`requireApprovalAccess`), then
+   * unconditionally called `heartbeat.wakeup(approval.requestedByAgentId, ...)`
+   * on the applied path -- any non-viewer company member could make the
+   * requesting agent run by resolving its approval. Gate the same
+   * "agent:wake" boundary the other five paths use, targeting the agent
+   * that would actually be woken. No-op until a company opts into
+   * agent-ownership enforcement.
+   */
+  async function assertApprovalResolutionOwnershipAllowed(
+    req: Request,
+    res: any,
+    approval: { companyId: string; requestedByAgentId: string | null },
+  ) {
+    if (!approval.requestedByAgentId) return true;
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent:wake",
+      resource: { type: "agent", companyId: approval.companyId, agentId: approval.requestedByAgentId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: decision.explanation, code: decision.code });
+    return false;
+  }
+
   async function assertApprovalMutationAllowedByRunContext(req: Request, res: any, companyId: string) {
     if (req.actor.type !== "agent") return true;
     const runId = req.actor.runId?.trim();
@@ -288,10 +314,12 @@ export function approvalRoutes(
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
+    const approvalForAccess = await requireApprovalAccess(req, id);
+    if (!approvalForAccess) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    if (!(await assertApprovalResolutionOwnershipAllowed(req, res, approvalForAccess))) return;
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
@@ -404,10 +432,12 @@ export function approvalRoutes(
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
+    const approvalForAccess = await requireApprovalAccess(req, id);
+    if (!approvalForAccess) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    if (!(await assertApprovalResolutionOwnershipAllowed(req, res, approvalForAccess))) return;
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 

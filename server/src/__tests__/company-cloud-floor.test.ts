@@ -18,6 +18,7 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  agentOwnershipService: () => ({ buildEnforcementDryRunReport: vi.fn() }),
   accessService: () => mockAccessService,
   agentService: () => ({}),
   budgetService: () => mockBudgetService,

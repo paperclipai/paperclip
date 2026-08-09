@@ -192,8 +192,46 @@ export async function startServer(): Promise<StartedServer> {
           { repairedMigrations: repair.repairedMigrations },
           `${label} had drifted migration history; repaired migration journal entries from existing schema state.`,
         );
+      }
+      if (repair.alreadyRecordedByOtherReplica.length > 0) {
+        logger.info(
+          { alreadyRecordedByOtherReplica: repair.alreadyRecordedByOtherReplica },
+          `${label} found migrations already recorded by another replica; re-inspecting migration state.`,
+        );
+      }
+      // Default to reconcile's own remainingMigrations -- as of this point,
+      // reconcile's internal inspect (which runs after its repair loop) is
+      // the freshest read we have. Only overridden below when the re-inspect
+      // branch actually runs a NEWER inspectMigrations call; `state` itself
+      // is NOT fresher than that by default -- in this no-repair path it's
+      // still the very first inspect from the top of this function, taken
+      // before reconcile ran at all. (A prior version of this logic read
+      // `state.pendingMigrations` unconditionally here, which was actually
+      // the stalest available source in this exact branch -- the opposite of
+      // the intent.)
+      let stillPending: string[] = repair.remainingMigrations;
+      if (repair.repairedMigrations.length > 0 || repair.alreadyRecordedByOtherReplica.length > 0) {
         state = await inspectMigrations(connectionString);
         if (state.status === "upToDate") return "already applied";
+        // This re-inspect IS fresher than reconcile's own internal check
+        // (it's the last DB read before we act on `state` below), so it
+        // takes over as the source here.
+        stillPending = state.status === "needsMigrations" ? state.pendingMigrations : [];
+      }
+      // Logged after the re-inspect above (when it ran) so this reflects
+      // what's actually still pending once repairs/other-replica recoveries
+      // are accounted for -- otherwise "still pending" could be contradicted
+      // moments later by an "already applied" return, or by a "Refusing to
+      // start against a stale schema" throw further down in non-autoApply
+      // mode. Field name matches the other migration-list logs in this
+      // function (`pendingMigrations`, not `remainingMigrations`), since by
+      // the time this fires it's just "what's pending," not a residual tied
+      // to reconcile's own internal struct field of the same name.
+      if (stillPending.length > 0) {
+        logger.info(
+          { pendingMigrations: stillPending },
+          `${label} reconciliation left migrations still pending.`,
+        );
       }
     }
     if (state.status === "upToDate") return "already applied";
