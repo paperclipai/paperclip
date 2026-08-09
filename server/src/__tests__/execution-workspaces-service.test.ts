@@ -770,6 +770,52 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(reopenActivities).toContainEqual({ action: "execution_workspace.source_issue_reopened" });
   }, 20_000);
 
+  it("blocks close and terminal cleanup while a live run context still references the workspace", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seeded.companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: seeded.companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: {
+        issueId: seeded.sourceIssueId,
+        executionWorkspaceId: seeded.executionWorkspaceId,
+      },
+    });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    const firstSweep = await svc.sweepTerminalWorkspaces();
+    const [runningWorkspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(readiness).toMatchObject({
+      state: "blocked",
+      isDestructiveCloseAllowed: false,
+      blockingReasons: ["This workspace is still used by a queued or running heartbeat run."],
+    });
+    expect(firstSweep).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+    expect(runningWorkspace?.status).toBe("active");
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const secondSweep = await svc.sweepTerminalWorkspaces();
+    expect(secondSweep.archived).toBe(1);
+  }, 20_000);
+
   it("allows archiving shared workspace sessions with warnings even when issues are still open", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
