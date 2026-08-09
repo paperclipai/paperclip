@@ -687,6 +687,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    executionPolicy?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -789,6 +790,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
         monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+        executionPolicy: input.executionPolicy ?? null,
         responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
@@ -6605,6 +6607,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "succeeded",
       livenessState: "advanced",
       monitorNextCheckAt: new Date("2026-03-19T01:00:00.000Z"),
+      executionPolicy: {
+        monitor: { nextCheckAt: "2026-03-19T01:00:00.000Z" },
+      },
       resultJson: {
         summary: "Waiting for the deploy to settle; monitor is scheduled.",
         externalWait: { kind: "issue_monitor", durable: true },

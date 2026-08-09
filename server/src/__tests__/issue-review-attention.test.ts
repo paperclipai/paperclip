@@ -137,14 +137,15 @@ describeEmbeddedPostgres("issue review attention", () => {
 
   it("reports every healthy review path as covered", async () => {
     const { companyId, agentId } = await seed();
+    const monitorDeadline = new Date("2099-01-01T00:01:00.000Z");
     const interactionIssueId = await insertReview({ companyId, agentId, identifier: "RVA-2" });
     const approvalIssueId = await insertReview({ companyId, agentId, identifier: "RVA-3" });
     const monitorIssueId = await insertReview({
       companyId,
       agentId,
       identifier: "RVA-4",
-      monitorNextCheckAt: new Date(Date.now() + 60_000),
-      executionPolicy: { monitor: { maxAttempts: 3 } },
+      monitorNextCheckAt: monitorDeadline,
+      executionPolicy: { monitor: { nextCheckAt: monitorDeadline.toISOString(), maxAttempts: 3 } },
     });
     const humanIssueId = await insertReview({
       companyId,
