@@ -30,7 +30,9 @@ trap 'rm -f "$ROWS"' EXIT
 
 # Do not emit raw temporary/public URLs into the report. They may be expired,
 # sensitive, and are not reliable asset identities. The evidence is the issue
-# record plus source counts and durable Paperclip attachment coverage.
+# record plus source counts and Paperclip attachment candidates. An attachment
+# must still be reconciled by filename/request id/hash before it can be said to
+# be the asset named by an old provider URL.
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -AtF $'\t' > "$ROWS" <<'SQL'
 WITH comment_refs AS (
   SELECT company_id, issue_id, count(*)::int AS count, max(updated_at) AS last_seen_at
@@ -53,11 +55,22 @@ WITH comment_refs AS (
     GREATEST(COALESCE(c.last_seen_at, '-infinity'::timestamptz), COALESCE(d.last_seen_at, '-infinity'::timestamptz)) AS last_seen_at
   FROM comment_refs c
   FULL OUTER JOIN document_refs d ON d.issue_id = c.issue_id
-), attachment_counts AS (
+), attachment_evidence AS (
   SELECT
     ia.issue_id,
     count(*)::int AS attachment_count,
-    count(*) FILTER (WHERE a.content_type LIKE 'video/%')::int AS video_attachment_count
+    count(*) FILTER (WHERE a.content_type LIKE 'video/%')::int AS video_attachment_count,
+    jsonb_agg(
+      jsonb_build_object(
+        'attachmentId', ia.id,
+        'assetId', a.id,
+        'originalFilename', a.original_filename,
+        'contentType', a.content_type,
+        'byteSize', a.byte_size,
+        'sha256', a.sha256,
+        'createdAt', ia.created_at
+      ) ORDER BY ia.created_at DESC
+    ) AS attachment_candidates
   FROM issue_attachments ia
   JOIN assets a ON a.id = ia.asset_id
   GROUP BY ia.issue_id
@@ -69,20 +82,22 @@ SELECT
   i.title,
   r.comment_refs,
   r.document_refs,
-  COALESCE(ac.attachment_count, 0),
-  COALESCE(ac.video_attachment_count, 0),
+  COALESCE(ae.attachment_count, 0),
+  COALESCE(ae.video_attachment_count, 0),
+  COALESCE(ae.attachment_candidates, '[]'::jsonb),
   r.last_seen_at
 FROM refs r
 JOIN issues i ON i.id = r.issue_id
-LEFT JOIN attachment_counts ac ON ac.issue_id = r.issue_id
-ORDER BY COALESCE(ac.attachment_count, 0) ASC, r.last_seen_at DESC, i.identifier;
+LEFT JOIN attachment_evidence ae ON ae.issue_id = r.issue_id
+ORDER BY COALESCE(ae.attachment_count, 0) ASC, r.last_seen_at DESC, i.identifier;
 SQL
 
 node - "$ROWS" "$OUTPUT" <<'NODE'
 const fs = require("fs");
 const [rowsPath, outputPath] = process.argv.slice(2);
 const rows = fs.readFileSync(rowsPath, "utf8").trim().split("\n").filter(Boolean).map((line) => {
-  const [companyId, issueId, identifier, title, commentRefs, documentRefs, attachmentCount, videoAttachmentCount, lastSeenAt] = line.split("\t");
+  const [companyId, issueId, identifier, title, commentRefs, documentRefs, attachmentCount, videoAttachmentCount, attachmentCandidates, lastSeenAt] = line.split("\t");
+  const hasAttachments = Number(attachmentCount) > 0;
   return {
     companyId,
     issueId,
@@ -92,20 +107,31 @@ const rows = fs.readFileSync(rowsPath, "utf8").trim().split("\n").filter(Boolean
     documentRefs: Number(documentRefs),
     attachmentCount: Number(attachmentCount),
     videoAttachmentCount: Number(videoAttachmentCount),
+    attachmentCandidates: JSON.parse(attachmentCandidates),
     lastSeenAt,
-    disposition: Number(attachmentCount) > 0 ? "durable_attachment_present" : "needs_consolidated_review",
+    disposition: hasAttachments
+      ? "needs_attachment_identity_check"
+      : "needs_recovery_or_retention_decision",
   };
 });
-const review = rows.filter((row) => row.disposition === "needs_consolidated_review");
+const missingAttachment = rows.filter((row) => row.disposition === "needs_recovery_or_retention_decision");
+const candidateCheck = rows.filter((row) => row.disposition === "needs_attachment_identity_check");
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: new Date().toISOString(),
   scope: "Paperclip issue comments and issue-linked documents containing x.ai URLs",
-  importantLimit: "URL references are not asset identities. Do not create one recovery task per URL; use this one report to decide retention or targeted recovery.",
+  importantLimit: "URL references are not asset identities. Do not create one recovery task per URL. Attachment candidates are durable evidence but must be reconciled by filename/request id/hash before claiming they match a historic xAI URL.",
+  reconciliationOrder: [
+    "Paperclip attachment candidate: compare filename/request id and SHA-256; download through its attachment content path if byte verification is needed.",
+    "Hermes cache: only a short-term recovery source (~/.hermes/cache/videos/xai-<request-id>.mp4), never completion evidence by itself.",
+    "X10 custody: confirm the matched Paperclip object has been mirrored by the hourly custody job; do not create per-URL recovery work before this consolidated decision.",
+  ],
   summary: {
     issuesWithXaiReferences: rows.length,
-    issuesWithAnyAttachment: rows.length - review.length,
-    issuesNeedingConsolidatedReview: review.length,
+    issuesWithAttachmentCandidates: candidateCheck.length,
+    issuesWithoutAttachmentCandidates: missingAttachment.length,
+    issuesNeedingAttachmentIdentityCheck: candidateCheck.length,
+    issuesNeedingRecoveryOrRetentionDecision: missingAttachment.length,
     totalCommentReferenceRecords: rows.reduce((sum, row) => sum + row.commentRefs, 0),
     totalDocumentReferenceRecords: rows.reduce((sum, row) => sum + row.documentRefs, 0),
   },
