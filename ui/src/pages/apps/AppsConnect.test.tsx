@@ -23,7 +23,9 @@ const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
+const SLACK = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
+const LINEAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "linear")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -236,6 +238,34 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=opaque",
+    );
+  });
+
+  it("auto-starts the allowlisted Slack source deep link and opens provider sign-in", async () => {
+    mockSearch.value = "source=slack";
+    listGalleryMock.mockResolvedValueOnce({ apps: [SLACK] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-slack",
+      application: { id: "app-slack", name: "Slack" },
+      connection: { id: "conn-slack" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://slack.com/oauth/v2/authorize?state=opaque" },
+    });
+
+    await render();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "slack",
+      name: "Slack",
+      credentialValues: {},
+      configValues: undefined,
+      applicationId: undefined,
+    });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://slack.com/oauth/v2/authorize?state=opaque",
     );
   });
 
@@ -479,9 +509,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("keeps non-allowlisted OAuth apps blocked", async () => {
-    const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
-    mockParams.appKey = "slack";
-    listGalleryMock.mockResolvedValueOnce({ apps: [slack] });
+    mockParams.appKey = "linear";
+    listGalleryMock.mockResolvedValueOnce({ apps: [LINEAR] });
 
     await render();
 

@@ -14,6 +14,7 @@ export const ZAPIER_CONNECT_HREF = "/apps/connect?byo=1&source=zapier";
 
 /** MCP-direct OAuth apps enter through the generic source deep link. */
 export const NOTION_CONNECT_HREF = appSourceConnectHref("notion");
+export const SLACK_CONNECT_HREF = appSourceConnectHref("slack");
 
 /**
  * First-class "Connect your own tool" card (PAP-12371, Finding C; PAP-13254).

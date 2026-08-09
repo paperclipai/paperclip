@@ -108,7 +108,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connect Notion, Zapier, or your own MCP server.");
+    expect(text).toContain("Connect Notion, Slack, Zapier, or your own MCP server.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");
@@ -118,7 +118,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).toContain("Connect your own tool");
   });
 
-  it("enables Notion, Zapier, and custom URLs while fading unfinished integrations", async () => {
+  it("enables Notion, Slack, Zapier, and custom URLs while fading unfinished integrations", async () => {
     await renderBrowse();
 
     const zapierTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
@@ -129,6 +129,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     );
     const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
       button.textContent?.includes("Notion"),
+    );
+    const slackTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Slack"),
     );
     const tile = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Acme CRM"),
@@ -141,11 +144,14 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
     expect(notionTiles).toHaveLength(2);
     expect(notionTiles.every((button) => !button.disabled)).toBe(true);
+    expect(slackTiles).toHaveLength(2);
+    expect(slackTiles.every((button) => !button.disabled)).toBe(true);
     expect(githubTiles.every((button) => button.disabled)).toBe(true);
     expect(tile?.disabled).toBe(true);
     expect(byoCard?.disabled).toBe(false);
     expect(tile?.textContent).toContain("Coming soon");
     expect(zapierTiles[0]?.textContent).toContain("Connect");
+    expect(slackTiles[0]?.textContent).toContain("Connect");
 
     await act(async () => {
       zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -156,6 +162,11 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=notion");
+
+    await act(async () => {
+      slackTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=slack");
 
     await act(async () => {
       byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

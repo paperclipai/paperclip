@@ -21,12 +21,14 @@ import {
   ByoConnectCard,
   NOTION_CONNECT_HREF,
   POPULAR_KEYS,
+  SLACK_CONNECT_HREF,
   ZAPIER_CONNECT_HREF,
 } from "./store-cards";
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
   if (slug === "notion") return NOTION_CONNECT_HREF;
+  if (slug === "slack") return SLACK_CONNECT_HREF;
   if (slug === "zapier") return ZAPIER_CONNECT_HREF;
   return null;
 }
@@ -36,8 +38,9 @@ function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
  *
  * A persistent, browsable storefront: search + a Popular grid + the full
  * gallery + a first-class bring-your-own card + a labelled Developer link.
- * Browse remains the single discoverability surface. Notion uses MCP-direct
- * OAuth, while Zapier and bring-your-own MCP servers use the URL flow.
+ * Browse remains the single discoverability surface. Notion and Slack use
+ * MCP-direct OAuth, while Zapier and bring-your-own MCP servers use the
+ * URL flow.
  */
 export function Browse() {
   const navigate = useNavigate();
@@ -90,7 +93,7 @@ export function Browse() {
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect Notion, Zapier, or your own MCP server. More integrations are coming soon.
+          Connect Notion, Slack, Zapier, or your own MCP server. More integrations are coming soon.
         </p>
       </header>
 

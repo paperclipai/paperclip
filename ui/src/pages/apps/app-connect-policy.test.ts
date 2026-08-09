@@ -7,16 +7,17 @@ import {
 } from "./app-connect-policy";
 
 describe("app connect policy", () => {
-  it("allowlists exactly Notion for MCP-direct OAuth", () => {
-    expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(["notion"]);
+  it("allowlists exactly Notion and Slack for MCP-direct OAuth", () => {
+    expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(["notion", "slack"]);
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);
+    expect(isMcpDirectOAuthConnectSlug("slack")).toBe(true);
     expect(isMcpDirectOAuthConnectSlug("github")).toBe(false);
-    expect(isMcpDirectOAuthConnectSlug("slack")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug(null)).toBe(false);
   });
 
-  it("admits the Notion deep link without opening other source slugs", () => {
+  it("admits the Notion and Slack deep links without opening other source slugs", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=notion"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(true);
@@ -24,5 +25,6 @@ describe("app connect policy", () => {
 
   it("builds a generic source deep link", () => {
     expect(appSourceConnectHref("notion")).toBe("/apps/connect?source=notion");
+    expect(appSourceConnectHref("slack")).toBe("/apps/connect?source=slack");
   });
 });
