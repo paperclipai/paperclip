@@ -624,6 +624,44 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("suppresses live-run Working messages for terminal issues", () => {
+    const liveRun: LiveRunForIssue = {
+      id: "run-live-terminal",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:04:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:04:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+    };
+
+    const terminalMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      issueStatus: "done",
+      currentUserId: "user-1",
+    });
+    const liveMessages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      issueStatus: "in_progress",
+      currentUserId: "user-1",
+    });
+
+    expect(terminalMessages.find((message) => message.id === "run-assistant:run-live-terminal")).toBeUndefined();
+    expect(liveMessages.find((message) => message.id === "run-assistant:run-live-terminal")).toMatchObject({
+      status: { type: "running" },
+      metadata: { custom: { waitingText: "Working..." } },
+    });
+  });
+
   it("merges thread interactions into the same chronological feed as comments and runs", () => {
     const messages = buildIssueChatMessages({
       comments: [

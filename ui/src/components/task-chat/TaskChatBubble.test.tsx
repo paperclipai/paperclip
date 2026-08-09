@@ -209,3 +209,62 @@ describe("TaskChatBubble footer line (round 9)", () => {
     expect(plain).toHaveLength(0);
   });
 });
+
+describe("TaskChatBubble footer actions (PAP-413)", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    root = null;
+    container.remove();
+  });
+
+  function render(item: TaskChatMessageItem, opts?: { attachedTurn?: ReactNode; actions?: ReactNode }) {
+    flushSync(() =>
+      root!.render(
+        <ThemeProvider>
+          <TaskChatBubble item={item} attachedTurn={opts?.attachedTurn} actions={opts?.actions} />
+        </ThemeProvider>,
+      ),
+    );
+  }
+
+  const actions = <div data-testid="fake-actions">actions</div>;
+
+  it("hands actions to the attached turn (not this wrapper) so they ride the summary row", () => {
+    render(
+      { id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Done.", timestamp: "2:34 PM" },
+      { attachedTurn: <div data-testid="fake-attached-turn">2:34 PM · Worked</div>, actions },
+    );
+    const slot = container.querySelector('[data-testid="task-chat-bubble-attached-turn"]');
+    expect(slot).not.toBeNull();
+    // The turn owns the footer line; the bubble no longer places actions beside
+    // it (they ride the turn's `leading` slot, anchored to the summary line).
+    expect(slot?.querySelector('[data-testid="fake-attached-turn"]')).not.toBeNull();
+    expect(slot?.querySelector('[data-testid="fake-actions"]')).toBeNull();
+  });
+
+  it("leads a runless agent reply with actions, timestamp trailing", () => {
+    render(
+      { id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Done.", timestamp: "2:34 PM" },
+      { actions },
+    );
+    expect(container.querySelector('[data-testid="fake-actions"]')).not.toBeNull();
+    const stamp = [...container.querySelectorAll("span")].find((el) => el.textContent === "2:34 PM");
+    expect(stamp).not.toBeNull();
+  });
+
+  it("omits the actions row entirely when none are supplied (human bubble)", () => {
+    render({ id: "m1", kind: "message", author: "human", text: "Hi", timestamp: "2:34 PM" });
+    expect(container.querySelector('[data-testid="fake-actions"]')).toBeNull();
+    const stamp = [...container.querySelectorAll("span")].find((el) => el.textContent === "2:34 PM");
+    expect(stamp).not.toBeNull();
+  });
+});

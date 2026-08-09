@@ -1605,6 +1605,72 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]);
   });
 
+  it("defaults package conflicts to skip and reports skip, rename, and explicit replace outcomes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const original = await svc.createLocalSkill(companyId, {
+      name: "Conflict Skill",
+      slug: "conflict-skill",
+      markdown: "---\nname: Conflict Skill\n---\n\n# Original\n",
+    });
+    const packageFiles = {
+      "skills/conflict-skill/SKILL.md": [
+        "---",
+        "name: Imported Conflict Skill",
+        "slug: conflict-skill",
+        "description: Incoming package version",
+        "---",
+        "",
+        "# Imported",
+        "",
+      ].join("\n"),
+    };
+
+    const skipped = await svc.importPackageFiles(companyId, packageFiles);
+    expect(skipped).toEqual([
+      expect.objectContaining({
+        action: "skipped",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({ id: original.id, name: "Conflict Skill" }),
+      }),
+    ]);
+    await expect(svc.getById(companyId, original.id)).resolves.toMatchObject({
+      name: "Conflict Skill",
+      markdown: expect.stringContaining("# Original"),
+    });
+
+    const renamed = await svc.importPackageFiles(companyId, packageFiles, { onConflict: "rename" });
+    expect(renamed).toEqual([
+      expect.objectContaining({
+        action: "renamed",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({
+          name: "Imported Conflict Skill",
+          slug: "conflict-skill-2",
+        }),
+      }),
+    ]);
+    expect((await svc.list(companyId)).filter((skill) => skill.slug.startsWith("conflict-skill"))).toHaveLength(2);
+
+    const replaced = await svc.importPackageFiles(companyId, packageFiles, { onConflict: "replace" });
+    expect(replaced).toEqual([
+      expect.objectContaining({
+        action: "replaced",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({ id: original.id, name: "Imported Conflict Skill" }),
+      }),
+    ]);
+    await expect(svc.getById(companyId, original.id)).resolves.toMatchObject({
+      name: "Imported Conflict Skill",
+      markdown: expect.stringContaining("# Imported"),
+    });
+  });
+
   it("rejects executable external package skills before persistence", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

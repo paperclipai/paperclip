@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-28T22:35:25.645Z",
+  "generatedAt": "2026-08-07T20:30:29.973Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 11837,
-          "sha256": "86d6e382c32c626213b46c010cc7fc1ec460821a8c777cfa5b8e86fa9d6a86b2"
+          "sizeBytes": 12028,
+          "sha256": "083d5fa8dc43c3ce7747e89c1afb6f6f42d0603a31808bffc5f8e56735f2d865"
         }
       ],
-      "contentHash": "sha256:1c7a82cd9638a1d845b238032da3ff4ad80c5b6a87dca46082f501fa4583db55"
+      "contentHash": "sha256:f2592d81f616628a3eba92636616424f2eed82ec22bb504240a58f6be115e407"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:status-card-query",
@@ -1113,6 +1113,53 @@
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
       }
+    },
+    {
+      "id": "paperclipai:optional:software-development:prepare-mcp-integration",
+      "key": "paperclipai/optional/software-development/prepare-mcp-integration",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "prepare-mcp-integration",
+      "name": "prepare-mcp-integration",
+      "description": "Prepare MCP/vendor integrations through cited research, a content PR, exact-revision human approval, and one governed Paperclip connector PR per approved connection. Use for new integration research and delivery; not for ad hoc connector coding that bypasses the playbooks.",
+      "path": "catalog/optional/software-development/prepare-mcp-integration",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager",
+        "researcher"
+      ],
+      "requires": [
+        "git",
+        "gh",
+        "curl"
+      ],
+      "tags": [
+        "mcp",
+        "integrations",
+        "connectors",
+        "research",
+        "github",
+        "human-approval"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 11183,
+          "sha256": "452386be3aa5e2988dc9d72f288f469975da766626a25c48017877963c533781"
+        },
+        {
+          "path": "examples/notion-mcp-research-gate.md",
+          "kind": "markdown",
+          "sizeBytes": 1900,
+          "sha256": "944b13ac67c06c65643eb236e856f1479106749861535648d29334f84cf1b50b"
+        }
+      ],
+      "contentHash": "sha256:4dbb76624e0fd5502fa10a9168f77214c5020899838af887e77a1617a0a00c31"
     }
   ]
 }

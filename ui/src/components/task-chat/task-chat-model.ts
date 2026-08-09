@@ -12,6 +12,7 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
 /** Who authored a thread row — the primary legibility signal. */
@@ -100,6 +101,17 @@ export interface TaskChatMessageItem {
    * Expanding still nests the tool history beneath the bubble.
    */
   attachedTurn?: TaskChatTurnItem;
+  /**
+   * Structured system-notice fields (PAP-443), carried only for
+   * author === "system": the comment's server-authored presentation hints and
+   * metadata sections drive the collapsed one-line row + expandable detail.
+   */
+  presentation?: IssueCommentPresentation | null;
+  metadata?: IssueCommentMetadata | null;
+  /** Agent that owns the source run, used to build run-detail links in metadata rows. */
+  runAgentId?: string | null;
+  /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
+  createdAtIso?: string;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */

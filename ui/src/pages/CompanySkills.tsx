@@ -5446,7 +5446,7 @@ export function CompanySkills() {
 
   const attachAgentsMutation = useMutation({
     mutationFn: async (input: { agentId: string; desiredSkills: Array<string | AgentDesiredSkillEntry> }) => {
-      return agentsApi.syncSkills(input.agentId, input.desiredSkills, selectedCompanyId ?? undefined);
+      return agentsApi.syncSkills(input.agentId, input.desiredSkills, "replace", selectedCompanyId ?? undefined);
     },
     onSuccess: async () => {
       await Promise.all([

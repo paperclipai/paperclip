@@ -19,9 +19,12 @@ import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescri
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
+  TaskChatMessageItem,
   TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
+import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
+import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
@@ -29,6 +32,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
+import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import { workModeInEffectAt } from "@/lib/issue-timeline-events";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
 
@@ -108,6 +112,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     threadHeader,
     workModeChanges,
     issueBrief,
+    feedbackVotes,
+    feedbackDataSharingPreference = "prompt",
+    feedbackTermsUrl = null,
+    onVote,
+    draftKey,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -177,9 +186,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   // The single in-flight run whose turn we stream live (non-terminal).
   const liveRun = useMemo(() => {
-    if (activeRun && !isTerminalRunStatus(activeRun.status)) return activeRun;
-    return (liveRuns ?? []).find((r) => !isTerminalRunStatus(r.status)) ?? null;
-  }, [activeRun, liveRuns]);
+    if (isTerminalIssueStatus(issueStatus)) return null;
+    if (activeRun && isLiveIssueRun(activeRun, issueStatus)) return activeRun;
+    return (liveRuns ?? []).find((r) => isLiveIssueRun(r, issueStatus)) ?? null;
+  }, [activeRun, issueStatus, liveRuns]);
 
   // Runs observed non-terminal while mounted: their turns ANIMATE the fold when
   // they settle. Runs already terminal at mount collapse instantly.
@@ -388,6 +398,43 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
   }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun, hasBrief]);
 
+  // Feedback votes keyed by the comment they target (targetType
+  // "issue_comment"), mirroring IssueChatThread — the redesign attaches the
+  // 👍/👎 state to each agent bubble by its comment id (PAP-413).
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes ?? []) {
+      if (feedbackVote.targetType !== "issue_comment") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
+
+  // copy · 👍 · 👎 cluster for an agent bubble's footer line (PAP-413). Human
+  // and system bubbles get nothing; copy is always available, and the feedback
+  // buttons render only when the host wired a vote handler.
+  const renderMessageActions = useCallback(
+    (item: TaskChatMessageItem) => {
+      if (item.author !== "agent" || item.optimistic) return null;
+      return (
+        <TaskChatBubbleActions
+          copyText={item.text}
+          feedback={
+            onVote
+              ? {
+                  activeVote: feedbackVoteByTargetId.get(item.id) ?? null,
+                  sharingPreference: feedbackDataSharingPreference,
+                  termsUrl: feedbackTermsUrl,
+                  onVote: (vote, options) => onVote(item.id, vote, options),
+                }
+              : null
+          }
+        />
+      );
+    },
+    [onVote, feedbackVoteByTargetId, feedbackDataSharingPreference, feedbackTermsUrl],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -450,6 +497,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             header={threadHeader}
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
+            renderMessageActions={renderMessageActions}
             scroll={!isMobile}
           />
         )}
@@ -480,6 +528,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             currentAssigneeValue={currentAssigneeValue}
             issueStatus={issueStatus}
             mobile={isMobile}
+            draftKey={draftKey}
           />
           {footer}
         </div>

@@ -992,6 +992,7 @@ export interface IssueCommentMetadataAgentLinkRow extends IssueCommentMetadataRo
 export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowBase {
   type: "run_link";
   runId: string;
+  agentId?: string | null;
   title?: string | null;
 }
 

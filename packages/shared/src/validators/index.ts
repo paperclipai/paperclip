@@ -282,6 +282,7 @@ export {
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
+  agentSkillAssignmentModeSchema,
   agentDesiredSkillEntrySchema,
   agentDesiredSkillSelectionSchema,
   agentSkillEntrySchema,

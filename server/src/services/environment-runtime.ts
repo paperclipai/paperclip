@@ -20,6 +20,11 @@ import type {
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import {
+  getActiveStepContext,
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
 import {
   collectEnvironmentSecretRefs,
@@ -43,7 +48,7 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
@@ -188,6 +193,32 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session. The run
+   * orchestrator sets this on the workspace provision command, which runs before
+   * the run opens its trace root. A sandbox provider that opens a persistent
+   * session on the first command must run this command one-shot and keep the
+   * session closed, so the session first opens on an in-run command whose setup
+   * span parents to the run trace. The default keeps the session path.
+   */
+  bypassSession?: boolean;
+  /**
+   * Force the command onto the lease's persistent session even when no run step
+   * is active. The ACP process session bridge sets this so the long-lived agent
+   * command opens the session and streams its output through the session log
+   * stream. `bypassSession: true` still wins, so an explicit bypass is never
+   * overridden. The default keeps the context-based session selection.
+   */
+  forceSession?: boolean;
+  /**
+   * Incremental log sink for one execute call. When set, the plugin worker
+   * delivers each `stdout` and `stderr` chunk to this sink through the
+   * `execute.log` notification while the command runs, before the final result.
+   * The runtime forwards it to the plugin worker manager, which routes each
+   * chunk to this sink by the host-issued invocation id. A driver that does not
+   * stream ignores it and returns only the final result.
+   */
+  onLog?: ExecuteLogSink;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
@@ -638,6 +669,31 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   const environmentsSvc = environmentService(db);
+
+  // The run-time exec parent context, held per lease id. A plugin sandbox
+  // provider can open a persistent session on the first command and delete it
+  // on lease release. The session open runs inside `execute`, under the run
+  // parent (the same context the `sandbox.exec` span reads). The session delete
+  // runs inside the lease-release RPC, which the run orchestrator calls after
+  // the run, outside that scope. Without a parent the host mints no
+  // `traceparent` and drops the provider `session.teardown` span. So `execute`
+  // records the exec parent here, and the release paths replay it around the
+  // release RPC. The host still mints and validates the `traceparent` itself;
+  // the value only widens which host calls carry a run parent. An entry is
+  // removed on release, so the map holds at most one context per live lease.
+  const runExecParentByLeaseId = new Map<string, StartupSpanContext>();
+
+  // Run a lease-release RPC under the lease's recorded exec parent context, and
+  // then drop the entry — the lease is gone. Under the parent the host mints a
+  // `traceparent`, so a provider `session.teardown` span reaches the span
+  // backend in the run trace. With no recorded context (no command ran, or a
+  // local target with no trace context) the call runs unwrapped, exactly as
+  // before, so the change never fails a release.
+  function runLeaseReleaseWithRunParent<T>(leaseId: string, call: () => Promise<T>): Promise<T> {
+    const runParent = runExecParentByLeaseId.get(leaseId);
+    runExecParentByLeaseId.delete(leaseId);
+    return runParent !== undefined ? runWithRuntimeParent(runParent, call) : call();
+  }
 
   async function resolveSandboxProviderPlugin(input: { provider: string }) {
     const running = await resolvePluginSandboxProviderDriverByKey({
@@ -1274,6 +1330,36 @@ function createSandboxEnvironmentDriver(
     async execute(input) {
       // Plugin-backed sandbox providers: delegate command execution.
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
+        // Read the active run-parent context once. The host mints the plugin
+        // RPC `traceparent` from this same context, so a provider `session.setup`
+        // span parents to the run trace only when this context is present.
+        const activeStep = getActiveStepContext();
+        // Record the run-time exec parent context for this lease, so a later
+        // lease-release RPC that emits the provider `session.teardown` span can
+        // parent to the same run trace. This is the same context the
+        // `sandbox.exec` span reads. Keep only a defined context; a local or SSH
+        // target with no host trace context yields undefined and stores nothing.
+        const execParentContext = activeStep?.parentContext;
+        if (execParentContext !== undefined) {
+          runExecParentByLeaseId.set(input.lease.id, execParentContext);
+        }
+        // Bypass the persistent session for any command that runs with no active
+        // run-parent context. Such a command runs before the run trace is active:
+        // the workspace provision command, the CLI install command, the
+        // resolvability probe, and the agent process launch all run at the top of
+        // the adapter execute, outside a measured step and outside the run
+        // trace. A session opened on such a command emits a `session.setup` span
+        // with no host-minted parent, and the span backend drops it. So run the
+        // command one-shot and keep the session closed; the session then opens on
+        // the first in-run command that carries a run parent (an agent tool
+        // command runs under the run trace), whose setup span parents to the run
+        // trace. A command that sets `bypassSession` explicitly always bypasses.
+        // A command that sets `forceSession` keeps the session even with no
+        // active step: the ACP process session bridge runs the long-lived agent
+        // command this way, so the session opens and streams its output through
+        // the session log stream. An explicit `bypassSession` still wins.
+        const bypassSession =
+          input.bypassSession === true || (activeStep === null && input.forceSession !== true);
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey = readString(input.lease.metadata?.provider);
         if (pluginId && providerKey) {
@@ -1300,10 +1386,17 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
+            // Forward the effective session-bypass flag so a provider that opens
+            // a persistent session skips it for a pre-run or context-less command
+            // (the workspace provision command, the CLI install command, the
+            // resolvability probe, the agent process launch). The session then
+            // opens on the first in-run command that carries a run parent, whose
+            // setup span parents to the run trace.
+            bypassSession,
           }, resolvePluginExecuteRpcTimeoutMs({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,
-          }));
+          }), input.onLog);
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
@@ -1368,15 +1461,17 @@ function createSandboxEnvironmentDriver(
           lease: input.lease,
           provider: providerKey,
         });
-        await pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
-          driverKey: providerKey,
-          companyId: input.lease.companyId,
-          environmentId: input.environment.id,
-          issueId: input.lease.issueId,
-          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
-          providerLeaseId: input.lease.providerLeaseId,
-          leaseMetadata: metadata,
-        }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+        await runLeaseReleaseWithRunParent(input.lease.id, () =>
+          pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
+            driverKey: providerKey,
+            companyId: input.lease.companyId,
+            environmentId: input.environment.id,
+            issueId: input.lease.issueId,
+            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+            providerLeaseId: input.lease.providerLeaseId,
+            leaseMetadata: metadata,
+          }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
+        );
       } catch {
         cleanupStatus = "failed";
       }
@@ -1414,15 +1509,17 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          await pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
-            driverKey: providerKey,
-            companyId: input.lease.companyId,
-            environmentId: input.environment.id,
-            issueId: input.lease.issueId,
-            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
-            providerLeaseId: input.lease.providerLeaseId,
-            leaseMetadata: metadata,
-          }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+          await runLeaseReleaseWithRunParent(input.lease.id, () =>
+            pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
+              driverKey: providerKey,
+              companyId: input.lease.companyId,
+              environmentId: input.environment.id,
+              issueId: input.lease.issueId,
+              config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+              providerLeaseId: input.lease.providerLeaseId,
+              leaseMetadata: metadata,
+            }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
+          );
         }
       } else {
         const metadataConfig = sandboxConfigFromLeaseMetadata(input.lease);

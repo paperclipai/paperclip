@@ -194,6 +194,57 @@ describe("AppNotConnected", () => {
     expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/conn-live/permissions", replace: true });
   });
 
+  it("shows all existing provider connections before connecting another", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        application({
+          id: "app-1",
+          applicationKey: "app-gallery:notion:one",
+          name: "Notion",
+          metadata: { sourceTemplateKey: "notion" },
+        }),
+        application({
+          id: "app-2",
+          applicationKey: "app-gallery:notion:two",
+          name: "Notion workspace",
+          metadata: { sourceTemplateKey: "notion" },
+        }),
+      ],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "conn-one", applicationId: "app-1", name: "Notion", status: "active" }),
+        connection({ id: "conn-two", applicationId: "app-2", name: "Notion team", status: "active" }),
+      ],
+    });
+
+    await renderPage();
+
+    expect(navigateComponentMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("2 connected");
+    expect(container.textContent).toContain("Already connected to Notion");
+    expect(container.textContent).toContain("Notion team");
+    expect(container.textContent).toContain("Connect another");
+
+    const editRows = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Edit"),
+    );
+    await act(async () => {
+      editRows[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-two/setup");
+
+    const connectAnother = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Connect another",
+    );
+    await act(async () => {
+      connectAnother?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?applicationId=app-1&name=Notion&new=1&source=notion",
+    );
+  });
+
   it.each([
     ["setup", "Reconnect this app"],
     ["review", "Nothing is waiting for your OK right now."],

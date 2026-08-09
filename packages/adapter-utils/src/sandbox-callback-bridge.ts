@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   runWithoutActiveStep,
   runWithRuntimeParent,
+  type RuntimeSpanRunner,
   type StartupSpanContext,
 } from "./acpx-engine/startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
@@ -22,6 +23,10 @@ const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
+
+/** Span name that wraps one Paperclip-API callback request — read the request,
+ * write the response, and remove the request file. */
+const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
 
@@ -231,6 +236,13 @@ async function runShell(
     },
     timeoutMs,
     stdin,
+    // Every command that rides this helper is bridge control-plane plumbing:
+    // input delivery, output read, callback relay, and queue/setup bookkeeping.
+    // It must run concurrently with the agent, so force it off the persistent
+    // session. In streamed mode the agent holds that single serialized session
+    // for the whole run; a control write on the same session queues behind the
+    // agent command that never returns — a permanent deadlock.
+    bypassSession: true,
   });
 }
 
@@ -630,6 +642,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // otherwise). When it is absent, the request work runs with an empty store,
   // exactly like the earlier `runWithoutActiveStep` behavior.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each Paperclip-API callback request in a
+  // `sandbox.callbackBridge.relayRequest` span, so the request's read, write, and
+  // remove execs group under one named span. When it is absent, the request work
+  // runs under the run parent with no wrapper span, exactly like the earlier
+  // behavior.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
@@ -777,15 +795,20 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
-            // A request is run-time work, not startup work. Read the run parent
-            // context now and run the request under it, so the request
-            // `sandbox.exec` span parents to the live run span. Read the getter
-            // per request: the live parent switches to `agent.turn` during the
-            // turn and back to `task.run` after it. With no getter the store
-            // stays empty, exactly like the earlier unparented behavior.
-            await runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
-              processRequestFile(fileName),
-            );
+            // A request is run-time work, not startup work. Wrap it in a
+            // `sandbox.callbackBridge.relayRequest` span, so its read, write, and
+            // remove execs group under one named span that parents to the live
+            // run span. The span runner reads the run parent per request: the
+            // live parent switches to `agent.turn` during the turn and back to
+            // `task.run` after it. Without a runner, the request runs under the
+            // run parent with no wrapper span, exactly like the earlier behavior.
+            await (input.runtimeSpan
+              ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
+                  processRequestFile(fileName),
+                )
+              : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
+                  processRequestFile(fileName),
+                ));
           } finally {
             inFlight -= 1;
           }

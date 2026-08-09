@@ -178,7 +178,7 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
       const startTimeMs = Date.now() - 4500;
       const endTimeMs = startTimeMs + 4500;
       recordProviderPluginSpan({
-        name: "sandbox.provider.mkdir",
+        name: "sandbox.daytona.ensureDirectory",
         parent: {
           traceId: "0af7651916cd43dd8448eb211c80319c",
           spanId: "b7ad6b7169203331",
@@ -191,7 +191,7 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
       const finished = exporter.getFinishedSpans();
       expect(finished).toHaveLength(1);
       const span = finished[0]!;
-      expect(span.name).toBe("sandbox.provider.mkdir");
+      expect(span.name).toBe("sandbox.daytona.ensureDirectory");
       expect(Math.round(hrTimeToMs(span.startTime as [number, number]))).toBe(startTimeMs);
       expect(Math.round(hrTimeToMs(span.endTime as [number, number]))).toBe(endTimeMs);
       // The native width equals the true wall-clock difference, not near zero.
@@ -211,7 +211,7 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
     try {
       const { recordProviderPluginSpan } = await import("../instrumentation.js");
       recordProviderPluginSpan({
-        name: "sandbox.provider.pack",
+        name: "sandbox.daytona.pack",
         parent: {
           traceId: "0af7651916cd43dd8448eb211c80319c",
           spanId: "b7ad6b7169203331",

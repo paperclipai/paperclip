@@ -515,6 +515,25 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("hides the Priority property row while priority UI is off (PAP-411)", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ priority: "high" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      // The Triage section still renders the Status row...
+      expect(container.querySelector('[data-property-label="Status"]')).not.toBeNull();
+      // ...but the Priority row is gated behind SHOW_TASK_PRIORITY_UI (off).
+      expect(container.querySelector('[data-property-label="Priority"]')).toBeNull();
+    });
+
+    act(() => root.unmount());
+  });
+
   it("shows assignee and originating without responsible wording", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {

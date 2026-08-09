@@ -631,6 +631,7 @@ const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema
 const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
   type: z.literal("run_link"),
   runId: z.string().uuid(),
+  agentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(160).nullable().optional(),
 }).strict();
 
