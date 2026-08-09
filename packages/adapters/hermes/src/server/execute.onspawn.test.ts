@@ -136,6 +136,58 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(executorArgs).not.toContain("planner");
   });
 
+  it("keeps Planner MOA and Executor single-model routing authoritative over conflicting passthrough flags", async () => {
+    const conflictingExtraArgs = [
+      "-m", "wrong-short-model",
+      "-m=wrong-equals-model",
+      "--model", "wrong-model",
+      "--model=wrong-equals-model",
+      "--provider", "openrouter",
+      "--provider=wrong-provider",
+      "--keep", "value",
+    ];
+    const binding = { planner: "LagunaS-Qwen" };
+
+    const { ctx: plannerCtx } = makeCtx({
+      profile: "planner",
+      model: "qwen3.6:27b",
+      provider: "auto",
+      moaProfileBindings: binding,
+      extraArgs: conflictingExtraArgs,
+    });
+    await execute(plannerCtx as any);
+
+    const plannerArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(plannerArgs[plannerArgs.indexOf("-m") + 1]).toBe("moa:LagunaS-Qwen");
+    expect(plannerArgs[plannerArgs.indexOf("--provider") + 1]).toBe("moa");
+    expect(plannerArgs).toContain("--keep");
+    expect(plannerArgs).toContain("value");
+    expect(plannerArgs).not.toContain("wrong-short-model");
+    expect(plannerArgs).not.toContain("wrong-equals-model");
+    expect(plannerArgs).not.toContain("wrong-model");
+    expect(plannerArgs).not.toContain("openrouter");
+    expect(plannerArgs).not.toContain("wrong-provider");
+
+    const { ctx: executorCtx } = makeCtx({
+      profile: "executor",
+      model: "qwen3.6:27b",
+      provider: "auto",
+      moaProfileBindings: binding,
+      extraArgs: conflictingExtraArgs,
+    });
+    await execute(executorCtx as any);
+
+    const executorArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    expect(executorArgs[executorArgs.indexOf("-m") + 1]).toBe("qwen3.6:27b");
+    expect(executorArgs).not.toContain("--provider");
+    expect(executorArgs).not.toContain("moa:LagunaS-Qwen");
+    expect(executorArgs).not.toContain("wrong-short-model");
+    expect(executorArgs).not.toContain("wrong-equals-model");
+    expect(executorArgs).not.toContain("wrong-model");
+    expect(executorArgs).not.toContain("openrouter");
+    expect(executorArgs).not.toContain("wrong-provider");
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches

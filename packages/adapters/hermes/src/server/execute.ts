@@ -77,7 +77,7 @@ function cfgStringArray(v: unknown): string[] | undefined {
     : undefined;
 }
 
-const RESERVED_HERMES_PASSTHROUGH_FLAGS = new Set(["--profile", "-p"]);
+const RESERVED_HERMES_PASSTHROUGH_FLAGS = new Set(["--profile", "-p", "--model", "-m", "--provider"]);
 
 function sanitizeHermesExtraArgs(extraArgs: string[] | undefined): string[] {
   if (!extraArgs?.length) return [];
