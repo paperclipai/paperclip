@@ -166,6 +166,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
+  activeTypedIssueMonitorDeadline,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -9437,7 +9438,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
-      hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasPersistedMonitor: issue
+        ? activeTypedIssueMonitorDeadline(issue) !== null
+        : false,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -16782,7 +16785,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-      const issueHasPersistedMonitor = Boolean(issue.monitorNextCheckAt);
+      const issueHasPersistedMonitor = activeTypedIssueMonitorDeadline(issue) !== null;
       const findExplicitBlockerPath = () =>
         tx
           .select({ id: issueRelations.issueId })

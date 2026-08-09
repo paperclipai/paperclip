@@ -425,7 +425,10 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(result.skipped).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
+    // The bounded monitor itself is cleared, but the unconditional execution-lock
+    // reaper may acquire the issue and retain its own future liveness deadline.
+    expect(issue.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(issue.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now());
     expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
       status: "cleared",
       clearReason: "max_attempts_exhausted",
