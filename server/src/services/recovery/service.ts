@@ -496,6 +496,12 @@ const MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND = 3;
 const RECOVERY_LOOP_CAP_WINDOW_MS = 72 * 60 * 60 * 1000;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+// A configured wall-clock timeout is a bounded execution contract, not an
+// invitation to spend several more full windows on the same stuck task. The
+// first timeout gets one clean continuation attempt (often enough for a
+// transient host/provider stall); if that continuation also times out, the
+// normal recovery path escalates it to blocked for an explicit re-scope.
+const CONTINUATION_TIMEOUT_RECOVERY_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 const SOURCE_SCOPED_RECOVERY_MIN_REFIRE_INTERVAL_MS = 60_000;
@@ -635,7 +641,10 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
       kind: "transient_infra",
-      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      maxAttempts:
+        errorCode === "timeout"
+          ? CONTINUATION_TIMEOUT_RECOVERY_MAX_ATTEMPTS
+          : CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
       baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
       errorCode,
     };

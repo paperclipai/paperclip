@@ -20,10 +20,10 @@ describe("pause durability: continuation retry classification", () => {
     expect(classifyContinuationFailure(run("agent_not_invokable")).kind).toBe("non_retryable");
   });
 
-  it("timed_out (timeout) still retries as transient infra", () => {
+  it("timeout gets one continuation attempt, then the recovery loop escalates", () => {
     const c = classifyContinuationFailure(run("timeout"));
     expect(c.kind).toBe("transient_infra");
-    expect(c.maxAttempts).toBeGreaterThan(0);
+    expect(c.maxAttempts).toBe(1);
   });
 
   it("codex harness crashes retry as transient infra", () => {
