@@ -26,6 +26,10 @@ Grok Imagine model-routing note (validated 2026-08-09):
   agent must still attach any derived final render and evidence packet, but must not rely
   on a cache path or temporary xAI URL. Do not re-enable permanent public URLs without a
   retention owner.
+  For a board-supervised **no-generation** custody check or known cached-result recovery,
+  use Hermes' `tools/deliver_cached_video_to_paperclip.py` entrypoint: it calls the same
+  provider handoff helper, not a duplicate curl upload. It is never a replacement for the
+  normal generation path or a reason to create per-URL recovery work.
 - xAI may return a 1920x1088 padded stream while declaring 1080p. The Mini assembly
   handler deterministically normalizes text-free motion B-roll to 1920x1080 and records
   the source/delivery geometry. It is not an upscale or a reason to regenerate.
