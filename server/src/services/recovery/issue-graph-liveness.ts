@@ -728,7 +728,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       if (chainFinding) findings.push(chainFinding);
     }
 
-    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
+    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id) && !routineBackedIssueIds.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
     }
