@@ -1410,6 +1410,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+    const monitorDeadline = new Date("2099-03-19T00:00:00.000Z");
     const { companyId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
@@ -1421,7 +1422,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await db
       .update(issues)
-      .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
+      .set({
+        monitorNextCheckAt: monitorDeadline,
+        executionPolicy: { monitor: { nextCheckAt: monitorDeadline.toISOString() } },
+      })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
 
     const heartbeat = heartbeatService(db);
@@ -2426,13 +2430,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
-  it("preserves the reaper liveness deadline when exhausted process-loss continuation recovery fails", async () => {
+  it("blocks the issue when process-loss retry is exhausted and the immediate continuation recovery also fails", async () => {
     mockAdapterExecute.mockRejectedValueOnce(new Error("continuation recovery failed"));
 
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
       processLossRetryCount: 1,
+    });
+    const resolvedBlockerId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: resolvedBlockerId,
+      companyId,
+      title: "Already completed prerequisite",
+      status: "done",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: resolvedBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
     });
     const heartbeat = heartbeatService(db);
 
@@ -2454,24 +2475,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
     const settledContinuationRun = await waitForRunToSettle(heartbeat, continuationRun.id, 5_000);
     expect(settledContinuationRun?.status).toBe("failed");
-    await heartbeat.reconcileStrandedAssignedIssues();
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
-    expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBeNull();
-    expect(issue?.monitorNextCheckAt).toBeInstanceOf(Date);
-    expect(issue?.monitorNextCheckAt?.getTime()).toBeGreaterThan(Date.now());
+    const blockedIssue = await waitForValue(
+      () => db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const issue = rows[0] ?? null;
+        return issue?.status === "blocked" ? issue : null;
+      }),
+      5_000,
+    );
+    expect(blockedIssue?.status).toBe("blocked");
+    expect(blockedIssue?.executionRunId).toBeNull();
+    expect(blockedIssue?.checkoutRunId).toBeNull();
 
-    const recoveryActions = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
-    expect(recoveryActions).toHaveLength(0);
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId: continuationRun.id,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("retried continuation");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
