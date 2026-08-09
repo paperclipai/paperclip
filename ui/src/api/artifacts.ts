@@ -1,12 +1,15 @@
 import { api } from "./client";
 import type {
   CompanyArtifact,
+  CompanyArtifactGroupBy,
   CompanyArtifactMediaKind,
   CompanyArtifactsResponse,
 } from "@paperclipai/shared";
 
 export type {
   CompanyArtifact,
+  CompanyArtifactGroup,
+  CompanyArtifactGroupBy as ArtifactGroupBy,
   CompanyArtifactMediaKind as ArtifactMediaKind,
   CompanyArtifactsResponse,
   CompanyArtifactSource as ArtifactSource,
@@ -32,6 +35,10 @@ export interface ListArtifactsParams {
   kind?: ArtifactKindFilter;
   projectId?: string;
   q?: string;
+  /** Grouping mode. `none` (default) returns the flat artifact grid. */
+  groupBy?: CompanyArtifactGroupBy;
+  /** When grouping, selects a single stack to expand into its artifacts. */
+  groupIssueId?: string;
   limit?: number;
   cursor?: string;
 }
@@ -41,6 +48,8 @@ function buildArtifactsQuery(params?: ListArtifactsParams): string {
   if (params?.kind && params.kind !== "all") search.set("kind", params.kind);
   if (params?.projectId) search.set("projectId", params.projectId);
   if (params?.q) search.set("q", params.q);
+  if (params?.groupBy && params.groupBy !== "none") search.set("groupBy", params.groupBy);
+  if (params?.groupIssueId) search.set("groupIssueId", params.groupIssueId);
   if (params?.limit != null) search.set("limit", String(params.limit));
   if (params?.cursor) search.set("cursor", params.cursor);
   const qs = search.toString();
@@ -49,8 +58,8 @@ function buildArtifactsQuery(params?: ListArtifactsParams): string {
 
 /**
  * Normalize the endpoint response. The contract is an envelope
- * (`{ artifacts, nextCursor }`), but we also tolerate a bare array so the page
- * keeps working if the backend ships the simpler shape.
+ * (`{ artifacts, groups?, selectedGroup?, nextCursor }`), but we also tolerate a
+ * bare array so the page keeps working if the backend ships the simpler shape.
  */
 function normalizeArtifactsResponse(
   raw: CompanyArtifactsResponse | CompanyArtifact[],
@@ -58,7 +67,12 @@ function normalizeArtifactsResponse(
   if (Array.isArray(raw)) {
     return { artifacts: raw, nextCursor: null };
   }
-  return { artifacts: raw.artifacts ?? [], nextCursor: raw.nextCursor ?? null };
+  return {
+    artifacts: raw.artifacts ?? [],
+    groups: raw.groups,
+    selectedGroup: raw.selectedGroup,
+    nextCursor: raw.nextCursor ?? null,
+  };
 }
 
 export const artifactsApi = {

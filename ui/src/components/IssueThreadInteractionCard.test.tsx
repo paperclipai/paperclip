@@ -338,4 +338,98 @@ describe("IssueThreadInteractionCard", () => {
       "This request could not be resolved. Try again or create a new request.",
     );
   });
+
+  it("renders a plan confirmation as a distinct state-coloured plan card", () => {
+    const pending = renderCard({ interaction: pendingRequestConfirmationInteraction });
+    const pendingShell = pending.firstElementChild as HTMLElement;
+    expect(pendingShell.className).toContain("border-violet-500/80");
+    expect(pendingShell.className).not.toContain("border-l-");
+    expect(pending.textContent).toContain("Plan");
+    expect(pending.textContent).toContain("In review");
+    // Approve is a neutral CTA (foreground/background), not the blue primary.
+    const approve = Array.from(pending.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve plan"),
+    );
+    expect(approve?.className).toContain("bg-foreground");
+    expect(approve?.className).not.toContain("bg-primary");
+
+    act(() => root?.unmount());
+    pending.remove();
+    root = null;
+
+    const accepted = renderCard({
+      interaction: { ...pendingRequestConfirmationInteraction, status: "accepted" },
+    });
+    expect((accepted.firstElementChild as HTMLElement).className).toContain("border-green-500/80");
+    expect(accepted.textContent).toContain("Approved");
+
+    act(() => root?.unmount());
+    accepted.remove();
+    root = null;
+
+    const rejected = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "rejected",
+        result: { version: 1, outcome: "rejected", reason: "Tighten the spacing" },
+      },
+    });
+    expect((rejected.firstElementChild as HTMLElement).className).toContain("border-red-500/80");
+    expect(rejected.textContent).toContain("Changes requested");
+  });
+
+  it("attaches screenshots to a plan request-changes reason as markdown images", async () => {
+    const onRejectInteraction = vi.fn(async () => undefined);
+    const onUploadImage = vi.fn(async () => "https://cdn.example/shot.png");
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          rejectRequiresReason: false,
+        },
+      },
+      onRejectInteraction,
+      onUploadImage,
+    });
+
+    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Request revisions"),
+    );
+    await act(async () => {
+      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const attachButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Attach screenshots"),
+    );
+    expect(attachButton).toBeTruthy();
+
+    const fileInput = host.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(fileInput).toBeTruthy();
+    const file = new File(["x"], "bug.png", { type: "image/png" });
+    Object.defineProperty(fileInput!, "files", { value: [file], configurable: true });
+    Object.defineProperty(fileInput!, "value", {
+      value: "C:/fake/bug.png",
+      writable: true,
+      configurable: true,
+    });
+
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onUploadImage).toHaveBeenCalledTimes(1);
+
+    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Request revisions"),
+    ).at(-1);
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onRejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_confirmation" }),
+      "![bug.png](https://cdn.example/shot.png)",
+    );
+  });
 });

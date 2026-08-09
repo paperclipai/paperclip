@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
@@ -52,6 +52,16 @@ function ImagePreview({ artifact }: { artifact: CompanyArtifact }) {
 
 function VideoPreview({ artifact }: { artifact: CompanyArtifact }) {
   const [errored, setErrored] = useState(false);
+  const [frameReady, setFrameReady] = useState(false);
+  const thumbnailSeekRequested = useRef(false);
+  const frameReadyFallbackTimer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (frameReadyFallbackTimer.current !== null) {
+        window.clearTimeout(frameReadyFallbackTimer.current);
+      }
+    };
+  }, []);
   if (errored || !artifact.contentPath) {
     return (
       <PreviewFrame className="flex items-center justify-center bg-black/80">
@@ -61,6 +71,43 @@ function VideoPreview({ artifact }: { artifact: CompanyArtifact }) {
       </PreviewFrame>
     );
   }
+
+  const markFrameReady = () => {
+    if (frameReadyFallbackTimer.current !== null) {
+      window.clearTimeout(frameReadyFallbackTimer.current);
+      frameReadyFallbackTimer.current = null;
+    }
+    setFrameReady(true);
+  };
+  const scheduleFrameReadyFallback = () => {
+    if (frameReadyFallbackTimer.current !== null) {
+      window.clearTimeout(frameReadyFallbackTimer.current);
+    }
+    frameReadyFallbackTimer.current = window.setTimeout(markFrameReady, 3000);
+  };
+  const loadThumbnailFrame = (event: SyntheticEvent<HTMLVideoElement>) => {
+    if (thumbnailSeekRequested.current) return;
+    thumbnailSeekRequested.current = true;
+    const video = event.currentTarget;
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const seekTarget = duration > 0 ? Math.min(0.12, duration / 2) : 0.05;
+    try {
+      if (Math.abs(video.currentTime - seekTarget) > 0.001) {
+        video.currentTime = seekTarget;
+        scheduleFrameReadyFallback();
+      } else {
+        markFrameReady();
+      }
+    } catch {
+      markFrameReady();
+    }
+  };
+  const handleLoadedData = (event: SyntheticEvent<HTMLVideoElement>) => {
+    if (thumbnailSeekRequested.current || event.currentTarget.currentTime > 0) {
+      markFrameReady();
+    }
+  };
+
   return (
     <PreviewFrame className="bg-black">
       <video
@@ -68,7 +115,11 @@ function VideoPreview({ artifact }: { artifact: CompanyArtifact }) {
         preload="metadata"
         muted
         playsInline
-        className="h-full w-full object-contain"
+        data-frame-ready={frameReady ? "true" : "false"}
+        className={cn("h-full w-full object-contain transition-opacity", frameReady ? "opacity-100" : "opacity-0")}
+        onLoadedMetadata={loadThumbnailFrame}
+        onLoadedData={handleLoadedData}
+        onSeeked={markFrameReady}
         onError={() => setErrored(true)}
       />
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -97,7 +148,7 @@ function TextPreview({ artifact }: { artifact: CompanyArtifact }) {
   );
 }
 
-function ArtifactPreview({ artifact }: { artifact: CompanyArtifact }) {
+export function ArtifactPreview({ artifact }: { artifact: CompanyArtifact }) {
   switch (artifact.mediaKind) {
     case "image":
       return <ImagePreview artifact={artifact} />;

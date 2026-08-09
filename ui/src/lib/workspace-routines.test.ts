@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
+  sortWorkspaceRoutinesByName,
 } from "./workspace-routines";
 
 function createRoutine(overrides: Partial<RoutineListItem> = {}): RoutineListItem {
@@ -67,5 +68,32 @@ describe("workspace routine helpers", () => {
     });
 
     expect(routineHasWorkspaceSpecificVariables(routine)).toBe(false);
+  });
+
+  it("sorts workspace routines by name regardless of update order", () => {
+    const routines = [
+      createRoutine({
+        id: "routine-2",
+        title: "zeta review",
+        updatedAt: new Date("2026-05-02T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-3",
+        title: "Alpha review",
+        updatedAt: new Date("2026-04-30T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-1",
+        title: "alpha review",
+        updatedAt: new Date("2026-05-03T00:00:00.000Z"),
+      }),
+    ];
+
+    expect(sortWorkspaceRoutinesByName(routines).map((routine) => routine.id)).toEqual([
+      "routine-1",
+      "routine-3",
+      "routine-2",
+    ]);
+    expect(routines.map((routine) => routine.id)).toEqual(["routine-2", "routine-3", "routine-1"]);
   });
 });

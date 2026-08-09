@@ -22,7 +22,7 @@ The empirical Node 20 compatibility check is recorded in [PAPA-352](/PAPA/issues
 
 ## Configuration
 
-Configure Modal from `Company Settings -> Environments`, not from the plugin's instance settings page.
+Configure Modal from `Instance Settings -> Environments`, not from the plugin's plugin page.
 
 | Field | Required | Description |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ These commands assume the repo root has already been installed once so the local
 
 1. Provision Modal credentials in your Modal account (`modal token new`) or use a service account.
 2. Install the plugin from the Paperclip Plugins page.
-3. In `Company Settings -> Environments`, add a new Modal sandbox environment with at least `appName`, `image`, `tokenId`, and `tokenSecret`.
+3. In `Instance Settings -> Environments`, add a new Modal sandbox environment with at least `appName`, `image`, `tokenId`, and `tokenSecret`.
 4. Run the environment **Probe** action. A success result confirms auth, app creation, image pull, and `exec` round-trip.
 5. Run at least one Paperclip task with a remote-managed adapter (for example `claude_local`) bound to that environment. The adapter should provision the sandbox, run commands in it, and clean it up.
 

@@ -10,6 +10,11 @@ import {
   companies,
   companyMemberships,
   createDb,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -18,6 +23,7 @@ import {
   principalPermissionGrants,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   routineTriggers,
@@ -96,6 +102,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(documentAnnotationAnchorSnapshots);
+    await db.delete(documentAnnotationComments);
+    await db.delete(documentAnnotationThreads);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(heartbeatRunEvents);
@@ -106,7 +115,10 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(projectWorkspaces);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);

@@ -18,6 +18,11 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  // All specs share one throwaway server, and several toggle instance-level
+  // state (the `enableConferenceRoomChat` experimental flag) that changes
+  // which UI variant renders. Run files serially so a flag flip in one spec
+  // can't change the wizard/thread under another spec mid-flight.
+  workers: 1,
   use: {
     baseURL: BASE_URL,
     headless: true,

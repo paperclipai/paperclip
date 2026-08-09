@@ -257,6 +257,21 @@ describe("keyboardShortcuts helpers", () => {
     })).toBe("focus_comment");
   });
 
+  it("opens the file viewer on f after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "f",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("open_file_viewer");
+  });
+
   it("disarms go-to-inbox instead of firing from an editor", () => {
     const input = document.createElement("textarea");
 

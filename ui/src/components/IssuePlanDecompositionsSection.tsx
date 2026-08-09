@@ -95,7 +95,7 @@ export function IssuePlanDecompositionsSection({
                 <span className="text-xs text-muted-foreground/70">·</span>
                 <span className="inline-flex items-center gap-1 text-xs text-foreground">
                   <GitBranch className="h-3 w-3 text-muted-foreground" />
-                  {created} of {requested} child {requested === 1 ? "issue" : "issues"} created
+                  {created} of {requested} child {requested === 1 ? "task" : "tasks"} created
                 </span>
                 {record.status === "completed" && requested > 0 ? (
                   <span

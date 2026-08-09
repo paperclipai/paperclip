@@ -55,7 +55,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^22.19.21",
     "@types/ws": "^8.18.1",
     "typescript": "^5.7.3"
   }

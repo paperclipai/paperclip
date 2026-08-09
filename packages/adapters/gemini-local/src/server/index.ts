@@ -3,7 +3,8 @@ export { listGeminiSkills, syncGeminiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   parseGeminiJsonl,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
+  isGeminiTransientNetworkError,
   describeGeminiFailure,
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,

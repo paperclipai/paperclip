@@ -2,6 +2,8 @@ export type CompanyArtifactSource = "document" | "attachment" | "work_product";
 
 export type CompanyArtifactMediaKind = "image" | "video" | "text" | "document" | "file" | "empty";
 
+export type CompanyArtifactGroupBy = "none" | "task" | "parent_task";
+
 export interface CompanyArtifactIssueSummary {
   id: string;
   identifier: string;
@@ -35,7 +37,21 @@ export interface CompanyArtifact {
   href: string;
 }
 
+export interface CompanyArtifactGroup {
+  id: string;
+  groupBy: Exclude<CompanyArtifactGroupBy, "none">;
+  issue: CompanyArtifactIssueSummary;
+  title: string;
+  count: number;
+  mediaKinds: CompanyArtifactMediaKind[];
+  previewArtifacts: CompanyArtifact[];
+  updatedAt: string;
+  href: string;
+}
+
 export interface CompanyArtifactsResponse {
   artifacts: CompanyArtifact[];
+  groups?: CompanyArtifactGroup[];
+  selectedGroup?: CompanyArtifactGroup | null;
   nextCursor: string | null;
 }

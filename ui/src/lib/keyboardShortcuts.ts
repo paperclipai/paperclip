@@ -13,7 +13,13 @@ const MODIFIER_ONLY_KEYS = new Set(["Shift", "Meta", "Control", "Alt"]);
 
 export type InboxQuickArchiveKeyAction = "ignore" | "archive" | "disarm";
 export type InboxUndoArchiveKeyAction = "ignore" | "undo_archive";
-export type IssueDetailGoKeyAction = "ignore" | "arm" | "navigate_inbox" | "focus_comment" | "disarm";
+export type IssueDetailGoKeyAction =
+  | "ignore"
+  | "arm"
+  | "navigate_inbox"
+  | "focus_comment"
+  | "open_file_viewer"
+  | "disarm";
 
 export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -162,6 +168,7 @@ export function resolveIssueDetailGoKeyAction({
   if (!armed) return normalizedKey === "g" ? "arm" : "ignore";
   if (normalizedKey === "i") return "navigate_inbox";
   if (normalizedKey === "c") return "focus_comment";
+  if (normalizedKey === "f") return "open_file_viewer";
   if (normalizedKey === "g") return "arm";
   return "disarm";
 }

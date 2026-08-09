@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -12,7 +13,7 @@ import type {
   SuggestTasksInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
-import type { LiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 
 function createAgent(id: string, name: string): Agent {
   return {
@@ -238,6 +239,24 @@ describe("buildAssistantPartsFromTranscript", () => {
     }]);
   });
 
+  it("marks only the latest chain-of-thought segment active while a run is live", () => {
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 0,
+      segmentCount: 2,
+    })).toBe(false);
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(true);
+    expect(isCoTSegmentActive({
+      isMessageRunning: false,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(false);
+  });
+
   it("keeps run errors while suppressing init and system transcript noise", () => {
     const result = buildAssistantPartsFromTranscript([
       {
@@ -323,6 +342,39 @@ describe("buildIssueChatMessages", () => {
         },
       },
     });
+  });
+
+  it("flags an operator-interrupted historical run so the timeline can read 'interrupted'", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-int",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+        },
+        {
+          runId: "run-plain",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          startedAt: new Date("2026-04-06T12:03:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:04:00.000Z"),
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+    });
+
+    const interrupted = messages.find((message) => message.id === "run-assistant:run-int");
+    const plain = messages.find((message) => message.id === "run-assistant:run-plain");
+    expect(interrupted?.metadata?.custom).toMatchObject({ runOperatorInterrupted: true });
+    expect(plain?.metadata?.custom).toMatchObject({ runOperatorInterrupted: false });
   });
 
   it("redacts deleted comment bodies while preserving tombstone metadata", () => {
@@ -583,6 +635,46 @@ describe("buildIssueChatMessages", () => {
         custom: {
           kind: "interaction",
           anchorId: "interaction-interaction-2",
+        },
+      },
+    });
+  });
+
+  it("preserves ephemeral active-run status metadata for rendering", () => {
+    const activeRun: ActiveRunForIssue = {
+      id: "run-active-1",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:03:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:03:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+      currentStatusMessage: "Syncing git worktree to sandbox",
+      currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+    };
+
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      activeRun,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      status: { type: "running" },
+      metadata: {
+        custom: {
+          kind: "live-run",
+          runId: "run-active-1",
+          currentStatusMessage: "Syncing git worktree to sandbox",
+          currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
         },
       },
     });
@@ -910,6 +1002,39 @@ describe("buildIssueChatMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.metadata.custom).toMatchObject({
       chainOfThoughtLabel: "Paused by board after 1 minute",
+      runStatus: "cancelled",
+    });
+  });
+
+  it("labels error-code-only operator interruptions as interrupted by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-interrupted",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          errorCode: "operator_interrupted",
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-interrupted", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-interrupted",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Interrupted by board after 1 minute",
+      runOperatorInterrupted: true,
       runStatus: "cancelled",
     });
   });

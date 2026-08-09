@@ -25,7 +25,10 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  documentRevisions,
+  documents,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   secretAccessEvents,
@@ -61,7 +64,10 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(projects);

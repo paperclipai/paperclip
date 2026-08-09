@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
@@ -16,6 +18,13 @@ import {
 
 const ORIGINAL_ENV = { ...process.env };
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
+// Points at a guaranteed-nonexistent path so the CLI's ancestor-directory
+// context.json lookup (see client/context.ts) can't pick up a real host
+// profile when tests run from inside a live Paperclip workspace.
+const ISOLATED_CONTEXT_PATH = path.join(
+  os.tmpdir(),
+  `paperclip-cli-company-test-context-${process.pid}-${Math.random().toString(36).slice(2)}.json`,
+);
 
 function makeProgram(): Command {
   const program = new Command();
@@ -29,7 +38,7 @@ function makeProgram(): Command {
 }
 
 async function runCommand(args: string[]): Promise<void> {
-  await makeProgram().parseAsync(args, { from: "user" });
+  await makeProgram().parseAsync([...args, "--context", ISOLATED_CONTEXT_PATH], { from: "user" });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -74,6 +83,10 @@ describe("company CLI commands", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    // Point context resolution at a path that can never exist so this test's
+    // company-id resolution can't pick up a real ~/.paperclip context file
+    // from the host running the suite (see SAG-6205).
+    process.env.PAPERCLIP_CONTEXT = "/nonexistent/paperclip-cli-company-test-context.json";
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -407,6 +420,7 @@ describe("renderCompanyImportPreview", () => {
             leadAgentSlug: null,
             targetDate: null,
             color: null,
+            icon: null,
             status: null,
             executionWorkspacePolicy: null,
             workspaces: [],
@@ -626,6 +640,7 @@ describe("import selection catalog", () => {
             leadAgentSlug: null,
             targetDate: null,
             color: null,
+            icon: null,
             status: null,
             executionWorkspacePolicy: null,
             workspaces: [],

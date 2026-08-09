@@ -59,6 +59,41 @@ describe("artifactsApi.list", () => {
     );
   });
 
+  it("omits groupBy when grouping is none", async () => {
+    await artifactsApi.list("company-1", { groupBy: "none" });
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/artifacts");
+  });
+
+  it("serializes groupBy and the selected stack issue", async () => {
+    await artifactsApi.list("company-1", {
+      groupBy: "parent_task",
+      groupIssueId: "issue-9",
+      kind: "image",
+    });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/artifacts?kind=image&groupBy=parent_task&groupIssueId=issue-9",
+    );
+  });
+
+  it("preserves groups and selectedGroup from the envelope", async () => {
+    const artifact = sampleArtifact();
+    const group = {
+      id: "task:issue-1",
+      groupBy: "task" as const,
+      issue: artifact.issue,
+      title: "Demo reel",
+      count: 3,
+      mediaKinds: ["video" as const],
+      previewArtifacts: [artifact],
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      href: "/PAP/artifacts?groupBy=task&groupIssueId=issue-1",
+    };
+    mockApi.get.mockResolvedValue({ artifacts: [], groups: [group], nextCursor: "next" });
+    const result = await artifactsApi.list("company-1", { groupBy: "task" });
+    expect(result.groups).toEqual([group]);
+    expect(result.nextCursor).toBe("next");
+  });
+
   it("returns the envelope shape from the backend", async () => {
     const artifact = sampleArtifact();
     mockApi.get.mockResolvedValue({ artifacts: [artifact], nextCursor: "next" });

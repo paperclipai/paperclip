@@ -73,7 +73,7 @@ Use the Paperclip API to write the plan document, then comment:
 - If approval is required: `POST /api/issues/{issueId}/interactions` with `kind: request_confirmation`, `targetRevisionId` set to the new plan revision, `continuationPolicy: wake_assignee`, and `idempotencyKey: "confirmation:{issueId}:plan:{revisionId}"`.
 - Set the issue to `in_review` after creating the confirmation. Stay assigned so the acceptance wakes the planner.
 
-When the plan is accepted, see the companion skill for converting accepted plans into Paperclip executable tasks.
+When the plan is accepted, see the companion skill for converting accepted plans into Paperclip executable tasks. Key requirements covered there: produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue.
 
 ## Anti-patterns
 

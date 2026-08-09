@@ -501,6 +501,34 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export type IssueWatchdogStatus = "active" | "disabled";
+
+export interface IssueWatchdogSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  watchdogAgentId: string;
+  instructions: string | null;
+  status: IssueWatchdogStatus;
+  watchdogIssueId: string | null;
+  lastObservedFingerprint: string | null;
+  lastReviewedFingerprint: string | null;
+  lastTriggeredAt: Date | null;
+  lastCompletedAt: Date | null;
+  triggerCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueWatchdog extends IssueWatchdogSummary {
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -555,6 +583,7 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
@@ -786,12 +815,40 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
 }
 
+export interface RequestCheckboxConfirmationOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface RequestCheckboxConfirmationPayload {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  options: RequestCheckboxConfirmationOption[];
+  defaultSelectedOptionIds?: string[];
+  minSelected?: number;
+  maxSelected?: number | null;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
 export interface RequestConfirmationResult {
   version: 1;
   outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+}
+
+export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
+  selectedOptionIds?: string[];
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
@@ -829,20 +886,29 @@ export interface RequestConfirmationInteraction extends IssueThreadInteractionBa
   result?: RequestConfirmationResult | null;
 }
 
+export interface RequestCheckboxConfirmationInteraction extends IssueThreadInteractionBase {
+  kind: "request_checkbox_confirmation";
+  payload: RequestCheckboxConfirmationPayload;
+  result?: RequestCheckboxConfirmationResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
-  | RequestConfirmationInteraction;
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
-  | RequestConfirmationPayload;
+  | RequestConfirmationPayload
+  | RequestCheckboxConfirmationPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
-  | RequestConfirmationResult;
+  | RequestConfirmationResult
+  | RequestCheckboxConfirmationResult;
 
 export interface IssueAttachment {
   id: string;

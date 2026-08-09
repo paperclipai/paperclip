@@ -18,6 +18,7 @@ const apiPrefixes: Record<string, string> = {
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
+  "board-chat.ts": "/api",
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -25,6 +26,7 @@ const apiPrefixes: Record<string, string> = {
   "dashboard.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
+  "file-resources.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
   "inbox-dismissals.ts": "/api",
@@ -49,6 +51,10 @@ const apiPrefixes: Record<string, string> = {
 const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+const explicitOpenApiCoverageExclusions = new Set([
+  // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
+  "pipelines.ts",
+]);
 
 function createApp() {
   const app = express();
@@ -82,6 +88,7 @@ function loadActualRoutes() {
   const unknownRouteFiles: string[] = [];
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
+    if (explicitOpenApiCoverageExclusions.has(file)) continue;
     const prefix = apiPrefixes[file];
     const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
     if (!prefix) {

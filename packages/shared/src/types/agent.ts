@@ -13,9 +13,12 @@ import type {
   TrustAuthorizationPolicy,
   TrustPreset,
 } from "../trust-policy.js";
+import type { AgentOrgChainHealth } from "../agent-eligibility.js";
+import type { AgentApiKeyScope } from "../validators/agent.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
+  canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
 }
@@ -95,9 +98,11 @@ export interface Agent {
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
+  errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
+  orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -107,9 +112,12 @@ export interface AgentDetail extends Agent {
   access: AgentAccessState;
 }
 
+export type ClearAgentErrorResponse = Agent;
+
 export interface AgentKeyCreated {
   id: string;
   name: string;
+  scope: AgentApiKeyScope;
   token: string;
   createdAt: Date;
 }

@@ -112,7 +112,8 @@ import {
   AvatarGroup,
   AvatarGroupCount,
 } from "@/components/ui/avatar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
@@ -519,6 +520,16 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
+          <div className="flex items-center gap-2 flex-wrap">
+            {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
+              (s) => (
+                <IssueStatusBadge key={s} status={s} />
+              )
+            )}
+          </div>
+        </SubSection>
+
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
@@ -591,6 +602,69 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  AGENT CAPSULE                                                */}
+      {/* ============================================================ */}
+      <Section title="Agent Capsule">
+        <p className="text-sm text-muted-foreground max-w-prose">
+          The brand &quot;capsule is the agent&quot; motif. A single agent reads as a tall
+          pill that moves through three states as it comes to life. The online fill uses
+          the live brand agent-gradient tokens (<code className="font-mono">--agent-Na</code> →{" "}
+          <code className="font-mono">--agent-Nb</code>); <code className="font-mono">prefers-reduced-motion</code>{" "}
+          skips the liquid rise and pulses and renders the final state.
+        </p>
+        <SubSection title="States">
+          <div className="flex items-end gap-10">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="slot" />
+              <span className="text-xs text-muted-foreground">slot</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="configured" />
+              <span className="text-xs text-muted-foreground">configured</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} />
+              <span className="text-xs text-muted-foreground">online</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} glow="blue" />
+              <span className="text-xs text-muted-foreground">online · blue glow</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Sizes">
+          <div className="flex items-end gap-8">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="sm" gradient={1} />
+              <span className="text-xs text-muted-foreground">sm</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="md" gradient={4} />
+              <span className="text-xs text-muted-foreground">md</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="lg" gradient={8} />
+              <span className="text-xs text-muted-foreground">lg</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size={{ width: 28, height: 96 }} gradient={6} />
+              <span className="text-xs text-muted-foreground">custom px</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Gradients">
+          <div className="flex items-end gap-3 flex-wrap">
+            {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
+              <div key={i} className="flex flex-col items-center gap-1.5">
+                <AgentCapsule state="online" size="sm" gradient={i + 1} />
+                <span className="text-[10px] font-mono text-muted-foreground">{i + 1}</span>
+              </div>
+            ))}
           </div>
         </SubSection>
       </Section>
@@ -965,7 +1039,7 @@ export function DesignGuide() {
             identifier="PAP-001"
             title="Implement authentication flow"
             subtitle="Assigned to Agent Alpha"
-            trailing={<StatusBadge status="in_progress" />}
+            trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -978,7 +1052,7 @@ export function DesignGuide() {
             identifier="PAP-002"
             title="Set up CI/CD pipeline"
             subtitle="Completed 2 days ago"
-            trailing={<StatusBadge status="done" />}
+            trailing={<IssueStatusBadge status="done" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -990,7 +1064,7 @@ export function DesignGuide() {
             }
             identifier="PAP-003"
             title="Write API documentation"
-            trailing={<StatusBadge status="todo" />}
+            trailing={<IssueStatusBadge status="todo" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -1003,7 +1077,7 @@ export function DesignGuide() {
             identifier="PAP-004"
             title="Deploy to production"
             subtitle="Blocked by PAP-001"
-            trailing={<StatusBadge status="blocked" />}
+            trailing={<IssueStatusBadge status="blocked" />}
             selected
           />
         </div>

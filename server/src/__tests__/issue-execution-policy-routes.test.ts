@@ -65,6 +65,15 @@ function registerModuleMocks() {
         companyId: "company-1",
         permissions: null,
       })),
+      resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
+        ambiguous: false,
+        agent: {
+          id: reference,
+          companyId: "company-1",
+          status: "idle",
+          orgChainHealth: { status: "healthy" },
+        },
+      })),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),

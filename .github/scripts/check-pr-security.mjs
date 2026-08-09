@@ -243,10 +243,14 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
   });
 }
 
+// Cap pagination so a large backlog of unrelated draft advisories cannot stall
+// the security gate (it runs inside a 5-minute workflow timeout).
+const MAX_DRAFT_ADVISORY_PAGES = 20;
+
 export async function findExistingDraftAdvisory(fetchImpl, token, repo, prNumber) {
   const prMarker = `PR #${prNumber}`;
 
-  for (let page = 1; ; page += 1) {
+  for (let page = 1; page <= MAX_DRAFT_ADVISORY_PAGES; page += 1) {
     const advisories = await fetchImpl(
       `/repos/${repo}/security-advisories?state=draft&per_page=100&page=${page}`,
       token,
@@ -261,6 +265,12 @@ export async function findExistingDraftAdvisory(fetchImpl, token, repo, prNumber
 
     if (advisories.length < 100) return null;
   }
+
+  console.warn(
+    `[security] findExistingDraftAdvisory: hit ${MAX_DRAFT_ADVISORY_PAGES}-page cap without finding PR #${prNumber}; ` +
+    'treating as new advisory. A duplicate draft may be created.',
+  );
+  return null;
 }
 
 export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasFlags) {
@@ -296,7 +306,29 @@ export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasF
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// Wall-clock budget for the whole script. The workflow job has a 5-minute
+// timeout-minutes, and `continue-on-error: true` on a step does NOT override
+// a job-level timeout — it only suppresses step failures. So if any API call
+// (e.g. security-advisories POST/PATCH) hangs, the whole job is cancelled,
+// failing the `review` check. This watchdog enforces the script's documented
+// "always exit 0" contract regardless of API behaviour.
+export const SCRIPT_WATCHDOG_MS = 90_000;
+
+export function startScriptWatchdog(timeoutMs = SCRIPT_WATCHDOG_MS, exit = process.exit) {
+  const timer = setTimeout(() => {
+    console.warn(
+      `[security] script exceeded ${timeoutMs}ms wall-clock budget; exiting 0 per always-exit-0 contract`
+    );
+    exit(0);
+  }, timeoutMs);
+  // Don't keep the event loop alive solely for the watchdog.
+  timer.unref?.();
+  return timer;
+}
+
 async function main() {
+  const watchdog = startScriptWatchdog();
+
   const { GH_TOKEN, GH_REPO, PR_NUMBER } = process.env;
 
   if (!GH_TOKEN || !GH_REPO || !PR_NUMBER) {
@@ -352,6 +384,7 @@ async function main() {
   }
 
   // Always exit 0 — security flags are silent, never block the PR publicly
+  clearTimeout(watchdog);
   process.exit(0);
 }
 

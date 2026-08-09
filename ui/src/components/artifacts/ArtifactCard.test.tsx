@@ -1,4 +1,8 @@
+// @vitest-environment jsdom
+
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -86,6 +90,82 @@ describe("ArtifactCard", () => {
     expect(markup).toContain('data-media-kind="video"');
     expect(markup).toContain("<video");
     expect(markup).toContain('preload="metadata"');
+  });
+
+  it("seeks video previews after metadata loads so a thumbnail frame is painted", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    flushSync(() => {
+      root.render(
+        <ArtifactCard
+          artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath: "/files/clip.mp4" })}
+        />,
+      );
+    });
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.dataset.frameReady).toBe("false");
+
+    Object.defineProperty(video, "readyState", {
+      configurable: true,
+      value: HTMLMediaElement.HAVE_METADATA,
+    });
+
+    flushSync(() => {
+      video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
+    });
+
+    expect(video.currentTime).toBe(0.05);
+
+    flushSync(() => {
+      video.dispatchEvent(new Event("seeked", { bubbles: true }));
+    });
+
+    expect(video.dataset.frameReady).toBe("true");
+
+    flushSync(() => root.unmount());
+    container.remove();
+  });
+
+  it("reveals video previews if the browser does not report seek completion", () => {
+    vi.useFakeTimers();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    try {
+      flushSync(() => {
+        root.render(
+          <ArtifactCard
+            artifact={makeArtifact({ mediaKind: "video", contentType: "video/mp4", contentPath: "/files/clip.mp4" })}
+          />,
+        );
+      });
+
+      const video = container.querySelector("video") as HTMLVideoElement;
+      expect(video).not.toBeNull();
+      expect(video.dataset.frameReady).toBe("false");
+
+      flushSync(() => {
+        video.dispatchEvent(new Event("loadedmetadata", { bubbles: true }));
+      });
+
+      expect(video.currentTime).toBe(0.05);
+      expect(video.dataset.frameReady).toBe("false");
+
+      flushSync(() => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      expect(video.dataset.frameReady).toBe("true");
+    } finally {
+      flushSync(() => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+    }
   });
 
   it("renders a falling-back video placeholder when no content path exists", () => {

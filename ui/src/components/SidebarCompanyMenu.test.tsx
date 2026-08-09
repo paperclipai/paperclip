@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +34,7 @@ vi.mock("@/api/sidebarPreferences", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to, ...props }: { children: React.ReactNode; to: string }) => (
+  Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
   useLocation: () => mockLocation,
@@ -98,11 +99,13 @@ vi.mock("../context/SidebarContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function act(callback: () => void) {
+  flushSync(callback);
+}
+
 async function flushReact() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  await Promise.resolve();
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 describe("SidebarCompanyMenu", () => {
@@ -137,13 +140,45 @@ describe("SidebarCompanyMenu", () => {
     vi.clearAllMocks();
   });
 
+  it("uses company-centric create copy without the chat flag", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    expect(trigger).not.toBeNull();
+    act(() => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).not.toContain("Add company...");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows the requested company actions and signs out through the dropdown", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -155,20 +190,20 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch workspace");
+    expect(document.body.textContent).toContain("Switch company");
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Add company...");
+    expect(document.body.textContent).toContain("Create new company...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
@@ -177,25 +212,25 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Sign out"));
     expect(signOutButton).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });
 
-  it("toggles company order editing without selecting a workspace", async () => {
+  it("toggles company order editing without selecting a company", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -205,10 +240,10 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -218,7 +253,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent === "Edit");
     expect(editButton).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -232,7 +267,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Strata"));
     expect(strataItem).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -240,19 +275,19 @@ describe("SidebarCompanyMenu", () => {
     expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });
 
-  it("navigates to the selected workspace dashboard from company-prefixed routes", async () => {
+  it("navigates to the selected company dashboard from company-prefixed routes", async () => {
     mockLocation.pathname = "/PAP/issues";
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -262,10 +297,10 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -275,7 +310,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Strata"));
     expect(strataItem).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -283,7 +318,7 @@ describe("SidebarCompanyMenu", () => {
     expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
     expect(mockNavigate).toHaveBeenCalledWith("/STR/dashboard");
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });

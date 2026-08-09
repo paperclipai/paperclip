@@ -32,6 +32,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -61,12 +62,13 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
-async function deleteHeartbeatRunsAfterActivityLogDrains(db: Db) {
+async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(activityLog);
     try {
       await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
       return;
     } catch (error) {
       lastError = error;
@@ -527,8 +529,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
-    await deleteHeartbeatRunsAfterActivityLogDrains(db);
-    await db.delete(agentWakeupRequests);
+    await deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
@@ -584,6 +585,50 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       preset: LOW_TRUST_REVIEW_PRESET,
       disposition: "quarantined",
     });
+  });
+
+  it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const [targetIssue] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.outOfScope.id,
+      title: "Coach-owned mention target",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: fixture.agents.standard.id,
+    }).returning();
+    await db.insert(issueComments).values({
+      companyId: fixture.company.id,
+      issueId: targetIssue!.id,
+      authorAgentId: fixture.agents.standard.id,
+      authorType: "agent",
+      body: `[@Low Trust Reviewer](agent://${fixture.agents.lowTrust.id}) please verify this issue.`,
+    });
+
+    const unmentioned = await db.insert(agents).values({
+      companyId: fixture.company.id,
+      name: "Unmentioned Low Trust Reviewer",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: fixture.agents.lowTrust.permissions,
+    }).returning().then((rows) => rows[0]!);
+
+    const comment = await request(createApp(db, agentActor(fixture)))
+      .post(`/api/issues/${targetIssue!.id}/comments`)
+      .send({ body: "Mention-scoped verification complete." });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+    expect(comment.body).toMatchObject({
+      issueId: targetIssue!.id,
+      authorAgentId: fixture.agents.lowTrust.id,
+    });
+
+    const unmentionedComment = await request(createApp(db, agentActor(fixture, unmentioned.id)))
+      .post(`/api/issues/${targetIssue!.id}/comments`)
+      .send({ body: "I was not mentioned." });
+    expect(unmentionedComment.status, JSON.stringify(unmentionedComment.body)).toBe(403);
+    expect(unmentionedComment.body.error).toBe("Issue is outside this actor's authorization boundary");
   });
 
   it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
@@ -906,46 +951,40 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       expect(run).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
       const payload = gateway.getAgentPayloads()[0] ?? {};
-      expect(payload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          issue: {
-            id: fixture.issues.reviewRoot.id,
-            title: fixture.issues.reviewRoot.title,
-          },
-          latestCommentId: comment.body.id,
-          commentIds: [comment.body.id],
-          comments: [
-            {
-              id: comment.body.id,
-              issueId: fixture.issues.assignedReview.id,
-              body: LOW_TRUST_QUARANTINED_BODY,
-              presentation: null,
-              metadata: null,
-              sourceTrust: {
-                preset: LOW_TRUST_REVIEW_PRESET,
-                disposition: "quarantined",
-                sourceIssueId: fixture.issues.assignedReview.id,
-                sourceRunId: fixture.runs.lowTrust.id,
-                sourceAgentId: fixture.agents.lowTrust.id,
-              },
-            },
-          ],
-          continuationSummary: {
+      // The gateway rejects unknown root params, so the wake context rides in the
+      // generated message rather than a top-level `paperclip` field.
+      expect(payload.paperclip).toBeUndefined();
+      const wake = parseWakePayloadFromMessage(payload.message);
+      // Security-critical: low-trust quarantined output is redacted to the sanitized
+      // stub before it reaches the higher-trust wake/continuation context. The raw
+      // body must never appear (asserted by expectNoCanary below). The sourceTrust
+      // provenance is intentionally not carried in the agent-facing message form; its
+      // recording is covered by the route-response assertions earlier in this suite.
+      expect(wake).toMatchObject({
+        reason: "issue_commented",
+        issue: {
+          id: fixture.issues.reviewRoot.id,
+          title: fixture.issues.reviewRoot.title,
+        },
+        latestCommentId: comment.body.id,
+        commentIds: [comment.body.id],
+        comments: [
+          {
+            id: comment.body.id,
+            issueId: fixture.issues.assignedReview.id,
             body: LOW_TRUST_QUARANTINED_BODY,
-            sourceTrust: {
-              preset: LOW_TRUST_REVIEW_PRESET,
-              disposition: "quarantined",
-            },
           },
-          livenessContinuation: {
-            attempt: 1,
-            maxAttempts: 2,
-            sourceRunId: fixture.runs.lowTrust.id,
-            state: "quarantined_low_trust_handoff",
-            reason: "Low-trust review output requires sanitized follow-up.",
-            instruction: "Continue from the sanitized quarantine stub only.",
-          },
+        ],
+        continuationSummary: {
+          body: LOW_TRUST_QUARANTINED_BODY,
+        },
+        livenessContinuation: {
+          attempt: 1,
+          maxAttempts: 2,
+          sourceRunId: fixture.runs.lowTrust.id,
+          state: "quarantined_low_trust_handoff",
+          reason: "Low-trust review output requires sanitized follow-up.",
+          instruction: "Continue from the sanitized quarantine stub only.",
         },
       });
       expect(String(payload.message ?? "")).toContain("## Paperclip Wake Payload");

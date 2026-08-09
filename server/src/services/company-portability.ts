@@ -35,6 +35,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  PROJECT_ICON_NAMES,
   PROJECT_STATUSES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
@@ -471,6 +472,10 @@ function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
   return parsed.success ? parsed.data : null;
 }
 
+function normalizeProjectIconName(value: string | null | undefined): string | null {
+  return value && PROJECT_ICON_NAMES.includes(value as typeof PROJECT_ICON_NAMES[number]) ? value : null;
+}
+
 function extractPortableScopedEnvInputs(
   scope: {
     label: string;
@@ -579,6 +584,7 @@ type ProjectLike = {
   leadAgentId: string | null;
   targetDate: string | null;
   color: string | null;
+  icon: string | null;
   status: string;
   env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -2764,13 +2770,19 @@ function buildManifestFromPackageFiles(
       const trackingRef = asString(primarySource?.trackingRef);
       const sourceHostname = asString(primarySource?.hostname) || "github.com";
       const [owner, repoName] = (repo ?? "").split("/");
+      const canonicalKey = readSkillKey(frontmatter);
+      const normalizedSourceKind = owner === "paperclipai"
+        && repoName === "paperclip"
+        && canonicalKey?.startsWith("paperclipai/paperclip/")
+        ? "paperclip_bundled"
+        : "github";
       sourceType = "github";
       sourceLocator = asString(primarySource?.url)
         ?? (repo ? `https://${sourceHostname}/${repo}${repoPath ? `/tree/${trackingRef ?? commit ?? "main"}/${repoPath}` : ""}` : null);
       sourceRef = commit;
       normalizedMetadata = owner && repoName
         ? {
-            sourceKind: "github",
+            sourceKind: normalizedSourceKind,
             ...(sourceHostname !== "github.com" ? { hostname: sourceHostname } : {}),
             owner,
             repo: repoName,
@@ -2842,6 +2854,7 @@ function buildManifestFromPackageFiles(
       leadAgentSlug: asString(extension.leadAgentSlug),
       targetDate: asString(extension.targetDate),
       color: asString(extension.color),
+      icon: asString(extension.icon),
       status: asString(extension.status),
       env: normalizePortableProjectEnv(extension.env),
       executionWorkspacePolicy: isPlainRecord(extension.executionWorkspacePolicy)
@@ -3037,7 +3050,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
       companyId,
       nextAdapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
     );
     await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
     return {
@@ -3617,6 +3630,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         leadAgentSlug: project.leadAgentId ? (idToSlug.get(project.leadAgentId) ?? null) : null,
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
+        icon: project.icon ?? null,
         status: project.status,
         executionWorkspacePolicy: exportPortableProjectExecutionWorkspacePolicy(
           slug,
@@ -4708,6 +4722,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             leadAgentId: projectLeadAgentId,
             targetDate: manifestProject.targetDate,
             color: manifestProject.color,
+            icon: normalizeProjectIconName(manifestProject.icon),
             status: manifestProject.status && PROJECT_STATUSES.includes(manifestProject.status as any)
               ? manifestProject.status as typeof PROJECT_STATUSES[number]
               : "backlog",

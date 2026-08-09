@@ -4,10 +4,11 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -191,6 +192,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
+      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
@@ -199,7 +201,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
-async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -237,16 +239,14 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       },
     });
 
+  // Earlier cloud_tenant builds granted every tenant user `instance_admin`.
+  // Stale rows from those deployments would still elevate this user through
+  // the BetterAuth session path, board API keys, and the authorization
+  // service's own instanceUserRoles lookup — so actively purge them on every
+  // trusted-header authentication instead of merely no longer inserting them.
   await db
-    .insert(instanceUserRoles)
-    .values({
-      userId,
-      role: "instance_admin",
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: [instanceUserRoles.userId, instanceUserRoles.role],
-    });
+    .delete(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
   await db
     .insert(companies)
@@ -292,6 +292,16 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       status: "active",
     });
 
+  // Without instance-admin elevation, cloud tenant users are authorized purely
+  // through company-scoped permission grants — seed the same role defaults the
+  // regular membership flows create.
+  await ensureHumanRoleDefaultGrants(db, {
+    companyId,
+    principalId: userId,
+    membershipRole: membership.membershipRole,
+    grantedByUserId: null,
+  });
+
   return {
     type: "board",
     userId,
@@ -303,7 +313,7 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       membershipRole: membership.membershipRole,
       status: membership.status,
     }],
-    isInstanceAdmin: true,
+    isInstanceAdmin: false,
     source: "cloud_tenant",
   };
 }

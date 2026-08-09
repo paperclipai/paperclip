@@ -5,13 +5,13 @@ import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
-const SEEDED_SHARED_FILES = [
-  ".credentials.json",
-  "credentials.json",
-  "settings.json",
-  "settings.local.json",
-  "CLAUDE.md",
-] as const;
+const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
+
+interface SeedFile {
+  name: string;
+  sourcePath: string;
+  contents: Buffer;
+}
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -27,23 +27,48 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<Array<{ name: string; sourcePath: string }>> {
-  const files: Array<{ name: string; sourcePath: string }> = [];
+function sanitizeRemoteClaudeSettings(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return JSON.stringify({ permissions: { defaultMode: "default" } });
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return JSON.stringify({ permissions: { defaultMode: "default" } });
+  }
+
+  const settings = { ...(parsed as Record<string, unknown>) };
+  settings.permissions = { defaultMode: "default" };
+  delete settings.hooks;
+  delete settings.mcpServers;
+  delete settings.permissionMode;
+  delete settings.skipDangerousModePermissionPrompt;
+  return JSON.stringify(settings);
+}
+
+async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+  const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
     if (!(await pathExists(sourcePath))) continue;
-    files.push({ name, sourcePath });
+    const rawContents = await fs.readFile(sourcePath);
+    const contents = name === "settings.json"
+      ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
+      : rawContents;
+    files.push({ name, sourcePath, contents });
   }
   return files;
 }
 
-async function buildSeedSnapshotKey(files: Array<{ name: string; sourcePath: string }>): Promise<string> {
+async function buildSeedSnapshotKey(files: SeedFile[]): Promise<string> {
   if (files.length === 0) return "empty";
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(file.name);
     hash.update("\0");
-    hash.update(await fs.readFile(file.sourcePath));
+    hash.update(file.contents);
     hash.update("\0");
   }
   return hash.digest("hex").slice(0, 16);
@@ -52,7 +77,7 @@ async function buildSeedSnapshotKey(files: Array<{ name: string; sourcePath: str
 async function materializeSeedSnapshot(input: {
   rootDir: string;
   snapshotKey: string;
-  files: Array<{ name: string; sourcePath: string }>;
+  files: SeedFile[];
 }): Promise<string> {
   const targetDir = path.join(input.rootDir, input.snapshotKey);
   if (await pathExists(targetDir)) {
@@ -63,7 +88,7 @@ async function materializeSeedSnapshot(input: {
   const stagingDir = await fs.mkdtemp(path.join(input.rootDir, ".tmp-"));
   try {
     for (const file of input.files) {
-      await fs.copyFile(file.sourcePath, path.join(stagingDir, file.name));
+      await fs.writeFile(path.join(stagingDir, file.name), file.contents);
     }
     try {
       await fs.rename(stagingDir, targetDir);

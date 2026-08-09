@@ -6,14 +6,34 @@ body:
     attributes:
       value: |
         Thanks for taking the time to file a bug. Please fill out the sections below so we can reproduce and triage quickly.
+
+        > **⚠️ Privacy notice:** Several fields below accept logs, config, or transcript output that may contain **personally identifiable information (PII)** — usernames in file paths, API keys, tokens, company names, agent output, or task content. Before pasting:
+        > 1. Review for sensitive data
+        > 2. Redact usernames, paths, API keys, tokens (e.g. replace `/Users/yourname/` with `/Users/REDACTED/`)
+        > 3. For heavy output, consider running it through an anonymizer such as **[presidio-anonymizer](https://microsoft.github.io/presidio/)** (open-source, local-only) or **[scrub](https://github.com/dssg/scrub)**
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      description: Please confirm each of these before filing.
+      options:
+        - label: I have searched existing open and closed issues and this is not a duplicate.
+          required: true
+        - label: I am on the latest released version of Paperclip (or can reproduce on `master`).
+          required: true
+        - label: I have confirmed the error originates in Paperclip itself — not in my agent adapter, API provider, or local configuration.
+          required: true
+
   - type: textarea
     id: what-happened
     attributes:
       label: What happened?
-      description: A clear description of the bug.
+      description: A clear description of the bug. Be specific about which Paperclip command, endpoint, or UI action was involved.
       placeholder: When I do X, Y happens instead of Z.
     validations:
       required: true
+
   - type: textarea
     id: expected
     attributes:
@@ -21,17 +41,19 @@ body:
       description: What should have happened instead.
     validations:
       required: true
+
   - type: textarea
     id: repro
     attributes:
       label: Steps to reproduce
-      description: Numbered steps a maintainer can follow to reproduce the bug.
+      description: Numbered steps a maintainer can follow to reproduce the bug. Start from a clean install where possible.
       value: |
         1.
         2.
         3.
     validations:
       required: true
+
   - type: input
     id: paperclip-version
     attributes:
@@ -40,6 +62,7 @@ body:
       placeholder: e.g. 0.42.0 or 78dc3625ac
     validations:
       required: true
+
   - type: dropdown
     id: deployment
     attributes:
@@ -51,25 +74,101 @@ body:
         - Other
     validations:
       required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - npm / pnpm global install
+        - Docker
+        - Built from source (pnpm dev / pnpm build)
+        - Other
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: adapters
+    attributes:
+      label: Agent adapter(s) involved
+      description: Select all that apply. If unsure, leave unchecked and describe in additional context.
+      options:
+        - label: Claude Code
+        - label: Codex
+        - label: Cursor
+        - label: Droid
+        - label: Hermes
+        - label: Custom / external plugin adapter
+        - label: Not adapter-specific (core bug)
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database mode
+      options:
+        - Embedded PGlite (default — `DATABASE_URL` unset)
+        - External Postgres
+        - Not database-related
+    validations:
+      required: false
+
+  - type: dropdown
+    id: access_context
+    attributes:
+      label: Access context
+      description: Whose credentials were being used when the bug occurred?
+      options:
+        - Board (human operator)
+        - Agent (bearer API key via `agent_api_keys`)
+        - Both
+        - Unclear / not applicable
+    validations:
+      required: false
+
   - type: input
     id: node-version
     attributes:
       label: Node.js version
       description: Output of `node --version`.
       placeholder: e.g. v20.18.0
+
   - type: input
     id: os
     attributes:
       label: Operating system
       placeholder: e.g. macOS 14.5 (Apple Silicon), Ubuntu 22.04
+
   - type: textarea
     id: logs
     attributes:
       label: Relevant logs or output
-      description: Paste error messages, stack traces, or API responses. Will be rendered as a code block.
+      description: |
+        Paste error messages, stack traces, or API responses. Will be rendered as a code block.
+
+        **⚠️ PII warning:** Server logs often contain file paths with your username (e.g. `/Users/yourname/...`). Redact before pasting.
       render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (if applicable)
+      description: |
+        If the bug is config-related, paste the relevant snippet.
+
+        **⚠️ PII warning:** Paperclip config may contain API keys, encrypted-secrets paths, company names, or tokens. **Remove all secrets before pasting.**
+      render: json
+
   - type: textarea
     id: context
     attributes:
       label: Additional context
       description: Screenshots, related issues, or anything else that might help.
+
+  - type: checkboxes
+    id: pii_confirmed
+    attributes:
+      label: Privacy checklist
+      description: Please confirm you've reviewed your submission for sensitive data.
+      options:
+        - label: I have reviewed all pasted output for PII (usernames, file paths, API keys, tokens, company names) and redacted where necessary.
+          required: true

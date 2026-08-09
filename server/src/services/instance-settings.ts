@@ -10,6 +10,7 @@ import {
   type InstanceExperimentalSettings,
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
+  type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
@@ -27,6 +28,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      // Absent => unrestricted; only carry through an explicit policy.
+      ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
     };
   }
   return {
@@ -43,8 +46,15 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
+      enablePipelines: parsed.data.enablePipelines ?? false,
+      enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
+      enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
+      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
+      enableExternalObjects: parsed.data.enableExternalObjects ?? false,
+      enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       issueGraphLivenessAutoRecoveryLookbackHours:
@@ -55,8 +65,15 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableStreamlinedLeftNavigation: true,
+    enablePipelines: false,
+    enableConferenceRoomChat: false,
+    enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
+    enableExperimentalFileViewer: false,
     enableCloudSync: false,
+    enableExternalObjects: false,
+    enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
@@ -67,11 +84,12 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
   return {
     id: row.id,
+    defaultEnvironmentId: row.defaultEnvironmentId ?? null,
     general: normalizeGeneralSettings(row.general),
     experimental: normalizeExperimentalSettings(row.experimental),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
+  } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db) {
@@ -115,6 +133,22 @@ export function instanceSettingsService(db: Db) {
 
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+
+    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
+            ? { defaultEnvironmentId: patch.defaultEnvironmentId ?? null }
+            : {}),
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();

@@ -9,11 +9,18 @@
 // Issue status colors
 // ---------------------------------------------------------------------------
 
+// PAP-75 brand mapping ("blue = liveness"): todo → amber (queued), in_progress
+// → blue (live). See `issueStatusColor` below for the canonical chip palette.
+//
+// The brand mapping is the default status palette. Chat-specific gating stays
+// isolated to the Conference Room route/nav/API and does not control task
+// status presentation.
+
 /** StatusIcon circle: text + border classes */
 export const issueStatusIcon: Record<string, string> = {
   backlog: "text-muted-foreground border-muted-foreground",
-  todo: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
-  in_progress: "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
+  todo: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  in_progress: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
@@ -25,8 +32,8 @@ export const issueStatusIconDefault = "text-muted-foreground border-muted-foregr
 /** Text-only color for issue statuses (dropdowns, labels) */
 export const issueStatusText: Record<string, string> = {
   backlog: "text-muted-foreground",
-  todo: "text-blue-600 dark:text-blue-400",
-  in_progress: "text-yellow-600 dark:text-yellow-400",
+  todo: "text-amber-600 dark:text-amber-400",
+  in_progress: "text-blue-600 dark:text-blue-400",
   in_review: "text-violet-600 dark:text-violet-400",
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
@@ -70,10 +77,11 @@ export const statusBadge: Record<string, string> = {
   approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   rejected: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 
-  // Issue statuses — consistent hues with issueStatusIcon above
+  // Issue statuses — consistent hues with issueStatusIcon above (PAP-75 brand
+  // mapping: todo → amber, in_progress → blue "liveness").
   backlog: "bg-muted text-muted-foreground",
-  todo: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
-  in_progress: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
+  todo: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  in_progress: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
   in_review: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
@@ -81,6 +89,133 @@ export const statusBadge: Record<string, string> = {
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";
+
+// ---------------------------------------------------------------------------
+// Agent status — brand state system (PAP-75)
+// ---------------------------------------------------------------------------
+
+export type AgentBadgeColor = "gray" | "blue" | "amber" | "red";
+
+/** Agent status → brand colour name. `active` aliases idle (never assigned). */
+export const agentStatusColor: Record<string, AgentBadgeColor> = {
+  idle: "gray",
+  active: "gray",
+  running: "blue",
+  paused: "amber",
+  error: "red",
+};
+
+export const agentStatusColorDefault: AgentBadgeColor = "gray";
+
+/** Brand `.task-chip` styles (1px border) per colour name — light + dark. */
+export const agentStatusBadge: Record<AgentBadgeColor, string> = {
+  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
+  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
+  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
+  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
+};
+
+/** Heartbeat-capsule fill (solid) per colour name. gray darkens in dark mode. */
+export const agentStatusCapsule: Record<AgentBadgeColor, string> = {
+  gray: "bg-[#A8AEB2] dark:bg-[#6E6960]",
+  blue: "bg-[#2563EB]",
+  amber: "bg-[#F59E0B]",
+  red: "bg-[#DC2626]",
+};
+
+/** Per-status capsule motion (running pulses, error blinks). Honors reduced-motion. */
+export const agentStatusMotion: Record<string, string> = {
+  running: "hb-pulse",
+  error: "hb-blink",
+};
+
+// ---------------------------------------------------------------------------
+// Brand `.task-chip` status palette (PAP-75 / status-reference.html)
+//
+// Colour-named, 1px border, light + dark — values straight from paperclip.ing
+// `brand.css`. Shared by the agents section (PAP-80) and the All Projects page
+// (PAP-91); PAP-99 brings it to issue/task status chips, adding `violet` for
+// `in_review`.
+// ---------------------------------------------------------------------------
+
+export type BrandChipColor = "gray" | "blue" | "amber" | "green" | "violet" | "red";
+
+export const brandChipBadge: Record<BrandChipColor, string> = {
+  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
+  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
+  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
+  green: "bg-[#DCFCE7] text-[#188A3C] border-[#22C55E] dark:bg-[#22c55e1f] dark:text-[#22C55E] dark:border-[#22c55e73]",
+  violet: "bg-[#EDE9FE] text-[#5B21B6] border-[#7C3AED] dark:bg-[#7c3aed2e] dark:text-[#7C3AED] dark:border-[#7c3aed73]",
+  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
+};
+
+/**
+ * Issue/task status → brand colour name (PAP-75). `in_progress` is blue
+ * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
+ * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).
+ */
+export const issueStatusColor: Record<string, BrandChipColor> = {
+  backlog: "gray",
+  todo: "amber",
+  in_progress: "blue",
+  in_review: "violet",
+  done: "green",
+  blocked: "red",
+  cancelled: "gray",
+};
+
+export const issueStatusColorDefault: BrandChipColor = "gray";
+
+// ---------------------------------------------------------------------------
+// Status → base-hue CSS variable
+//
+// Each status chip / icon sets a local `--sc` to the matching var below, and
+// the `.status-chip` / `.status-fill` helpers (index.css) derive the rendered
+// fill/text/border from it for both light and dark. Agent and task keep
+// independent vars so each can be tuned without touching the other, even where
+// their defaults coincide.
+// ---------------------------------------------------------------------------
+
+/** Agent status → base-hue CSS var. `active` aliases idle (never assigned). */
+export const agentStatusVar: Record<string, string> = {
+  idle: "--status-agent-idle",
+  active: "--status-agent-idle",
+  running: "--status-agent-running",
+  paused: "--status-agent-paused",
+  error: "--status-agent-error",
+};
+export const agentStatusVarDefault = "--status-agent-idle";
+
+/** Task/issue status → base-hue CSS var (drives both the chip and the icon). */
+export const taskStatusVar: Record<string, string> = {
+  backlog: "--status-task-backlog",
+  todo: "--status-task-todo",
+  in_progress: "--status-task-in_progress",
+  in_review: "--status-task-in_review",
+  done: "--status-task-done",
+  blocked: "--status-task-blocked",
+  cancelled: "--status-task-cancelled",
+};
+export const taskStatusVarDefault = "--status-task-backlog";
+
+/**
+ * Task/issue status → AA-tuned ICON-hue CSS var (PAP-238). Drives the standalone
+ * {@link StatusGlyph} colour. Separate from {@link taskStatusVar} (the chip base
+ * hue) because a bare glyph next to text needs a stronger hue to clear WCAG 3:1;
+ * see the `--status-task-icon-*` block in `index.css`. `in_queue` is the blocked
+ * shape recoloured blue, so it maps to its own var.
+ */
+export const taskStatusIconVar: Record<string, string> = {
+  backlog: "--status-task-icon-backlog",
+  todo: "--status-task-icon-todo",
+  in_progress: "--status-task-icon-in_progress",
+  in_review: "--status-task-icon-in_review",
+  done: "--status-task-icon-done",
+  blocked: "--status-task-icon-blocked",
+  cancelled: "--status-task-icon-cancelled",
+  in_queue: "--status-task-icon-in_queue",
+};
+export const taskStatusIconVarDefault = "--status-task-icon-backlog";
 
 // ---------------------------------------------------------------------------
 // Agent status dot — solid background for small indicator dots
@@ -110,3 +245,86 @@ export const priorityColor: Record<string, string> = {
 };
 
 export const priorityColorDefault = "text-yellow-600 dark:text-yellow-400";
+
+// ---------------------------------------------------------------------------
+// External object status — colors & severity ranking
+// ---------------------------------------------------------------------------
+//
+// Categories come from `EXTERNAL_OBJECT_STATUS_CATEGORIES` in @paperclipai/shared.
+// The map keys here intentionally mirror the union — keep them in sync.
+//
+// Tone reuse rationale (see UX spec §1):
+//   unknown   → backlog hue (muted, dashed circle)
+//   open      → todo / blue
+//   waiting   → amber (distinct from internal in_progress yellow)
+//   running   → cyan, animated when motion is allowed
+//   succeeded → done / green
+//   failed    → red
+//   blocked   → red
+//   closed    → muted neutral
+//   archived  → muted neutral
+//   auth_required → amber + dashed
+//   unreachable   → red + dashed
+
+export const externalObjectStatusIcon: Record<string, string> = {
+  unknown: "text-muted-foreground border-muted-foreground",
+  open: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
+  waiting: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  running: "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400",
+  succeeded: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
+  failed: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
+  blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
+  closed: "text-neutral-500 border-neutral-500",
+  archived: "text-neutral-500 border-neutral-500",
+  auth_required: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  unreachable: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
+};
+
+export const externalObjectStatusIconDefault = "text-muted-foreground border-muted-foreground";
+
+export const externalObjectStatusBadge: Record<string, string> = {
+  unknown: "bg-muted text-muted-foreground",
+  open: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  waiting: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  succeeded: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  failed: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  closed: "bg-muted text-muted-foreground",
+  archived: "bg-muted text-muted-foreground",
+  auth_required: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  unreachable: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+};
+
+export const externalObjectStatusBadgeDefault = "bg-muted text-muted-foreground";
+
+/**
+ * Liveness overlay applied on top of the base status tone. We deliberately
+ * encode it as utility classes (not a tone change) so callers can append the
+ * overlay to any pill, icon, or marker without redefining colors.
+ *
+ * The dashed border + reduced opacity guarantees a non-color differentiator
+ * for stale / auth_required / unreachable per WCAG 1.4.1.
+ */
+export const externalObjectLivenessOverlay: Record<string, string> = {
+  unknown: "",
+  fresh: "",
+  stale: "opacity-70 [border-style:dashed]",
+  auth_required: "[border-style:dashed]",
+  unreachable: "[border-style:dashed]",
+};
+
+/**
+ * Severity ranking used by sidebar/list rollups. Higher number = more
+ * attention-worthy. Anything ≤ `muted` should be hidden when summarising.
+ */
+export const externalObjectStatusToneSeverity: Record<string, number> = {
+  muted: 0,
+  neutral: 1,
+  success: 2,
+  info: 3,
+  warning: 4,
+  danger: 5,
+};
+
+export const externalObjectStatusToneSeverityDefault = 0;

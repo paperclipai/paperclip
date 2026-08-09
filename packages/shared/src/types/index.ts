@@ -24,6 +24,7 @@ export type {
   FeedbackTraceBundle,
 } from "./feedback.js";
 export type {
+  InstanceExecutionMode,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
@@ -59,11 +60,24 @@ export type {
   CompanySkillTrustLevel,
   CompanySkillCompatibility,
   CompanySkillSourceBadge,
+  CompanySkillSharingScope,
+  CompanySkillListSort,
   CompanySkillFileInventoryEntry,
+  CompanySkillVersionFileInventoryEntry,
   CompanySkill,
   CompanySkillListItem,
   CompanySkillUsageAgent,
   CompanySkillDetail,
+  CompanySkillListQuery,
+  CompanySkillCategoryCount,
+  CompanySkillVersion,
+  CompanySkillVersionCreateRequest,
+  CompanySkillStarResult,
+  CompanySkillComment,
+  CompanySkillCommentCreateRequest,
+  CompanySkillCommentUpdateRequest,
+  CompanySkillForkRequest,
+  CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,
   CompanySkillAuditVerdict,
@@ -119,6 +133,7 @@ export type {
   AgentSkillSyncMode,
   AgentSkillState,
   AgentSkillOrigin,
+  AgentDesiredSkillEntry,
   AgentSkillEntry,
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
@@ -128,6 +143,7 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  ClearAgentErrorResponse,
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
@@ -142,6 +158,15 @@ export type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "./agent.js";
+export type {
+  AgentEligibilityAgent,
+  AgentEligibilityLifecycleReason,
+  AgentInvalidOrgChainAncestor,
+  AgentOrgChainEntry,
+  AgentOrgChainHealth,
+  AgentOrgChainInvalidReason,
+  AgentWorkEligibility,
+} from "../agent-eligibility.js";
 export type { AssetImage } from "./asset.js";
 export type {
   CreateDocumentAnnotationCommentRequest,
@@ -159,7 +184,7 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
@@ -181,6 +206,10 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  WorkspaceOverviewItem,
+  WorkspaceOverviewLinkedIssue,
+  WorkspaceOverviewPrimaryService,
+  WorkspaceOverviewResponse,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceCommandDefinition,
   WorkspaceCommandKind,
@@ -207,6 +236,21 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
+  WorkspaceFileContent,
+  WorkspaceFileContentEncoding,
+  WorkspaceFileListDirectoryItem,
+  WorkspaceFileListFileItem,
+  WorkspaceFileListItem,
+  WorkspaceFileListMode,
+  WorkspaceFileListResponse,
+  WorkspaceFilePreviewKind,
+  WorkspaceFileRef,
+  WorkspaceFileResourceKind,
+  WorkspaceFileSelector,
+  WorkspaceFileWorkspaceKind,
+  ResolvedWorkspaceResource,
+} from "./workspace-file-resource.js";
+export type {
   IssueWorkProduct,
   IssueWorkProductType,
   IssueWorkProductProvider,
@@ -217,12 +261,22 @@ export type {
 export type {
   CompanyArtifact,
   CompanyArtifactAgentSummary,
+  CompanyArtifactGroup,
+  CompanyArtifactGroupBy,
   CompanyArtifactIssueSummary,
   CompanyArtifactMediaKind,
   CompanyArtifactProjectSummary,
   CompanyArtifactSource,
   CompanyArtifactsResponse,
 } from "./artifact.js";
+
+export type {
+  ExternalObject,
+  ExternalObjectMention,
+  ExternalObjectMentionGroup,
+  ExternalObjectSummary,
+  ExternalObjectSummaryItem,
+} from "./external-object.js";
 export type {
   Issue,
   IssueWorkMode,
@@ -288,6 +342,9 @@ export type {
   RequestConfirmationTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  RequestCheckboxConfirmationOption,
+  RequestCheckboxConfirmationPayload,
+  RequestCheckboxConfirmationResult,
   AcceptedPlanDecompositionStatus,
   AcceptedPlanDecompositionChild,
   AcceptedPlanDecomposition,
@@ -298,6 +355,7 @@ export type {
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -311,6 +369,9 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  IssueWatchdog,
+  IssueWatchdogStatus,
+  IssueWatchdogSummary,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,
@@ -372,6 +433,7 @@ export type {
   Routine,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
+  RoutineDescriptionDocument,
   RoutineVariable,
   RoutineVariableDefaultValue,
   RoutineRevisionSnapshotRoutineV1,
@@ -394,6 +456,7 @@ export type {
   AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
+  HeartbeatRunStatusPhase,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
@@ -502,6 +565,8 @@ export type {
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,
   PluginApiRouteDeclaration,
+  PluginObjectReferenceRefreshPolicy,
+  PluginObjectReferenceProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,

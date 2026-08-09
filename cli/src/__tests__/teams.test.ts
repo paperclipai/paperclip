@@ -114,7 +114,7 @@ describe("teams CLI commands", () => {
       "http://paperclip.test/api/teams/catalog?kind=bundled&category=software-development&q=engineering",
       expect.objectContaining({ method: "GET" }),
     );
-    const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
     expect(rendered).toContain("id");
     expect(rendered).toContain("paperclipai:bundled:software-development:product-engineering");
   });
@@ -188,7 +188,7 @@ describe("teams CLI commands", () => {
       "http://paperclip.test/api/companies/company-1/teams/catalog/installed",
       expect.objectContaining({ method: "GET" }),
     );
-    const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
     expect(rendered).toContain("installedStatus");
     expect(rendered).toContain("out_of_date");
     expect(rendered).toContain("not_installed");

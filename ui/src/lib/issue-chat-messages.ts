@@ -10,6 +10,7 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -45,6 +46,7 @@ export interface IssueChatLinkedRun {
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -536,6 +538,17 @@ export interface SegmentTiming {
   endMs: number;
 }
 
+export function isCoTSegmentActive(args: {
+  isMessageRunning: boolean;
+  segmentIndex: number;
+  segmentCount: number;
+}) {
+  const { isMessageRunning, segmentIndex, segmentCount } = args;
+  if (!isMessageRunning) return false;
+  if (segmentCount <= 0 || segmentIndex < 0) return true;
+  return segmentIndex === segmentCount - 1;
+}
+
 function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): SegmentTiming[] {
   const timings: SegmentTiming[] = [];
   let inSegment = false;
@@ -595,6 +608,7 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }) {
   const start = run.startedAt ?? run.createdAt;
@@ -611,6 +625,9 @@ function runDurationLabel(run: {
     case "timed_out":
       return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
+      if (isOperatorInterruptedRun(run.resultJson, run.errorCode)) {
+        return durationText ? `Interrupted by board after ${durationText}` : "Interrupted by board";
+      }
       if (stopReason === "paused") {
         return durationText ? `Paused by board after ${durationText}` : "Paused by board";
       }
@@ -639,6 +656,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+        runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
   };
@@ -675,6 +693,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
@@ -831,13 +850,27 @@ function normalizeLiveRuns(
       status: activeRun.status,
       invocationSource: activeRun.invocationSource,
       triggerDetail: activeRun.triggerDetail,
+      contextCommentId: activeRun.contextCommentId,
+      contextWakeCommentId: activeRun.contextWakeCommentId,
       startedAt: activeRun.startedAt ? toDate(activeRun.startedAt).toISOString() : null,
       finishedAt: activeRun.finishedAt ? toDate(activeRun.finishedAt).toISOString() : null,
       createdAt: toDate(activeRun.createdAt).toISOString(),
       agentId: activeRun.agentId,
       agentName: activeRun.agentName,
       adapterType: activeRun.adapterType,
-      issueId,
+      logBytes: activeRun.logBytes,
+      lastOutputBytes: activeRun.lastOutputBytes,
+      issueId: activeRun.issueId ?? issueId,
+      livenessState: activeRun.livenessState,
+      livenessReason: activeRun.livenessReason,
+      continuationAttempt: activeRun.continuationAttempt,
+      lastUsefulActionAt: activeRun.lastUsefulActionAt ? toDate(activeRun.lastUsefulActionAt).toISOString() : null,
+      nextAction: activeRun.nextAction,
+      outputSilence: activeRun.outputSilence,
+      currentStatusMessage: activeRun.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
+        ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -876,6 +909,8 @@ function createLiveRunMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      currentStatusMessage: run.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
     }),
   };
   return message;

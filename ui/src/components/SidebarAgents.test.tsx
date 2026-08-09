@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -30,6 +31,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({ collapsed: false, peeking: false }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -75,6 +77,8 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     isMobile: false,
     setSidebarOpen: mockSetSidebarOpen,
+    collapsed: mockSidebarState.collapsed,
+    peeking: mockSidebarState.peeking,
   }),
 }));
 
@@ -186,8 +190,17 @@ async function chooseSortMode(label: string) {
 
 function agentLinkLabels(container: HTMLElement) {
   return Array.from(container.querySelectorAll('a[href^="/agents/"]'))
+    .filter((anchor) => anchor.getAttribute("href") !== "/agents/all")
     .map((anchor) => anchor.textContent?.trim())
     .filter(Boolean);
+}
+
+function seeAllAgentsLink(container: HTMLElement) {
+  return (
+    Array.from(container.querySelectorAll('a[href="/agents/all"]')).find((anchor) =>
+      anchor.textContent?.includes("See all agents"),
+    ) ?? null
+  );
 }
 
 describe("SidebarAgents", () => {
@@ -197,6 +210,8 @@ describe("SidebarAgents", () => {
   let memberships: ResourceMemberships;
 
   beforeEach(() => {
+    mockSidebarState.collapsed = false;
+    mockSidebarState.peeking = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -249,7 +264,21 @@ describe("SidebarAgents", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebarAgents() {
+  async function renderSidebarAgents(streamlined = true) {
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents streamlined={streamlined} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  async function renderSidebarAgentsWithDefaultProps() {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
@@ -262,6 +291,43 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
   }
+
+  async function renderRailSidebarAgents() {
+    mockSidebarState.collapsed = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAgents streamlined />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
+    mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
+
+    await renderRailSidebarAgents();
+
+    // The agent name is preserved in the a11y tree but kept in flow (zero-width,
+    // clipped) so the row stays 1:1 tall with the expanded state (PAP-10676); the
+    // row links become tooltip triggers and the per-row actions dropdown is dropped.
+    const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
+    expect(nameSpan?.className).not.toContain("sr-only");
+    expect(nameSpan?.className).toContain("w-0");
+    expect(nameSpan?.className).toContain("overflow-hidden");
+    const agentLink = container.querySelector('a[href^="/agents/"]:not([href="/agents/all"])');
+    expect(agentLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(container.querySelector('button[aria-label="Open actions for Alpha"]')).toBeNull();
+
+    // The section header collapses to a divider (no caret / section menu).
+    expect(container.querySelector('button[aria-label="Agents section actions"]')).toBeNull();
+  });
 
   it("keeps top mode in stored org-aware order", async () => {
     localStorage.setItem("paperclip.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
@@ -465,6 +531,103 @@ describe("SidebarAgents", () => {
       .find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+  });
+
+  it("shows only active agents when any agent has a live run", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-b", status: "running" },
+    ]);
+
+    await renderSidebarAgents();
+
+    const labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain("Bravo");
+    // PAP-76: the full-list entry point stays visible even when only active
+    // agents are shown.
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
+  });
+
+  it("shows up to 5 recently-active agents plus a See all link when none are running", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgents();
+
+    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
+  });
+
+  it("classic mode (flag OFF) shows all agents and no See all link even when one is running", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-b", status: "running" },
+    ]);
+
+    await renderSidebarAgents(false);
+
+    // Show-all: every agent is listed regardless of live-run state. (Bravo's
+    // label includes its live-run badge text, so match by prefix.)
+    const labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(3);
+    expect(labels[0]).toBe("Alpha");
+    expect(labels[1]).toContain("Bravo");
+    expect(labels[2]).toBe("Charlie");
+    // No recent-5 truncation, so no "See all agents" link in classic mode.
+    expect(seeAllAgentsLink(container)).toBeNull();
+  });
+
+  it("classic mode (flag OFF) shows more than 5 agents without truncation", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgents(false);
+
+    expect(agentLinkLabels(container)).toHaveLength(7);
+    expect(seeAllAgentsLink(container)).toBeNull();
+  });
+
+  it("defaults to classic mode when rendered outside the Sidebar flag path", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgentsWithDefaultProps();
+
+    expect(agentLinkLabels(container)).toHaveLength(7);
+    expect(seeAllAgentsLink(container)).toBeNull();
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {

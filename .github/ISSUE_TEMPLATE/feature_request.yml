@@ -6,6 +6,22 @@ body:
     attributes:
       value: |
         Feature work on core Paperclip is coordinated against `ROADMAP.md` and Discord `#dev`. Please skim those before filing — see [CONTRIBUTING.md](https://github.com/paperclipai/paperclip/blob/master/CONTRIBUTING.md) for the full guidance.
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem affected
+      description: Which part of the codebase would this primarily live in?
+      options:
+        - server/ — REST API & orchestration services
+        - ui/ — React + Vite board UI
+        - packages/db — Drizzle schema, migrations
+        - packages/shared — types, constants, validators, API paths
+        - packages/adapters — agent adapter implementations
+        - packages/plugins — plugin system
+        - Cross-cutting (multiple of the above)
+        - Unsure
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:

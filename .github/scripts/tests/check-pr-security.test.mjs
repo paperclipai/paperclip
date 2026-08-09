@@ -10,9 +10,11 @@ import {
   scanSupplyChain,
   scanTestPatterns,
   scanSensitivePaths,
+  startScriptWatchdog,
   syncDraftAdvisory,
   validateSensitivePaths,
 } from '../check-pr-security.mjs';
+import { ghFetch } from '../get-bot-token.mjs';
 
 // ── scanSecrets ──────────────────────────────────────────────────────────────
 
@@ -141,6 +143,19 @@ test('findExistingDraftAdvisory: returns null when no matching draft advisory ex
   const fakeFetch = async () => [{ summary: 'Completely different advisory' }];
   const advisory = await findExistingDraftAdvisory(fakeFetch, 'token', 'paperclipai/paperclip', 6469);
   assert.equal(advisory, null);
+});
+
+test('findExistingDraftAdvisory: bails out at the page cap so a large backlog cannot hang the workflow', async () => {
+  let pageCount = 0;
+  const fakeFetch = async () => {
+    pageCount += 1;
+    return Array.from({ length: 100 }, (_, i) => ({ summary: `Unrelated advisory ${pageCount}-${i}` }));
+  };
+
+  const advisory = await findExistingDraftAdvisory(fakeFetch, 'token', 'paperclipai/paperclip', 6469);
+
+  assert.equal(advisory, null);
+  assert.equal(pageCount, 20, `expected pagination to run exactly 20 pages (the cap), got ${pageCount}`);
 });
 
 test('syncDraftAdvisory: patches an existing advisory with the latest flags', async () => {
@@ -317,4 +332,49 @@ test('scanSensitivePaths: ignores unrelated paths', () => {
 test('scanSensitivePaths: ignores removed files even on sensitive paths', () => {
   const files = [{ filename: 'server/src/routes/agents.ts', status: 'removed' }];
   assert.equal(scanSensitivePaths(files).length, 0);
+});
+
+// ── startScriptWatchdog ──────────────────────────────────────────────────────
+
+test('startScriptWatchdog: fires exit(0) when the wall-clock budget is exceeded', async () => {
+  let exitCode = null;
+  const fakeExit = (code) => { exitCode = code; };
+  startScriptWatchdog(20, fakeExit);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(exitCode, 0, 'watchdog should have exited with code 0 by now');
+});
+
+test('startScriptWatchdog: cleared timer never fires', async () => {
+  let exitCode = null;
+  const fakeExit = (code) => { exitCode = code; };
+  const timer = startScriptWatchdog(20, fakeExit);
+  clearTimeout(timer);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(exitCode, null, 'cleared watchdog must not call exit');
+});
+
+// ── ghFetch timeout ──────────────────────────────────────────────────────────
+
+test('ghFetch: aborts the request when the per-call timeout elapses', async () => {
+  const originalFetch = globalThis.fetch;
+  // Replace global fetch with one that respects the AbortSignal but never resolves on its own.
+  globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      reject(err);
+    }, { once: true });
+  });
+
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      ghFetch('/repos/example/example/security-advisories', 'token', { timeoutMs: 30 }),
+      /aborted|abort/i,
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 500, `ghFetch should abort within the timeout, took ${elapsed}ms`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -146,6 +146,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(environments);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
+    await db.delete(environmentLeases);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 

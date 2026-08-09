@@ -1,9 +1,16 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  assertGitSensitiveAdapterWorkspaceValid,
+  assertPushCapabilityCheckoutValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
@@ -15,14 +22,21 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveNextSessionState,
+  requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
+  shouldResetTaskSessionForModelChange,
+  stripConfiguredModelFromSessionParams,
+  normalizeSessionParams,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
+
+const execFile = promisify(execFileCallback);
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -36,6 +50,99 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     ...overrides,
   };
+}
+
+type WorkspaceValidationInput = Parameters<typeof assertGitSensitiveAdapterWorkspaceValid>[0];
+
+function buildWorkspaceValidationInput(
+  overrides: Partial<WorkspaceValidationInput> = {},
+): WorkspaceValidationInput {
+  return {
+    adapterType: "codex_local",
+    agentId: "agent-1",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+    },
+    resolvedWorkspace: buildResolvedWorkspace(),
+    executionWorkspace: {
+      baseCwd: "/tmp/project",
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: null,
+      strategy: "project_primary",
+      cwd: "/tmp/project",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      baseRefSha: null,
+    },
+    persistedExecutionWorkspace: {
+      id: "execution-workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+      sourceIssueId: "issue-1",
+      mode: "project_workspace",
+      strategyType: "project_primary",
+      name: "Primary workspace",
+      status: "active",
+      cwd: "/tmp/project",
+      repoUrl: null,
+      baseRef: null,
+      branchName: null,
+      providerType: "local_path",
+      providerRef: null,
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date("2026-06-06T00:00:00.000Z"),
+      openedAt: new Date("2026-06-06T00:00:00.000Z"),
+      closedAt: null,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      config: null,
+      metadata: null,
+      createdAt: new Date("2026-06-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-06T00:00:00.000Z"),
+    },
+    executionTarget: { kind: "local" },
+    ...overrides,
+  };
+}
+
+async function runGit(cwd: string, args: string[]) {
+  await execFile("git", args, { cwd });
+}
+
+async function createGitCheckout(options: { withRemote: boolean }) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-push-preflight-"));
+  await runGit(root, ["init"]);
+  if (options.withRemote) {
+    await runGit(root, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
+  }
+  return root;
+}
+
+async function expectWorkspaceValidationFailure(
+  input: WorkspaceValidationInput,
+  reason: string,
+  message: string,
+) {
+  await expect(assertGitSensitiveAdapterWorkspaceValid(input)).rejects.toMatchObject({
+    code: "workspace_validation_failed",
+    message: expect.stringContaining(message),
+    resultJson: {
+      workspaceValidation: expect.objectContaining({
+        reason,
+        adapterType: input.adapterType,
+        issueId: input.issue?.id,
+      }),
+    },
+  });
 }
 
 function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> = {}) {
@@ -124,6 +231,239 @@ function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; paren
     }),
   };
 }
+
+describe("assertGitSensitiveAdapterWorkspaceValid", () => {
+  it("rejects a project-workspace-linked issue that is missing its project id before adapter launch", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: null,
+          projectWorkspaceId: "workspace-1",
+        },
+      }),
+      "missing_project_id",
+      "linked to a project workspace but has no project id",
+    );
+  });
+
+  it("rejects a git-sensitive local adapter when effective cwd differs from the persisted workspace cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: "/tmp/agent-fallback",
+        },
+      }),
+      "persisted_cwd_mismatch",
+      'resolved adapter cwd "/tmp/agent-fallback"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when no execution workspace was persisted", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: null,
+      }),
+      "missing_persisted_execution_workspace",
+      "requires a project execution workspace",
+    );
+  });
+
+  it("rejects a workspace-linked issue when no effective adapter cwd was resolved", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: null,
+        },
+      }),
+      "missing_effective_cwd",
+      "no adapter cwd was resolved",
+    );
+  });
+
+  it("rejects a persisted execution workspace linked to a different project workspace", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: "workspace-other",
+        },
+      }),
+      "project_workspace_mismatch",
+      'expected project workspace "workspace-1"',
+    );
+  });
+
+  it("rejects a persisted execution workspace missing its project workspace id", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: null,
+        },
+      }),
+      "persisted_workspace_missing_project_workspace_id",
+      "has no project workspace id",
+    );
+  });
+
+  it("rejects a workspace-linked issue that would launch from the agent fallback cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: fallbackCwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd: fallbackCwd,
+        },
+      }),
+      "fallback_agent_home_cwd",
+      "would launch from agent fallback cwd",
+    );
+  });
+
+  it("rejects a git worktree persisted workspace when cwd differs from providerRef", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          strategy: "git_worktree",
+          cwd: "/tmp/worktree-current",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          strategyType: "git_worktree",
+          cwd: "/tmp/worktree-current",
+          providerRef: "/tmp/worktree-expected",
+        },
+      }),
+      "git_worktree_provider_ref_mismatch",
+      'expected git worktree "/tmp/worktree-expected"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-workspace-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          executionTarget: { kind: "cloud" },
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            cwd: "/tmp/agent-fallback",
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("assertPushCapabilityCheckoutValid", () => {
+  it("rejects a GitHub PR workflow checkout without a configured push remote", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertPushCapabilityCheckoutValid({
+        enabled: true,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+        },
+        cwd,
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("has no configured push remote"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "missing_git_push_remote",
+            issueId: "issue-1",
+            executionWorkspaceCwd: cwd,
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a GitHub PR workflow checkout when a push remote is configured", async () => {
+    const cwd = await createGitCheckout({ withRemote: true });
+    try {
+      await expect(assertPushCapabilityCheckoutValid({
+        enabled: true,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+        },
+        cwd,
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("requiresPushCapabilityPreflight", () => {
+  it("only enables the guard when the issue explicitly mentions the GitHub PR workflow skill", () => {
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: ["paperclipai/bundled/software-development/github-pr-workflow"],
+    })).toBe(true);
+
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: [],
+    })).toBe(false);
+
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "cursor-cloud",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: ["paperclipai/bundled/software-development/github-pr-workflow"],
+    })).toBe(false);
+  });
+});
 
 describe("stripHostWorkspaceProvisionForLowTrustSandbox", () => {
   it("removes only the host-side provision command for sandbox-backed low-trust runs", () => {
@@ -631,6 +971,159 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("shouldDeferFollowupWakeForSameIssue", () => {
+  it("defers a same-agent follow-up for mention-style comment wakes while a run is active", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: "comment-1",
+        forceFreshSession: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("defers a same-agent follow-up when a fresh session is explicitly requested", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not defer when the existing run is only queued", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "queued",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not defer normal same-agent wakes without a comment or fresh-session request", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldResetTaskSessionForModelChange", () => {
+  it("resets when configured model differs from persisted session model", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "opencode/mimo-v2-pro-free",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reset when models match", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when persisted session model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when configured model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: null,
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when task session params are missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("stripConfiguredModelFromSessionParams", () => {
+  it("removes the internal model key from persisted session params", () => {
+    expect(
+      stripConfiguredModelFromSessionParams({
+        sessionId: "thread-1",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+      }),
+    ).toEqual({ sessionId: "thread-1" });
+  });
+
+  it("returns null when session params are missing", () => {
+    expect(stripConfiguredModelFromSessionParams(null)).toBeNull();
+    expect(stripConfiguredModelFromSessionParams(undefined)).toBeNull();
+  });
+
+  it("returns a copy without mutating the input", () => {
+    const input = { sessionId: "thread-1", __paperclipConfiguredModel: "gpt-5.4-mini" };
+    const result = stripConfiguredModelFromSessionParams(input);
+    expect(result).not.toBe(input);
+    expect(input.__paperclipConfiguredModel).toBe("gpt-5.4-mini");
+  });
+
+  it("returns an empty object when only the internal model key is present (caller must normalize)", () => {
+    const stripped = stripConfiguredModelFromSessionParams({
+      __paperclipConfiguredModel: "gpt-5.4-mini",
+    });
+    expect(stripped).toEqual({});
+    // Callers that forward params to adapters must normalize {} back to null so
+    // the pre-PR null contract is preserved (adapters distinguishing {} from null).
+    expect(normalizeSessionParams(stripped)).toBeNull();
+  });
+});
+
+describe("normalizeSessionParams", () => {
+  it("collapses an empty object to null", () => {
+    expect(normalizeSessionParams({})).toBeNull();
+  });
+
+  it("returns null for null or undefined inputs", () => {
+    expect(normalizeSessionParams(null)).toBeNull();
+    expect(normalizeSessionParams(undefined)).toBeNull();
+  });
+
+  it("preserves a non-empty object", () => {
+    const params = { sessionId: "thread-1" };
+    expect(normalizeSessionParams(params)).toBe(params);
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -682,6 +1175,21 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+
+  it("keeps forceFreshSession sticky once any coalesced wake requests it", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        forceFreshSession: true,
+      },
+      {
+        issueId: "issue-1",
+        forceFreshSession: false,
+      },
+    );
+
+    expect(merged.forceFreshSession).toBe(true);
   });
 });
 

@@ -34,6 +34,8 @@ export const routines = pgTable(
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
+    originKind: text("origin_kind").notNull().default("manual"),
+    originId: text("origin_id"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
     env: jsonb("env").$type<RoutineEnvConfig>(),
     latestRevisionId: uuid("latest_revision_id"),
@@ -51,6 +53,7 @@ export const routines = pgTable(
     companyStatusIdx: index("routines_company_status_idx").on(table.companyId, table.status),
     companyAssigneeIdx: index("routines_company_assignee_idx").on(table.companyId, table.assigneeAgentId),
     companyProjectIdx: index("routines_company_project_idx").on(table.companyId, table.projectId),
+    companyOriginIdx: index("routines_company_origin_idx").on(table.companyId, table.originKind, table.originId),
   }),
 );
 
