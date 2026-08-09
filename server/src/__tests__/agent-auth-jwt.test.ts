@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { agentJwtGraceWindowSeconds, createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -251,6 +251,60 @@ describe("agent local JWT", () => {
     // instance-agnostic; disabling it closes that residual cross-instance hole.
     const legacyToken = craftLegacyMasterSecretToken(process.env[secretEnv]!, "company-1");
     expect(verifyLocalAgentJwt(legacyToken)).toBeNull();
+  });
+
+  // --- allowExpired grace-verify (RENA-56176/RENA-56180) --------------------
+
+  it("returns claims with expired: true for an expired-but-validly-signed token when allowExpired is set", () => {
+    process.env[ttlEnv] = "1";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1");
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    const claims = verifyLocalAgentJwt(token!, { allowExpired: true });
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      run_id: "run-1",
+      expired: true,
+    });
+  });
+
+  it("still rejects an expired token when allowExpired is unset or false (unchanged default behavior)", () => {
+    process.env[ttlEnv] = "1";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    expect(verifyLocalAgentJwt(token!)).toBeNull();
+    expect(verifyLocalAgentJwt(token!, {})).toBeNull();
+    expect(verifyLocalAgentJwt(token!, { allowExpired: false })).toBeNull();
+  });
+
+  it("never skips signature verification for an expired token, even with allowExpired set", () => {
+    process.env[ttlEnv] = "1";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    // Tamper the signature of an otherwise-expired token.
+    const [headerB64, claimsB64, signature] = token!.split(".");
+    const tamperedSignature = signature.slice(0, -1) + (signature.at(-1) === "A" ? "B" : "A");
+    const tampered = `${headerB64}.${claimsB64}.${tamperedSignature}`;
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    expect(verifyLocalAgentJwt(tampered, { allowExpired: true })).toBeNull();
+  });
+
+  it("returns claims with expired: false via allowExpired for a token that is not actually expired", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const claims = verifyLocalAgentJwt(token!, { allowExpired: true });
+    expect(claims).toMatchObject({ sub: "agent-1", expired: false });
+  });
+
+  it("defaults the grace window to 24h when PAPERCLIP_AGENT_JWT_GRACE_SECONDS is unset", () => {
+    delete process.env.PAPERCLIP_AGENT_JWT_GRACE_SECONDS;
+    expect(agentJwtGraceWindowSeconds()).toBe(24 * 60 * 60);
   });
 
   it("defaults TTL to 1h when PAPERCLIP_AGENT_JWT_TTL_SECONDS is unset", () => {

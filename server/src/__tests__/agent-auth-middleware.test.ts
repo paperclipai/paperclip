@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentApiKeys,
@@ -33,7 +33,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
-  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null; status?: string };
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -58,6 +58,7 @@ function createDbState(input: {
         companyId: input.run.companyId,
         agentId: input.run.agentId,
         responsibleUserId: input.run.responsibleUserId ?? null,
+        status: input.run.status ?? "running",
       }
     : null;
 
@@ -376,6 +377,132 @@ describe("agent auth middleware", () => {
       entityType: "agent_api_key",
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
+    });
+  });
+
+  // --- Run-JWT grace-verify (RENA-56176/RENA-56180) -------------------------
+  // Adapter processes hold a single, non-refreshing JWT for the whole run.
+  // Once `exp` passes mid-run, standard verification always rejects the token
+  // even though the run may still be genuinely active. These tests pin the
+  // bounded, DB-backed grace path: an expired-but-validly-signed token is
+  // accepted only if `heartbeat_runs` still has a matching status='running'
+  // row for the exact (run, agent, company) the token claims, and only within
+  // PAPERCLIP_AGENT_JWT_GRACE_SECONDS of `exp`.
+  describe("grace path for expired-but-validly-signed run JWTs", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      delete process.env.PAPERCLIP_AGENT_JWT_GRACE_SECONDS;
+    });
+
+    it("accepts an expired token when the claimed heartbeat run is still status='running'", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const { db, activity } = createDbState({
+        agent: { id: agentId, companyId },
+        run: { id: runId, companyId, agentId, responsibleUserId: "user-claim", status: "running" },
+      });
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+      // exp = mint time + 3600s TTL. Jump 5 minutes past it, well within the
+      // default 24h grace window.
+      vi.setSystemTime(new Date("2026-01-01T01:05:00.000Z"));
+
+      const res = await request(createApp(db))
+        .get("/actor")
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        type: "agent",
+        agentId,
+        companyId,
+        runId,
+        onBehalfOfUserId: "user-claim",
+        source: "agent_jwt",
+      });
+      expect(activity).toHaveLength(1);
+      expect(activity[0]).toMatchObject({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "auth.agent_jwt_grace_expiry_accepted",
+        entityType: "heartbeat_run",
+        entityId: runId,
+        runId,
+      });
+    });
+
+    it("rejects an expired token once the run is no longer status='running'", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const issueId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: agentId, companyId },
+        run: { id: runId, companyId, agentId, responsibleUserId: "user-claim", status: "succeeded" },
+      });
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+      vi.setSystemTime(new Date("2026-01-01T01:05:00.000Z"));
+
+      const res = await request(createApp(db))
+        .get(`/companies/${companyId}/issues/${issueId}`)
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId);
+
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects an expired token when the run_id belongs to a different agent", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const runId = randomUUID();
+      const issueId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: agentId, companyId },
+        run: { id: runId, companyId, agentId: otherAgentId, responsibleUserId: "user-claim", status: "running" },
+      });
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+      vi.setSystemTime(new Date("2026-01-01T01:05:00.000Z"));
+
+      const res = await request(createApp(db))
+        .get(`/companies/${companyId}/issues/${issueId}`)
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId);
+
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects an expired token once the bounded grace window has elapsed, even if the run is still status='running'", async () => {
+      process.env.PAPERCLIP_AGENT_JWT_GRACE_SECONDS = "60";
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const issueId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: agentId, companyId },
+        run: { id: runId, companyId, agentId, responsibleUserId: "user-claim", status: "running" },
+      });
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+      // 120s past exp exceeds the 60s grace window configured above.
+      vi.setSystemTime(new Date("2026-01-01T01:02:00.000Z"));
+
+      const res = await request(createApp(db))
+        .get(`/companies/${companyId}/issues/${issueId}`)
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId);
+
+      expect(res.status).toBe(401);
     });
   });
 });
