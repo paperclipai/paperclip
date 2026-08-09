@@ -56,6 +56,18 @@ export interface PortfolioRunsRow {
   priced_cost_event_count: number;
   /** Token-bearing run rows whose provider price was not reported. */
   unpriced_cost_event_count: number;
+  /** Provider-reported input tokens for the agent/window. */
+  input_tokens: number;
+  /** Provider-reported cached-input tokens for the agent/window. */
+  cached_input_tokens: number;
+  /** Provider-reported output tokens for the agent/window. */
+  output_tokens: number;
+  /**
+   * Runs reporting at least 1M input tokens. This is the portfolio review
+   * threshold: the run completed, but it needs a deliberate split/cap/path
+   * decision before becoming a repeatable lane.
+   */
+  runs_input_tokens_ge_1m: number;
   /**
    * Runs that started with no prior session id (cold start). TSMC-20213 —
    * visible fresh-vs-reused ratio. This is a workload-mix indicator: it includes
@@ -330,7 +342,12 @@ export function portfolioService(db: Db) {
             ce.agent_id,
             COALESCE(SUM(ce.cost_cents), 0)::bigint AS cost_cents,
             COUNT(*) FILTER (WHERE ce.cost_status <> 'unpriced')::int AS priced_cost_event_count,
-            COUNT(*) FILTER (WHERE ce.cost_status = 'unpriced')::int AS unpriced_cost_event_count
+            COUNT(*) FILTER (WHERE ce.cost_status = 'unpriced')::int AS unpriced_cost_event_count,
+            COALESCE(SUM(ce.input_tokens), 0)::bigint AS input_tokens,
+            COALESCE(SUM(ce.cached_input_tokens), 0)::bigint AS cached_input_tokens,
+            COALESCE(SUM(ce.output_tokens), 0)::bigint AS output_tokens,
+            COUNT(DISTINCT ce.heartbeat_run_id) FILTER (WHERE ce.input_tokens >= 1000000)::int
+              AS runs_input_tokens_ge_1m
           FROM cost_events ce
           WHERE
             ce.company_id IN (${companyIdsParam})
@@ -355,6 +372,10 @@ export function portfolioService(db: Db) {
           COALESCE(c.cost_cents, 0)::bigint AS cost_cents,
           COALESCE(c.priced_cost_event_count, 0)::int AS priced_cost_event_count,
           COALESCE(c.unpriced_cost_event_count, 0)::int AS unpriced_cost_event_count,
+          COALESCE(c.input_tokens, 0)::bigint AS input_tokens,
+          COALESCE(c.cached_input_tokens, 0)::bigint AS cached_input_tokens,
+          COALESCE(c.output_tokens, 0)::bigint AS output_tokens,
+          COALESCE(c.runs_input_tokens_ge_1m, 0)::int AS runs_input_tokens_ge_1m,
           COALESCE(r.runs_fresh_session, 0)::int AS runs_fresh_session,
           COALESCE(r.runs_reused_session, 0)::int AS runs_reused_session,
           CASE
@@ -398,6 +419,10 @@ export function portfolioService(db: Db) {
         cost_cents: Number(row.cost_cents ?? 0),
         priced_cost_event_count: Number(row.priced_cost_event_count ?? 0),
         unpriced_cost_event_count: Number(row.unpriced_cost_event_count ?? 0),
+        input_tokens: Number(row.input_tokens ?? 0),
+        cached_input_tokens: Number(row.cached_input_tokens ?? 0),
+        output_tokens: Number(row.output_tokens ?? 0),
+        runs_input_tokens_ge_1m: Number(row.runs_input_tokens_ge_1m ?? 0),
         runs_fresh_session: Number(row.runs_fresh_session ?? 0),
         runs_reused_session: Number(row.runs_reused_session ?? 0),
         fresh_session_ratio: Number(row.fresh_session_ratio ?? 0),
