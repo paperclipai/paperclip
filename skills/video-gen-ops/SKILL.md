@@ -44,7 +44,7 @@ Grok Imagine model-routing note (validated 2026-08-09):
      in the cache is an INCOMPLETE disposition. Attach it:
      ```bash
      curl -sS -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-       -F "file=@<the-generated-clip-path>" \
+       -F "file=@<the-generated-clip-path>;type=video/mp4" \
        "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/<this-issue-id>/attachments"
      ```
    - Comment the exact prompt used and confirm the attachment, then set the disposition.

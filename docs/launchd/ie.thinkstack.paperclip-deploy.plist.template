@@ -30,6 +30,8 @@
     <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PAPERCLIP_UI_DEV_MIDDLEWARE</key>
     <string>true</string>
+    <key>PAPERCLIP_ATTACHMENT_MAX_BYTES</key>
+    <string>26214400</string>
     <key>PORT</key>
     <string>3100</string>
     <key>PAPERCLIP_DEPLOY_ROOT</key>

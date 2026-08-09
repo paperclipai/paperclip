@@ -17,6 +17,10 @@ if [ -x "$NODE_V22_BIN/node" ]; then
 fi
 
 export PAPERCLIP_UI_DEV_MIDDLEWARE="${PAPERCLIP_UI_DEV_MIDDLEWARE:-true}"
+# Generated 1080p review clips regularly exceed the legacy 10 MiB default.
+# Keep a bounded process cap so the per-company attachment policy can enforce
+# its 25 MiB TSM limit without silently rejecting the original render.
+export PAPERCLIP_ATTACHMENT_MAX_BYTES="${PAPERCLIP_ATTACHMENT_MAX_BYTES:-26214400}"
 # Never inherit control-plane DATABASE_URL into children (SEV-1 / 2026-06-29).
 unset DATABASE_URL
 
