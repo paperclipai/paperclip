@@ -185,3 +185,17 @@ test("execute lets a selected Hermes profile resolve its own model", async () =>
   expect(args).not.toContain("gpt-5.5");
   expect(resultModel).toBe("auto");
 });
+
+test("execute does not inherit the detected provider for a selected Hermes profile", async () => {
+  const { args } = await runExecuteWithFakeHermes(
+    { model: "auto", extraArgs: ["--profile", "profile-a"] },
+    [
+      "model:",
+      "  default: gpt-5.5",
+      "  provider: openai-codex",
+    ].join("\n"),
+  );
+
+  expect(args).not.toContain("--provider");
+  expect(args).not.toContain("openai-codex");
+});
