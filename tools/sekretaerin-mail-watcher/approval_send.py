@@ -37,6 +37,7 @@ def build_payload(entry: dict, secret: str) -> dict:
         "replyTo": REPLY_TO, "inReplyTo": entry.get("in_reply_to", ""),
         "attachments": entry.get("attachments", []),  # Inline-Logos (cid)
         "approval": secret,
+        "signatur": "none",  # Luna signiert selbst (Vorschau vor Freigabe)
     }
 
 
