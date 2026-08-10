@@ -67,7 +67,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
-  it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
+  it("queues one bounded status-only corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 
     expect(decision.kind).toBe("enqueue");
@@ -84,21 +84,23 @@ describe("successful run handoff decision", () => {
       maxHandoffAttempts: 1,
       resumeIntent: true,
       resumeFromRunId: "run-1",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+      modelProfile: "cheap",
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
     });
-    for (const key of [
-      "modelProfile",
-      "recoveryIntent",
-      "allowDeliverableWork",
-      "allowDocumentUpdates",
-      "resumeRequiresNormalModel",
-    ]) {
-      expect(decision.payload).not.toHaveProperty(key);
-      expect(decision.contextSnapshot).not.toHaveProperty(key);
-    }
+    expect(decision.contextSnapshot).toMatchObject({
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    });
     expect(decision.instruction).toContain("You are assigned PAP-1: Finish backend handoff.");
     expect(decision.instruction).toContain("Implement and verify the backend handoff behavior.");
     expect(decision.instruction).toContain("Implemented the handoff path and ran the focused test.");
@@ -109,7 +111,7 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("3. Mark it `blocked` with first-class blockers");
     expect(decision.instruction).toContain("4. Either delegate follow-up work");
     expect(decision.instruction).toContain("Only mark `done` if you can point at concrete verification evidence");
-    expect(decision.instruction).toContain("you are on your normal model and allowed to work in this wake");
+    expect(decision.instruction).toContain("only for recording the disposition");
   });
 
   it.each([

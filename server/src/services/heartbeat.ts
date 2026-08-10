@@ -15618,6 +15618,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
+    // Recovery wrappers and corrective successful-run handoffs only need to
+    // record a durable issue disposition. They must not silently inherit the
+    // normal task budget when their assignment wake was created without the
+    // recovery fields that adapter renderers use to select the compact prompt
+    // and recovery turn cap. In particular, issue assignment intentionally
+    // builds a fresh wake context, so the fields supplied when the wrapper was
+    // created are not guaranteed to survive to this execution boundary.
+    const recoveryCause =
+      issueContext?.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery
+        ? RECOVERY_ORIGIN_KINDS.strandedIssueRecovery
+        : readNonEmptyString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON && context.handoffRequired === true
+          ? SUCCESSFUL_RUN_MISSING_STATE_REASON
+          : null;
+    if (recoveryCause) {
+      Object.assign(context, withRecoveryModelProfileHint({ recoveryCause }, "status_only"));
+    }
     const wakeCommentId = deriveCommentId(context, null);
     const wakeCommentContext =
       issueContext && wakeCommentId
