@@ -25,7 +25,64 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
-| `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+| `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Disable Codex's own approval and sandbox layer. This does not disable a Paperclip execution-target sandbox; use only when that outer boundary is configured and verified. |
+
+## Layering Codex and Paperclip sandboxes
+
+A local Codex run can have two independent enforcement layers:
+
+1. Codex's own approval and sandbox mode.
+2. Paperclip's local-process execution target, configured by fields such as
+   `filesystemScope` and `networkScope`.
+
+When both are enabled, the effective permissions are the intersection of both
+layers. Paperclip's outer sandbox does not grant permissions that Codex's inner
+sandbox denies. For example, Codex's workspace-write mode can still reject
+writes under `.git`, and Codex network policy can still prevent a tool from
+reaching a proxy that Paperclip's allowlist exposes.
+
+If the Paperclip local-process sandbox is intended to be the sole enforcement
+boundary for a headless run, set `dangerouslyBypassApprovalsAndSandbox: true`
+only after verifying that the agent really receives the expected
+`filesystemScope` and `networkScope`. If no outer execution-target sandbox is
+active, that flag removes Codex's local approval and sandbox protection rather
+than transferring it to Paperclip.
+
+### Bubblewrap on Ubuntu with restricted user namespaces
+
+Paperclip's Linux local-process confinement uses Bubblewrap. On Ubuntu hosts
+where the following reports `1`, AppArmor can deny Bubblewrap before the agent
+starts:
+
+```sh
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+Prefer a distro-provided Bubblewrap AppArmor profile. If the package does not
+install one, a narrow executable profile can allow user namespaces for
+`/usr/bin/bwrap` without disabling Ubuntu's global restriction:
+
+```text
+# /etc/apparmor.d/paperclip-bwrap
+abi <abi/4.0>,
+include <tunables/global>
+
+profile paperclip-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+```
+
+Load it with:
+
+```sh
+sudo apparmor_parser -r /etc/apparmor.d/paperclip-bwrap
+```
+
+Keep `kernel.apparmor_restrict_unprivileged_userns=1`; do not work around the
+failure by globally disabling the restriction. Adjust the executable path if
+`command -v bwrap` reports a different location. This AppArmor allowance only
+lets Bubblewrap create the user namespace; Bubblewrap's mount, process, and
+network namespace policy remains the run's confinement boundary.
 
 ## Session Persistence
 
