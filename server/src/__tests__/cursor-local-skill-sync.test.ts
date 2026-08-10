@@ -48,7 +48,7 @@ describe("cursor local skill sync", () => {
     const before = await listCursorSkills(ctx);
     expect(before.mode).toBe("persistent");
     expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
+    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("shared_unlinked");
 
     const after = await syncCursorSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
