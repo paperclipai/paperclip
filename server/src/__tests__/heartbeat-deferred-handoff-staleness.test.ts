@@ -241,6 +241,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           taskId: issueId,
           wakeReason: "execution_review_requested",
           source: "issue.execution_stage",
+          skipIssueComment: true,
         },
       },
     });
@@ -287,6 +288,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           taskId: issueId,
           wakeReason: "execution_changes_requested",
           source: "issue.execution_stage",
+          skipIssueComment: true,
         },
       });
       expect(handoffWake).toBeNull();
@@ -312,6 +314,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
         taskId: issueId,
         wakeReason: "execution_review_requested",
         source: "issue.execution_stage",
+        skipIssueComment: true,
       },
     });
 
@@ -398,6 +401,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           taskId: issueId,
           wakeReason: "execution_changes_requested",
           source: "issue.execution_stage",
+          skipIssueComment: true,
         },
       },
     });
@@ -444,6 +448,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           taskId: issueId,
           wakeReason: "execution_review_requested",
           source: "issue.execution_stage",
+          skipIssueComment: true,
         },
       });
       expect(reviewWake).toBeNull();
@@ -468,6 +473,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
         issueId,
         taskId: issueId,
         wakeReason: "issue_assigned",
+        skipIssueComment: true,
       },
     });
 
@@ -564,6 +570,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
         issueId,
         taskId: issueId,
         wakeReason: "issue_assigned",
+        skipIssueComment: true,
       },
     });
 
