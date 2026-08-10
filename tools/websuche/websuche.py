@@ -75,7 +75,16 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
                  deadline: float = 25.0, gleiche_domain_erlauben: bool = False,
                  backend=None, abrufer=None) -> dict:
     backend = backend or SearxngBackend()
-    abrufer = abrufer or abruf.hole_text
+    if abrufer is None:
+        # Ein robots-Speicher je Lauf: mehrere Seiten derselben Domain (und
+        # Weiterleitungen innerhalb einer Domain) holen die robots.txt sonst
+        # jedes Mal neu und nehmen dem Zielserver sein Zeitbudget weg. Die
+        # Bindung geschieht hier, damit eingesetzte Test-Abrufer bei der
+        # schlichten Signatur (url, zeichen, timeout) bleiben duerfen.
+        speicher = abruf.RobotsSpeicher()
+
+        def abrufer(url, zeichen_, timeout_):
+            return abruf.hole_text(url, zeichen_, timeout_, robots=speicher)
 
     # Uhr fuer die Gesamt-Deadline laeuft ab hier — sie deckt Suche UND Abruf,
     # denn beides zaehlt fuer den Aufrufer (z.B. der 30s-Deckel von shell_exec).

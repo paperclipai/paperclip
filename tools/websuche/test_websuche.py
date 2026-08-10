@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+import abruf
 from abruf import AbrufErgebnis
 from backends import BackendFehler, Treffer
 from websuche import recherchiere, registrierbare_domain
@@ -145,6 +146,37 @@ def test_ohne_backend_warnung_bleibt_hinweis_null():
     backend = WarnendesBackend([t("https://a.de/1"), t("https://b.de/2")], None)
     ergebnis = recherchiere("f", quellen=2, backend=backend, abrufer=abrufer_ok)
     assert ergebnis["hinweis"] is None
+
+
+def test_alle_quellen_eines_laufs_teilen_einen_robots_speicher(monkeypatch):
+    """Ohne geteilten Speicher holt jede Seite ihre robots.txt neu und
+    verbrennt Zeitbudget, das dem Zielserver fehlt."""
+    gesehen = []
+
+    def falsches_hole_text(url, max_zeichen=12000, timeout=10.0, robots=None):
+        gesehen.append(robots)
+        return AbrufErgebnis(text="ok")
+
+    monkeypatch.setattr(abruf, "hole_text", falsches_hole_text)
+    backend = FakeBackend([t("https://a.de/1"), t("https://b.de/2")])
+    recherchiere("f", quellen=2, backend=backend)  # kein abrufer: Standardweg
+    assert len(gesehen) == 2
+    assert gesehen[0] is not None
+    assert gesehen[0] is gesehen[1]
+
+
+def test_jeder_lauf_bekommt_einen_frischen_robots_speicher(monkeypatch):
+    gesehen = []
+
+    def falsches_hole_text(url, max_zeichen=12000, timeout=10.0, robots=None):
+        gesehen.append(robots)
+        return AbrufErgebnis(text="ok")
+
+    monkeypatch.setattr(abruf, "hole_text", falsches_hole_text)
+    backend = FakeBackend([t("https://a.de/1")])
+    recherchiere("f", quellen=1, backend=backend)
+    recherchiere("f", quellen=1, backend=backend)
+    assert gesehen[0] is not gesehen[1]
 
 
 def test_jede_quelle_traegt_abrufdatum_und_url():

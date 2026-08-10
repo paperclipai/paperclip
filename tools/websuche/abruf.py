@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import threading
 import time
 import urllib.robotparser
 from dataclasses import dataclass
@@ -127,7 +128,12 @@ def kappe(text: str, max_zeichen: int) -> str:
     return text[:max_zeichen] + f"… [gekappt bei {max_zeichen} Zeichen]"
 
 
-def darf_abrufen(url: str, timeout: float = 5.0) -> bool:
+ALLES_ERLAUBT = "alles erlaubt"
+ALLES_VERBOTEN = "alles verboten"
+
+
+def _hole_robots(url: str, timeout: float):
+    """Holt die robots.txt einer Domain und gibt die Regel zurueck."""
     teile = urlparse(url)
     robots_url = urljoin(f"{teile.scheme}://{teile.netloc}", "/robots.txt")
     try:
@@ -135,12 +141,63 @@ def darf_abrufen(url: str, timeout: float = 5.0) -> bool:
                                headers={"User-Agent": USER_AGENT})
     except requests.exceptions.RequestException:
         # Keine erreichbare robots.txt ist keine Verbotsregel.
-        return True
+        return ALLES_ERLAUBT
+    if antwort.status_code >= 500:
+        # RFC 9309, 2.3.1.4: ein "unreachable" robots.txt bedeutet komplettes
+        # Verbot. Bisher galt jeder Status ausser 200 als Freibrief — genau
+        # verkehrt herum fuer den Fall, dass der Server gerade taumelt.
+        return ALLES_VERBOTEN
     if antwort.status_code != 200:
-        return True
+        return ALLES_ERLAUBT
     parser = urllib.robotparser.RobotFileParser()
     parser.parse(antwort.text.splitlines())
-    return parser.can_fetch(USER_AGENT, url)
+    return parser
+
+
+def _bewerte(regel, url: str) -> bool:
+    if regel is ALLES_ERLAUBT:
+        return True
+    if regel is ALLES_VERBOTEN:
+        return False
+    return regel.can_fetch(USER_AGENT, url)
+
+
+class RobotsSpeicher:
+    """Merkt die robots.txt je Host fuer die Dauer EINES Laufs.
+
+    Ohne das holt jede Seite ihre robots.txt neu — bei mehreren Seiten
+    derselben Domain (--gleiche-domain-erlauben) und bei Weiterleitungen
+    innerhalb einer Domain ist das reine Budgetverschwendung.
+
+    Bewusst kein Prozess-Cache mit TTL: der Dienst laeuft wochenlang, und
+    eine veraltete robots.txt waere ein leiser Regelbruch. Ein Lauf dauert
+    Sekunden — so lange ist die Datei sicher gueltig.
+    """
+
+    def __init__(self):
+        self._regeln = {}
+        self._sperren = {}
+        self._verwaltung = threading.Lock()
+
+    def _sperre_fuer(self, host: str) -> threading.Lock:
+        # Feingranular je Host: der Abruf laeuft parallel, und eine lahme
+        # robots.txt darf nicht die Abrufe anderer Domains aufhalten.
+        with self._verwaltung:
+            return self._sperren.setdefault(host, threading.Lock())
+
+    def darf(self, url: str, timeout: float = ROBOTS_TIMEOUT) -> bool:
+        teile = urlparse(url)
+        host = f"{teile.scheme}://{teile.netloc}".lower()
+        with self._sperre_fuer(host):
+            if host not in self._regeln:
+                self._regeln[host] = _hole_robots(url, timeout)
+            regel = self._regeln[host]
+        return _bewerte(regel, url)
+
+
+def darf_abrufen(url: str, timeout: float = ROBOTS_TIMEOUT) -> bool:
+    """Einzelabfrage ohne Cache — fuer Aufrufer ausserhalb eines Laufs."""
+    return _bewerte(_hole_robots(url, timeout), url)
 
 
 def _formatfehler(content_type: str, rumpf: bytes) -> str | None:
@@ -177,8 +234,8 @@ def _lies_gedeckelt(antwort, frist: float) -> tuple[bytes, str | None]:
     return bytes(rumpf), None
 
 
-def hole_text(url: str, max_zeichen: int = 12000,
-              timeout: float = 10.0) -> AbrufErgebnis:
+def hole_text(url: str, max_zeichen: int = 12000, timeout: float = 10.0,
+              robots: "RobotsSpeicher | None" = None) -> AbrufErgebnis:
     # `timeout` ist ab hier das GESAMTbudget dieser Seite: robots.txt, alle
     # Weiterleitungen und der Rumpf zusammen.
     frist = time.monotonic() + timeout
@@ -193,7 +250,10 @@ def hole_text(url: str, max_zeichen: int = 12000,
         rest = frist - time.monotonic()
         if rest <= 0:
             return zeit_aus
-        if not darf_abrufen(aktuell, timeout=min(rest, ROBOTS_TIMEOUT)):
+        robots_budget = min(rest, ROBOTS_TIMEOUT)
+        erlaubt = (robots.darf(aktuell, robots_budget) if robots is not None
+                   else darf_abrufen(aktuell, timeout=robots_budget))
+        if not erlaubt:
             return AbrufErgebnis(fehler="Abruf laut robots.txt nicht erlaubt")
 
         rest = frist - time.monotonic()

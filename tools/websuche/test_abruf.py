@@ -377,3 +377,87 @@ def test_pruefe_ziel_erlaubt_oeffentliche_adresse():
 ])
 def test_pruefe_ziel_verweigert_lokale_und_private_adressen(url):
     assert pruefe_ziel(url) is not None
+
+
+# --- robots.txt: Zeitbudget, Cache, 5xx (I6) ------------------------------
+
+def test_robots_abruf_bekommt_das_seitenbudget(monkeypatch):
+    """hole_text rief darf_abrufen(url) ohne timeout — dort galten dann fest
+    5 s. Das Seitenbudget war damit faktisch 15 statt 10 Sekunden, und bei
+    kleinem --deadline verbrannte allein der robots-Abruf das Budget, bevor
+    der Zielserver ueberhaupt kontaktiert wurde.
+    """
+    gesehen = {}
+
+    def falsches_darf(url, timeout=5.0):
+        gesehen["timeout"] = timeout
+        return True
+
+    monkeypatch.setattr(abruf, "darf_abrufen", falsches_darf)
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/seite", text=SEITE)
+        hole_text("https://a.de/seite", timeout=2.0)
+    assert gesehen["timeout"] <= 2.0
+
+
+def test_haengende_robots_txt_sprengt_die_gesamtzeit_nicht(monkeypatch):
+    def lahmes_get(url, **kwargs):
+        if url.endswith("/robots.txt"):
+            time.sleep(kwargs["timeout"])
+            raise requests.exceptions.Timeout()
+        raise AssertionError("Zielserver trotz verbrauchtem Budget angefragt")
+
+    monkeypatch.setattr(abruf.requests, "get", lahmes_get)
+    start = time.monotonic()
+    ergebnis = hole_text("https://a.de/seite", timeout=0.4)
+    dauer = time.monotonic() - start
+    assert dauer < 2.0, f"lief {dauer:.2f}s trotz 0,4s Budget"
+    assert ergebnis.text is None
+    assert "Zeit" in ergebnis.fehler
+
+
+def test_robots_txt_wird_je_domain_nur_einmal_geholt():
+    speicher = abruf.RobotsSpeicher()
+    with requests_mock.Mocker() as m:
+        robots = m.get("https://a.de/robots.txt",
+                       text="User-agent: *\nDisallow: /privat")
+        m.get("https://a.de/eins", text=SEITE)
+        m.get("https://a.de/zwei", text=SEITE)
+        eins = hole_text("https://a.de/eins", robots=speicher)
+        zwei = hole_text("https://a.de/zwei", robots=speicher)
+        gesperrt = hole_text("https://a.de/privat/x", robots=speicher)
+    assert robots.call_count == 1, "robots.txt pro Seite neu geholt"
+    assert eins.fehler is None and zwei.fehler is None
+    # Der Cache darf die Regeln nicht verwaessern:
+    assert gesperrt.text is None and "robots.txt" in gesperrt.fehler
+
+
+def test_robots_speicher_trennt_domains():
+    speicher = abruf.RobotsSpeicher()
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", text="User-agent: *\nDisallow: /")
+        m.get("https://b.de/robots.txt", status_code=404)
+        m.get("https://b.de/seite", text=SEITE)
+        a = hole_text("https://a.de/seite", robots=speicher)
+        b = hole_text("https://b.de/seite", robots=speicher)
+    assert a.text is None and "robots.txt" in a.fehler
+    assert b.fehler is None
+
+
+def test_robots_5xx_gilt_als_verbot():
+    """RFC 9309: ein 5xx auf robots.txt bedeutet 'komplett verboten', nicht
+    'erlaubt'. Bisher wurde jeder Status ausser 200 als Freibrief gelesen."""
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=503)
+        seite = m.get("https://a.de/seite", text=SEITE)
+        ergebnis = hole_text("https://a.de/seite")
+    assert ergebnis.text is None
+    assert "robots.txt" in ergebnis.fehler
+    assert seite.call_count == 0, "Seite trotz 5xx auf robots.txt abgerufen"
+
+
+def test_robots_404_bleibt_ein_freibrief():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", text=SEITE)
+        assert hole_text("https://a.de/seite").fehler is None
