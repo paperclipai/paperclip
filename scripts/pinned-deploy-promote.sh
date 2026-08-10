@@ -262,6 +262,10 @@ cmd_prepare_candidate() {
     else
       rm -rf "$CANDIDATE_ROOT"
     fi
+    # A forced filesystem fallback leaves Git's administrative record behind.
+    # Prune it before re-adding the same candidate path; otherwise a later
+    # deploy retry fails with "missing but already registered worktree".
+    git -C "$SOURCE_ROOT" worktree prune --expire now
   fi
 
   log "adding detached worktree $CANDIDATE_ROOT @ $full"
@@ -370,16 +374,21 @@ cmd_promote_pointer() {
 
   # A copied linked-worktree `.git` file keeps pointing at the candidate's
   # administrative directory. The next prepare-candidate then removes or
-  # recreates that directory and silently rewires the serving tree. Create a
-  # distinct linked worktree for the staged pointer, then overlay runtime files
-  # while preserving that worktree's own Git metadata.
+  # recreates that directory and silently rewires the serving tree. Do not make
+  # the new serving path another linked worktree: moving the old serving path
+  # aside leaves its worktree registration at DEPLOY_ROOT, which makes
+  # `git worktree move` fail after the live pointer has already gone away.
+  # Instead create a standalone checkout with its own .git directory, then
+  # overlay the candidate runtime content while preserving that metadata.
   local candidate_sha=""
   candidate_sha="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.candidateSha||""))' "$(working_receipt_path)")"
-  local staged_as_worktree=0
+  local staged_as_checkout=0
   if git -C "$SOURCE_ROOT" rev-parse --verify "${candidate_sha}^{commit}" >/dev/null 2>&1; then
-    git -C "$SOURCE_ROOT" worktree add --detach "$staging" "$candidate_sha" \
-      || fail "promote-pointer: unable to create isolated staging worktree"
-    staged_as_worktree=1
+    git clone --no-checkout "$SOURCE_ROOT" "$staging" \
+      || fail "promote-pointer: unable to create isolated staging checkout"
+    git -C "$staging" checkout --detach "$candidate_sha" \
+      || fail "promote-pointer: unable to checkout staged candidate"
+    staged_as_checkout=1
   else
     # Retain the lightweight fixture path for promotion-script tests. Live
     # receipts always carry a committed candidate SHA, so production never
@@ -404,21 +413,26 @@ cmd_promote_pointer() {
     log "moving existing deploy to $backup"
     mv "$DEPLOY_ROOT" "$backup"
   fi
-  if [ "$staged_as_worktree" = "1" ]; then
-    # `worktree move` updates the unique Git administrative path as it moves
-    # the staged tree into the serving location.
-    git -C "$SOURCE_ROOT" worktree move "$staging" "$DEPLOY_ROOT" \
-      || fail "promote-pointer: unable to install isolated serving worktree"
-  else
-    mv "$staging" "$DEPLOY_ROOT"
+  if ! mv "$staging" "$DEPLOY_ROOT"; then
+    # Do not leave a live service pointed at a missing source directory if the
+    # final rename fails. Restore the exact prior pointer before failing.
+    if [ -n "$backup" ] && [ -d "$backup" ] && [ ! -e "$DEPLOY_ROOT" ]; then
+      mv "$backup" "$DEPLOY_ROOT" || true
+    fi
+    fail "promote-pointer: unable to install staged serving checkout"
   fi
+
+  # If the previous serving tree was a linked worktree, its administrative
+  # entry now points at the retained rollback directory. It is safe to prune
+  # that stale entry only after the new standalone checkout is in place.
+  git -C "$SOURCE_ROOT" worktree prune --expire now || true
 
   # Final belt-and-braces on the live pointer path.
   ensure_worktree_env "$DEPLOY_ROOT"
   [ -f "$DEPLOY_ROOT/.paperclip/.env" ] || fail "DEPLOY_ROOT missing .paperclip/.env after promote"
-  if [ "$staged_as_worktree" = "1" ]; then
+  if [ "$staged_as_checkout" = "1" ]; then
     git -C "$DEPLOY_ROOT" diff --quiet \
-      || fail "promote-pointer: serving worktree is dirty after staged copy"
+      || fail "promote-pointer: serving checkout is dirty after staged copy"
   fi
 
   # Finalize transition metadata on the working receipt FIRST, then write the
