@@ -174,7 +174,9 @@ describe("AgentActionButtons", () => {
     render(makeAgent({ status: "active" }));
     await flushReact();
 
-    expect(container.textContent).toContain("Pause");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Pause");
+    });
     expect(container.textContent).not.toContain("Clear error");
   });
 
