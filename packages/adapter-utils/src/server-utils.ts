@@ -282,6 +282,7 @@ export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  required?: boolean;
   versionId?: string | null;
   currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
@@ -4105,6 +4106,7 @@ function normalizeConfiguredPaperclipRuntimeSkills(
       key,
       runtimeName,
       source,
+      required: entry.required === true,
       versionId:
         typeof entry.versionId === "string" && entry.versionId.trim().length > 0
           ? entry.versionId.trim()
