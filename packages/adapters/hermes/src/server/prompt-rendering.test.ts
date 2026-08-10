@@ -74,6 +74,10 @@ test("renders standard assignment wake with task authority and no backlog discov
       checkedOutByHarness: true,
       commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
       comments: [],
+      continuationSummary: {
+        body: "# Continuation Summary\\n\\n## Objective\\n\\nOLD-HERMES-SUMMARY-ONLY",
+        bodyTruncated: false,
+      },
       fallbackFetchNeeded: false,
     },
     paperclipTaskMarkdown: [
@@ -100,6 +104,7 @@ test("renders standard assignment wake with task authority and no backlog discov
   expect(prompt).toContain("- issue work mode: standard");
   expect(prompt).toContain("Paperclip task context:");
   expect(prompt).toContain("Add focused unit tests for assignment wake and custom prompt rendering.");
+  expect(prompt).not.toContain("OLD-HERMES-SUMMARY-ONLY");
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
   expect(prompt).toContain("clear final disposition");
   expect(prompt).not.toContain("check for unassigned issues");

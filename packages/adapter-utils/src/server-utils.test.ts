@@ -802,6 +802,18 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Use the deterministic renderer.");
     expect(prompt).not.toContain("Issue continuation summary:");
     expect(prompt).not.toContain("every-old-file");
+
+    const promptJson = stringifyPaperclipWakePayload(payload, {
+      omitIssueDescription: true,
+      omitContinuationSummary: true,
+    });
+    expect(JSON.parse(promptJson ?? "{}")).toMatchObject({
+      issue: { description: null, descriptionTruncated: false },
+      continuationSummary: null,
+    });
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      continuationSummary: { body: expect.stringContaining("every-old-file") },
+    });
   });
 
   it("omits the issue description from non-assignment resume deltas and leaves a fetch breadcrumb", () => {

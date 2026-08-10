@@ -207,9 +207,17 @@ export function buildPrompt(
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: paperclipTaskMarkdown.length > 0,
+    // A fresh Hermes session already receives the full task brief below. Do
+    // not replay the prior-run summary into the same prompt.
+    suppressContinuationSummary: options.resumedSession !== true,
   });
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake, {
+    // Custom Hermes prompt templates can embed this JSON. Keep it aligned with
+    // the rendered prompt so a fresh session does not receive the old summary
+    // through a second channel.
+    omitContinuationSummary: options.resumedSession !== true,
+  }) || "";
   const recoveryScoped = isPaperclipRecoveryWakePayload(context.paperclipWake);
   // Recovery wakes are deliberately limited to recording or repairing the
   // execution path. Re-sending a full managed-instructions bundle (often tens

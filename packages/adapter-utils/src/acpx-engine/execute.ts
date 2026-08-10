@@ -2389,6 +2389,10 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: taskContextNote.length > 0,
+    // Fresh ACP sessions receive the full authoritative task context below.
+    // Do not add the previous-run summary as well: it repeats the objective
+    // and artifact inventory and turns a session rotation into a history replay.
+    suppressContinuationSummary: !resumedSession,
   });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;

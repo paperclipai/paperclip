@@ -811,6 +811,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: taskContextNote.length > 0,
+    // A fresh Claude session already receives the full task brief below. Do
+    // not replay the prior-run summary into the same prompt.
+    suppressContinuationSummary: !sessionId,
   });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)

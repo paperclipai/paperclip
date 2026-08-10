@@ -277,12 +277,17 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     Boolean(nonEmpty(ctx.runtime?.sessionId));
   const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    resumedSession,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: Boolean(taskMarkdown),
+    // A fresh Hermes Gateway session already receives the full task brief
+    // below. Do not replay the prior-run summary into the same prompt.
+    suppressContinuationSummary: !resumedSession,
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
     omitIssueDescription: Boolean(taskMarkdown),
+    omitContinuationSummary: !resumedSession,
   });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);

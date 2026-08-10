@@ -514,6 +514,33 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 
+  it("does not replay a continuation summary into a fresh ACP task-context prompt", async () => {
+    const { meta } = await runExecutor(
+      { agent: "codex", agentCommand: "node ./fake-acp.js" },
+      {
+        context: {
+          taskId: "issue-1",
+          paperclipTaskMarkdown: "FRESH-ACP-TASK-AUTHORITY",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: { id: "issue-1", identifier: "TEST-1", description: "Current task brief" },
+            commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+            comments: [],
+            continuationSummary: {
+              body: "# Continuation Summary\\n\\nOLD-ACP-SUMMARY-ONLY",
+              bodyTruncated: false,
+            },
+            fallbackFetchNeeded: false,
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("FRESH-ACP-TASK-AUTHORITY");
+    expect(prompt).not.toContain("OLD-ACP-SUMMARY-ONLY");
+  });
+
   it("does not show a scoped issue API command when the task id is unavailable", async () => {
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },

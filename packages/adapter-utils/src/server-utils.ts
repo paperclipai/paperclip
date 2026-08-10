@@ -1441,14 +1441,21 @@ export function stringifyPaperclipWakePayload(
     // section already carries the issue description; the env-var copy should
     // stay complete.
     omitIssueDescription?: boolean;
+    // For prompt-embedded copies on a fresh session where the full task
+    // context is already injected separately. The env-var copy should stay
+    // complete so explicit API inspection remains possible.
+    omitContinuationSummary?: boolean;
   } = {},
 ): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
-  if (options.omitIssueDescription === true && normalized.issue) {
+  if (options.omitIssueDescription === true || options.omitContinuationSummary === true) {
     return JSON.stringify({
       ...normalized,
-      issue: { ...normalized.issue, description: null, descriptionTruncated: false },
+      ...(options.omitIssueDescription === true && normalized.issue
+        ? { issue: { ...normalized.issue, description: null, descriptionTruncated: false } }
+        : {}),
+      ...(options.omitContinuationSummary === true ? { continuationSummary: null } : {}),
     });
   }
   return JSON.stringify(normalized);
