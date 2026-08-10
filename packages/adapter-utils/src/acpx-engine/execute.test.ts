@@ -979,6 +979,90 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(sameEnvNewWake)).toBe(fp(first));
   });
 
+  it("keeps the session fingerprint stable across server-owned run scratch directories", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const runWithScratch = async (scratchDir: string) =>
+      runExecutor(
+        {
+          ...baseConfig,
+          env: {
+            PAPERCLIP_RUN_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_TASK_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_TMPDIR: scratchDir,
+            TMPDIR: scratchDir,
+            TEMP: scratchDir,
+            TMP: scratchDir,
+          },
+        },
+        {
+          context: {
+            taskId: "issue-1",
+            wakeReason: "execution_review_requested",
+            paperclipScratch: {
+              dir: scratchDir,
+              tempKeysApplied: ["TMPDIR", "TEMP", "TMP"],
+            },
+          },
+        },
+      );
+
+    const first = await runWithScratch(path.join(root, "paperclip-run-a"));
+    const second = await runWithScratch(path.join(root, "paperclip-run-b"));
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    expect(fp(first)).toBeDefined();
+    expect(fp(second)).toBe(fp(first));
+    const secondEnv = (
+      second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }
+    ).env;
+    expect(secondEnv.PAPERCLIP_RUN_SCRATCH_DIR).toBe(path.join(root, "paperclip-run-b"));
+    expect(secondEnv.TMPDIR).toBe(path.join(root, "paperclip-run-b"));
+  });
+
+  it("still fingerprints a user-configured temp directory", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const runWithTemp = async (scratchDir: string, tmpDir: string) =>
+      runExecutor(
+        {
+          ...baseConfig,
+          env: {
+            PAPERCLIP_RUN_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_TASK_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_SCRATCH_DIR: scratchDir,
+            PAPERCLIP_TMPDIR: scratchDir,
+            TMPDIR: tmpDir,
+          },
+        },
+        {
+          context: {
+            taskId: "issue-1",
+            wakeReason: "execution_review_requested",
+            paperclipScratch: { dir: scratchDir, tempKeysApplied: [] },
+          },
+        },
+      );
+
+    const first = await runWithTemp(
+      path.join(root, "paperclip-run-a"),
+      path.join(root, "user-tmp-a"),
+    );
+    const second = await runWithTemp(
+      path.join(root, "paperclip-run-b"),
+      path.join(root, "user-tmp-b"),
+    );
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    expect(fp(first)).toBeDefined();
+    expect(fp(second)).not.toBe(fp(first));
+  });
+
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
