@@ -69,6 +69,7 @@ const mockStorageService = vi.hoisted(() => ({
   deleteObject: vi.fn(),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  create: vi.fn(),
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
@@ -452,6 +453,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockReset();
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockIssueThreadInteractionService.create.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
@@ -1161,6 +1163,27 @@ describe("agent issue mutation checkout ownership", () => {
         request(app).delete(`/api/issues/${issueId}/approvals/88888888-8888-4888-8888-888888888888`),
       "Cheap status-only recovery runs cannot create or modify approvals",
     ],
+    [
+      "issue-thread interaction create",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/interactions`).send({
+          kind: "suggest_tasks",
+          payload: {
+            version: 1,
+            tasks: [{ clientKey: "task-1", title: "One" }],
+          },
+        }),
+      "Cheap status-only recovery runs cannot create issue-thread interactions or accepted-plan decompositions",
+    ],
+    [
+      "accepted-plan decomposition",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/accepted-plan-decompositions`).send({
+          acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          children: [{ title: "Follow-up task" }],
+        }),
+      "Cheap status-only recovery runs cannot create issue-thread interactions or accepted-plan decompositions",
+    ],
   ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest, expectedError) => {
     const app = await createApp(
       ownerActor(),
@@ -1186,6 +1209,8 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.removeAttachment).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.link).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
+    expect(mockIssueThreadInteractionService.create).not.toHaveBeenCalled();
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
   });
 
   it.each([

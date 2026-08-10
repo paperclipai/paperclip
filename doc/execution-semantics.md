@@ -315,6 +315,24 @@ Recovery from an invalid external wait is bounded and idempotent:
 
 This rule is intentionally conservative: local watcher evidence can help the recovery owner decide what happened, but only persisted control-plane state can prove that the work will move again.
 
+### Canonical next-action answer
+
+For every agent-owned non-terminal issue, and for every unresolved blocker leaf that prevents another issue from moving, Paperclip must expose one canonical answer to "what moves this forward next?"
+
+That answer is both machine-readable and human-readable. The machine-readable shape must be derived from durable control-plane state, not from comments or transcripts, and must include at least:
+
+- `kind`: the action-path primitive, such as `active_run`, `queued_wake`, `review_participant`, `pending_interaction`, `pending_approval`, `monitor`, `human_owner`, `blocker_leaf`, `terminal_post_run_gate`, `explicit_recovery_action`, or `external_owner`
+- `sourceIssueId`: the issue whose liveness is being explained
+- `target`: the run, wake, participant, interaction, approval, monitor, owner, blocker leaf, gate, or recovery action that owns the next move
+- `owner`: the agent, user, board, system recovery owner, or named external owner responsible for that move
+- `reason`: a stable reason code plus a short human-readable sentence
+- `evidence`: bounded references to the durable state used to compute the answer, such as run ids, blocker ids, interaction ids, gate ids, workspace operation ids, document revision ids, or recovery fingerprints
+- `policy`: any wake, monitor, retry, timeout, or escalation bound that will move the answer forward
+
+UI summaries, issue diagnostics, blocker diagnostics, task watchdogs, and recovery scans may render this answer differently, but they must agree on the same underlying machine-readable answer for the same snapshot. If several signals are present, the canonical answer is the first valid action path that can actually move the issue. A queued wake that cannot dispatch because of workspace incoherence, missing configuration, budget stop, or another active gate is not a live answer; the answer must instead name the gate or recovery action that owns the failed delivery.
+
+The answer is not a replacement for issue status. It is the liveness explanation for the current status. A comment, document annotation, raw run log, or prose "waiting" note can be evidence in the answer, but cannot be the answer unless it has been converted into a first-class primitive such as a blocker, owner, interaction, monitor, or explicit recovery action.
+
 ### Comment and document activity wake sources
 
 Issue-thread comments and document-scoped comments have different wake semantics.
@@ -373,6 +391,16 @@ The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` i
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
+
+### Terminal post-run gates
+
+A terminal source issue can still leave dependents waiting when a post-run control-plane gate remains unresolved. Examples include `workspace_finalize_pending`, failed workspace branch-coherence finalization, missing artifact upload finalization, or another run-finalization gate that must complete before downstream work can safely start.
+
+In that state, the terminal issue is not an opaque blocker leaf. The canonical next-action answer for each dependent must name the terminal post-run gate or the explicit recovery action that routes the gate. The answer must include the gate kind, source issue id, run or workspace operation evidence, recovery owner, retry or timeout policy, and escalation path.
+
+If the issue relation system cannot directly block on a non-issue gate, Paperclip must create or reuse a source-scoped recovery action, or an issue-backed recovery action when separate work is required, and block dependents on that recovery path instead of leaving them blocked only by a `done` or `cancelled` issue. The terminal source issue may remain terminal when the deliverable work is complete; it only needs to be reopened with explicit resume metadata when the unresolved gate proves the terminal disposition itself was wrong or incomplete.
+
+Downstream wake logic must treat the gate resolution, not the terminal status alone, as the condition that releases dependents. Once the gate or recovery action resolves, dependents resume through the normal blocker-resolution path. Repeated scans of the same terminal gate use the gate or recovery fingerprint for idempotency and must not create duplicate recovery work.
 
 ### Explicit recovery actions
 
@@ -560,6 +588,28 @@ This keeps the post-decomposition umbrella (§7) on a real waiting path instead 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
+
+The cheap-to-normal handoff is fingerprinted. When cheap recovery discovers that source work, deliverable work, or persistent document/artifact updates are required, it must compute a normal-lane handoff fingerprint from at least:
+
+- company id and source issue id
+- recovery action kind or gate kind
+- required action kind, such as `update_plan_document`, `write_workspace_files`, `upload_artifact`, `create_children`, `submit_review_decision`, or `resolve_terminal_gate`
+- target key when present, such as document key and revision id, workspace id, gate id, interaction id, or blocked dependent id
+- the evidence point that proved cheap recovery is not allowed to do the work
+
+For a new fingerprint, Paperclip may create exactly one normal-model continuation, wake, or recovery issue capable of doing the required work. That continuation must scrub cheap-only guard hints, preserve the evidence and return owner, and become the canonical next-action answer for the source issue or dependent blocker leaf.
+
+If the same fingerprint already has a queued or running normal continuation, an open explicit recovery action, or a completed handoff result that restored a valid path, repeated cheap/status-only runs must not create another handoff. They must reuse the existing answer or record a suppressed duplicate observation.
+
+If the normal continuation for a fingerprint finishes and the same deliverable requirement remains unresolved, Paperclip must escalate to an explicit recovery action for that fingerprint instead of scheduling the same cheap/status-only recovery again. This makes repeated cheap observations visible as bounded recovery debt, not an infinite retry loop.
+
+### Liveness invariants preserved
+
+These rules preserve three liveness invariants:
+
+- **Productive work continues:** when actual source or deliverable work remains, the next path is a normal lane, a live owner, or a routed recovery action that is allowed to do that work.
+- **Only real blockers stop work:** blocked trees must name the actual blocker leaf, terminal gate, approval, human owner, external owner/action, or recovery action. A terminal issue, comment, document note, or stale status cannot silently stand in for the real blocker.
+- **No infinite loops:** recovery and handoffs are fingerprinted, duplicate observations are suppressed, and exhausted handoffs escalate to explicit recovery instead of repeatedly scheduling a lane that is forbidden or unable to perform the required action.
 
 ## 10. Startup and Periodic Reconciliation
 

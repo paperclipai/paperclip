@@ -3327,6 +3327,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceRunId: runId,
       handoffRequired: true,
       handoffReason: "successful_run_missing_state",
+      handoffWorkClass: "normal_model",
+      normalLaneHandoffFingerprint: `normal_lane_handoff:${companyId}:${issueId}:successful_run_missing_state:record_issue_disposition_or_continuation:issue_status:${runId}`,
+      requiredActionKind: "record_issue_disposition_or_continuation",
       handoffAttempt: 1,
       maxHandoffAttempts: 1,
       resumeIntent: true,
@@ -3533,6 +3536,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(classifiedRun?.livenessState).toBe("advanced");
     expect(handoffWakeups).toHaveLength(1);
     expect(handoffWakeups[0]?.idempotencyKey).toBe(`finish_successful_run_handoff:${issueId}:${runId}:1`);
+    expect(handoffWakeups[0]?.payload).toMatchObject({
+      handoffWorkClass: "normal_model",
+      normalLaneHandoffFingerprint: `normal_lane_handoff:${companyId}:${issueId}:successful_run_missing_state:record_issue_disposition_or_continuation:issue_status:${runId}`,
+      requiredActionKind: "record_issue_disposition_or_continuation",
+    });
+    expect(handoffWakeups[0]?.payload as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    expect(handoffWakeups[0]?.payload as Record<string, unknown>).not.toHaveProperty("allowDocumentUpdates");
+    expect(handoffWakeups[0]?.payload as Record<string, unknown>).not.toHaveProperty("resumeRequiresNormalModel");
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");

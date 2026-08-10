@@ -7,10 +7,12 @@ import {
   agents,
   companies,
   createDb,
+  executionWorkspaces,
   heartbeatRuns,
   issueRelations,
   issues,
   projects,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
@@ -193,9 +195,11 @@ describeEmbeddedPostgres("issue blocker diagnostics route", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(workspaceOperations);
     await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -245,6 +249,90 @@ describeEmbeddedPostgres("issue blocker diagnostics route", () => {
       status: "done",
       isDependencyReady: true,
       flags: ["done_but_blocking"],
+    });
+  });
+
+  it("surfaces a terminal workspace-finalize gate for a done blocker that is not dependency-ready", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const root = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Dependent work",
+      status: "blocked",
+      assigneeAgentId: agent.id,
+    });
+    const blocker = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Upstream finished work",
+      status: "done",
+    });
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId: company.id,
+      projectId: project.id,
+      sourceIssueId: blocker.id,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "upstream-workspace",
+      providerType: "git_worktree",
+      providerRef: "/tmp/upstream-workspace",
+    }).returning();
+    await db.update(issues).set({
+      executionWorkspaceId: workspace!.id,
+    }).where(eq(issues.id, blocker.id));
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      status: "succeeded",
+      contextSnapshot: { issueId: blocker.id },
+    }).returning();
+    await db.insert(workspaceOperations).values({
+      companyId: company.id,
+      executionWorkspaceId: workspace!.id,
+      heartbeatRunId: run!.id,
+      issueId: blocker.id,
+      phase: "workspace_finalize",
+      status: "failed",
+      startedAt: new Date("2026-07-08T12:00:00.000Z"),
+      finishedAt: new Date("2026-07-08T12:00:01.000Z"),
+    });
+    await blockIssue(db, company.id, blocker.id, root.id);
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${root.id}/diagnostics/blockers`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      diagnosis: expect.stringContaining("finish workspace finalization"),
+      readiness: {
+        allBlockersDone: false,
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+        pendingFinalizeBlockerCount: 1,
+      },
+      omittedUnauthorizedBlockerCount: 0,
+      truncated: false,
+    });
+    expect(res.body.blockers).toHaveLength(1);
+    expect(res.body.blockers[0]).toMatchObject({
+      id: blocker.id,
+      status: "done",
+      isUnresolved: true,
+      isPendingFinalize: true,
+      isDependencyReady: false,
+      flags: ["done_but_blocking", "workspace_finalize_pending"],
+      terminalGate: {
+        kind: "workspace_finalize_pending",
+        sourceIssueId: blocker.id,
+        owner: "system",
+        evidence: {
+          blockerIssueId: blocker.id,
+          gate: "workspace_finalize",
+        },
+        policy: "wait_for_workspace_finalize",
+      },
     });
   });
 

@@ -234,6 +234,22 @@ export function buildFinishSuccessfulRunHandoffIdempotencyKey(input: {
   ].join(":");
 }
 
+export function buildFinishSuccessfulRunNormalLaneHandoffFingerprint(input: {
+  companyId: string;
+  issueId: string;
+  sourceRunId: string;
+}) {
+  return [
+    "normal_lane_handoff",
+    input.companyId,
+    input.issueId,
+    SUCCESSFUL_RUN_MISSING_STATE_REASON,
+    "record_issue_disposition_or_continuation",
+    "issue_status",
+    input.sourceRunId,
+  ].join(":");
+}
+
 export async function findExistingFinishSuccessfulRunHandoffWake(
   db: Db,
   input: {
@@ -471,6 +487,11 @@ export function decideSuccessfulRunHandoff(input: {
     nextAction: input.nextAction,
     detectedProgressSummary: input.detectedProgressSummary,
   });
+  const normalLaneHandoffFingerprint = buildFinishSuccessfulRunNormalLaneHandoffFingerprint({
+    companyId: run.companyId,
+    issueId: issue.id,
+    sourceRunId: run.id,
+  });
   const payload = withRecoveryModelProfileHint({
     issueId: issue.id,
     taskId: issue.id,
@@ -478,6 +499,9 @@ export function decideSuccessfulRunHandoff(input: {
     sourceRunId: run.id,
     handoffRequired: true,
     handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+    handoffWorkClass: "normal_model",
+    normalLaneHandoffFingerprint,
+    requiredActionKind: "record_issue_disposition_or_continuation",
     missingDisposition: "clear_next_step",
     validDispositionOptions: [...SUCCESSFUL_RUN_HANDOFF_OPTIONS],
     detectedProgressSummary: input.detectedProgressSummary,
