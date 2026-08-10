@@ -131,10 +131,11 @@ Brain-Instanzen).
 
 ```
 python3 ~/.paperclip/scripts/websuche/cli.py "<frage>" [--quellen N] [--zeichen N]
+                                                       [--deadline SEK]
                                                        [--gleiche-domain-erlauben] [--json]
 ```
 
-Standard: `--quellen 3`, `--zeichen 12000`. Ausgabe ist kompaktes Markdown;
+Standard: `--quellen 3`, `--zeichen 12000`, `--deadline 25`. Ausgabe ist kompaktes Markdown;
 `--json` schaltet auf dieselbe Struktur wie der HTTP-Dienst um.
 
 Markdown ist der Default, weil lokale Modelle Fließtext mit Überschriften
@@ -215,15 +216,35 @@ stillschweigend auf einer einzigen Quelle aufbaut.
 
 ### Zeitbudget
 
-`shell_exec` bricht hart bei 120 Sekunden ab. Der CLI-Weg muss deutlich darunter
-landen, sonst sieht der Agent einen Abbruch statt eines Ergebnisses. Deshalb:
+Maßgeblich ist nicht der harte Deckel, sondern der Standardwert. In
+`paperclip-adapter-lmstudio/src/server/shell-tools.ts` steht:
 
-- 15 Sekunden pro Seitenabruf
-- 60 Sekunden Gesamt-Deadline
+```
+const MAX_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+```
+
+Der Agent kann pro Aufruf ein `timeout` mitgeben (max. 120 s), **bekommt ohne
+Angabe aber nur 30 Sekunden**. Auf ein lokales Modell zu bauen, dass es diesen
+Parameter zuverlässig mitschickt, wäre leichtfertig — die Auslegung muss so
+sein, dass der naive Aufruf funktioniert. Deshalb:
+
+- **25 Sekunden Gesamt-Deadline im Default** (`--deadline`), damit ein Aufruf
+  ohne `timeout` sicher innerhalb der 30 Sekunden fertig wird
+- 10 Sekunden pro Seitenabruf
 - Seitenabruf parallel, nicht sequenziell
 
+Wer `--deadline` über 25 anhebt, muss dem `shell_exec`-Aufruf ein passendes
+`timeout` mitgeben; das gehört in die Aufrufanleitung der Migration. Über
+HTTP (n8n, Bots) gilt die Grenze nicht — dort ist `--deadline` frei wählbar.
+
 Was nicht rechtzeitig da ist, wird zur Fehlerquelle markiert, statt den ganzen
-Lauf zu kippen.
+Lauf zu kippen. Läuft `shell_exec` doch in seinen Timeout, liefert der Adapter
+`isError: true` mit „Command timed out after Nms" — der Agent sieht also einen
+Fehler und kein stilles Nichts.
+
+Die Ausgabegröße ist unkritisch: `MAX_BUFFER` liegt bei 10 MiB, drei gekappte
+Quellen ergeben rund 36 KB.
 
 ### Abrufverhalten
 
@@ -280,8 +301,10 @@ SynologyDrive Dateimodi beim Sync kippt; die Skripte werden explizit über
 
 1. Alle sieben Testfälle grün, Suite ohne Netzzugang lauffähig.
 2. Rauchtest liefert für eine Fachfrage drei Quellen auf drei verschiedenen
-   Domains, jede mit Text und Abrufdatum, in unter 60 Sekunden.
+   Domains, jede mit Text und Abrufdatum, innerhalb der Standard-Deadline von
+   25 Sekunden.
 3. Ein Aufruf über `shell_exec` aus einem lokalen Paperclip-Agenten heraus
-   liefert ein verwertbares Ergebnis innerhalb der 120-Sekunden-Grenze.
+   liefert ein verwertbares Ergebnis, **ohne** dass der Agent ein `timeout`
+   mitgeben muss — also innerhalb der 30 Sekunden Adapter-Default.
 4. SearXNG gestoppt → CLI beendet sich mit Exit-Code ungleich null und einer
    Fehlermeldung im Klartext, nicht mit einer leeren Trefferliste.
