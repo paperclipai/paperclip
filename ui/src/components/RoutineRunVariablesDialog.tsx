@@ -153,6 +153,10 @@ function isMissingRequiredValue(value: unknown) {
   return value == null || (typeof value === "string" && value.trim().length === 0);
 }
 
+function shouldUseDateInput(variable: RoutineVariable) {
+  return variable.type === "date";
+}
+
 function supportsRoutineRunWorkspaceSelection(
   project: Project | null | undefined,
   isolatedWorkspacesEnabled: boolean,
@@ -335,7 +339,7 @@ export function RoutineRunVariablesDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
-      <DialogContent className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] max-w-xl flex-col gap-0 overflow-hidden p-0 sm:h-auto sm:max-h-[min(calc(100dvh-2rem),42rem)]">
+      <DialogContent className="flex h-(--sz-calc-18) max-h-(--sz-calc-18) max-w-xl flex-col gap-0 overflow-hidden p-0 sm:h-auto sm:max-h-(--sz-calc-20)">
         <DialogHeader className="shrink-0 border-b border-border/60 px-6 pb-4 pr-12 pt-6">
           {routineName && (
             <p className="text-muted-foreground text-sm">{routineName}</p>
@@ -419,7 +423,7 @@ export function RoutineRunVariablesDialog({
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: selectedProject.color ?? "#64748b" }}
+                        style={{ backgroundColor: selectedProject.color ?? "var(--project-none)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
@@ -434,7 +438,7 @@ export function RoutineRunVariablesDialog({
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: project?.color ?? "#64748b" }}
+                        style={{ backgroundColor: project?.color ?? "var(--project-none)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
@@ -497,6 +501,12 @@ export function RoutineRunVariablesDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : shouldUseDateInput(variable) ? (
+                <Input
+                  type="date"
+                  value={values[variable.name] == null ? "" : String(values[variable.name])}
+                  onChange={(event) => setValues((current) => ({ ...current, [variable.name]: event.target.value }))}
+                />
               ) : (
                 <Input
                   type={variable.type === "number" ? "number" : "text"}
@@ -522,7 +532,7 @@ export function RoutineRunVariablesDialog({
 
         <DialogFooter
           showCloseButton={false}
-          className="shrink-0 border-t border-border/60 bg-background px-6 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+          className="shrink-0 border-t border-border/60 bg-background px-6 pb-(--sz-calc-19) pt-4"
         >
           {!selection.assigneeAgentId ? (
             <p className="mr-auto text-xs text-amber-600">Default agent required for this run.</p>

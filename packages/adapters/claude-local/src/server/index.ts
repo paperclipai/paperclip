@@ -1,11 +1,19 @@
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export * from "./acp.js";
+export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
-export { listClaudeModels } from "./models.js";
+export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
+export {
+  claudeCommandSupportsEffortFlag,
+  resetClaudeCliCapabilitiesCacheForTests,
+} from "./cli-capabilities.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
+  isClaudeProviderQuotaError,
+  isClaudeRefusalResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {
@@ -21,6 +29,7 @@ export {
   claudeConfigDir,
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -31,7 +40,7 @@ export const sessionCodec: AdapterSessionCodec = {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
     const record = raw as Record<string, unknown>;
     const sessionId = readNonEmptyString(record.sessionId) ?? readNonEmptyString(record.session_id);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.deserialize(raw);
     const cwd =
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
@@ -54,7 +63,7 @@ export const sessionCodec: AdapterSessionCodec = {
   serialize(params: Record<string, unknown> | null) {
     if (!params) return null;
     const sessionId = readNonEmptyString(params.sessionId) ?? readNonEmptyString(params.session_id);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.serialize(params);
     const cwd =
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
@@ -76,6 +85,11 @@ export const sessionCodec: AdapterSessionCodec = {
   },
   getDisplayId(params: Record<string, unknown> | null) {
     if (!params) return null;
-    return readNonEmptyString(params.sessionId) ?? readNonEmptyString(params.session_id);
+    return (
+      readNonEmptyString(params.sessionId) ??
+      readNonEmptyString(params.session_id) ??
+      acpxSessionCodec.getDisplayId?.(params) ??
+      null
+    );
   },
 };

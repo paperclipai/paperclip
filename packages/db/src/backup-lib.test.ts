@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
@@ -42,7 +43,7 @@ afterEach(async () => {
     const cleanup = cleanups.pop();
     await cleanup?.();
   }
-});
+}, 60_000);
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -74,6 +75,45 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it(
+    "keeps the newest backup for each retained calendar month",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-retention-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const janNewest = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql.gz");
+      const janOlder = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
+      const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
+
+      try {
+        fs.writeFileSync(janNewest, "jan-newest");
+        fs.writeFileSync(janOlder, "jan-older");
+        fs.writeFileSync(decOld, "dec-old");
+
+        fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
+        fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
+        fs.utimesSync(decOld, new Date("2025-12-15T12:00:00Z"), new Date("2025-12-15T12:00:00Z"));
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(2);
+        expect(fs.existsSync(janNewest)).toBe(true);
+        expect(fs.existsSync(janOlder)).toBe(false);
+        expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
   it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
@@ -403,6 +443,79 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           `),
         ).rejects.toThrow();
       } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "restores fallback COPY data when child tables are dumped before parent tables",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_copy_fk_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-copy-fk-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."zzz_parent_records" (
+            "id" uuid PRIMARY KEY,
+            "name" text NOT NULL
+          );
+          CREATE TABLE "public"."aaa_child_records" (
+            "id" uuid PRIMARY KEY,
+            "parent_id" uuid NOT NULL REFERENCES "public"."zzz_parent_records"("id") ON DELETE CASCADE,
+            "note" text NOT NULL
+          );
+          INSERT INTO "public"."zzz_parent_records" ("id", "name")
+          VALUES ('11111111-1111-4111-8111-111111111111', 'parent');
+          INSERT INTO "public"."aaa_child_records" ("id", "parent_id", "note")
+          VALUES (
+            '22222222-2222-4222-8222-222222222222',
+            '11111111-1111-4111-8111-111111111111',
+            'child emitted before parent'
+          );
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-copy-fk-test",
+          backupEngine: "auto",
+        });
+
+        const backupSql = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        expect(backupSql.indexOf("-- Data for: public.aaa_child_records")).toBeGreaterThan(-1);
+        expect(backupSql.indexOf("-- Data for: public.aaa_child_records")).toBeLessThan(
+          backupSql.indexOf("-- Data for: public.zzz_parent_records"),
+        );
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ note: string; name: string }[]>(`
+          SELECT child."note", parent."name"
+          FROM "public"."aaa_child_records" child
+          JOIN "public"."zzz_parent_records" parent ON parent."id" = child."parent_id"
+        `);
+        expect(rows).toEqual([{ note: "child emitted before parent", name: "parent" }]);
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
         await sourceSql.end();
         await restoreSql.end();
       }

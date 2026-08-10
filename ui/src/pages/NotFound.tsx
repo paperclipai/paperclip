@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 
@@ -34,7 +35,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
 
   return (
     <div className="mx-auto max-w-2xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <Card className="block p-6">
         <div className="flex items-center gap-3">
           <div className="rounded-md border border-destructive/20 bg-destructive/10 p-2">
             <AlertTriangle className="h-5 w-5 text-destructive" />
@@ -60,7 +61,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
             <Link to="/">Go home</Link>
           </Button>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

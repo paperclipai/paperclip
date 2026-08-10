@@ -4,6 +4,11 @@ const SECRET_FIELD_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+// Authorization reasons are policy decision codes, not credentials. They must
+// remain visible in audit receipts even though the field name contains
+// "authorization". JWT-shaped values are still caught by the value guard below.
+const AUDIT_REASON_PAYLOAD_KEY_RE = /^authorizationReason$/;
+const AUDIT_SURFACE_PAYLOAD_KEY_RE = /^surface$/;
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
@@ -54,6 +59,7 @@ function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
+  if (isUserSecretRefBinding(value)) return value;
   if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
@@ -62,6 +68,11 @@ function sanitizeValue(value: unknown): unknown {
 function isSecretRefBinding(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "secret_ref" && typeof value.secretId === "string";
+}
+
+function isUserSecretRefBinding(value: unknown): value is { type: "user_secret_ref"; key: string; version?: unknown } {
+  if (!isPlainObject(value)) return false;
+  return value.type === "user_secret_ref" && typeof value.key === "string";
 }
 
 function isPlainBinding(value: unknown): value is { type: "plain"; value: unknown } {
@@ -96,8 +107,12 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = redactSensitiveText(value);
       continue;
     }
-    if (SECRET_PAYLOAD_KEY_RE.test(key)) {
+    if (SECRET_PAYLOAD_KEY_RE.test(key) && !AUDIT_REASON_PAYLOAD_KEY_RE.test(key)) {
       if (isSecretRefBinding(value)) {
+        redacted[key] = sanitizeValue(value);
+        continue;
+      }
+      if (isUserSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
         continue;
       }
@@ -108,7 +123,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
+    if (typeof value === "string" && JWT_VALUE_RE.test(value) && !AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key)) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }

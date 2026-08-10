@@ -63,6 +63,36 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("requests the compact issue list view explicitly", async () => {
+    await issuesApi.listCompact("company-1", {
+      touchedByUserId: "me",
+      includeLiveDescendantSummary: true,
+      limit: 100,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?touchedByUserId=me&includeLiveDescendantSummary=true&limit=100&sortField=updated&sortDir=desc&view=compact",
+    );
+  });
+
+  it("passes plan document filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { hasPlanDocument: false, limit: 25 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?hasPlanDocument=false&limit=25",
+    );
+  });
+
+  it("passes live descendant summary opt-in through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { includeLiveDescendantSummary: true, limit: 25 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?includeLiveDescendantSummary=true&limit=25",
+    );
+  });
+
   it("posts recovery action resolution to the source issue endpoint", async () => {
     await issuesApi.resolveRecoveryAction("issue-1", {
       actionId: "00000000-0000-0000-0000-0000000000aa",
@@ -76,6 +106,21 @@ describe("issuesApi.list", () => {
         actionId: "00000000-0000-0000-0000-0000000000aa",
         outcome: "restored",
         sourceIssueStatus: "done",
+      },
+    );
+  });
+
+  it("posts stalled review decisions to the dedicated endpoint", async () => {
+    await issuesApi.decideStalledReview("issue-1", {
+      action: "request_changes",
+      note: "Please cover the race condition.",
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/stalled-review-decision",
+      {
+        action: "request_changes",
+        note: "Please cover the race condition.",
       },
     );
   });

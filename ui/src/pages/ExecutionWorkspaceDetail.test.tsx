@@ -25,6 +25,7 @@ const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockPluginSlotOutlet = vi.hoisted(() => vi.fn());
 const mockPluginSlotMount = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 const mockPluginSlotState = vi.hoisted(() => ({
   slots: [] as unknown[],
   isLoading: false,
@@ -85,6 +86,12 @@ vi.mock("@/plugins/slots", () => ({
 vi.mock("../components/IssuesList", () => ({
   IssuesList: () => <div data-testid="issues-list" />,
 }));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card" />;
+  },
+}));
 vi.mock("../components/ExecutionWorkspaceCloseDialog", () => ({
   ExecutionWorkspaceCloseDialog: () => null,
 }));
@@ -93,8 +100,12 @@ vi.mock("../components/RoutineRunVariablesDialog", () => ({
 }));
 vi.mock("../components/WorkspaceRuntimeControls", () => ({
   buildWorkspaceRuntimeControlSections: () => [],
-  WorkspaceRuntimeQuickControls: () => <div data-testid="runtime-quick-controls" />,
+  buildWorkspaceServiceControlEntries: () => [],
+  resolveWorkspaceServiceControlRequests: () => [],
   WorkspaceRuntimeControls: () => <div data-testid="runtime-controls" />,
+}));
+vi.mock("../components/WorkspaceServiceControlBar", () => ({
+  WorkspaceServiceControlBar: () => <div data-testid="service-control-bar" />,
 }));
 vi.mock("../components/PageTabBar", () => ({
   PageTabBar: ({ items }: { items: Array<{ value: string; label: string }> }) => (
@@ -155,6 +166,7 @@ function project(overrides: Partial<Project> = {}): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#14b8a6",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -276,6 +288,32 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     });
   });
 
+  it("shows the linked project workspace summary above tasks", async () => {
+    mockExecutionWorkspacesApi.get.mockResolvedValue(workspace({ projectWorkspaceId: "project-workspace-1" }));
+
+    await render();
+
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "project_workspace",
+      scopeId: "project-workspace-1",
+      title: "Workspace summary",
+    }));
+    const summary = container.querySelector('[data-testid="summary-slot-card"]');
+    const issues = container.querySelector('[data-testid="issues-list"]');
+    expect(summary).not.toBeNull();
+    expect(issues).not.toBeNull();
+    if (!summary || !issues) throw new Error("Expected summary and issues list to render");
+    expect(summary.compareDocumentPosition(issues) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it("does not show a project workspace summary for standalone execution workspaces", async () => {
+    await render();
+
+    expect(mockSummarySlotCard).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="summary-slot-card"]')).toBeNull();
+  });
+
   it("does not mount plugin slots scoped to other entity types", async () => {
     await render();
 
@@ -292,7 +330,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     await render();
 
     expect(container.textContent).toContain("Workspace plugin tab is not available.");
-    expect(container.querySelector('a[href="/execution-workspaces/workspace-1/issues"]')?.textContent).toBe("Back to issues");
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1/issues"]')?.textContent).toBe("Back to tasks");
     expect(container.textContent).not.toContain("Workspace routines");
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
   });
@@ -308,7 +346,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
 
     const tabLabels = Array.from(container.querySelectorAll("[data-tab-value]")).map((tab) => tab.textContent);
     expect(tabLabels).toEqual([
-      "Issues",
+      "Tasks",
       "Services",
       "Changes",
       "Configuration",

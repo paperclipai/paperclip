@@ -21,6 +21,9 @@ const mockBoardAuthService = vi.hoisted(() => ({
   resolveBoardActivityCompanyIds: vi.fn(),
   assertCurrentBoardKey: vi.fn(),
   revokeBoardApiKey: vi.fn(),
+  listBoardApiKeys: vi.fn(),
+  createNamedBoardApiKey: vi.fn(),
+  getBoardApiKeyForUser: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -301,5 +304,122 @@ describe.sequential("cli auth routes", () => {
         action: "board_api_key.revoked",
       }),
     );
+  });
+
+  it.sequential("creates a named board API key and logs audit activity", async () => {
+    mockBoardAuthService.createNamedBoardApiKey.mockResolvedValue({
+      id: "board-key-4",
+      name: "external-admin",
+      token: "pcp_board_plaintext",
+      createdAt: new Date("2026-05-23T12:00:00.000Z"),
+      lastUsedAt: null,
+      revokedAt: null,
+      expiresAt: new Date("2026-06-23T12:00:00.000Z"),
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["11111111-1111-4111-8111-111111111111"]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "board_key",
+      isInstanceAdmin: false,
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+    });
+    const res = await request(app)
+      .post("/api/board-api-keys")
+      .send({
+        name: "external-admin",
+        requestedCompanyId: "11111111-1111-4111-8111-111111111111",
+        expiresAt: "2026-06-23T12:00:00.000Z",
+      });
+
+    expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "board-key-4",
+      name: "external-admin",
+      token: "pcp_board_plaintext",
+      expiresAt: "2026-06-23T12:00:00.000Z",
+    });
+    expect(mockBoardAuthService.createNamedBoardApiKey).toHaveBeenCalledWith({
+      userId: "user-1",
+      name: "external-admin",
+      expiresAt: new Date("2026-06-23T12:00:00.000Z"),
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "11111111-1111-4111-8111-111111111111",
+        action: "board_api_key.created",
+        details: expect.objectContaining({ name: "external-admin" }),
+      }),
+    );
+  });
+
+  it.sequential("lists and revokes named board API keys for the current board user", async () => {
+    const keyId = "55555555-5555-4555-8555-555555555555";
+    mockBoardAuthService.listBoardApiKeys.mockResolvedValue([
+      {
+        id: keyId,
+        name: "external-admin",
+        createdAt: new Date("2026-05-23T12:00:00.000Z"),
+        lastUsedAt: null,
+        revokedAt: null,
+        expiresAt: null,
+      },
+    ]);
+    mockBoardAuthService.getBoardApiKeyForUser.mockResolvedValue({
+      id: keyId,
+      userId: "user-1",
+      name: "external-admin",
+    });
+    mockBoardAuthService.revokeBoardApiKey.mockResolvedValue({
+      id: keyId,
+      userId: "user-1",
+      name: "external-admin",
+    });
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["company-1"]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "board_key",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const listRes = await request(app).get("/api/board-api-keys");
+    expect(listRes.status).toBe(200);
+    expect(listRes.body[0]).toMatchObject({ id: keyId, name: "external-admin" });
+    expect(mockBoardAuthService.listBoardApiKeys).toHaveBeenCalledWith(
+      "user-1",
+      { includeInactive: false },
+    );
+
+    const revokeRes = await request(app).delete(`/api/board-api-keys/${keyId}`);
+    expect(revokeRes.status).toBe(200);
+    expect(revokeRes.body).toEqual({ ok: true, keyId });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "board_api_key.revoked",
+      }),
+    );
+  });
+
+  it.sequential("rejects malformed board API key IDs before database lookup", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "board_key",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).delete("/api/board-api-keys/not-a-uuid");
+
+    expect(res.status).toBe(400);
+    expect(mockBoardAuthService.getBoardApiKeyForUser).not.toHaveBeenCalled();
+    expect(mockBoardAuthService.revokeBoardApiKey).not.toHaveBeenCalled();
   });
 });

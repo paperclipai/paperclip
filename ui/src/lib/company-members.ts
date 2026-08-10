@@ -1,7 +1,7 @@
 import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
-import type { Agent, Project } from "@paperclipai/shared";
+import type { Agent, Issue, Project } from "@paperclipai/shared";
 
 export interface CompanyUserProfile {
   label: string;
@@ -84,15 +84,47 @@ export function buildCompanyUserMentionOptions(
   }));
 }
 
+export function isAgentTaskTarget(
+  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth">>,
+): boolean {
+  return (
+    agent.status !== "terminated" &&
+    agent.status !== "pending_approval" &&
+    agent.orgChainHealth?.status !== "invalid_org_chain"
+  );
+}
+
+export function buildIssueMentionOptions(
+  issues?: Array<Pick<Issue, "id" | "identifier" | "title">> | null | undefined,
+): MentionOption[] {
+  const options: MentionOption[] = [];
+  for (const issue of issues ?? []) {
+    const identifier = issue.identifier?.trim();
+    if (!identifier) continue;
+    const title = issue.title?.trim() ?? "";
+    options.push({
+      id: `issue:${issue.id}`,
+      // `name` carries identifier + title so the picker matches either when
+      // filtering; the dropdown renders the identifier and title separately.
+      name: title ? `${identifier} ${title}` : identifier,
+      kind: "issue",
+      issueId: issue.id,
+      issueIdentifier: identifier,
+    });
+  }
+  return options;
+}
+
 export function buildMarkdownMentionOptions(args: {
-  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon">> | null | undefined;
+  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon"> & Partial<Pick<Agent, "orgChainHealth">>> | null | undefined;
   projects?: Array<Pick<Project, "id" | "name" | "color">> | null | undefined;
   members?: CompanyUserRecord[] | null | undefined;
+  issues?: Array<Pick<Issue, "id" | "identifier" | "title">> | null | undefined;
 }): MentionOption[] {
   const options: MentionOption[] = [
     ...buildCompanyUserMentionOptions(args.members),
     ...[...(args.agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
+      .filter(isAgentTaskTarget)
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((agent) => ({
         id: `agent:${agent.id}`,
@@ -110,6 +142,9 @@ export function buildMarkdownMentionOptions(args: {
         projectId: project.id,
         projectColor: project.color,
       })),
+    // Issues keep their incoming order (callers pass most-recently-updated first)
+    // so the picker surfaces the freshest tasks before any query is typed.
+    ...buildIssueMentionOptions(args.issues),
   ];
 
   return options;

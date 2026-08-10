@@ -37,11 +37,11 @@ function mapMetadataRow(
     case "issue_link": {
       const identifier = row.identifier ?? null;
       if (!identifier) {
-        return { kind: "text", label: metadataRowText(row, "Issue"), value: row.title ?? "unknown" };
+        return { kind: "text", label: metadataRowText(row, "Task"), value: row.title ?? "unknown" };
       }
       return {
         kind: "issue",
-        label: metadataRowText(row, "Issue"),
+        label: metadataRowText(row, "Task"),
         identifier,
         href: `/issues/${identifier}`,
         title: row.title ?? undefined,
@@ -57,7 +57,7 @@ function mapMetadataRow(
       };
     }
     case "run_link": {
-      const runAgentId = ctx.runAgentId ?? null;
+      const runAgentId = row.agentId ?? ctx.runAgentId ?? null;
       const href = runAgentId ? `/agents/${runAgentId}/runs/${row.runId}` : undefined;
       return {
         kind: "run",

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
@@ -20,6 +20,8 @@ import { projectsApi } from "../api/projects";
 import { routinesApi } from "../api/routines";
 import { IssuesList } from "../components/IssuesList";
 import { PageTabBar } from "../components/PageTabBar";
+import { SummarySlotCard } from "../components/SummarySlotCard";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
   RoutineRunVariablesDialog,
@@ -27,10 +29,12 @@ import {
 } from "../components/RoutineRunVariablesDialog";
 import {
   buildWorkspaceRuntimeControlSections,
-  WorkspaceRuntimeQuickControls,
+  buildWorkspaceServiceControlEntries,
+  resolveWorkspaceServiceControlRequests,
   WorkspaceRuntimeControls,
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
+import { WorkspaceServiceControlBar } from "../components/WorkspaceServiceControlBar";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -40,6 +44,7 @@ import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } fr
 import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
+  sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
 
 type WorkspaceFormState = {
@@ -50,10 +55,19 @@ type WorkspaceFormState = {
   branchName: string;
   providerRef: string;
   provisionCommand: string;
+  runtimeProvisionCommand: string;
   teardownCommand: string;
   cleanupCommand: string;
   inheritRuntime: boolean;
   workspaceRuntime: string;
+};
+
+type ConfiguredRuntimeServicePort = {
+  collection: "commands" | "services";
+  index: number;
+  name: string;
+  port: number | null;
+  invalidPort: boolean;
 };
 
 type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
@@ -67,7 +81,7 @@ type OrderedExecutionWorkspaceTabItem = {
 
 const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
 const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
-  { value: "issues", label: "Issues", order: 10 },
+  { value: "issues", label: "Tasks", order: 10 },
   { value: "services", label: "Services", order: 20 },
   { value: "configuration", label: "Configuration", order: 30 },
   { value: "runtime_logs", label: "Runtime logs", order: 40 },
@@ -162,6 +176,93 @@ function parseWorkspaceRuntimeJson(value: string) {
   }
 }
 
+export function readConfiguredRuntimeServicePorts(runtimeConfig: Record<string, unknown> | null) {
+  if (!runtimeConfig) return [] as ConfiguredRuntimeServicePort[];
+
+  const entries: ConfiguredRuntimeServicePort[] = [];
+  const addServices = (collection: ConfiguredRuntimeServicePort["collection"], services: unknown, commandsRequireServiceKind: boolean) => {
+    if (!Array.isArray(services)) return;
+    services.forEach((service, index) => {
+      if (!service || typeof service !== "object" || Array.isArray(service)) return;
+      const config = service as Record<string, unknown>;
+      if (commandsRequireServiceKind && config.kind !== "service") return;
+      const portConfig = config.port;
+      const hasObjectPortValue = Boolean(
+        portConfig
+        && typeof portConfig === "object"
+        && !Array.isArray(portConfig)
+        && Object.hasOwn(portConfig, "value"),
+      );
+      const portValue =
+        typeof portConfig === "number"
+          ? portConfig
+          : hasObjectPortValue
+            ? (portConfig as Record<string, unknown>).value
+            : null;
+      entries.push({
+        collection,
+        index,
+        name: typeof config.name === "string" && config.name.trim() ? config.name : `Service ${index + 1}`,
+        port: typeof portValue === "number" ? portValue : null,
+        invalidPort: (typeof portConfig === "number" || hasObjectPortValue)
+          && (typeof portValue !== "number" || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535),
+      });
+    });
+  };
+
+  addServices("commands", runtimeConfig.commands, true);
+  addServices("services", runtimeConfig.services, false);
+  return entries;
+}
+
+export function updateConfiguredRuntimeServicePort(input: {
+  runtimeConfig: Record<string, unknown>;
+  service: ConfiguredRuntimeServicePort;
+  port: string;
+}) {
+  const runtimeConfig = structuredClone(input.runtimeConfig);
+  const entries = runtimeConfig[input.service.collection];
+  if (!Array.isArray(entries)) return runtimeConfig;
+  const entry = entries[input.service.index];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return runtimeConfig;
+  const config = entry as Record<string, unknown>;
+  const existingPort = config.port && typeof config.port === "object" && !Array.isArray(config.port)
+    ? config.port as Record<string, unknown>
+    : null;
+
+  const trimmedPort = input.port.trim();
+  if (!trimmedPort) {
+    if (existingPort) {
+      const autoPort: Record<string, unknown> = { ...existingPort, type: "auto" };
+      delete autoPort.value;
+      config.port = autoPort;
+    } else {
+      delete config.port;
+    }
+    return runtimeConfig;
+  }
+  const port = Number(trimmedPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return runtimeConfig;
+  config.port = { ...existingPort, type: "fixed", value: port };
+  return runtimeConfig;
+}
+
+export function getConfiguredRuntimeServicePortWarnings(services: ConfiguredRuntimeServicePort[]) {
+  const servicesByPort = new Map<number, ConfiguredRuntimeServicePort[]>();
+  for (const service of services) {
+    if (service.invalidPort || !service.port) continue;
+    const servicesForPort = servicesByPort.get(service.port) ?? [];
+    servicesForPort.push(service);
+    servicesByPort.set(service.port, servicesForPort);
+  }
+
+  return Array.from(servicesByPort.entries())
+    .filter(([, servicesForPort]) => servicesForPort.length > 1)
+    .map(([port, servicesForPort]) =>
+      `Port ${port} is assigned to multiple services: ${servicesForPort.map((service) => service.name).join(", ")}.`,
+    );
+}
+
 function formStateFromWorkspace(workspace: ExecutionWorkspace): WorkspaceFormState {
   return {
     name: workspace.name,
@@ -171,6 +272,7 @@ function formStateFromWorkspace(workspace: ExecutionWorkspace): WorkspaceFormSta
     branchName: readText(workspace.branchName),
     providerRef: readText(workspace.providerRef),
     provisionCommand: readText(workspace.config?.provisionCommand),
+    runtimeProvisionCommand: readText(workspace.config?.runtimeProvisionCommand),
     teardownCommand: readText(workspace.config?.teardownCommand),
     cleanupCommand: readText(workspace.config?.cleanupCommand),
     inheritRuntime: !workspace.config?.workspaceRuntime,
@@ -196,12 +298,13 @@ function buildWorkspacePatch(initialState: WorkspaceFormState, nextState: Worksp
   maybeAssign("branchName");
   maybeAssign("providerRef");
 
-  const maybeAssignConfigText = (key: keyof Pick<WorkspaceFormState, "provisionCommand" | "teardownCommand" | "cleanupCommand">) => {
+  const maybeAssignConfigText = (key: keyof Pick<WorkspaceFormState, "provisionCommand" | "runtimeProvisionCommand" | "teardownCommand" | "cleanupCommand">) => {
     if (initialState[key] === nextState[key]) return;
     configPatch[key] = normalizeText(nextState[key]);
   };
 
   maybeAssignConfigText("provisionCommand");
+  maybeAssignConfigText("runtimeProvisionCommand");
   maybeAssignConfigText("teardownCommand");
   maybeAssignConfigText("cleanupCommand");
 
@@ -233,6 +336,8 @@ function validateForm(form: WorkspaceFormState) {
     if (!runtimeJson.ok) {
       return runtimeJson.error;
     }
+    const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find((service) => service.invalidPort);
+    if (invalidPort) return `${invalidPort.name} has an invalid fixed port.`;
   }
 
   return null;
@@ -258,6 +363,55 @@ function Field({
   );
 }
 
+function workspaceOperationPhaseLabel(phase: string) {
+  switch (phase) {
+    case "worktree_prepare":
+      return "Worktree setup";
+    case "workspace_config_freshness":
+      return "Config freshness";
+    case "workspace_provision":
+      return "Provision";
+    case "workspace_runtime_provision":
+      return "Runtime provision";
+    case "workspace_teardown":
+      return "Teardown";
+    case "worktree_cleanup":
+      return "Worktree cleanup";
+    case "workspace_finalize":
+      return "Finalize";
+    default:
+      return phase;
+  }
+}
+
+export type RuntimeProvisionStatus =
+  | { kind: "eager" }
+  | { kind: "deferred" }
+  | { kind: "provisioning"; at: Date | null }
+  | { kind: "provisioned"; at: Date | null }
+  | { kind: "failed"; at: Date | null };
+
+/**
+ * Derives the lazy runtime-provisioning state from the configured command and the
+ * `workspace_runtime_provision` operation-log entries (most-recent first). Returns
+ * "eager" when no runtime provision command is configured (the legacy path).
+ */
+export function resolveRuntimeProvisionStatus(input: {
+  runtimeProvisionCommand: string | null | undefined;
+  operations: WorkspaceOperation[] | undefined;
+}): RuntimeProvisionStatus {
+  const latest = (input.operations ?? []).find((operation) => operation.phase === "workspace_runtime_provision") ?? null;
+  if (latest) {
+    const at = latest.finishedAt ?? latest.startedAt ?? null;
+    if (latest.status === "running") return { kind: "provisioning", at };
+    if (latest.status === "succeeded") return { kind: "provisioned", at };
+    if (latest.status === "failed") return { kind: "failed", at };
+    // "skipped" falls through to the config-derived state below.
+  }
+  const configured = Boolean(input.runtimeProvisionCommand && input.runtimeProvisionCommand.trim());
+  return configured ? { kind: "deferred" } : { kind: "eager" };
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 py-1.5 sm:flex-row sm:items-start sm:gap-3">
@@ -271,6 +425,55 @@ function StatusPill({ children, className }: { children: React.ReactNode; classN
   return (
     <div className={cn("inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground", className)}>
       {children}
+    </div>
+  );
+}
+
+export function RuntimeProvisionStatusValue({
+  status,
+  onViewLogs,
+}: {
+  status: RuntimeProvisionStatus;
+  onViewLogs: () => void;
+}) {
+  if (status.kind === "eager") {
+    return (
+      <span className="text-sm text-muted-foreground">Eager · provisioned during workspace setup</span>
+    );
+  }
+  if (status.kind === "deferred") {
+    return (
+      <div className="flex flex-col gap-1">
+        <StatusPill className="border-amber-500/40 text-amber-600 dark:text-amber-400">Deferred</StatusPill>
+        <span className="text-xs text-muted-foreground">
+          Runs once before the first runtime-service start.
+        </span>
+      </div>
+    );
+  }
+  if (status.kind === "provisioning") {
+    return (
+      <StatusPill className="border-border text-muted-foreground">
+        <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+        Provisioning…
+      </StatusPill>
+    );
+  }
+  if (status.kind === "provisioned") {
+    return (
+      <StatusPill className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+        Provisioned{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+      </StatusPill>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <StatusPill className="border-destructive/50 text-destructive">
+        Provisioning failed{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+      </StatusPill>
+      <button type="button" onClick={onViewLogs} className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+        View runtime logs
+      </button>
     </div>
   );
 }
@@ -321,14 +524,25 @@ function ExecutionWorkspaceIssuesList({
     enabled: !!companyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
   });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
@@ -401,7 +615,7 @@ function WorkspaceRoutineRow({
           <span>Last run {formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span>
           <span className="flex flex-wrap gap-1">
             {variableNames.map((name) => (
-              <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+              <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
                 {name}
               </span>
             ))}
@@ -445,7 +659,7 @@ function ExecutionWorkspaceRoutinesList({
   });
 
   const workspaceRoutines = useMemo(
-    () => (routines ?? []).filter(routineHasWorkspaceSpecificVariables),
+    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
     [routines],
   );
 
@@ -565,6 +779,7 @@ export function ExecutionWorkspaceDetail() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
   const pluginTabFromSearch = useMemo(() => {
     const tab = new URLSearchParams(location.search).get("tab");
@@ -647,6 +862,20 @@ export function ExecutionWorkspaceDetail() {
         ? "project_workspace"
         : "none";
 
+  const configuredRuntimeConfig = useMemo(() => {
+    if (!form || form.inheritRuntime) return inheritedRuntimeConfig;
+    const parsed = parseWorkspaceRuntimeJson(form.workspaceRuntime);
+    return parsed.ok ? parsed.value : null;
+  }, [form, inheritedRuntimeConfig]);
+  const configuredRuntimeServicePorts = useMemo(
+    () => readConfiguredRuntimeServicePorts(configuredRuntimeConfig),
+    [configuredRuntimeConfig],
+  );
+  const configuredRuntimeServicePortWarnings = useMemo(
+    () => getConfiguredRuntimeServicePortWarnings(configuredRuntimeServicePorts),
+    [configuredRuntimeServicePorts],
+  );
+
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
   const isDirty = Boolean(form && initialState && JSON.stringify(form) !== JSON.stringify(initialState));
   const projectRef = project ? projectRouteRef(project) : workspace?.projectId ?? "";
@@ -661,6 +890,7 @@ export function ExecutionWorkspaceDetail() {
     setForm(formStateFromWorkspace(workspace));
     setErrorMessage(null);
     setRuntimeActionErrorMessage(null);
+    setPendingRuntimeActions([]);
   }, [workspace]);
 
   useEffect(() => {
@@ -698,11 +928,24 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.listWorkspaceOperations(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  const runtimeProvisionCommand =
+    workspace?.config?.runtimeProvisionCommand
+    ?? project?.executionWorkspacePolicy?.workspaceStrategy?.runtimeProvisionCommand
+    ?? null;
+  const runtimeProvisionStatus = useMemo(
+    () =>
+      resolveRuntimeProvisionStatus({
+        runtimeProvisionCommand,
+        operations: workspaceOperationsQuery.data,
+      }),
+    [runtimeProvisionCommand, workspaceOperationsQuery.data],
+  );
   const controlRuntimeServices = useMutation({
     mutationFn: (request: WorkspaceRuntimeControlRequest) =>
       executionWorkspacesApi.controlRuntimeCommands(workspace!.id, request.action, request),
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
@@ -719,6 +962,9 @@ export function ExecutionWorkspaceDetail() {
     onError: (error) => {
       setRuntimeActionMessage(null);
       setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+    },
+    onSettled: (_result, _error, request) => {
+      setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
     },
   });
 
@@ -741,6 +987,11 @@ export function ExecutionWorkspaceDetail() {
     canRunJobs: canRunWorkspaceCommands,
   });
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
+  const serviceControlEntries = buildWorkspaceServiceControlEntries({
+    sections: runtimeControlSections,
+    runtimeServices: workspace.runtimeServices ?? [],
+    pendingRequests: pendingRuntimeActions,
+  });
 
   const pluginSlotContext = {
     companyId: workspace.companyId,
@@ -781,21 +1032,31 @@ export function ExecutionWorkspaceDetail() {
     updateWorkspace.mutate(patch);
   };
 
+  const runRuntimeControlRequests = (requests: WorkspaceRuntimeControlRequest[]) => {
+    if (requests.length === 0) return;
+    setPendingRuntimeActions((current) => [...current, ...requests]);
+    for (const request of requests) controlRuntimeServices.mutate(request);
+  };
+
   return (
     <>
       <div className="space-y-4 overflow-hidden sm:space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Execution workspace
             </div>
             <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           </div>
-          <WorkspaceRuntimeQuickControls
-            sections={runtimeControlSections}
-            isPending={controlRuntimeServices.isPending}
-            pendingRequest={pendingRuntimeAction}
-            onAction={(request) => controlRuntimeServices.mutate(request)}
+          <WorkspaceServiceControlBar
+            services={serviceControlEntries}
+            onAction={(action, serviceKey) => {
+              runRuntimeControlRequests(
+                resolveWorkspaceServiceControlRequests(runtimeControlSections, action, serviceKey),
+              );
+            }}
+            onViewLogs={() => handleTabChange("runtime_logs")}
+            onManageServices={() => handleTabChange("services")}
           />
         </div>
         {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
@@ -835,7 +1096,7 @@ export function ExecutionWorkspaceDetail() {
                 ? null
                 : "Execution workspaces need a working directory before local commands can run, and services also need runtime config."
             }
-            onAction={(request) => controlRuntimeServices.mutate(request)}
+            onAction={(request) => runRuntimeControlRequests([request])}
           />
         ) : activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
@@ -843,7 +1104,7 @@ export function ExecutionWorkspaceDetail() {
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
                 <CardDescription>
-                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
+                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Paperclip may refresh or replace a reused workspace when config changes.
                 </CardDescription>
                 <CardAction>
                   <Button
@@ -941,6 +1202,18 @@ export function ExecutionWorkspaceDetail() {
                     />
                   </Field>
 
+                  <Field
+                    label="Runtime provision command"
+                    hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
+                  >
+                    <Textarea
+                      className="min-h-20 font-mono"
+                      value={form.runtimeProvisionCommand}
+                      onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
+                      placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                    />
+                  </Field>
+
                   <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
                     <Textarea
                       className="min-h-20 font-mono"
@@ -1032,6 +1305,56 @@ export function ExecutionWorkspaceDetail() {
                       </Field>
                     </div>
                   </details>
+
+                  {configuredRuntimeServicePorts.length > 0 ? (
+                    <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
+                      <div>
+                        <div className="text-sm font-medium">Service ports</div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Set a fixed port for a service or leave it blank to use its configured automatic behavior. Editing an inherited service creates an execution-workspace runtime override.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {configuredRuntimeServicePorts.map((service) => (
+                          <Field key={`${service.collection}-${service.index}`} label={service.name} hint="Fixed port">
+                            <Input
+                              type="number"
+                              min="1"
+                              max="65535"
+                              inputMode="numeric"
+                              value={service.port ?? ""}
+                              onChange={(event) => {
+                                setForm((current) => {
+                                  if (!current) return current;
+                                  const parsed = current.inheritRuntime
+                                    ? { ok: true as const, value: inheritedRuntimeConfig }
+                                    : parseWorkspaceRuntimeJson(current.workspaceRuntime);
+                                  if (!parsed.ok || !parsed.value) return current;
+                                  return {
+                                    ...current,
+                                    inheritRuntime: false,
+                                    workspaceRuntime: formatJson(updateConfiguredRuntimeServicePort({
+                                      runtimeConfig: parsed.value,
+                                      service,
+                                      port: event.target.value,
+                                    })),
+                                  };
+                                });
+                              }}
+                            />
+                          </Field>
+                        ))}
+                      </div>
+                      {configuredRuntimeServicePortWarnings.length > 0 ? (
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                          {configuredRuntimeServicePortWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+                        </div>
+                      ) : null}
+                      <p className="text-sm text-muted-foreground">
+                        Paperclip checks fixed ports again when a service starts and rejects cross-workspace conflicts.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -1077,7 +1400,7 @@ export function ExecutionWorkspaceDetail() {
                   "None"
                 )}
               </DetailRow>
-              <DetailRow label="Source issue">
+              <DetailRow label="Source task">
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -1098,6 +1421,12 @@ export function ExecutionWorkspaceDetail() {
                 ) : (
                   "None"
                 )}
+              </DetailRow>
+              <DetailRow label="Runtime provisioning">
+                <RuntimeProvisionStatusValue
+                  status={runtimeProvisionStatus}
+                  onViewLogs={() => handleTabChange("runtime_logs")}
+                />
               </DetailRow>
               <DetailRow label="Workspace ID">
                 <MonoValue value={workspace.id} />
@@ -1171,7 +1500,7 @@ export function ExecutionWorkspaceDetail() {
                   <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>
+                        <div className="text-sm font-medium">{operation.command ?? workspaceOperationPhaseLabel(operation.phase)}</div>
                         <div className="text-xs text-muted-foreground">
                           {formatDateTime(operation.startedAt)}
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
@@ -1193,14 +1522,25 @@ export function ExecutionWorkspaceDetail() {
             </CardContent>
           </Card>
         ) : activeTab === "issues" ? (
-          <ExecutionWorkspaceIssuesList
-            companyId={workspace.companyId}
-            workspace={workspace}
-            issues={linkedIssues}
-            isLoading={linkedIssuesQuery.isLoading}
-            error={linkedIssuesQuery.error as Error | null}
-            project={project}
-          />
+          <div className="space-y-6">
+            {workspace.projectWorkspaceId ? (
+              <SummarySlotCard
+                companyId={workspace.companyId}
+                scopeKind="project_workspace"
+                scopeId={workspace.projectWorkspaceId}
+                title="Workspace summary"
+                description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
+              />
+            ) : null}
+            <ExecutionWorkspaceIssuesList
+              companyId={workspace.companyId}
+              workspace={workspace}
+              issues={linkedIssues}
+              isLoading={linkedIssuesQuery.isLoading}
+              error={linkedIssuesQuery.error as Error | null}
+              project={project}
+            />
+          </div>
         ) : activePluginTab ? (
           <PluginSlotMount
             slot={activePluginTab.slot}
@@ -1218,7 +1558,7 @@ export function ExecutionWorkspaceDetail() {
         ) : isExecutionWorkspacePluginTab(activeTab) ? (
           <MissingPluginTabPlaceholder
             defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
-            defaultTabLabel="Back to issues"
+            defaultTabLabel="Back to tasks"
           />
         ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList
@@ -1237,6 +1577,7 @@ export function ExecutionWorkspaceDetail() {
         onOpenChange={setCloseDialogOpen}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
+          queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(nextWorkspace.companyId) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(nextWorkspace.id) });
           if (project) {

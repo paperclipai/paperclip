@@ -1,7 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -25,12 +26,13 @@ import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
+import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -40,7 +42,7 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
-import { prefetchIssueDetail } from "../lib/issueDetailCache";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
@@ -48,6 +50,24 @@ import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
+import {
+  resolveInboxIssueBlockerAttention,
+  resolveIssueLiveDescendantCount,
+} from "../lib/inbox-live-descendants";
+import {
+  beginLocalInboxArchive,
+  boundLocalInboxArchive,
+  cancelInboxIssueQueries,
+  clearLocalInboxArchive,
+  confirmLocalInboxArchive,
+  invalidateInboxIssueQueries,
+  getIssuePresenceInActiveInboxCaches,
+  removeIssueFromInboxCaches,
+  restoreIssueToInboxCaches,
+  snapshotInboxIssueCaches,
+  type InboxIssueCacheSnapshot,
+  useLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
 import { EmptyState } from "../components/EmptyState";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -102,9 +122,6 @@ import {
   Search,
   ListTree,
 } from "lucide-react";
-
-const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -156,6 +173,16 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import {
+  captureInboxOrderPin,
+  reconcileInboxOrderPin,
+  type InboxOrderPin,
+} from "../lib/inboxOrderPin";
+
+const INBOX_HEARTBEAT_RUN_LIMIT = 200;
+const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_HOT_PATH_STALE_MS = 30_000;
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
@@ -165,6 +192,17 @@ type SectionKey =
 
 /** A flat navigation entry for keyboard j/k traversal that includes expanded children. */
 type NavEntry = InboxKeyboardNavEntry;
+// Stable identity for a nav row, resilient to the numeric index shifting when
+// the inbox reshapes (archive/poll). Used to re-anchor both the keyboard
+// selection and the hovered row across list refreshes.
+const navEntryKey = (entry: NavEntry | undefined): string | null =>
+  !entry
+    ? null
+    : entry.type === "top"
+      ? `top:${entry.itemKey}`
+      : entry.type === "child"
+        ? `child:${entry.issueId}`
+        : `group:${entry.groupKey}`;
 type CreatorOption = {
   id: string;
   label: string;
@@ -234,6 +272,12 @@ export function formatJoinRequestInboxLabel(
 
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
+
+// Rows outside SwipeToArchive (non-archivable tabs/sections) still need the
+// hover-follows-selection band that SwipeToArchive's surface normally paints.
+function InboxRowSurface({ selected, children }: { selected: boolean; children: ReactNode }) {
+  return <div className={cn(selected && "rounded-lg bg-accent/50")}>{children}</div>;
+}
 
 export function FailedRunInboxRow({
   run,
@@ -337,7 +381,7 @@ export function FailedRunInboxRow({
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
-              <span className="truncate max-w-[300px]">{displayError}</span>
+              <span className="truncate max-w-(--sz-300px)">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
             </span>
           </span>
@@ -722,8 +766,8 @@ export function Inbox() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -732,6 +776,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
@@ -788,69 +833,135 @@ export function Inbox() {
     retry: false,
   });
 
-  const { data: dashboard, isLoading: isDashboardLoading } = useQuery({
-    queryKey: queryKeys.dashboard(selectedCompanyId!),
+  const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
+  const sharedDashboard = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "dashboard",
+    queryKey: dashboardQueryKey,
+    enabled: !!selectedCompanyId,
+  });
+  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+    queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions"],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        includeRoutineExecutions: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
+  const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const sharedInboxIssues = useSharedPollingQuery<Issue[]>({
+    companyId: selectedCompanyId,
+    resourceKey: "inbox:issues",
+    queryKey: inboxIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
+  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = useQuery({
+    queryKey: inboxIssuesQueryKey,
+    queryFn: () =>
+      issuesApi.listCompact(selectedCompanyId!, {
+        includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
+        limit: INBOX_ISSUE_LIST_LIMIT,
+      }).then((rows) => rows as Issue[]),
+    enabled: !!selectedCompanyId,
+    refetchOnWindowFocus: false,
+    staleTime: INBOX_HOT_PATH_STALE_MS,
+  });
+  usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
   const {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
+    dataUpdatedAt: mineIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
+      }).then((rows) => rows as Issue[]),
+    enabled: !!selectedCompanyId,
+    refetchOnWindowFocus: false,
+    staleTime: INBOX_HOT_PATH_STALE_MS,
+  });
+  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const sharedMineIssues = useSharedPollingQuery<Issue[]>({
+    companyId: selectedCompanyId,
+    resourceKey: "inbox:mine-issues",
+    queryKey: mineIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
+  usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
   const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
+    dataUpdatedAt: touchedIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+      issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
-      }),
+      }).then((rows) => rows as Issue[]),
+    enabled: !!selectedCompanyId,
+    refetchOnWindowFocus: false,
+    staleTime: INBOX_HOT_PATH_STALE_MS,
+  });
+  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
+    companyId: selectedCompanyId,
+    resourceKey: "inbox:touched-issues",
+    queryKey: touchedIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
+  usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
+    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
     enabled: !!selectedCompanyId,
+    refetchOnWindowFocus: false,
+    staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+  const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
+    enabled: !!selectedCompanyId,
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
+  });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
   });
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
+  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
+  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
+  const guardedArchiveIssueIds = useLocalInboxArchiveIssueIds(selectedCompanyId);
+  const locallyArchivedIssueIds = useMemo(() => {
+    const issueIds = new Set(guardedArchiveIssueIds);
+    for (const issueId of undoableArchiveIssueIds) issueIds.add(issueId);
+    for (const issueId of archivingIssueIds) issueIds.add(issueId);
+    for (const issueId of unarchivingIssueIds) issueIds.delete(issueId);
+    return issueIds;
+  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
@@ -861,15 +972,69 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
-  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
+  const mineIssues = useMemo(
+    () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, mineIssuesRaw],
+  );
+  const touchedIssues = useMemo(
+    () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, touchedIssuesRaw],
+  );
+  const shouldUseIssueSearchSupplement =
+    !!selectedCompanyId
+    && normalizedSearchQuery.length > 0;
+  const { data: remoteIssueSearchResults = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
+      "compact",
+      "inbox-supplement",
+      "live-descendant-summary",
+    ],
+    queryFn: () =>
+      issuesApi.listCompact(selectedCompanyId!, {
+        q: normalizedSearchQuery,
+        limit: 25,
+        includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
+      }).then((rows) => rows as Issue[]),
+    enabled: shouldUseIssueSearchSupplement,
+    placeholderData: (previousData) => previousData,
+  });
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(liveRuns, [
+      ...(issues ?? []),
+      ...mineIssuesRaw,
+      ...touchedIssuesRaw,
+      ...remoteIssueSearchResults,
+    ]),
+    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+  );
+  const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
+    const issueIds = new Set<string>();
+    for (const issue of mineIssues) issueIds.add(issue.id);
+    for (const issue of touchedIssues) issueIds.add(issue.id);
+    for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
+    return [...issueIds];
+  }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  const {
+    summaries: externalObjectSummaryByIssueId,
+    isLoading: externalObjectSummariesLoading,
+    isReady: externalObjectSummariesReady,
+  } = useIssueExternalObjectSummaries(
+    selectedCompanyId,
+    inboxIssueIdsForExternalObjectSummaries,
+  );
+  const issueFilterContext = useMemo(() => ({
+    externalObjectSummaryByIssueId,
+    externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
+  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1160,23 +1325,6 @@ export function Inbox() {
       visibleTouchedIssues,
     ],
   );
-  const shouldUseIssueSearchSupplement =
-    !!selectedCompanyId
-    && normalizedSearchQuery.length > 0;
-  const { data: remoteIssueSearchResults = [] } = useQuery({
-    queryKey: [
-      ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
-      "inbox-supplement",
-    ],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
-        q: normalizedSearchQuery,
-        limit: 25,
-        includeRoutineExecutions: true,
-      }),
-    enabled: shouldUseIssueSearchSupplement,
-    placeholderData: (previousData) => previousData,
-  });
   const issueSearchSupplementResults = useMemo(
     () =>
       getInboxSearchSupplementIssues({
@@ -1188,11 +1336,13 @@ export function Inbox() {
         currentUserId,
         enableRoutineVisibilityFilter: true,
         liveIssueIds,
+        issueFilterContext,
       }),
     [
       archivedSearchIssues,
       currentUserId,
       filteredWorkItems,
+      issueFilterContext,
       issueFilters,
       liveIssueIds,
       normalizedSearchQuery,
@@ -1243,7 +1393,7 @@ export function Inbox() {
       return next;
     });
   }, [selectedCompanyId]);
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+  const freshGroupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
     ...buildGroupedInboxSections(
       getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
@@ -1265,6 +1415,79 @@ export function Inbox() {
     issueSearchSupplementResults,
     nestingEnabled,
   ]);
+
+  // --- Order pinning (PAP-16015) ---
+  // The freshly computed sort is only *displayed* at attention boundaries. Between
+  // them we reconcile the fresh sections against the last committed order so that
+  // archiving mid-engagement (which drops rows from the caches, and can lower a
+  // parent's subtree-max sort ts) can no longer reshuffle the list under the
+  // cursor. New items still land at their algorithmic position; archived rows hold
+  // their slot for the 5s undo grace before collapsing. See `inboxOrderPin.ts`.
+  const orderPinRef = useRef<InboxOrderPin>({ sections: [] });
+  // Bumped by an attention commit to force `groupedSections` to adopt the fresh order.
+  const [orderCommitToken, setOrderCommitToken] = useState(0);
+  const orderCommitRequestedRef = useRef(false);
+  const commitInboxOrder = useCallback(() => {
+    orderCommitRequestedRef.current = true;
+    setOrderCommitToken((token) => token + 1);
+  }, []);
+
+  // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
+  // held order so we never carry one view's layout into another.
+  const inboxSortViewIdentity = useMemo(
+    () =>
+      JSON.stringify([
+        selectedCompanyId,
+        tab,
+        groupBy,
+        nestingEnabled,
+        normalizedSearchQuery,
+        allCategoryFilter,
+        allApprovalFilter,
+        issueFilters,
+      ]),
+    [
+      allApprovalFilter,
+      allCategoryFilter,
+      groupBy,
+      issueFilters,
+      nestingEnabled,
+      normalizedSearchQuery,
+      selectedCompanyId,
+      tab,
+    ],
+  );
+  // Adopt the fresh order in the SAME render the view identity changes, so a
+  // section key shared between the two views never briefly shows the previous
+  // view's order before the hook's passive commit effect runs.
+  const previousInboxSortViewIdentityRef = useRef(inboxSortViewIdentity);
+  if (previousInboxSortViewIdentityRef.current !== inboxSortViewIdentity) {
+    previousInboxSortViewIdentityRef.current = inboxSortViewIdentity;
+    orderCommitRequestedRef.current = true;
+  }
+
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
+    const nowMs = Date.now();
+    // An attention boundary (or a view change) fired: adopt the fresh order
+    // wholesale and re-pin it.
+    if (orderCommitRequestedRef.current) {
+      orderCommitRequestedRef.current = false;
+      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
+      return freshGroupedSections;
+    }
+    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
+    orderPinRef.current = pin;
+    return sections;
+    // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
+    // forces it on a view change even when the fresh sections keep their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+
+  const inboxSortAttention = useInboxSortAttention({
+    viewIdentity: inboxSortViewIdentity,
+    onCommit: commitInboxOrder,
+  });
+  const noteInboxSortInteraction = inboxSortAttention.noteInteraction;
 
   const openCreateIssueForGroup = useCallback((group: InboxGroupedSection) => {
     const defaults = buildInboxIssueGroupCreateDefaults(
@@ -1288,11 +1511,44 @@ export function Inbox() {
       return next;
     });
   }, []);
+  const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
+    setCollapsedInboxParents((prev) => {
+      if (prev.has(parentId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(parentId);
+      else next.delete(parentId);
+      return next;
+    });
+  }, []);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
   }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  // Read the current nav list from event handlers without recreating them (and
+  // without capturing a stale array), so hover can resolve the row's key.
+  const flatNavItemsRef = useRef(flatNavItems);
+  flatNavItemsRef.current = flatNavItems;
+  // Roll live descendant runs up to their ancestors across the loaded inbox tree
+  // so a parent that is not itself live can still surface "n live below".
+  const subtreeLiveCounts = useMemo(() => {
+    const nodes: { id: string; parentId: string | null }[] = [];
+    const seen = new Set<string>();
+    const pushIssue = (issue: Issue) => {
+      if (seen.has(issue.id)) return;
+      seen.add(issue.id);
+      nodes.push({ id: issue.id, parentId: issue.parentId });
+    };
+    for (const group of groupedSections) {
+      for (const item of group.displayItems) {
+        if (item.kind === "issue") pushIssue(item.issue);
+      }
+      for (const children of group.childrenByIssueId.values()) {
+        for (const child of children) pushIssue(child);
+      }
+    }
+    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+  }, [groupedSections, liveIssueIds]);
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -1347,6 +1603,15 @@ export function Inbox() {
       issueFilters: { ...previous.issueFilters, ...patch },
     }));
   }, [updateFilterPreferences]);
+  useEffect(() => {
+    if (!experimentalSettingsLoaded || externalObjectsEnabled || issueFilters.externalObjectStatuses.length === 0) return;
+    updateIssueFilters({ externalObjectStatuses: [] });
+  }, [
+    experimentalSettingsLoaded,
+    externalObjectsEnabled,
+    issueFilters.externalObjectStatuses.length,
+    updateIssueFilters,
+  ]);
   const updateAllCategoryFilter = useCallback((value: InboxCategoryFilter) => {
     updateFilterPreferences((previous) => ({ ...previous, allCategoryFilter: value }));
   }, [updateFilterPreferences]);
@@ -1451,71 +1716,89 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
-  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
-  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
-  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
   const [fadingNonIssueItems, setFadingNonIssueItems] = useState<Set<string>>(new Set());
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
   const listRef = useRef<HTMLDivElement>(null);
+  // Keyboard nav scrolls the list, which fires mouseenter on whatever row lands
+  // under the stationary cursor — that must not steal the selection. Hover only
+  // selects after the pointer has physically moved since the last key nav.
+  const pointerMovedSinceKeyNavRef = useRef(true);
+  useEffect(() => {
+    const handlePointerMove = () => {
+      pointerMovedSinceKeyNavRef.current = true;
+    };
+    window.addEventListener("mousemove", handlePointerMove, { passive: true });
+    return () => window.removeEventListener("mousemove", handlePointerMove);
+  }, []);
+  // Which row the cursor is over, tracked WITHOUT React state so scrubbing the
+  // list costs zero re-renders (hover paints via CSS `:hover`, see IssueRow).
+  // Keyboard nav reads this to continue from the hovered row.
+  const hoveredIndexRef = useRef<number | null>(null);
+  // The hovered row's stable key, kept alongside the numeric index so a poll
+  // that reshapes the list can re-anchor the hover to the same row instead of
+  // dropping it (which stranded j/k back at the top — PAP-9679 regression).
+  const hoveredNavKeyRef = useRef<string | null>(null);
+  const setSelectedIndexFromPointer = useCallback((idx: number) => {
+    if (!pointerMovedSinceKeyNavRef.current) return;
+    noteInboxSortInteraction();
+    hoveredIndexRef.current = idx;
+    hoveredNavKeyRef.current = navEntryKey(flatNavItemsRef.current[idx]);
+    // Drop any keyboard selection band the moment the mouse takes over, so we
+    // never show two identical highlights at once. React bails out when the
+    // value is already -1, so continuous hovering triggers no re-render.
+    setSelectedIndex((prev) => (prev < 0 ? prev : -1));
+  }, [noteInboxSortInteraction]);
 
-  const invalidateInboxIssueQueries = () => {
+  const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    invalidateInboxIssueQueries(queryClient, selectedCompanyId);
   };
 
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
+      // Keep the sort pinned: archiving is engagement, so defer any idle re-sort.
+      noteInboxSortInteraction();
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
-      // Cancel in-flight refetches so they don't overwrite our optimistic update
-      const queryKeys_ = [
-        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
-        [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
-        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
-      ];
-      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+      if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+      beginLocalInboxArchive(selectedCompanyId, id);
 
-      // Snapshot previous data for rollback
-      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
+      removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
 
-      // Optimistically remove the issue from all inbox query caches
-      for (const qk of queryKeys_) {
-        queryClient.setQueryData(qk, (old: unknown) => {
-          if (!Array.isArray(old)) return old;
-          return old.filter((issue: { id: string }) => issue.id !== id);
-        });
-      }
-
-      return { previousData };
+      return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive issue");
+      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      // Restore previous query data on failure
+      // Restore only this failed archive so overlapping archive mutations stay removed.
       if (context?.previousData) {
-        for (const [qk, data] of context.previousData) {
-          queryClient.setQueryData(qk, data);
-        }
+        restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
     },
-    onSettled: (_data, _error, id) => {
+    onSettled: async (_data, error, id, context) => {
       // Clean up archiving state and refetch to sync with server
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueries();
+      if (!context?.companyId) return;
+      if (!error) boundLocalInboxArchive(context.companyId, id);
+      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
+      }
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
@@ -1527,9 +1810,15 @@ export function Inbox() {
     onMutate: (id) => {
       setActionError(null);
       setUnarchivingIssueIds((prev) => new Set(prev).add(id));
+      if (selectedCompanyId) clearLocalInboxArchive(selectedCompanyId, id);
+      return { companyId: selectedCompanyId };
     },
-    onError: (err) => {
+    onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      if (context?.companyId) {
+        beginLocalInboxArchive(context.companyId, id);
+        boundLocalInboxArchive(context.companyId, id);
+      }
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => {
@@ -1543,7 +1832,7 @@ export function Inbox() {
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
   });
 
@@ -1553,7 +1842,7 @@ export function Inbox() {
       setFadingOutIssues((prev) => new Set(prev).add(id));
     },
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
@@ -1578,7 +1867,7 @@ export function Inbox() {
       });
     },
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
     onSettled: (_data, _error, issueIds) => {
       setTimeout(() => {
@@ -1594,7 +1883,7 @@ export function Inbox() {
   const markUnreadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markUnread(id),
     onSuccess: () => {
-      invalidateInboxIssueQueries();
+      invalidateInboxIssueQueryCaches();
     },
   });
 
@@ -1611,6 +1900,7 @@ export function Inbox() {
   }, [markItemRead]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
+    noteInboxSortInteraction();
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
       if (key.startsWith("alert:")) {
@@ -1624,7 +1914,7 @@ export function Inbox() {
         return next;
       });
     }, 200);
-  }, [dismissAlert, dismissInboxItem]);
+  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1635,10 +1925,39 @@ export function Inbox() {
     return "hidden";
   };
 
-  // Keep selection valid when the list shape changes, but do not auto-select on initial load.
+  // Keep selection on the same logical item when the list shape changes —
+  // rows archived/refreshed above the selection would otherwise shift the
+  // numeric index onto a neighboring row (and Enter would open the wrong
+  // task). Falls back to clamping when the item is gone; never auto-selects
+  // on initial load.
+  const selectedNavKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
-  }, [flatNavItems.length]);
+    // A reshaped list invalidates the numeric hover index. Re-anchor it to the
+    // same row by key (the inbox polls constantly, so nulling it here silently
+    // broke hover→j/k sync — PAP-9679). Drop it only when the row is gone.
+    const hoveredKey = hoveredNavKeyRef.current;
+    const nextHovered =
+      hoveredKey === null ? -1 : flatNavItems.findIndex((entry) => navEntryKey(entry) === hoveredKey);
+    hoveredIndexRef.current = nextHovered >= 0 ? nextHovered : null;
+    if (nextHovered < 0) hoveredNavKeyRef.current = null;
+    setSelectedIndex((prev) => {
+      if (prev < 0) return resolveInboxSelectionIndex(prev, flatNavItems.length);
+      const prevKey = selectedNavKeyRef.current;
+      const keyIndex = prevKey === null
+        ? -1
+        : flatNavItems.findIndex((entry) => navEntryKey(entry) === prevKey);
+      return keyIndex >= 0 ? keyIndex : resolveInboxSelectionIndex(prev, flatNavItems.length);
+    });
+  }, [flatNavItems]);
+  useEffect(() => {
+    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
+  }, [flatNavItems, selectedIndex]);
+
+  useEffect(() => {
+    setUndoableArchiveIssueIds((prev) =>
+      prev.filter((issueId) => guardedArchiveIssueIds.has(issueId) || unarchivingIssueIds.has(issueId)),
+    );
+  }, [guardedArchiveIssueIds, unarchivingIssueIds]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
@@ -1682,6 +2001,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   });
   kbActionsRef.current = {
@@ -1693,6 +2013,7 @@ export function Inbox() {
     markNonIssueRead: handleMarkNonIssueRead,
     markNonIssueUnread: markItemUnread,
     setGroupCollapsed,
+    setInboxParentCollapsed,
     navigate,
   };
 
@@ -1719,10 +2040,9 @@ export function Inbox() {
       const st = kbStateRef.current;
       const act = kbActionsRef.current;
 
-      // Keyboard shortcuts are only active on the "mine" tab
-      if (!st.canArchive) return;
-
-      const undoArchiveAction = resolveInboxUndoArchiveKeyAction({
+      // Navigation works on every tab; archive/undo (and a/y below) stay
+      // scoped to the "mine" tab, the only place items are archivable.
+      const undoArchiveAction = !st.canArchive ? "none" : resolveInboxUndoArchiveKeyAction({
         hasUndoableArchive: st.undoableArchiveIssueIds.length > 0,
         defaultPrevented: e.defaultPrevented,
         key: e.key,
@@ -1744,7 +2064,10 @@ export function Inbox() {
       const navCount = navItems.length;
       if (navCount === 0) return;
 
-      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      // Any inbox keystroke (nav, archive, undo) is engagement: hold the sort.
+      noteInboxSortInteraction();
+
+      /** Resolve the nav entry at an index to an issue (for child entries) or work item. */
       const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
         const entry = navItems[idx];
         if (!entry) return {};
@@ -1753,33 +2076,62 @@ export function Inbox() {
         return {};
       };
 
+      // The row a keystroke acts on: the hovered row when the mouse has moved
+      // since the last key nav (so "hover a row → press a/r/Enter/Arrow" acts on
+      // it), otherwise the keyboard selection. Hover no longer writes selection
+      // state, so this is what threads the pointer position into every handler.
+      const rawHovered = hoveredIndexRef.current;
+      const hoveredIndex = rawHovered != null && rawHovered >= 0 && rawHovered < navCount ? rawHovered : -1;
+      const fromHover = pointerMovedSinceKeyNavRef.current && hoveredIndex >= 0;
+      const effectiveIndex = fromHover ? hoveredIndex : st.selectedIndex;
+
       switch (e.key) {
         case "j":
         case "ArrowDown": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "next"));
           break;
         }
         case "k":
         case "ArrowUp": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "previous"));
           break;
         }
         case "ArrowLeft":
         case "ArrowRight": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
-          const entry = navItems[st.selectedIndex];
-          if (!entry || entry.type !== "group") return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
+          const entry = navItems[effectiveIndex];
+          if (!entry) return;
+          if (entry.type === "group") {
+            e.preventDefault();
+            pointerMovedSinceKeyNavRef.current = false;
+            setSelectedIndex(effectiveIndex);
+            act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+            break;
+          }
+          // Parent tasks collapse/expand with the same keys as groups.
+          const { issue, item } = resolveNavEntry(effectiveIndex);
+          const targetIssue = issue ?? (item?.kind === "issue" ? item.issue : null);
+          if (!targetIssue) return;
+          const hasChildren = st.workItems.some(
+            (group) => (group.childrenByIssueId.get(targetIssue.id)?.length ?? 0) > 0,
+          );
+          if (!hasChildren) return;
           e.preventDefault();
-          act.setGroupCollapsed(entry.groupKey, e.key === "ArrowLeft");
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedIndex(effectiveIndex);
+          act.setInboxParentCollapsed(targetIssue.id, e.key === "ArrowLeft");
           break;
         }
         case "a":
         case "y": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (!st.canArchive) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (!st.nonInboxSearchIssueIds.has(issue.id) && !st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
           } else if (item) {
@@ -1795,9 +2147,10 @@ export function Inbox() {
           break;
         }
         case "U": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (!st.canArchive) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             act.markUnreadIssue(issue.id);
           } else if (item) {
@@ -1807,9 +2160,10 @@ export function Inbox() {
           break;
         }
         case "r": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (!st.canArchive) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
           } else if (item) {
@@ -1823,14 +2177,14 @@ export function Inbox() {
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
+          if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
-          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          const { issue, item } = resolveNavEntry(effectiveIndex);
           if (issue) {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetail(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -1839,7 +2193,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetail(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -1855,7 +2209,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [issueLinkState, keyboardShortcutsEnabled]);
+  }, [issueLinkState, keyboardShortcutsEnabled, noteInboxSortInteraction]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -1992,7 +2346,7 @@ export function Inbox() {
                   e.currentTarget.blur();
                 }
               }}
-              className="h-8 w-[220px] pl-8 text-xs"
+              className="h-8 w-(--sz-220px) pl-8 text-xs"
               data-page-search-target="true"
             />
           </div>
@@ -2007,6 +2361,7 @@ export function Inbox() {
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
+                enableExternalObjectFilters={externalObjectsEnabled}
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
@@ -2104,6 +2459,7 @@ export function Inbox() {
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
+                enableExternalObjectFilters={externalObjectsEnabled}
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
@@ -2126,7 +2482,7 @@ export function Inbox() {
                     {([
                       ["none", "None"],
                       ["type", "Type"],
-                      ["assignee", "Assignee"],
+                      ["assignee", "Responsible"],
                       ["project", "Project"],
                       ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
                     ] as const).map(([value, label]) => (
@@ -2203,12 +2559,12 @@ export function Inbox() {
             value={allCategoryFilter}
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
-            <SelectTrigger className="h-8 w-[170px] text-xs">
+            <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
               <SelectValue placeholder="Category" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
               <SelectItem value="join_requests">Join requests</SelectItem>
               <SelectItem value="approvals">Approvals</SelectItem>
               <SelectItem value="failed_runs">Failed runs</SelectItem>
@@ -2221,7 +2577,7 @@ export function Inbox() {
               value={allApprovalFilter}
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
+              <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
                 <SelectValue placeholder="Approval status" />
               </SelectTrigger>
               <SelectContent>
@@ -2249,6 +2605,7 @@ export function Inbox() {
           issueFilters={issueFilters}
           currentUserId={currentUserId}
           liveIssueIds={liveIssueIds}
+          subtreeLiveCounts={subtreeLiveCounts}
           workspaceFilterContext={inboxWorkspaceGrouping}
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
@@ -2281,7 +2638,12 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl">
+            <div
+              ref={listRef}
+              className="overflow-hidden"
+              onPointerDownCapture={noteInboxSortInteraction}
+              onWheelCapture={noteInboxSortInteraction}
+            >
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2309,15 +2671,36 @@ export function Inbox() {
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
+                  const originatingActor = deriveOriginatingActor(issue);
+                  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+                  const originatingViaAgentId =
+                    originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
+                  const isLive = liveIssueIds.has(issue.id);
+                  const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
+                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
+                    isLive,
+                    loadedSubtreeLiveCount,
+                  });
+                  const showStatus = visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status");
+                  const showSubtreeLiveChip = !(
+                    showStatus
+                    && issue.status === "blocked"
+                    && blockerAttention?.state === "covered"
+                  );
+                  const rowStatusIcon = (
+                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                  );
                   return (
                     <IssueRow
                       key={`issue:${issue.id}`}
                       issue={issue}
                       issueLinkState={issueLinkState}
+                      treeGuides={depth}
                       selected={selected}
                       className={
                         isArchiving
-                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                          ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                           : "transition-all duration-200 ease-out"
                       }
                       desktopMetaLeading={
@@ -2337,15 +2720,22 @@ export function Inbox() {
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                               </button>
                             ) : (
+                              // Every non-chevron row reserves this spacer so the
+                              // status column lines up under the parent rows'
+                              // collapse chevron. (The unread mark-read dot has
+                              // its own reserved leading slot in IssueRow, to the
+                              // left of this spacer.)
                               <span className="hidden w-4 shrink-0 sm:block" />
                             )
                           ) : null}
-                          {depth > 0 ? <span className="hidden w-4 shrink-0 sm:block" /> : null}
                           <InboxIssueMetaLeading
                             issue={issue}
-                            isLive={liveIssueIds.has(issue.id)}
-                            showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                            isLive={isLive}
+                            subtreeLiveCount={liveDescendantCount}
+                            showSubtreeLiveChip={showSubtreeLiveChip}
+                            showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                            statusSlot={rowStatusIcon}
                           />
                         </>
                       }
@@ -2368,12 +2758,14 @@ export function Inbox() {
                           >
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
-                        ) : undefined
+                        ) : (
+                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="md" />
+                        )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
-                      archiveDisabled={isArchiving || archiveIssueMutation.isPending}
+                      archiveDisabled={isArchiving}
                       desktopTrailing={
                         visibleTrailingIssueColumns.length > 0 ? (
                           <InboxIssueTrailingColumns
@@ -2393,6 +2785,10 @@ export function Inbox() {
                               ?? null
                             }
                             assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                            creatorAgentName={agentName(issue.createdByAgentId)}
+                            creatorUserName={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.label ?? null) : null}
+                            creatorUserAvatarUrl={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.image ?? null) : null}
+                            viaAgentName={originatingViaAgentId ? agentName(originatingViaAgentId) : null}
                             currentUserId={currentUserId}
                             parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
                             parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}
@@ -2417,7 +2813,7 @@ export function Inbox() {
                         className="flex items-center gap-3 border-y border-border/70 bg-muted/30 px-4 py-2"
                       >
                         <div className="h-px flex-1 bg-border/80" />
-                        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        <span className="shrink-0 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                           {group.searchSection === "archived" ? "Archived" : "Other results"}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
@@ -2432,18 +2828,19 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         data-inbox-item
-                        className={cn(
-                          "px-3 sm:px-4",
-                          groupIndex > 0 && "pt-2",
-                          isGroupSelected && "bg-accent/50",
-                        )}
+                        className={cn(groupIndex > 0 && "pt-2")}
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
                         onMouseEnter={() => {
-                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                          if (groupNavIdx >= 0) setSelectedIndexFromPointer(groupNavIdx);
                         }}
                       >
+                        {/* Left inset aligns the header chevron with the nested
+                            task chevrons. Read rows no longer reserve a
+                            mark-read column, so inbox rows sit at pl-1 before
+                            their chevron — same as the tasks list. */}
+                        <div className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", isGroupSelected ? "bg-accent/50" : "hover:bg-accent/50")}>
                         <IssueGroupHeader
                           label={group.label}
                           collapsible
@@ -2454,8 +2851,8 @@ export function Inbox() {
                               variant="ghost"
                               size="icon-xs"
                               className="-mr-2 text-muted-foreground"
-                              title={`New issue in ${group.label}`}
-                              aria-label={`New issue in ${group.label}`}
+                              title={`New task in ${group.label}`}
+                              aria-label={`New task in ${group.label}`}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openCreateIssueForGroup(group);
@@ -2465,6 +2862,7 @@ export function Inbox() {
                             </Button>
                           ) : null}
                         />
+                        </div>
                       </div>,
                     );
                   }
@@ -2479,7 +2877,7 @@ export function Inbox() {
                         data-inbox-item
                         className="relative"
                         onClick={() => setSelectedIndex(navIdx)}
-                        onMouseEnter={() => setSelectedIndex(navIdx)}
+                        onMouseEnter={() => setSelectedIndexFromPointer(navIdx)}
                       >
                         {child}
                       </div>
@@ -2495,7 +2893,7 @@ export function Inbox() {
                       elements.push(
                         <div key={`today-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
                           <div className="flex-1 border-t border-zinc-600" />
-                          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                          <span className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-zinc-500">
                             Earlier
                           </span>
                         </div>,
@@ -2521,7 +2919,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2535,7 +2933,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2559,7 +2957,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2573,7 +2971,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2594,7 +2992,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2608,7 +3006,7 @@ export function Inbox() {
                         >
                           {row}
                         </SwipeToArchive>
-                      ) : row));
+                      ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
 
@@ -2651,19 +3049,19 @@ export function Inbox() {
                               if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
                             }}
                             onMouseEnter={() => {
-                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                              if (childNavIdx >= 0) setSelectedIndexFromPointer(childNavIdx);
                             }}
                           >
                             {canArchiveIssue ? (
                               <SwipeToArchive
                                 key={`issue:${child.id}`}
                                 selected={isChildSelected}
-                                disabled={isChildArchiving || archiveIssueMutation.isPending}
+                                disabled={isChildArchiving}
                                 onArchive={() => archiveIssueMutation.mutate(child.id)}
                               >
                                 {childRow}
                               </SwipeToArchive>
-                            ) : childRow}
+                            ) : <InboxRowSurface selected={isChildSelected}>{childRow}</InboxRowSurface>}
                           </div>
                         );
 
@@ -2686,12 +3084,12 @@ export function Inbox() {
                       <SwipeToArchive
                         key={`issue:${issue.id}`}
                         selected={isSelected}
-                        disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
+                        disabled={archivingIssueIds.has(issue.id)}
                         onArchive={() => archiveIssueMutation.mutate(issue.id)}
                       >
                         {parentRow}
                       </SwipeToArchive>
-                    ) : parentRow));
+                    ) : <InboxRowSurface selected={isSelected}>{parentRow}</InboxRowSurface>));
 
                     if (isExpanded) {
                       elements.push(...renderChildIssueRows(childIssues, 1, new Set([issue.id])));

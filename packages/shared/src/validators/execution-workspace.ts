@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  WORKSPACE_OVERVIEW_DEFAULT_LIMIT,
+  WORKSPACE_OVERVIEW_MAX_LIMIT,
+} from "../constants.js";
 
 export const executionWorkspaceStatusSchema = z.enum([
   "active",
@@ -8,9 +12,34 @@ export const executionWorkspaceStatusSchema = z.enum([
   "cleanup_failed",
 ]);
 
+export const executionWorkspaceDeliveryStateSchema = z.enum([
+  "merged_via_pr",
+  "merged_by_ancestry",
+  "unmerged",
+  "unknown",
+]);
+
+const workspaceOverviewStatusFilterSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) return undefined;
+  const rawValues = Array.isArray(value) ? value : [value];
+  const statuses = rawValues.flatMap((entry) => {
+    if (typeof entry !== "string") return [];
+    return entry.split(",").map((part) => part.trim()).filter(Boolean);
+  });
+  return statuses.length > 0 ? statuses : undefined;
+}, z.array(executionWorkspaceStatusSchema).optional());
+
+export const workspaceOverviewQuerySchema = z.object({
+  projectId: z.string().uuid().optional(),
+  status: workspaceOverviewStatusFilterSchema,
+  limit: z.coerce.number().int().min(1).max(WORKSPACE_OVERVIEW_MAX_LIMIT).optional().default(WORKSPACE_OVERVIEW_DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+}).strict();
+
 export const executionWorkspaceConfigSchema = z.object({
   environmentId: z.string().uuid().optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
+  runtimeProvisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -80,7 +109,7 @@ export const workspaceRuntimeServiceSchema = z.object({
   scopeType: z.enum(["project_workspace", "execution_workspace", "run", "agent"]),
   scopeId: z.string().nullable(),
   serviceName: z.string(),
-  status: z.enum(["starting", "running", "stopped", "failed"]),
+  status: z.enum(["provisioning", "starting", "running", "stopped", "failed"]),
   lifecycle: z.enum(["shared", "ephemeral"]),
   reuseKey: z.string().nullable(),
   command: z.string().nullable(),
@@ -102,6 +131,7 @@ export const workspaceRuntimeServiceSchema = z.object({
 }).strict();
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
+  deliveryState: executionWorkspaceDeliveryStateSchema,
   state: executionWorkspaceCloseReadinessStateSchema,
   blockingReasons: z.array(z.string()),
   warnings: z.array(z.string()),
@@ -128,4 +158,23 @@ export const updateExecutionWorkspaceSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 
+const branchReconcileReasonSchema = z.string().trim().min(1);
+
+export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("forward"),
+    reason: branchReconcileReasonSchema.optional().nullable(),
+  }).strict(),
+  z.object({
+    mode: z.literal("override"),
+    reason: branchReconcileReasonSchema,
+  }).strict(),
+  z.object({
+    mode: z.literal("quarantine_restore"),
+    reason: branchReconcileReasonSchema.optional().nullable(),
+  }).strict(),
+]);
+
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
+export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutionWorkspaceBranchSchema>;
+export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;

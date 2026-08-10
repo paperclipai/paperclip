@@ -5,6 +5,8 @@ import type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
+  SecretScope,
   SecretStatus,
   SecretVersionStatus,
 } from "../constants.js";
@@ -16,6 +18,8 @@ export type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
+  SecretScope,
   SecretStatus,
   SecretVersionStatus,
 };
@@ -31,16 +35,29 @@ export interface EnvSecretRefBinding {
   type: "secret_ref";
   secretId: string;
   version?: SecretVersionSelector;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
+}
+
+export interface EnvUserSecretRefBinding {
+  type: "user_secret_ref";
+  key: string;
+  version?: SecretVersionSelector;
+  required?: boolean;
+  allowMissingOverride?: boolean;
 }
 
 // Backward-compatible: legacy plaintext string values are still accepted.
-export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
+export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding | EnvUserSecretRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
 export interface CompanySecret {
   id: string;
   companyId: string;
+  scope: SecretScope;
+  ownerUserId: string | null;
+  userSecretDefinitionId: string | null;
   key: string;
   name: string;
   provider: SecretProvider;
@@ -61,12 +78,57 @@ export interface CompanySecret {
   updatedAt: Date;
 }
 
+export interface UserSecretDefinition {
+  id: string;
+  companyId: string;
+  key: string;
+  name: string;
+  description: string | null;
+  status: SecretStatus;
+  provider: SecretProvider;
+  managedMode: SecretManagedMode;
+  providerConfigId: string | null;
+  providerMetadata: Record<string, unknown> | null;
+  usageGuidance: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserSecretDeclaration {
+  id: string;
+  companyId: string;
+  userSecretDefinitionId: string;
+  targetType: SecretBindingTargetType;
+  targetId: string;
+  configPath: string;
+  envKey: string;
+  versionSelector: SecretVersionSelector;
+  required: boolean;
+  allowMissingOverride: boolean;
+  label: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UserSecretCoverageSummary {
+  definitionId: string;
+  configuredCount: number;
+  missingCount: number;
+  inactiveCount: number;
+}
+
 export interface SecretProviderDescriptor {
   id: SecretProvider;
   label: string;
   requiresExternalRef: boolean;
   supportsManagedValues?: boolean;
   supportsExternalReferences?: boolean;
+  supportsExternalValueWrites?: boolean;
   configured?: boolean;
 }
 
@@ -197,6 +259,8 @@ export interface CompanySecretBinding {
   versionSelector: SecretVersionSelector;
   required: boolean;
   label: string | null;
+  projectionClass: SecretProjectionClass;
+  projectionAllowlistKey: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -216,12 +280,18 @@ export interface CompanySecretUsageBinding extends CompanySecretBinding {
 export interface SecretAccessEvent {
   id: string;
   companyId: string;
-  secretId: string;
+  secretId: string | null;
+  userSecretDefinitionId: string | null;
+  secretScope: SecretScope;
   version: number | null;
   provider: SecretProvider;
+  responsibleUserId: string | null;
+  credentialOwnerUserId: string | null;
+  credentialSubjectType: string | null;
+  credentialSubjectId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string | null;
-  consumerType: SecretBindingTargetType;
+  consumerType: SecretBindingTargetType | "agent_api" | "plugin_worker";
   consumerId: string;
   configPath: string | null;
   issueId: string | null;
@@ -278,4 +348,110 @@ export interface RemoteSecretImportResult {
   skippedCount: number;
   errorCount: number;
   results: RemoteSecretImportRowResult[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Proposed secrets & bindings (PAP-14731)                                    */
+/* -------------------------------------------------------------------------- */
+
+export type SecretProposalKind = "secret" | "binding";
+export type SecretProposalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "withdrawn"
+  | "expired";
+
+/** Minimal agent reference surfaced on a proposal (proposer / binding target). */
+export interface SecretProposalAgentRef {
+  id: string;
+  name: string;
+  /** lucide icon slug, if the agent has one. */
+  icon: string | null;
+}
+
+/** Provenance link to the issue a proposal originated from. */
+export interface SecretProposalIssueRef {
+  id: string;
+  /** Human key, e.g. `PAP-14743`. */
+  key: string;
+  title: string;
+}
+
+/**
+ * Board-facing view of a secret/binding proposal. The proposed value is NEVER
+ * included — secret-kind proposals expose only `valueFingerprintSha256` and
+ * `valueLength`, mirroring the no-human-value-read posture (plan §Security 4).
+ */
+export interface SecretProposalView {
+  id: string;
+  companyId: string;
+  kind: SecretProposalKind;
+  status: SecretProposalStatus;
+  justification: string;
+
+  // --- secret-kind ---
+  proposedName: string | null;
+  proposedKey: string | null;
+  proposedDescription: string | null;
+  valueFingerprintSha256: string | null;
+  valueLength: number | null;
+
+  // --- binding-kind ---
+  /** Set when the binding references an existing live secret. */
+  secretId: string | null;
+  /** Resolved name of the live secret referenced by `secretId`, for display. */
+  secretName: string | null;
+  /** Set when the binding depends on a still-pending secret proposal (cascade pairing). */
+  secretProposalId: string | null;
+  /** Resolved proposed name of the dependency secret proposal, for display. */
+  secretProposalName: string | null;
+  /** Binding target type (`"agent"` in v1). */
+  targetType: SecretBindingTargetType | null;
+  /** Resolved target agent for the binding. */
+  target: SecretProposalAgentRef | null;
+  /** Delivery path: `env.<KEY>` (env var) or `access.<ALIAS>` (agent API). */
+  configPath: string | null;
+
+  // --- provenance ---
+  proposedBy: SecretProposalAgentRef;
+  originIssue: SecretProposalIssueRef | null;
+  originRunId: string;
+  /** ISO timestamp; pending proposals auto-expire (default 14d). */
+  expiresAt: string;
+  createdAt: string;
+
+  // --- resolution (terminal statuses only) ---
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+  resolutionReason: string | null;
+  createdSecretId: string | null;
+  appliedBindingConfigPath: string | null;
+
+  /**
+   * Server-computed permission preflight for the current viewer, mirroring the
+   * exact authz the approve path enforces. Secret-kind approval uses the same
+   * company-secret write boundary as the normal company-secret create route;
+   * binding-kind approval additionally requires `agent_config:update` on the
+   * target agent. Approve is disabled with `approveBlockReason` shown when this
+   * is `false`.
+   */
+  viewerCanApprove: boolean;
+  approveBlockReason: string | null;
+}
+
+/** Approve body: cascade a proposed dependency secret and/or re-folder/rename before landing. */
+export interface ApproveSecretProposalInput {
+  /** Approve a pending dependency secret proposal in the same transaction. */
+  cascade?: boolean;
+  /** Re-folder / rename / re-provider a secret-kind proposal before it lands. */
+  overrides?: {
+    name?: string;
+    description?: string | null;
+    providerConfigId?: string | null;
+  };
+}
+
+export interface RejectSecretProposalInput {
+  reason: string;
 }

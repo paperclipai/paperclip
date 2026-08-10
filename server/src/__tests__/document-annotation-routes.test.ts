@@ -9,9 +9,11 @@ const otherCompanyId = "33333333-3333-4333-8333-333333333333";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  listReviewAttention: vi.fn(),
 }));
 const mockDocumentService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
+  upsertIssueDocument: vi.fn(),
 }));
 const mockAnnotationService = vi.hoisted(() => ({
   listThreadsForIssueDocument: vi.fn(),
@@ -37,6 +39,10 @@ const mockIssueReferenceService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
+}));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -108,8 +114,20 @@ const annotationComment = {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
-    accessService: () => ({ canUser: vi.fn(), hasPermission: vi.fn(async () => false) }),
+    accessService: () => ({
+      canUser: vi.fn(),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_test",
+        explanation: "Allowed by test mock.",
+      })),
+      hasPermission: vi.fn(async () => false),
+    }),
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
     documentAnnotationService: () => mockAnnotationService,
     documentService: () => mockDocumentService,
@@ -131,10 +149,7 @@ function registerModuleMocks() {
     }),
     issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
-    issueThreadInteractionService: () => ({
-      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
-    }),
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
@@ -186,7 +201,17 @@ describe("document annotation routes", () => {
       assigneeAgentId: null,
     });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({});
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockDocumentService.getIssueDocumentByKey.mockResolvedValue(documentPayload);
+    mockDocumentService.upsertIssueDocument.mockResolvedValue({
+      created: false,
+      document: {
+        ...documentPayload,
+        body: "Alpha updated selected text omega",
+        latestRevisionId: "99999999-9999-4999-8999-999999999999",
+        latestRevisionNumber: 2,
+      },
+    });
     mockAnnotationService.listThreadsForIssueDocument.mockImplementation(async (
       _issueId: string,
       _key: string,
@@ -228,7 +253,83 @@ describe("document annotation routes", () => {
     });
   });
 
-  it("creates annotation threads, syncs references, logs activity, and wakes the assignee", async () => {
+  it("updates issue documents without waking the assignee through the issue-comment path", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Document API",
+      status: "in_progress",
+      assigneeAgentId: "99999999-9999-4999-8999-999999999999",
+    });
+
+    const res = await request(await createApp())
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({
+        title: "Plan",
+        format: "markdown",
+        body: "Alpha updated selected text omega",
+        changeSummary: "Document feedback only",
+        baseRevisionId: documentPayload.latestRevisionId,
+      })
+      .expect(200);
+
+    expect(res.body.latestRevisionNumber).toBe(2);
+    expect(mockIssueReferenceService.syncDocument).toHaveBeenCalledWith(documentPayload.id);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.document_updated",
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("queues one bounded recovery when a board document revision expires the final review interactions", async () => {
+    const assigneeAgentId = "99999999-9999-4999-8999-999999999999";
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Document API",
+      status: "in_review",
+      assigneeAgentId,
+    });
+    mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockResolvedValueOnce([
+      { id: "interaction-b", kind: "request_confirmation", status: "expired" },
+      { id: "interaction-a", kind: "request_confirmation", status: "expired" },
+    ]);
+    mockIssueService.listReviewAttention.mockResolvedValueOnce(new Map([[issueId, {
+      state: "stalled",
+      paths: [],
+      reason: "Final document-bound review paths expired",
+    }]]));
+    mockHeartbeatService.wakeup.mockResolvedValueOnce({ id: "recovery-run" });
+
+    await request(await createApp())
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({
+        title: "Plan",
+        format: "markdown",
+        body: "Alpha updated selected text omega",
+        changeSummary: "Board revision",
+        baseRevisionId: documentPayload.latestRevisionId,
+      })
+      .expect(200);
+
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(assigneeAgentId, expect.objectContaining({
+      reason: "issue_review_path_lost",
+      idempotencyKey: expect.stringMatching(new RegExp(`^issue_review_path_lost:${issueId}:`)),
+      payload: expect.objectContaining({
+        issueId,
+        reviewPathConsumedRef: "interactions:interaction-a,interaction-b",
+        reviewPathRecoveryAttempt: 1,
+        maxReviewPathRecoveryAttempts: 1,
+      }),
+      contextSnapshot: expect.objectContaining({
+        source: "issue.document_updated",
+        wakeReason: "issue_review_path_lost",
+      }),
+    }));
+  });
+
+  it("creates annotation threads, syncs references, logs activity, and does not wake the assignee", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -251,30 +352,42 @@ describe("document annotation routes", () => {
     expect(mockIssueReferenceService.syncAnnotationComment).toHaveBeenCalledWith(annotationComment.id);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_created",
-    }));
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "99999999-9999-4999-8999-999999999999",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          annotationThreadId: annotationThread.id,
-          annotationCommentId: annotationComment.id,
-        }),
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
       }),
-    );
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("rejects agent cross-company annotation reads", async () => {
+  it("rejects agent cross-company annotation reads with a uniform 404", async () => {
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
-      .expect(403);
+      .expect(404);
   });
 
-  it("adds annotation comments and resolves threads", async () => {
+  it("adds annotation comments without waking the assignee and resolves threads", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Annotation API",
+      status: "todo",
+      assigneeAgentId: "99999999-9999-4999-8999-999999999999",
+    });
+
     await request(await createApp())
       .post(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}/comments`)
       .send({ body: "Reply with PAP-2" })
       .expect(201);
     expect(mockIssueReferenceService.syncAnnotationComment).toHaveBeenCalledWith(annotationComment.id);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.document_annotation_comment_added",
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
+      }),
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
     const resolved = await request(await createApp())
       .patch(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}`)
@@ -283,6 +396,11 @@ describe("document annotation routes", () => {
     expect(resolved.body.status).toBe("resolved");
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_resolved",
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
+      }),
     }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

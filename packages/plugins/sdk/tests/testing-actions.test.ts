@@ -72,3 +72,83 @@ describe("createTestHarness action context", () => {
     await expect(harness.performAction("legacy", { ok: true })).resolves.toEqual({ ok: true });
   });
 });
+
+describe("createTestHarness managed routines", () => {
+  it("preserves declared activity gate settings", async () => {
+    const harness = createTestHarness({
+      manifest: {
+        ...manifest,
+        capabilities: ["routines.managed"],
+        routines: [{
+          routineKey: "quiet-watcher",
+          title: "Quiet watcher",
+          activityGatePolicy: "require_external_activity",
+          activityGateScope: "project",
+        }],
+      },
+    });
+
+    const resolved = await harness.ctx.routines.managed.reconcile("quiet-watcher", "company-1");
+
+    expect(resolved.routine).toMatchObject({
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    });
+  });
+});
+
+describe("createTestHarness issue interactions", () => {
+  it("creates request_checkbox_confirmation interactions through the typed host helper", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: ["issues.create", "issue.interactions.create"],
+    });
+    const issue = await harness.ctx.issues.create({
+      companyId: "company-1",
+      title: "Pick files",
+    });
+
+    const interaction = await harness.ctx.issues.requestCheckboxConfirmation(
+      issue.id,
+      {
+        idempotencyKey: "checkbox:files",
+        title: "Choose files",
+        payload: {
+          version: 1,
+          prompt: "Which files should be included?",
+          options: [
+            { id: "file-a", label: "File A" },
+            { id: "file-b", label: "File B", description: "Secondary draft" },
+          ],
+          defaultSelectedOptionIds: ["file-a"],
+          minSelected: 1,
+          maxSelected: 2,
+        },
+      },
+      "company-1",
+      { authorAgentId: "agent-1" },
+    );
+
+    expect(interaction).toMatchObject({
+      issueId: issue.id,
+      companyId: "company-1",
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "checkbox:files",
+      title: "Choose files",
+      createdByAgentId: "agent-1",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        options: [
+          { id: "file-a", label: "File A" },
+          { id: "file-b", label: "File B", description: "Secondary draft" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+      },
+    });
+  });
+});

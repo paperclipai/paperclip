@@ -37,6 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
+| Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree and resolve only eligible task-level plan confirmations; it is not board authority, active-run output monitoring, or general liveness recovery. |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
@@ -44,6 +45,10 @@ These decisions close open questions from `SPEC.md` for V1.
 | Budget period | Monthly UTC calendar window |
 | Budget enforcement | Soft alerts + hard limit auto-pause |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
+
+Low-trust agent presets are containment controls for hostile automated work, not
+general project or issue privacy controls. The core preset resolver contract is
+documented in `doc/LOW-TRUST-PRESETS.md`.
 
 ## 4. Current Baseline (Repo Snapshot)
 
@@ -78,8 +83,12 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Revenue/expense accounting beyond model/token costs
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
-- Multi-board governance or role-based human permission granularity
+- Multi-board governance (multiple board UIs for a single company)
 - Automatic self-healing orchestration (auto-reassign/retry planners)
+
+Role-based human permission granularity is V1 — see the `humans-and-permissions`
+plan, the `principal_permission_grants` table, and the `PERMISSION_KEYS` set
+in `packages/shared/src/constants.ts`.
 
 ## 6. Architecture
 
@@ -148,7 +157,7 @@ Invariant: every business record belongs to exactly one company.
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
@@ -221,6 +230,7 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
+- `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `assignee_user_id` text null
 - checkout/execution locks: `checkout_run_id`, `execution_run_id`, `execution_agent_name_key`, `execution_locked_at`
@@ -229,6 +239,10 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
 - `request_depth` int not null default 0
+- `work_mode` text not null default `standard`; supported values:
+  - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.
+  - `ask`: answer-only execution. Agents may use tools for investigation or temporary scratch work, but the deliverable is an issue-thread answer; they must not write implementation code or produce an implementation plan.
+  - `planning`: plan-only execution. Agents create or revise the plan without implementation work; accepted-plan continuations remain planning-specific and create child issues from the approved plan.
 - `billing_code` text null
 - `assignee_adapter_overrides` jsonb null
 - `execution_policy` jsonb null
@@ -279,6 +293,7 @@ Invariants:
 - `billing_code` text null
 - `provider` text not null
 - `model` text not null
+- `cost_status` text not null default `reported`; `unpriced` when usage exists but no price was reported
 - `input_tokens` int not null default 0
 - `output_tokens` int not null default 0
 - `cost_cents` int not null
@@ -392,6 +407,13 @@ Operational policy:
   - `issue_id` uuid fk not null
   - `asset_id` uuid fk not null
   - `issue_comment_id` uuid fk null
+- V1 attachment serving contract:
+  - Default upload allowlist includes common images, PDF, plain text/markdown/JSON/CSV/HTML, ZIP, and video artifacts (`video/mp4`, `video/webm`, `video/quicktime`).
+  - Attachment reads are company-scoped and expose stable path metadata: `contentPath`/`openPath` for inline-safe viewing and `downloadPath` for forced download.
+  - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
+  - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
+- Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
+- Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
 
 ## 7.15 `documents` + `document_revisions` + `issue_documents`
 
@@ -434,6 +456,16 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
+Decision-desk triage uses company-scoped sidecars rather than adding queue fields to every attention source:
+
+- `decision_queues` stores durable named queues, optional retention overrides, server-derived creator/run provenance, and data-backed seed rules.
+- `decision_queue_items` keys membership by `(queue_id, source_kind, source_id)` and repeats `company_id` for company-consistent joins.
+- `decision_triage` keys current decide-by/snooze state by `(company_id, source_kind, source_id)` and preserves the latest setter attribution.
+- `decision_triage_events` is the immutable mutation history for queue membership and triage overrides, including actor, run, API-key, and responsible-user provenance.
+- `decision_retention` stores the attention source's last observed activity timestamp, monotonic version, Keep flag, and reversible archive provenance. Queue `retention_days` overrides use the shortest assigned queue threshold; otherwise the shelf threshold is 30 days.
+- `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
+- Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -471,8 +503,14 @@ V1 non-terminal liveness rule:
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
+- external waits are durable only when persisted as a bounded monitor/scheduled wake, a first-class blocker with a named owner and action, or healthy delegated child work connected by a blocker edge when the source must wait; parent/child structure alone is not a wait path
+- unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
+- heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
+- invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
+- source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
+- recovery-scoped wakes replace the normal deliverable execution contract with a cause-specific recovery contract, and successful repair returns the issue to the recorded original owner by default while recording `handed_back` versus `owner_completed`
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
@@ -494,8 +532,9 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 - Bearer API key mapped to one agent and company
 - Agent key scope:
   - read org/task/company context for own company
-  - read/write own assigned tasks and comments
-  - create tasks/comments for delegation
+  - read company-visible tasks and comments
+  - comment on and update visible tasks under the shared write rule
+  - create child tasks and assign visible work for delegation under the same rule
   - report heartbeat status
   - report cost events
 - Agent cannot:
@@ -516,7 +555,43 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Report cost | yes | yes |
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
+| Manage responsible user's inbox state | yes | yes (default-open policy) |
+| Manage another user's inbox state | yes | scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
+
+### 9.3.1 Shared default-open issue writes
+
+For standard-trust agents, issue comments, issue field/status updates, child
+creation under a parent, and assignment share one authorization rule: the
+target issue must be visible to the agent and the responsible user represented
+by the run must also be authorized. In V1, issue visibility defaults to the
+whole company, so these writes are company-wide by default.
+
+The shared rule does not widen low-trust, `skill_test`, or `task_bridge` key
+scopes. It also does not replace run-lifecycle controls: checkout ownership,
+active-run conflicts, status-transition validation, interaction ownership,
+budget gates, and pause gates remain independently enforced. Comment access is
+structurally downstream of issue read access (`issue:comment` is a subset of
+`issue:read`).
+
+Cross-issue writes are contained per heartbeat run. An agent-authored comment
+may wake the target assignee, including an explicit `resume: true` comment on a
+`done` or `cancelled` issue, but the wake remains agent-class and is subject to
+the normal agent rewake throttle; comment presentation cannot give it human
+wake privileges. Agent issue comments and updates require a persisted heartbeat
+run bound to the authenticated agent and company; missing, invalid, or mismatched
+run context fails closed before mutation. A run may attempt at most 20 cross-issue comments or issue
+updates across the shared counter. The server records each attempt with its
+source issue, target issue, run, count, and rollout mode, and fails closed with
+the cap in the error once enforcement is active. Assignee self-comments do not
+wake the assignee, and a non-assignee comment cannot mint a mention grant.
+
+Agent-authored issue comments persist the responsible user derived from the
+authenticated actor; clients cannot choose that attribution. Each comment also
+records the write-policy reason, and spoof attempts fail with an audited 422.
+Every issue PATCH emits an `issue.updated` activity receipt containing the
+actor, responsible user, run, authorization reason, and field-level before/after
+changes so both agent and board edits are visible in the issue activity stream.
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 
@@ -548,6 +623,8 @@ The approved term set is:
 | Assignment/invocation | Assignment creates execution authority; board can reassign or force release | Delegation policies and scoped invokers with deny-listed tool classes |
 | Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
+| Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
+| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
 ## 9.7 Recommended first-slice implementation order
@@ -570,6 +647,239 @@ The approved term set is:
 
 When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
 
+A protected-agent hard block is represented canonically as
+`authorizationPolicy.protectedAgent.blockAssignment: true`. It denies assignment
+even when the caller has a broad or scoped assignment grant. A company
+administrator must remove the block before assignment can be retried; no pending
+approval is created. The legacy fields `protectedAgent.requiresApproval` and
+`assignmentPolicy.protectedAgentRequiresApproval` remain fail-closed compatibility
+aliases for the same hard block, but API denial copy must describe the block and
+administrator remediation rather than promising a nonexistent approval step.
+
+## 9.9 Task Watchdog Authority Contract
+
+A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
+
+The watched subtree is the source issue plus descendants reached through `parent_id`, excluding every issue whose `origin_kind = 'task_watchdog'` and excluding all descendants below those watchdog issues. The generated reusable watchdog issue is outside the watched work subtree for scan purposes, but the watchdog agent may update that reusable watchdog issue to record its own review disposition.
+
+Task-watchdog wakes must include server-derived capability metadata that names the watched root, reusable watchdog issue, excluded `task_watchdog` origin branches, allowed operations, and denied operations. Watchdogs must use that metadata and server denials for capability discovery; they must not create visible probe issues, comments, or throwaway tasks to learn their permissions.
+
+### Allowed watchdog mutations
+
+Within the watched subtree, a watchdog run may perform only mutations that restore or clarify the next live/waiting path:
+
+- add comments that explain findings, evidence, and next action
+- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace context from that subtree
+- assign or reassign included issues to active, invokable, same-company agents when normal assignment checks and scoped assignment grants allow it
+- move included issues among `todo`, `in_progress`, `in_review`, and `blocked` when the transition is needed to restore a valid action path
+- reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
+- add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
+- set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
+- accept or reject eligible task-level plan confirmations as defined below
+- update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
+
+Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
+
+### Atomic recovery batch
+
+A watchdog run may submit an atomic recovery batch of at most 3 mutations drawn from the allowed-mutation list above, validated against the stop fingerprint that run observed. The server applies the batch all-or-nothing: if the subtree's stop fingerprint changed between observation and application — the subtree went live concurrently — the entire remainder of the batch is aborted and the staleness is recorded as evidence on the reusable watchdog issue. The batch is single-shot per watchdog run. This replaces the exactly-one-fresh-write model: the stale-guard's purpose (never mutate a subtree that concurrently went live) is preserved by fingerprint validation on the whole batch rather than by capping the run at one write, so a restoration that needs both a state-restoring `PATCH` and an explanatory comment cannot forfeit the restoration by ordering the comment first.
+
+### Restoration verification and escalation
+
+Reviewed-fingerprint suppression is disposition-aware. A watchdog disposition of "stopped state is legitimate" suppresses re-fire for that fingerprint as today. A disposition of "live path restored" arms a bounded verification instead:
+
+- if a later scan observes the subtree stopped with a fingerprint equal to the one the restoration claimed to fix, the watchdog re-fires with an incremented attempt count for that fingerprint lineage
+- restoration-attempt lineage (attempt number, claimed-fixed fingerprint, restoration actions) is persisted durable watchdog state
+- the stop fingerprint (or the lineage check) must account for intermediate-node durable updates so a restoration that changes no stopped leaf is classified as a failed restoration, not as a reviewed stop
+- after N attempts (N = 2–3, configuration-bounded) on the same fingerprint lineage, the platform stops re-firing and escalates to a human — the watchdog owner or a board notification — with the attempt history attached
+
+Escalation is terminal for the automatic loop: no further watchdog wakes fire for that lineage until a human or a new durable subtree change produces a different fingerprint.
+
+### Disallowed watchdog mutations
+
+A task watchdog must not:
+
+- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
+- approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
+- resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity
+- force-release checkout/execution locks, cancel active runs, terminate processes, or perform active-run output watchdog decisions
+- create visible probe issues, comments, or throwaway tasks to discover whether an operation is allowed
+- delete issue documents, comments, attachments, work products, or activity records
+- change the watchdog configuration, select a different watchdog agent, or create nested watchdog configurations
+- treat custom instructions as authority to bypass approval gates, cross company boundaries, access secrets, or override this contract
+
+When the safe next action needs one of these disallowed mutations, the watchdog must leave a valid waiting path by commenting, creating an in-subtree escalation/follow-up issue, assigning to the correct owner, or leaving the source issue blocked on a first-class blocker.
+
+### Interaction resolution
+
+The initial V1 watchdog resolver may resolve exactly one interaction family: `request_confirmation` interactions that are eligible task-level plan confirmations. The watchdog may accept a coherent eligible plan or reject/request changes with a reason. It may not resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, board approvals, or ad hoc document comments.
+
+A plan confirmation is eligible only when all of these are true:
+
+- the interaction is pending and belongs to an issue inside the watched subtree, excluding the reusable watchdog issue and its descendants
+- the interaction target is an `issue_document` with key `plan` on that same issue, and the target revision is still current
+- the interaction has an explicit plan-approval purpose marker; title text, body prose, or idempotency key shape alone is not enough
+- accepting the plan authorizes decomposition or task-level continuation inside the watched subtree only
+- the plan does not request hiring, budget/spend approval, secret access, production deployment, security-sensitive policy changes, legal/compliance decisions, destructive data changes, cross-company work, or any other board-only governed action
+- no newer board/user comment, document revision, superseding interaction, custom instruction, or issue policy reserves the decision for a human, CTO, Security, or the board
+- the plan names concrete child/follow-up work, owners or assignee selection criteria, dependencies/blockers, and acceptance criteria clearly enough that decomposition can proceed without further judgment
+
+If any condition fails, the watchdog must not accept the interaction. It should reject with a reason when the plan is clearly invalid, or leave/escalate the decision when the right owner is a board user, CTO, Security, or another typed approver.
+
+### Downstream acceptance criteria
+
+Implementation, security, UI, and QA work for task watchdogs must prove these contract points:
+
+- server tests deny cross-company watched issues, watchdog agents, watchdog issues, blockers, interactions, and assignment targets
+- server tests deny paused, terminated, pending-approval, budget-blocked, or otherwise uninvokable watchdog agents
+- watchdog-scoped mutations can touch only the watched subtree and the reusable watchdog issue, with activity records for each mutation
+- interaction tests prove only eligible `request_confirmation` plan confirmations are accepted or rejected, and all other interaction kinds remain unavailable to watchdogs
+- plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
+- scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
+- tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
+- recovery-batch tests prove batches are capped at 3 allowed mutations, applied all-or-nothing, and aborted with recorded evidence when the observed stop fingerprint went stale mid-batch
+- restoration-verification tests prove a "live path restored" disposition re-fires on an unchanged fingerprint with an incremented attempt count, a failed intermediate-node restoration is not treated as a reviewed stop, and the N-attempt bound escalates to a human with attempt history instead of firing forever
+- regression tests prove watchdog capability discovery comes from wake metadata/denials and denied probes do not create visible issues
+- UI copy and badges distinguish task watchdogs from active-run output watchdogs, monitors, reviewers, approvers, and liveness recovery
+- prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
+- QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
+
+No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+
+## 9.10 Company Skill Policy Contract
+
+### Product default
+
+An authenticated agent may perform normal company-skill work without a skill-specific grant when the target company has no explicit skill policy. This includes creating, importing, installing, editing, updating, testing, resetting, and removing skills. Core MUST NOT introduce a `skills:author` prerequisite, a draft-only default, or an activation-approval default.
+
+Authorization order is fixed:
+
+1. Enforce non-configurable platform invariants.
+2. Evaluate the company's explicit skill policy when one exists.
+3. Otherwise allow the authenticated company agent.
+
+Non-configurable invariants include authenticated actor identity, exact company scoping, source and workspace path containment, package and frontmatter validation, secret redaction/non-export, immutable audit attribution, and any hard runtime isolation rule. A policy rule, legacy grant, plugin, or EE configuration cannot override these invariants.
+
+For avoidance of doubt:
+
+- Local-path imports, updates, resets, and project scans MUST resolve under a Paperclip-known local workspace root or a Paperclip-managed skill root. Arbitrary host filesystem paths are invalid even when the caller is otherwise authorized. Caller-supplied `source`, `sourceLocator`, or similar path strings are descriptive input only; they MUST NOT expand authority beyond those approved roots.
+- Remote imports and updates MUST normalize to a known source category, require validated HTTPS or catalog sources, and resolve immutable content before install (for example pinned Git commit/content hash or pinned package version). Unknown schemes, unknown source categories, symlink escapes, and out-of-tree files fail closed before persistence.
+- Unsafe executable content, fetch-and-exec patterns, and secret exfiltration or non-redacted secret material are platform safety failures. Policy cannot waive them; the route MUST reject the operation before any new skill version, install, update, or reset is persisted.
+- Mandatory activity attribution is part of the invariant boundary. If the required audit record for a skill mutation or policy mutation cannot be persisted, the mutation MUST fail or roll back; do not return success with missing auditability.
+
+### Canonical actions and resources
+
+The version 1 evaluator uses these stable action identifiers:
+
+- `skills.create`: create or fork a company-authored skill and create skill versions
+- `skills.import`: import or scan skills from a workspace, Git source, URL, or package
+- `skills.install`: install a catalog or externally sourced skill into the company
+- `skills.edit`: change skill metadata, name, files, test inputs, or test templates
+- `skills.update`: install a newer upstream revision
+- `skills.test`: start, cancel, or remove a skill test run and run a skill audit
+- `skills.reset`: restore the installed/upstream revision
+- `skills.remove`: delete a company skill
+
+Policy resources may include `skillId`, stable `skillKey`, `sourceType`, and `sourceLocator`. The stable source categories are `workspace`, `catalog`, `git`, `external_package`, `generated`, and `unknown`; adapters may preserve a more specific source value as metadata, but policy evaluation MUST normalize it to one of these categories. Core derives actor and company identity from authentication and derives known resource fields from stored data; a mutation client cannot authorize itself by supplying actor or resource identity fields.
+
+### Version 1 policy document
+
+Absence of a policy record is semantically equivalent to the following document, but core SHOULD avoid materializing records for untouched companies:
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "defaultEffect": "allow",
+  "rules": []
+}
+```
+
+An explicit policy has a monotonically increasing `revision`, a `defaultEffect` of `allow` or `deny`, and ordered rules. Each rule contains a stable `id`, integer `priority`, `effect` (`allow` or `deny`), a subject selector (`all_agents`, agent ids, or role names), one or more canonical actions, and optional resource selectors for skill ids/keys and normalized source types/locators. An omitted resource selector matches every resource for the listed action.
+
+Rules are evaluated by ascending `priority`, then stable rule id; the first matching rule decides. If no rule matches, `defaultEffect` decides. This supports both the normal open policy with targeted deny rules and an opt-in restricted preset with default deny plus explicit allow rules. Core MUST validate policy documents atomically and reject ambiguous, unknown-version, unknown-action, cross-company, or malformed selectors with `422`.
+
+Every decision returned by the evaluator has this stable shape:
+
+```json
+{
+  "allowed": false,
+  "action": "skills.install",
+  "reason": "explicit_rule",
+  "policyRevision": 7,
+  "matchedRuleId": "deny-external-packages",
+  "remediation": "Contact a company administrator to change the skill policy."
+}
+```
+
+`reason` is one of `platform_invariant`, `no_policy_default`, `explicit_rule`, `policy_default`, or `legacy_compatibility`. Mutation routes MUST use this evaluator and return `403` with code `skill_policy_denied` and the non-sensitive decision fields when an explicit restriction denies an operation. Denials must identify the action and remediation without exposing hidden rule data, secrets, or another company's policy.
+
+Platform-invariant failures are not policy denials and MUST use stable machine-readable error codes so clients can distinguish non-overridable safety failures from optional administrative restrictions. Version 1 requires a finite code set covering at least:
+
+- `skill_authentication_required`
+- `skill_company_boundary_denied`
+- `skill_workspace_boundary_denied`
+- `skill_source_validation_failed`
+- `skill_unsafe_content_blocked`
+- `skill_secret_handling_blocked`
+- `skill_policy_admin_required`
+
+Core Skill Studio and Paperclip EE MUST treat those codes as hard platform failures, not as prompts to loosen policy.
+
+### Core API and ownership boundary
+
+Core owns and ships these company-scoped endpoints:
+
+- `GET /companies/:companyId/skill-policy` returns the effective versioned policy, its revision, and whether it is materialized or the open default.
+- `PUT /companies/:companyId/skill-policy` atomically replaces the policy and requires the caller's expected revision; stale writes return `409`.
+- `DELETE /companies/:companyId/skill-policy` removes explicit configuration and restores the open default.
+- `POST /companies/:companyId/skill-policy/evaluate` simulates decisions for administrative tooling without performing a skill mutation.
+
+Policy reads, writes, deletion, and simulation enforce company access. Policy mutation and cross-principal simulation require board administration authority or the existing `users:manage_permissions` capability; ordinary skill access does not. Every policy mutation writes an activity event containing the actor, previous revision, new revision, and a redacted change summary. Skill mutation activity logging remains required independently of the policy decision.
+
+Paperclip EE owns the detailed editor, presets, protected-skill management, policy simulation UX, and policy-specific audit views. EE consumes the core endpoints and does not implement a second evaluator. Core may expose a concise effective-policy summary and denial state, but MUST NOT depend on EE for enforcement or make EE installation a prerequisite for normal skill work.
+
+### Compatibility and availability
+
+- Existing companies with no explicit restriction adopt the open default, including companies that previously depended on missing grants to deny skill changes. Release notes and upgrade guidance MUST call out this behavior change.
+- Existing explicit restriction policies remain effective after migration.
+- Legacy `skills:create` and `skills:suggest-changes` positive grants remain accepted in APIs and portability packages. Historically either positive grant authorized the broad company-skill mutation surface, so in an explicit restricted policy either grant remains a compatibility allow fallback for all eight canonical skill actions only when no explicit rule matched. They never override an explicit deny or a platform invariant. With no explicit policy they are redundant because the default already allows the action.
+- Legacy `skills:suggest-changes` consent state is not a platform invariant for company skills and does not add a second mutation gate under the open-default policy. Companies that require approval or consent before skill changes must express that restriction through explicit skill-policy rules; authentication, company boundaries, source containment, validation, auditability, and runtime safety remain non-configurable invariants.
+- Import preview MUST report whether a package contains an explicit skill policy or legacy grants and how each will map. Import apply MUST preserve explicit policies, normalize supported legacy grants, and reject unknown policy versions rather than silently weakening them.
+- Export MUST include explicit skill policy configuration and retained legacy grants in `.paperclip.yaml`, never secret values or environment-specific paths. An unconfigured company exports no synthetic restriction.
+- If Paperclip EE is unavailable or removed, core continues to enforce stored policies and expose the policy API. Normal skill work remains available under the open default; explicit denials use core remediation text rather than a broken EE-only link.
+
+### Required regression tests
+
+Phase 2 server tests and Phase 4 UI tests must prove:
+
+- unauthenticated actors and authenticated actors from another company are denied for all skill mutation routes and all skill-policy routes
+- local-path imports and project scans reject paths outside approved workspace or managed-skill roots, including symlink escapes and out-of-tree files
+- remote imports and updates reject unknown schemes/categories, unpinned mutable refs, unsafe executable content, and secret exfiltration patterns before persistence
+- policy mutation, policy reset, and cross-principal policy simulation require board administration authority or `users:manage_permissions`; ordinary open-default skill access never grants those actions
+- explicit policy denials return `skill_policy_denied`, while platform safety failures return the stable invariant denial codes above
+- successful skill mutations and policy mutations persist activity records with actor, company, run attribution, normalized action, and revision/change summary; audit-write failures do not leave successful unaudited mutations behind
+
+## 9.11 Inbox Management Permission and Ownership Contract
+
+`inbox:manage` is the permission key for agent-driven per-user inbox archive state. Inbox archive state changes presentation in a user's Mine inbox; it does not change issue status, assignment, visibility, or the underlying work record.
+
+Core authorization follows these rules:
+
+- Board users may archive or unarchive inbox entries for users in the company.
+- An agent may manage the responsible user's inbox without an explicit grant when the authenticated run resolves that user and the user's inbox-agent policy permits the agent. This is the default-open path.
+- A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
+- An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
+- Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
+- New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
+- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
+
+Ownership split:
+
+- **Core / Free:** permission key and scoped-grant enforcement; responsible-user resolution; default-open, disabled, and allowlist policy modes; archive/unarchive APIs; per-user archive persistence; resurfacing behavior; activity audit records; and stable denial codes.
+- **Paperclip EE / Enterprise:** centralized policy administration beyond the per-user controls, organization-wide presets, policy simulation, bulk inbox operations, advanced compliance reporting, and richer administrative audit UX. EE may extend policy management surfaces but must not weaken core company boundaries, user policy restrictions, scoped grants, or audit requirements.
+
 ## 10. API Contract (REST)
 
 All endpoints are under `/api` and return JSON.
@@ -582,6 +892,20 @@ All endpoints are under `/api` and return JSON.
 - `PATCH /companies/:companyId`
 - `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
+
+On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
+code `cloud_managed`; the trusted-header provisioning path and company import
+routes remain the only company-creation paths there.
+
+## 10.1.1 Cloud Stack Portfolio
+
+- `GET /cloud/stacks`
+
+The route exists only on a Cloud-managed instance, requires a trusted
+`cloud_tenant` actor, and proxies the current actor's user id plus the current
+stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
+never forwarded. Successful responses are cached briefly per user; self-hosted
+instances return `404`.
 
 ## 10.2 Goals
 
@@ -710,10 +1034,33 @@ The current app also exposes V1-supporting surfaces for:
 
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
-- execution workspaces, project workspaces, workspace runtime services, and workspace operations
+- company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
+  `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
+  server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
+  bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
+- execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
+  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
+  through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
+- task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
+- company skill policy read/replace/reset/simulation, enforced by the same core evaluator used by skill mutation routes
+- decision queues and per-attention-item triage:
+  - `GET|POST /companies/:companyId/decision-queues`
+  - `PATCH /companies/:companyId/decision-queues/:key`
+  - `GET|POST /companies/:companyId/decision-queues/:key/items`
+  - `DELETE /companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId`
+  - `GET /companies/:companyId/decision-queue-seed-rules`
+  - `GET|PUT /companies/:companyId/decision-triage/:sourceKind/:sourceId`
+  - `PATCH /companies/:companyId/decision-retention/:sourceKind/:sourceId` (Keep)
+  - `POST /companies/:companyId/decision-retention/:sourceKind/:sourceId/archive|revive`
+  - `POST /companies/:companyId/decision-archive-proposals`
+
+Queue and triage mutations accept board non-viewers and active standard-scope agents, apply responsible-user intersection for run JWTs, and reject low-trust, `task_bridge`, and `skill_test` contexts. Missing, cross-company, and unauthorized attention sources share the same not-found response.
+
+The attention feed returns server-computed `shelf`, `retentionDays`, `keep`, `archivedAt`, and `retentionVersion` fields. Archived rows are excluded by default and selected with `archived=true`. Bulk archive proposals bind the exact source identities, per-item reasons, activity timestamps, and expected retention versions into the signed decisions-v1 target snapshots; acceptance re-authorizes both proposer and decider and commits all rows or none.
 
 ## 11. Heartbeat and Adapter Contract
 
@@ -1042,6 +1389,7 @@ Export/import behavior in V1:
 - Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
 - export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
 - export never includes secret values; env inputs are reported as portable declarations instead
+- export preserves explicit company skill policy and retained legacy skill grants in `.paperclip.yaml`; absence of policy remains the open default
 - import supports target modes:
   - create a new company
   - import into an existing company
@@ -1049,4 +1397,5 @@ Export/import behavior in V1:
 - import forces imported agent timer heartbeats off so packages never start scheduled runs implicitly
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
+- import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking

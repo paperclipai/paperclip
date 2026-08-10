@@ -100,7 +100,8 @@ export function PluginManager() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/instance/settings/heartbeats" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
@@ -172,6 +173,11 @@ export function PluginManager() {
   const bundledPlugins = bundledQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
+  // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
+  // install failure does not surface its error in the bundled-plugins section.
+  const installErrorMessage = installMutation.variables?.isLocalPath
+    ? installMutation.error?.message ?? null
+    : null;
   const errorSummaryByPluginId = useMemo(
     () =>
       new Map(
@@ -248,6 +254,12 @@ export function PluginManager() {
           <Badge variant="outline">Bundled</Badge>
         </div>
 
+        {installErrorMessage && (
+          <div className="rounded-md border border-destructive/25 bg-destructive/[0.06] px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
+            {installErrorMessage}
+          </div>
+        )}
+
         {bundledQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
         ) : bundledQuery.error ? (
@@ -257,7 +269,8 @@ export function PluginManager() {
             No bundled plugins were found in this checkout.
           </div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {bundledPlugins.map((bundledPlugin) => {
               const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
               const installPending =
@@ -292,6 +305,9 @@ export function PluginManager() {
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
+                      {installPending && !bundledPlugin.hasBuiltEntrypoints && (
+                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
@@ -307,7 +323,7 @@ export function PluginManager() {
                             </Button>
                           )}
                           <Button variant="outline" size="sm" asChild>
-                            <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
+                            <Link to={`/company/settings/instance/plugins/${installedPlugin.id}`}>
                               {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
                             </Link>
                           </Button>
@@ -332,6 +348,7 @@ export function PluginManager() {
               );
             })}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -352,14 +369,15 @@ export function PluginManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {installedPlugins.map((plugin) => (
               <li key={plugin.id}>
                 <div className="flex items-start gap-4 px-4 py-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
-                        to={`/instance/settings/plugins/${plugin.id}`}
+                        to={`/company/settings/instance/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
                         title={plugin.manifestJson.displayName ?? plugin.packageName}
                       >
@@ -463,7 +481,7 @@ export function PluginManager() {
                         </Button>
                       </div>
                       <Button variant="outline" size="sm" className="mt-2 h-8" asChild>
-                        <Link to={`/instance/settings/plugins/${plugin.id}`}>
+                        <Link to={`/company/settings/instance/plugins/${plugin.id}`}>
                           <Settings className="h-4 w-4" />
                           Configure
                         </Link>
@@ -474,6 +492,7 @@ export function PluginManager() {
               </li>
             ))}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -534,7 +553,7 @@ export function PluginManager() {
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">Full error output</p>
-              <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
+              <pre className="max-h-(--sz-50vh) overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>
             </div>

@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { insertRowsInChunks } from "./batch-insert.js";
+import type { ImportIssueDocumentRow } from "./import-write-types.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -39,7 +42,7 @@ export function extractLegacyPlanBody(description: string | null | undefined) {
   return body ? body : null;
 }
 
-function mapIssueDocumentRow(
+export function mapIssueDocumentRow(
   row: {
     id: string;
     companyId: string;
@@ -57,6 +60,7 @@ function mapIssueDocumentRow(
     lockedAt: Date | null;
     lockedByAgentId: string | null;
     lockedByUserId: string | null;
+    sourceTrust: typeof documents.$inferSelect.sourceTrust;
     createdAt: Date;
     updatedAt: Date;
   },
@@ -79,12 +83,13 @@ function mapIssueDocumentRow(
     lockedAt: row.lockedAt,
     lockedByAgentId: row.lockedByAgentId,
     lockedByUserId: row.lockedByUserId,
+    sourceTrust: row.sourceTrust ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-const issueDocumentSelect = {
+export const issueDocumentSelect = {
   id: documents.id,
   companyId: documents.companyId,
   issueId: issueDocuments.issueId,
@@ -101,6 +106,7 @@ const issueDocumentSelect = {
   lockedAt: documents.lockedAt,
   lockedByAgentId: documents.lockedByAgentId,
   lockedByUserId: documents.lockedByUserId,
+  sourceTrust: documents.sourceTrust,
   createdAt: documents.createdAt,
   updatedAt: documents.updatedAt,
 };
@@ -202,6 +208,7 @@ export function documentService(db: Db) {
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
       createdByRunId?: string | null;
+      sourceTrust?: typeof documents.$inferInsert.sourceTrust;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
@@ -235,6 +242,7 @@ export function documentService(db: Db) {
               lockedAt: documents.lockedAt,
               lockedByAgentId: documents.lockedByAgentId,
               lockedByUserId: documents.lockedByUserId,
+              sourceTrust: documents.sourceTrust,
               createdAt: documents.createdAt,
               updatedAt: documents.updatedAt,
             })
@@ -268,6 +276,7 @@ export function documentService(db: Db) {
                     lockedAt: null,
                     lockedByAgentId: null,
                     lockedByUserId: null,
+                    sourceTrust: input.sourceTrust ?? null,
                     createdAt: now,
                     updatedAt: now,
                   })
@@ -327,6 +336,7 @@ export function documentService(db: Db) {
                     lockedAt: null,
                     lockedByAgentId: null,
                     lockedByUserId: null,
+                    sourceTrust: document.sourceTrust ?? null,
                     createdAt: document.createdAt,
                     updatedAt: document.updatedAt,
                   },
@@ -379,6 +389,7 @@ export function documentService(db: Db) {
                 latestRevisionNumber: nextRevisionNumber,
                 updatedByAgentId: input.createdByAgentId ?? null,
                 updatedByUserId: input.createdByUserId ?? null,
+                sourceTrust: input.sourceTrust ?? null,
                 updatedAt: now,
               })
               .where(eq(documents.id, existing.id));
@@ -402,6 +413,7 @@ export function documentService(db: Db) {
                 lockedAt: existing.lockedAt,
                 lockedByAgentId: existing.lockedByAgentId,
                 lockedByUserId: existing.lockedByUserId,
+                sourceTrust: input.sourceTrust ?? null,
                 updatedAt: now,
               },
             };
@@ -427,6 +439,7 @@ export function documentService(db: Db) {
               lockedAt: null,
               lockedByAgentId: null,
               lockedByUserId: null,
+              sourceTrust: input.sourceTrust ?? null,
               createdAt: now,
               updatedAt: now,
             })
@@ -482,6 +495,7 @@ export function documentService(db: Db) {
               lockedAt: document.lockedAt,
               lockedByAgentId: document.lockedByAgentId,
               lockedByUserId: document.lockedByUserId,
+              sourceTrust: document.sourceTrust ?? null,
               createdAt: document.createdAt,
               updatedAt: document.updatedAt,
             },
@@ -499,6 +513,74 @@ export function documentService(db: Db) {
       }
 
       throw conflict("Unable to choose a new document key for locked document", { key });
+    },
+
+    /**
+     * Batched issue-document insert for company import.
+     *
+     * Every imported document is a fresh create (the issue is brand new), so we
+     * skip {@link upsertIssueDocument}'s per-row existence/lock/base-revision
+     * dance and the follow-up latest-revision update: ids are pre-generated so
+     * `latest_revision_id` can be written inline. Documents, their initial
+     * revisions, and the issue links are each inserted in chunked statements.
+     */
+    createIssueDocumentsForImport: async (rows: ImportIssueDocumentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const now = new Date();
+      const documentRows: Array<Record<string, unknown>> = [];
+      const revisionRows: Array<Record<string, unknown>> = [];
+      const linkRows: Array<Record<string, unknown>> = [];
+      for (const row of rows) {
+        const key = normalizeDocumentKey(row.key);
+        const documentId = randomUUID();
+        const revisionId = randomUUID();
+        documentRows.push({
+          id: documentId,
+          companyId: row.companyId,
+          title: row.title ?? null,
+          format: row.format,
+          latestBody: row.body,
+          latestRevisionId: revisionId,
+          latestRevisionNumber: 1,
+          createdByAgentId: row.createdByAgentId ?? null,
+          createdByUserId: row.createdByUserId ?? null,
+          updatedByAgentId: row.createdByAgentId ?? null,
+          updatedByUserId: row.createdByUserId ?? null,
+          lockedAt: null,
+          lockedByAgentId: null,
+          lockedByUserId: null,
+          sourceTrust: row.sourceTrust ?? null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        revisionRows.push({
+          id: revisionId,
+          companyId: row.companyId,
+          documentId,
+          revisionNumber: 1,
+          title: row.title ?? null,
+          format: row.format,
+          body: row.body,
+          changeSummary: null,
+          createdByAgentId: row.createdByAgentId ?? null,
+          createdByUserId: row.createdByUserId ?? null,
+          createdByRunId: row.createdByRunId ?? null,
+          createdAt: now,
+        });
+        linkRows.push({
+          companyId: row.companyId,
+          issueId: row.issueId,
+          documentId,
+          key,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      await db.transaction(async (tx) => {
+        await insertRowsInChunks(tx, documents, documentRows);
+        await insertRowsInChunks(tx, documentRevisions, revisionRows);
+        await insertRowsInChunks(tx, issueDocuments, linkRows);
+      });
     },
 
     restoreIssueDocumentRevision: async (input: {

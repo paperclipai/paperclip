@@ -61,6 +61,12 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issues.relations.get": ["issue.relations.read"],
   "issue.comments.list": ["issue.comments.read"],
   "issue.comments.get": ["issue.comments.read"],
+  "issue.interactions.list": ["issue.interactions.read"],
+  "issue.interactions.read": ["issue.interactions.read"],
+  "issue.attachments.list": ["issue.attachments.read"],
+  "issue.attachments.get": ["issue.attachments.read"],
+  "approvals.list": ["approvals.read"],
+  "approvals.get": ["approvals.read"],
   "agents.list": ["agents.read"],
   "agents.get": ["agents.read"],
   "agents.managed.get": ["agents.managed"],
@@ -93,12 +99,20 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issues.requestWakeup": ["issues.wakeup"],
   "issues.requestWakeups": ["issues.wakeup"],
   "issue.comments.create": ["issue.comments.create"],
+  "issue.comments.create_human_attributed": ["issue.comments.create_human_attributed"],
   "issue.interactions.create": ["issue.interactions.create"],
+  "issue.interactions.respond": ["issue.interactions.respond"],
+  "approvals.respond": ["approvals.respond"],
+  "approvals.decide": ["approvals.respond"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],
   "telemetry.track": ["telemetry.track"],
   "db.migrate": ["database.namespace.migrate"],
   "db.execute": ["database.namespace.write"],
+  "external.objects.detect": ["external.objects.detect"],
+  "external.objects.read": ["external.objects.read"],
+  "external.objects.write": ["external.objects.write"],
+  "external.objects.refresh": ["external.objects.refresh"],
 
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
@@ -128,6 +142,11 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "environment.destroyLease": ["environment.drivers.register"],
   "environment.realizeWorkspace": ["environment.drivers.register"],
   "environment.execute": ["environment.drivers.register"],
+  "environment.startInteractiveSetup": ["environment.drivers.register"],
+  "environment.getInteractiveSetup": ["environment.drivers.register"],
+  "environment.captureTemplate": ["environment.drivers.register"],
+  "environment.cancelInteractiveSetup": ["environment.drivers.register"],
+  "environment.deleteTemplate": ["environment.drivers.register"],
 };
 
 /**
@@ -188,6 +207,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   agents: "agents.managed",
   projects: "projects.managed",
   routines: "routines.managed",
+  objectReferences: "external.objects.detect",
 };
 
 // ---------------------------------------------------------------------------
@@ -447,6 +467,14 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
         const featureValue = manifest[feature as keyof PaperclipPluginManifestV1];
         if (Array.isArray(featureValue) && featureValue.length > 0) {
           if (!declared.has(requiredCap)) {
+            allMissing.push(requiredCap);
+          }
+        }
+      }
+
+      if ((manifest.objectReferences?.length ?? 0) > 0) {
+        for (const requiredCap of ["external.objects.detect", "external.objects.read"] as const) {
+          if (!declared.has(requiredCap) && !allMissing.includes(requiredCap)) {
             allMissing.push(requiredCap);
           }
         }

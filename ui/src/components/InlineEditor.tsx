@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { FoldCurtain } from "./FoldCurtain";
@@ -19,6 +19,18 @@ interface InlineEditorProps {
   nullable?: boolean;
   /** When true, long display-mode markdown is clipped with a fade curtain that expands on click. */
   foldable?: boolean;
+  /**
+   * Optional host-resolved external object metadata. Forwarded to the read-mode
+   * `MarkdownBody` so resolved URLs render with the inline status icon prefix.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
+  /**
+   * Mount the multiline editor already in edit mode, focused — for hosts whose
+   * own affordance opens the editor (the description bubble's pencil, PAP-375).
+   */
+  defaultEditing?: boolean;
+  /** Notified when the multiline editor swaps between display and edit mode. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -55,9 +67,12 @@ export function InlineEditor({
   onDropFile,
   mentions,
   foldable = false,
+  externalReferences,
+  defaultEditing = false,
+  onEditingChange,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
-  const [multilineEditing, setMultilineEditing] = useState(false);
+  const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
   const lastPropValueRef = useRef(value);
@@ -66,7 +81,7 @@ export function InlineEditor({
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCommitFrameRef = useRef<(() => void) | null>(null);
   const pendingFocusFrameRef = useRef<number | null>(null);
-  const justEnteredEditRef = useRef(false);
+  const justEnteredEditRef = useRef(multiline && defaultEditing);
   const hasBeenFocusedRef = useRef(false);
   const {
     state: autosaveState,
@@ -150,7 +165,8 @@ export function InlineEditor({
     if (autosaveState !== "idle") return;
     hasBeenFocusedRef.current = false;
     setMultilineEditing(false);
-  }, [multiline, multilineEditing, multilineFocused, autosaveState]);
+    onEditingChange?.(false);
+  }, [multiline, multilineEditing, multilineFocused, autosaveState, onEditingChange]);
 
 
   const commit = useCallback(async (nextValue = draft) => {
@@ -217,6 +233,7 @@ export function InlineEditor({
       if (multiline) {
         setMultilineFocused(false);
         setMultilineEditing(false);
+        onEditingChange?.(false);
         hasBeenFocusedRef.current = false;
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
@@ -263,6 +280,7 @@ export function InlineEditor({
         if (multilineEditing) return;
         justEnteredEditRef.current = true;
         setMultilineEditing(true);
+        onEditingChange?.(true);
       };
       return (
         <div
@@ -288,12 +306,18 @@ export function InlineEditor({
         >
           {foldable ? (
             <FoldCurtain>
-              <MarkdownBody className={cn("paperclip-edit-in-place-content", className)}>
+              <MarkdownBody
+                className={cn("paperclip-edit-in-place-content", className)}
+                externalReferences={externalReferences}
+              >
                 {previewValue}
               </MarkdownBody>
             </FoldCurtain>
           ) : (
-            <MarkdownBody className={cn("paperclip-edit-in-place-content", className)}>
+            <MarkdownBody
+              className={cn("paperclip-edit-in-place-content", className)}
+              externalReferences={externalReferences}
+            >
               {previewValue}
             </MarkdownBody>
           )}
@@ -344,7 +368,7 @@ export function InlineEditor({
         <div className="flex min-h-4 items-center justify-end pr-1">
           <span
             className={cn(
-              "text-[11px] transition-opacity duration-150",
+              "text-(length:--text-micro) transition-opacity duration-150",
               autosaveState === "error" ? "text-destructive" : "text-muted-foreground",
               autosaveState === "idle" ? "opacity-0" : "opacity-100",
             )}

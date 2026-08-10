@@ -81,7 +81,7 @@ export function CompanySettingsPluginPage() {
     <PluginSlotMount
       slot={pageSlot}
       context={{ companyId: resolvedCompanyId, companyPrefix }}
-      className="min-h-[200px]"
+      className="min-h-(--sz-200px)"
       missingBehavior="placeholder"
     />
   );

@@ -1,14 +1,187 @@
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import {
+  clampSpanLabel,
+  getActiveStepContext,
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_OUTCOME,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { parseObject } from "../adapters/utils.js";
+import { getStartupTracer } from "../instrumentation.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
+
+/** The minimal span surface the provider-exec seam calls. A real injected OTel
+ * span satisfies it; the no-op tracer's span satisfies it too. */
+type ExecSpan = {
+  setAttribute(key: string, value: string | number | boolean): void;
+  setStatus(status: { code: number; message?: string }): void;
+  end(): void;
+};
+
+/**
+ * The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. The server injects
+ * a real OTel span, but this module stays OTel-free, so it uses the numeric value
+ * directly. A failed exec span sets this status, so a trace UI counts and filters
+ * the failure through the native span status, not only the `outcome` attribute.
+ */
+const SPAN_STATUS_CODE_ERROR = 2;
+
+/** The minimal tracer surface the provider-exec seam calls. `getStartupTracer`
+ * returns a real or no-op implementation that satisfies it. The optional third
+ * argument is the explicit parent-context token: the seam passes the active
+ * step context, so the exec span parents to its step span. */
+type ExecTracer = {
+  startSpan(name: string, options?: unknown, context?: unknown): ExecSpan;
+};
+
+/**
+ * Set a numeric span attribute only when the value is a finite number. A value
+ * that is absent, `NaN`, or `Infinity` yields no attribute — never a misleading
+ * `0`. This mirrors the host counter guard below and the `adapter-utils`
+ * startup-step guard.
+ */
+function setFiniteNumberAttr(span: ExecSpan, key: string, value: unknown): void {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    span.setAttribute(key, value);
+  }
+}
+
+/** Read a free-form metadata value as a finite number, or `undefined`. The
+ * provider durations ride the exec result's untyped `metadata`, so a provider
+ * that omits or mistypes one yields no attribute — never a misleading `0`. */
+function toFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Read a free-form metadata value as a boolean, or `undefined`. The provider
+ * cache-hit flag rides the exec result's untyped `metadata`, so a provider that
+ * omits or mistypes it yields no attribute — never a misleading `false`. */
+function toBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Compute the tail of `final` that the provider did NOT already stream.
+ *
+ * The provider streams output chunks in order. Those chunks form `delivered`.
+ * The final result is `final`. In the normal path `final` continues
+ * `delivered`, so the tail is `final` past the delivered length.
+ *
+ * A provider can stream a prefix and then fall back to a poll that returns a
+ * different buffer. When `final` does not start with `delivered`, a length
+ * slice would drop unrelated leading output or cut a chunk mid-text, so the
+ * durable log would hold truncated or corrupt output. In that case this
+ * function returns the whole `final` instead. That can repeat the streamed
+ * prefix in the log, but the complete final output always reaches the log.
+ * Repetition is safer than a silent loss of output.
+ */
+function undeliveredSuffix(delivered: string, final: string): string {
+  if (!final) return "";
+  if (delivered.length === 0) return final;
+  if (final.startsWith(delivered)) return final.slice(delivered.length);
+  return final;
+}
+
+/**
+ * The closed input for one `sandbox.exec` span. The seam builds it from the
+ * exec result and the active step context. Every field is already bounded or
+ * numeric; the raw command clamps inside the helper below.
+ */
+interface SandboxExecSpanInput {
+  /** The low-cardinality provider family (already through `normalizeProviderFamily`). */
+  provider: string;
+  /** The raw `argv[0]`. The helper clamps it; the raw value never rides the span. */
+  command: string;
+  /** The numeric process exit code, or `null`. */
+  exitCode: number | null;
+  /** The host-measured wall time of the execution. */
+  wallMs: number;
+  /** The provider handle-fetch wait before the execution ran. */
+  waitBeforeMs: number | undefined;
+  /** The in-sandbox run time of the execution. */
+  sandboxMs: number | undefined;
+  /** Whether the execution sits on the startup critical path. */
+  criticalPath: boolean;
+  /** Whether the provider served the sandbox handle from its warm cache. */
+  cacheHit: boolean | undefined;
+}
+
+/**
+ * Assemble every `sandbox.exec` span attribute in one place. This is the single
+ * producer-side boundary for the exec span: it sets only the closed
+ * `paperclip.sandbox.startup.exec.*` allowlist. The command rides only as a
+ * clamped label, so a full command line, an argument, a path, an environment
+ * value, or any standard-stream text can never ride the span. A non-finite
+ * numeric input yields no attribute (fail open — never `NaN`, never a
+ * misleading `0`).
+ */
+function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInput): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  if (typeof input.exitCode === "number" && Number.isFinite(input.exitCode)) {
+    span.setAttribute(A.execExitCode, input.exitCode);
+  }
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  setFiniteNumberAttr(span, A.execWaitBeforeMs, input.waitBeforeMs);
+  setFiniteNumberAttr(span, A.execSandboxMs, input.sandboxMs);
+  // The transport time the host adds around the provider work: wall minus the
+  // handle-fetch wait minus the in-sandbox run. Set it only when both parts are
+  // present, so a provider that reports no durations yields no derived value.
+  if (input.waitBeforeMs !== undefined && input.sandboxMs !== undefined) {
+    setFiniteNumberAttr(span, A.execNetworkMs, input.wallMs - input.waitBeforeMs - input.sandboxMs);
+  }
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  // The explicit provider cache-hit flag, from `result.metadata.cacheHit`. The
+  // plugin decides it at the handle lookup, so the span no longer infers a
+  // cache hit from `wait_before_ms == 0`. A provider that omits it yields no
+  // attribute.
+  if (typeof input.cacheHit === "boolean") {
+    span.setAttribute(A.execCacheHit, input.cacheHit);
+  }
+  const failed = input.exitCode !== 0;
+  span.setAttribute(
+    A.outcome,
+    failed ? SANDBOX_STARTUP_OUTCOME.failed : SANDBOX_STARTUP_OUTCOME.ok,
+  );
+  // A non-zero exit code is a failed execution, so set the native span status to
+  // ERROR too. The success path leaves the status unset, so a successful exec
+  // keeps the default OTel status. A `null` exit code counts as failed here.
+  if (failed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+}
+
+/**
+ * Record a failed `sandbox.exec` span when the provider execution throws. There
+ * is no exec result, so only the bounded provider family, the clamped command
+ * label, the measured wall time, the critical-path flag, and the `failed`
+ * outcome ride the span. The raw command never rides the span. A thrown
+ * execution now still produces a span, instead of no span at all.
+ */
+function setSandboxExecSpanFailure(
+  span: ExecSpan,
+  input: { provider: string; command: string; wallMs: number; criticalPath: boolean },
+): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  span.setAttribute(A.outcome, SANDBOX_STARTUP_OUTCOME.failed);
+  // A thrown execution is a failed execution, so set the native span status to
+  // ERROR too, not only the `outcome` attribute.
+  span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+}
 
 export async function resolveEnvironmentExecutionTarget(input: {
   db: Db;
@@ -23,6 +196,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  // The startup tracer for the provider-exec span. Defaults to the endpoint-
+  // gated server tracer, which is a no-op when tracing is off. Tests inject a
+  // recording tracer.
+  tracer?: ExecTracer;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -33,15 +210,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   if (input.environment.driver === "sandbox") {
-    if (
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) {
+    // Keep this gate in lockstep with the shared capability metadata that the
+    // environment selector and capabilities API expose; a drift here lets the
+    // UI offer environments the runtime then refuses.
+    if (!adapterSupportsRemoteManagedEnvironments(input.adapterType)) {
       return null;
     }
 
@@ -64,6 +236,13 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
+    // The low-cardinality public provider family. A plugin-backed / operator-
+    // defined key maps to `plugin`, so a raw unbounded key never rides a span.
+    const providerFamily = normalizeProviderFamily(parsed.config.provider);
+    // The endpoint-gated startup tracer (no-op when tracing is off). Tests inject
+    // a recording tracer.
+    const tracer = input.tracer ?? getStartupTracer();
+
     return {
       kind: "remote",
       transport: "sandbox",
@@ -73,47 +252,205 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
+      // Run-log streaming defaults ON for sandbox environments so agent CLI
+      // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
+      // opt-out back to batch-at-end delivery.
+      streamRunLogs: parsed.config.streamRunLogs !== false,
+      // Interactive ACP output streaming through the persistent session log
+      // stream. Default OFF: the process session bridge keeps the output-file
+      // poll unless an operator opts a sandbox environment in.
+      streamAgentSessionOutput: parsed.config.streamAgentSessionOutput === true,
       runner: input.environmentRuntime && input.lease
         ? {
+            // Provider-backed sandbox RPCs do not surface bounded mid-stream
+            // progress for a single stdin upload, so keep the capability disabled
+            // here. The client falls back to the chunked upload path when this is
+            // false.
+            supportsSingleStreamStdinProgress: false,
             execute: async (commandInput) => {
-              const startedAt = new Date().toISOString();
-              const result = await input.environmentRuntime!.execute({
-                environment: input.environment as Environment,
-                lease: input.lease!,
-                command: commandInput.command,
-                args: commandInput.args,
-                cwd: commandInput.cwd ?? remoteCwd,
-                env: commandInput.env,
-                stdin: commandInput.stdin,
-                timeoutMs: commandInput.timeoutMs,
-              });
-              if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-              if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-              return {
-                exitCode: result.exitCode,
-                signal: result.signal ?? null,
-                timedOut: result.timedOut,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                pid: null,
-                startedAt,
-              };
+              // Record true start and stop timestamps around the provider await,
+              // so the exec span and the result carry a real wall time.
+              const startedAtMs = Date.now();
+              const startedAt = new Date(startedAtMs).toISOString();
+              // Open one `sandbox.exec` span BEFORE the provider await, so the
+              // native span duration covers the whole execution and a thrown
+              // execution still produces a span. The span parents to the active
+              // step span. `startSpan` sits inside a guard; observability must
+              // never change execution control flow, and a no-op tracer
+              // (tracing off) makes the whole block inert.
+              const activeStep = getActiveStepContext();
+              const criticalPath = activeStep?.criticalPath ?? true;
+              let span: ExecSpan | null = null;
+              try {
+                span = tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
+              } catch {
+                span = null;
+              }
+              try {
+                // Classify the span outcome from the provider execution ONLY.
+                // The inner try/catch wraps just the provider await, so a thrown
+                // provider execution marks the span failed. A later log-callback
+                // rejection sits outside this block and never flips a successful
+                // execution to failed.
+                // Incremental log sink. The provider streams each output chunk
+                // through the execute.log notification while the command runs.
+                // Serialize the delivery per execute call so the runner sees the
+                // chunks in order, and keep the delivered text per stream, so the
+                // final-result delivery below emits only the un-streamed suffix
+                // and can detect a provider poll fallback that returns a
+                // different buffer.
+                let incrementalLogChain: Promise<void> = Promise.resolve();
+                let deliveredStdout = "";
+                let deliveredStderr = "";
+                const onIncrementalLog = (
+                  stream: "stdout" | "stderr",
+                  chunk: string,
+                ): Promise<void> => {
+                  if (stream === "stdout") deliveredStdout += chunk;
+                  else deliveredStderr += chunk;
+                  incrementalLogChain = incrementalLogChain.then(() =>
+                    commandInput.onLog?.(stream, chunk),
+                  );
+                  return incrementalLogChain;
+                };
+                let result;
+                try {
+                  result = await input.environmentRuntime!.execute({
+                    environment: input.environment as Environment,
+                    lease: input.lease!,
+                    command: commandInput.command,
+                    args: commandInput.args,
+                    cwd: commandInput.cwd ?? remoteCwd,
+                    env: commandInput.env,
+                    stdin: commandInput.stdin,
+                    timeoutMs: commandInput.timeoutMs,
+                    onLog: commandInput.onLog ? onIncrementalLog : undefined,
+                    // The ACP process session bridge sets `useSession` so its
+                    // long-lived agent command opens the persistent session and
+                    // streams output, even though it runs with no active step.
+                    forceSession: commandInput.useSession,
+                    // The bridge control-plane execs set `bypassSession` so they
+                    // run one-shot and never queue behind the long-lived agent
+                    // command on the persistent session. An explicit bypass wins
+                    // over `forceSession` and over the active-step selection.
+                    bypassSession: commandInput.bypassSession,
+                  });
+                } catch (error) {
+                  // The provider execution threw. Mark the span failed with the
+                  // measured wall time, then rethrow the original error unchanged.
+                  if (span) {
+                    try {
+                      setSandboxExecSpanFailure(span, {
+                        provider: providerFamily,
+                        command: commandInput.command,
+                        wallMs: Date.now() - startedAtMs,
+                        criticalPath,
+                      });
+                    } catch {
+                      // Observability must not change execution control flow.
+                    }
+                  }
+                  throw error;
+                }
+                // The provider execution succeeded. The span timing and outcome
+                // come from the command result, not from the log callbacks below.
+                const finishedAtMs = Date.now();
+                const finishedAt = new Date(finishedAtMs).toISOString();
+                const durationMs = finishedAtMs - startedAtMs;
+                // `setSandboxExecSpanAttributes` sets ONLY the closed
+                // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
+                // provider family, the clamped command label, the numeric exit
+                // code, the wall / wait-before / sandbox / network times, the
+                // critical-path flag, and the outcome. The full command, args,
+                // env, stdout, and stderr never ride the span.
+                if (span) {
+                  try {
+                    setSandboxExecSpanAttributes(span, {
+                      provider: providerFamily,
+                      command: commandInput.command,
+                      exitCode: result.exitCode,
+                      wallMs: durationMs,
+                      waitBeforeMs: toFiniteNumber(result.metadata?.getDurationMs),
+                      sandboxMs: toFiniteNumber(result.metadata?.durationMs),
+                      criticalPath,
+                      cacheHit: toBoolean(result.metadata?.cacheHit),
+                    });
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+                // Drain the ordered incremental delivery before the final
+                // result. The provider streamed chunks arrive as execute.log
+                // notifications while the command runs; awaiting the chain keeps
+                // the runner order and surfaces a log-sink rejection.
+                await incrementalLogChain;
+                // Deliver only the suffix the provider did NOT already stream.
+                // The streamed chunks usually form an in-order prefix of the
+                // final result, so the remaining output is the final text past
+                // the delivered text. When the provider streamed nothing, the
+                // whole output is the suffix. When it streamed the complete
+                // output, the suffix is empty and nothing repeats. When it
+                // streamed a prefix and then fell back to a poll whose buffer
+                // does not continue that prefix, `undeliveredSuffix` returns the
+                // whole final output, so the durable log keeps the complete
+                // result and never holds a truncated slice. A rejected `onLog`
+                // still propagates to the caller (control flow is unchanged),
+                // but the span already carries the successful outcome, so a log
+                // failure never marks the execution failed.
+                const stdoutSuffix = undeliveredSuffix(deliveredStdout, result.stdout ?? "");
+                if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
+                const stderrSuffix = undeliveredSuffix(deliveredStderr, result.stderr ?? "");
+                if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
+                return {
+                  exitCode: result.exitCode,
+                  signal: result.signal ?? null,
+                  timedOut: result.timedOut,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  pid: null,
+                  startedAt,
+                  finishedAt,
+                  durationMs,
+                };
+              } finally {
+                if (span) {
+                  try {
+                    span.end();
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+              }
             },
+            // Expose the native file-sync capability only when the provider's
+            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
+            // undefined so the orchestrator keeps the byte-identical base64 path.
+            ...(input.environmentRuntime.supportsSync({
+              environment: input.environment as Environment,
+              lease: input.lease,
+            })
+              ? {
+                  syncIn: (operations) =>
+                    input.environmentRuntime!.syncIn({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                  syncOut: (operations) =>
+                    input.environmentRuntime!.syncOut({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                }
+              : {}),
           }
         : undefined,
     };
   }
 
   if (
-    (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) ||
+    !adapterSupportsRemoteManagedEnvironments(input.adapterType) ||
     input.environment.driver !== "ssh"
   ) {
     return null;
