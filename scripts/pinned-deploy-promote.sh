@@ -520,6 +520,19 @@ request_hot_restart_handoff() {
   ) || fail "promote-and-restart: could not write hot-restart handoff intent"
 }
 
+clear_hot_restart_handoff() {
+  local old_pid="$1"
+  local tsx_bin="$SOURCE_ROOT/packages/db/node_modules/.bin/tsx"
+  if [ ! -x "$tsx_bin" ]; then
+    tsx_bin="$SOURCE_ROOT/cli/node_modules/tsx/dist/cli.mjs"
+  fi
+  [ -f "$tsx_bin" ] || [ -x "$tsx_bin" ] || return 1
+  (
+    cd "$SOURCE_ROOT"
+    "$tsx_bin" scripts/clear-hot-restart-intent.ts --server-pid "$old_pid"
+  )
+}
+
 record_hot_restart_report() {
   local report="$1" old_pid="$2"
   [ -f "$(working_receipt_path)" ] || fail "no working receipt while recording hot-restart report"
@@ -588,15 +601,21 @@ NODE
 # Single sanctioned door: pointer flip + zero-loss LaunchAgent handoff.
 # Still requires dual allow flags; never touches source coexist agents.
 cmd_promote_and_restart() {
-  local api_base old_pid
+  local api_base old_pid pointer_mutated=0 handoff_verified=0
   api_base="$(live_api_base)"
   old_pid="$(read_live_server_pid "$api_base")" \
     || fail "promote-and-restart: live health did not expose a valid server pid at $api_base"
   request_hot_restart_handoff "$api_base" "$old_pid"
+  # The intent is deliberately written before the pointer moves. If that move
+  # fails, leaving the marker behind blocks every later promotion while the
+  # old server is still alive. Remove only this matching pre-cutover intent;
+  # after a successful pointer move the marker remains required for recovery.
+  trap 'if [ "$pointer_mutated" = "0" ] && [ "$handoff_verified" = "0" ]; then clear_hot_restart_handoff "$old_pid" >/dev/null 2>&1 || true; fi' EXIT
   # Capture and validate the live handoff before changing the deploy pointer.
   # Otherwise a down service leaves a newly promoted pointer with no verified
   # runtime and no way to complete the handoff it just requested.
   cmd_promote_pointer "$@"
+  pointer_mutated=1
   local label="${PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL:-ie.thinkstack.paperclip-deploy}"
   local uid domain target
   uid="$(id -u)"
@@ -611,6 +630,8 @@ cmd_promote_and_restart() {
       || fail "promote-and-restart: launchctl kickstart failed for $target"
     log "promote-and-restart: kickstart issued for $target"
     wait_for_hot_restart_report "$api_base" "$old_pid"
+    handoff_verified=1
+    trap - EXIT
   else
     fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then kickstart manually)"
   fi
