@@ -2085,3 +2085,94 @@ describe("review round circuit breaker", () => {
     });
   });
 });
+
+// ── evidenceRequired: proof at the terminal transition ────────────────────────
+//
+// Motivation, from a real deployment: an issue reached `done` while its pull request was
+// still open, on an approval that read "the workflow will publish the served version" —
+// future tense. Six such closures happened on one instance in a single day, each with a
+// green review. Nothing in the platform refused them, because a status is a declaration
+// and no predicate confronts it with the repository.
+//
+// The flag is opt-in and defaults to false: every test above this line exercises the
+// unchanged path, and none of them pass `evidence`.
+
+const EVIDENCE_OK = { pr: 34, mergedSha: "c6d3a6fa2e1b4f7890abcdef1234567890abcdef", checkRun: 31359056766 };
+
+function terminalApprovalPolicy(evidenceRequired: boolean) {
+  const base = normalizeIssueExecutionPolicy({
+    stages: [{ type: "approval", participants: [{ type: "user", userId: ctoUserId }] }],
+  })!;
+  return { ...base, evidenceRequired } as IssueExecutionPolicy;
+}
+
+function closeTerminalStage(policy: IssueExecutionPolicy, evidence?: unknown) {
+  return applyIssueExecutionPolicyTransition({
+    issue: {
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: ctoUserId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0]!.id!,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: ctoUserId, agentId: null },
+        returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        reviewRequest: null,
+        monitor: null,
+      } as unknown as IssueExecutionState,
+    },
+    policy,
+    requestedStatus: "done",
+    requestedAssigneePatch: {},
+    actor: { userId: ctoUserId },
+    commentBody: "Approved",
+    ...(evidence !== undefined ? { evidence: evidence as never } : {}),
+  });
+}
+
+describe("evidenceRequired on the terminal transition", () => {
+  it("is off by default: an existing policy closes exactly as before", () => {
+    const result = closeTerminalStage(terminalApprovalPolicy(false));
+    expect(result.decision?.outcome).toBe("approved");
+  });
+
+  it("off by default even when evidence is absent AND the policy omits the field", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{ type: "approval", participants: [{ type: "user", userId: ctoUserId }] }],
+    })!;
+    expect(() => closeTerminalStage(policy)).not.toThrow();
+  });
+
+  it("enabled: refuses a closure with no evidence at all", () => {
+    expect(() => closeTerminalStage(terminalApprovalPolicy(true)))
+      .toThrowError(/evidenceRequired/);
+  });
+
+  it("enabled: names what is missing rather than just refusing", () => {
+    expect(() => closeTerminalStage(terminalApprovalPolicy(true), { mergedSha: EVIDENCE_OK.mergedSha }))
+      .toThrowError(/missing pr/);
+    expect(() => closeTerminalStage(terminalApprovalPolicy(true), { pr: 34 }))
+      .toThrowError(/missing mergedSha/);
+  });
+
+  it("enabled: rejects a SHA that is not a SHA — 'will be published' is not a commit", () => {
+    expect(() => closeTerminalStage(terminalApprovalPolicy(true), { pr: 34, mergedSha: "pending" }))
+      .toThrowError(/must be a git SHA/);
+  });
+
+  it("enabled: accepts complete evidence and closes the issue", () => {
+    const result = closeTerminalStage(terminalApprovalPolicy(true), EVIDENCE_OK);
+    expect(result.decision?.outcome).toBe("approved");
+  });
+
+  it("enabled: checkRun is optional — not every project runs checks", () => {
+    const result = closeTerminalStage(terminalApprovalPolicy(true), { pr: "34", mergedSha: "c6d3a6f" });
+    expect(result.decision?.outcome).toBe("approved");
+  });
+});

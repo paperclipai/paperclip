@@ -246,9 +246,29 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+/**
+ * Evidence a terminal approval must carry when `evidenceRequired` is enabled.
+ *
+ * Deliberately narrow: a pull request number, the SHA that actually landed, and the
+ * identifier of the check run that validated it. These are the three facts a reviewer
+ * already looks up by hand today — asking for them as data rather than prose is what
+ * makes them auditable.
+ */
+export const issueExecutionEvidenceSchema = z.object({
+  pr: z.union([z.number().int().positive(), z.string().trim().min(1)]),
+  mergedSha: z.string().trim().regex(/^[0-9a-f]{7,40}$/i, "mergedSha must be a git SHA"),
+  checkRun: z.union([z.number().int().positive(), z.string().trim().min(1)]).optional().nullable(),
+  note: z.string().trim().max(500).optional().nullable(),
+});
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
+  /**
+   * Opt-in. When true, closing the final stage requires structured evidence instead of
+   * a free-text comment. Defaults to false so existing policies are untouched.
+   */
+  evidenceRequired: z.boolean().optional().default(false),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),

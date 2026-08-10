@@ -679,6 +679,12 @@ export interface IssueExecutionPolicy {
    * default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  /**
+   * When true, the transition that closes the final stage must carry structured
+   * delivery evidence ({ pr, mergedSha, checkRun? }) instead of prose asserting
+   * it. Opt-in; absent or false keeps the existing behavior unchanged.
+   */
+  evidenceRequired?: boolean;
 }
 
 export interface IssueExecutionMonitorState {
