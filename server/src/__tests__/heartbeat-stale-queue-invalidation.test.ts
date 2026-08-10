@@ -1047,9 +1047,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(promotedRun?.agentId).toBe(peerAgentId);
   });
 
-  it("cancels queued runs when the issue assignee changes before the run starts", async () => {
+  it("cancels stale queued runs and promotes the replacement assignee's deferred wake", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
     const replacementAgentId = randomUUID();
+    const deferredWakeupId = randomUUID();
     await db.insert(agents).values({
       id: replacementAgentId,
       companyId,
@@ -1083,6 +1084,22 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       issueId,
       wakeReason: "issue_assigned",
     });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeupId,
+      companyId,
+      agentId: replacementAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          wakeReason: "execution_review_requested",
+        },
+      },
+      status: "deferred_issue_execution",
+    });
 
     await heartbeat.resumeQueuedRuns();
 
@@ -1094,8 +1111,16 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .then((rows) => rows[0] ?? null);
       return run?.status === "cancelled";
     });
+    await waitForCondition(async () => {
+      const deferred = await db
+        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupId))
+        .then((rows) => rows[0] ?? null);
+      return Boolean(deferred?.runId) && deferred?.status !== "deferred_issue_execution";
+    });
 
-    const [run, wakeup] = await Promise.all([
+    const [run, wakeup, deferred] = await Promise.all([
       db
         .select({
           status: heartbeatRuns.status,
@@ -1110,13 +1135,27 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupId))
+        .then((rows) => rows[0] ?? null),
     ]);
+    const promotedRun = deferred?.runId
+      ? await db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, deferred.runId))
+        .then((rows) => rows[0] ?? null)
+      : null;
 
     expect(run?.status).toBe("cancelled");
     expect(run?.errorCode).toBe("issue_assignee_changed");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_assignee_changed" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
+    expect(deferred?.status).not.toBe("deferred_issue_execution");
+    expect(promotedRun?.agentId).toBe(replacementAgentId);
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
