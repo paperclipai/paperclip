@@ -51,6 +51,21 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Lifecycle echoes that contain no new issue input. Unlike a normal
+ * reconciliation poll, these are emitted immediately after a successful run.
+ * Re-running an adapter in that gap can only repeat the same terminal state,
+ * so one succeeded run without issue-visible progress is enough to suppress
+ * the echo. Human comments and explicit continuation/recovery paths remain
+ * outside this set.
+ */
+export const IMMEDIATE_NOOP_LIFECYCLE_WAKE_REASONS: ReadonlySet<string> = new Set([
+  "finish_successful_run_handoff",
+  "source_scoped_recovery_action",
+  "issue_execution_promoted",
+  "issue_commented",
+]);
+
+/**
  * Activity actions that count as issue-visible progress when attributed to a
  * run. Deliberately narrower than run-liveness "concrete action evidence":
  * tool calls inside the workspace do not move the issue, so they do not reset
@@ -114,6 +129,15 @@ export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput)
   return THROTTLED_ISSUE_REWAKE_REASONS.has(input.reason);
 }
 
+/** True only for automated lifecycle echoes that add no new task context. */
+export function isImmediateNoopLifecycleIssueRewake(input: IssueRewakeCandidateInput & {
+  isAutomatedWake: boolean;
+}): boolean {
+  if (!input.isAutomatedWake) return false;
+  if (input.forceFreshSession || input.wakeCommentId || input.hasExplicitResume) return false;
+  return input.reason !== null && IMMEDIATE_NOOP_LIFECYCLE_WAKE_REASONS.has(input.reason);
+}
+
 export interface RecentIssueRunSample {
   id: string;
   status: string;
@@ -128,6 +152,11 @@ export interface IssueRewakeThrottleInput {
   runIdsWithIssueProgress: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
+  /**
+   * Normal reconciliation wakes need two no-progress runs before cooling down.
+   * A lifecycle echo immediately after a no-progress success needs only one.
+   */
+  noProgressThreshold?: number;
 }
 
 export type IssueRewakeThrottleDecision =
@@ -161,14 +190,19 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
     noProgressStreak += 1;
   }
 
-  if (noProgressStreak < ISSUE_REWAKE_NO_PROGRESS_THRESHOLD) {
+  const noProgressThreshold = input.noProgressThreshold ?? ISSUE_REWAKE_NO_PROGRESS_THRESHOLD;
+  if (noProgressStreak < noProgressThreshold) {
     return { blocked: false, noProgressStreak };
   }
 
   const lastRunFinishedAt = runs[0]?.finishedAt;
   if (!lastRunFinishedAt) return { blocked: false, noProgressStreak };
 
-  const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
+  // Keep the ordinary cooldown curve: an immediate lifecycle echo is denied
+  // for the base two-minute window rather than creating another full session.
+  const cooldownMs = computeIssueRewakeCooldownMs(
+    Math.max(noProgressStreak, ISSUE_REWAKE_NO_PROGRESS_THRESHOLD),
+  );
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
   if (input.now.getTime() < nextAllowedAt.getTime()) {
     return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };

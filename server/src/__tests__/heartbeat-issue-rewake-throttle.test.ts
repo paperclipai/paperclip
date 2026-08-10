@@ -263,6 +263,30 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(commentWake).not.toBeNull();
   });
 
+  it("suppresses an automated lifecycle echo after one no-progress success", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "finish_successful_run_handoff",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "finish_successful_run_handoff" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+
+    expect(wake).toBeNull();
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.reason).toBe("issue_rewake_throttled");
+    expect((skipped?.payload as Record<string, unknown>)?.heartbeatSkip).toMatchObject({
+      requestedReason: "finish_successful_run_handoff",
+      immediateNoopLifecycleWake: true,
+      noProgressStreak: 1,
+    });
+  });
+
   it("suppresses automated handoff and recovery echoes for an already blocked issue", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue({ status: "blocked" });
 

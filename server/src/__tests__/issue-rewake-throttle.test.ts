@@ -5,6 +5,7 @@ import {
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
+  isImmediateNoopLifecycleIssueRewake,
   isThrottleCandidateIssueRewake,
 } from "../services/issue-rewake-throttle.ts";
 
@@ -57,6 +58,25 @@ describe("isThrottleCandidateIssueRewake", () => {
       expect(isThrottleCandidateIssueRewake({ ...base, reason })).toBe(false);
     }
   });
+
+  it("identifies only automated lifecycle echoes as immediate no-op candidates", () => {
+    expect(isImmediateNoopLifecycleIssueRewake({
+      ...base,
+      reason: "finish_successful_run_handoff",
+      isAutomatedWake: true,
+    })).toBe(true);
+    expect(isImmediateNoopLifecycleIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      isAutomatedWake: false,
+    })).toBe(false);
+    expect(isImmediateNoopLifecycleIssueRewake({
+      ...base,
+      reason: "issue_commented",
+      wakeCommentId: "new-comment",
+      isAutomatedWake: true,
+    })).toBe(false);
+  });
 });
 
 describe("computeIssueRewakeCooldownMs", () => {
@@ -88,6 +108,21 @@ describe("evaluateIssueRewakeThrottle", () => {
       hasNewIssueInputSinceLastRun: false,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+  });
+
+  it("blocks a lifecycle echo after one no-progress success when requested", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 10 })],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+      noProgressThreshold: 1,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(1);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
+    }
   });
 
   it("blocks inside the cooldown once the streak reaches the threshold", () => {

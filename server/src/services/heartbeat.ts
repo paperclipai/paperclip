@@ -136,6 +136,7 @@ import {
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateIssueRewakeThrottle,
+  isImmediateNoopLifecycleIssueRewake,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import {
@@ -20714,14 +20715,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // so external pollers/reconcilers can't storm full-price sessions.
         // Server-side recovery retries insert runs directly and never reach
         // this gate.
-        if (
-          isThrottleCandidateIssueRewake({
-            reason,
-            wakeCommentId: wakeCommentId ?? null,
-            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
-            hasExplicitResume: Boolean(explicitResumeSession),
-          })
-        ) {
+        const rewakeInput = {
+          reason,
+          wakeCommentId: wakeCommentId ?? null,
+          forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
+          hasExplicitResume: Boolean(explicitResumeSession),
+        };
+        const immediateNoopLifecycleWake = isImmediateNoopLifecycleIssueRewake({
+          ...rewakeInput,
+          isAutomatedWake,
+        });
+        if (isThrottleCandidateIssueRewake(rewakeInput) || immediateNoopLifecycleWake) {
           const throttleNow = new Date();
           const recentTerminalRuns = await tx
             .select({
@@ -20782,6 +20786,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   .filter((runId): runId is string => Boolean(runId)),
               ),
               hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+              noProgressThreshold: immediateNoopLifecycleWake ? 1 : undefined,
             });
 
             if (throttleDecision.blocked) {
@@ -20797,6 +20802,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   heartbeatSkip: {
                     reason: "issue_rewake_throttled",
                     requestedReason: reason,
+                    immediateNoopLifecycleWake,
                     noProgressStreak: throttleDecision.noProgressStreak,
                     cooldownMs: throttleDecision.cooldownMs,
                     lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
