@@ -775,6 +775,35 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
+  it("suppresses a continuation summary when a fresh adapter already carries task context", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-15272",
+        title: "Avoid duplicate recovery context",
+        description: "Render the named artifact.",
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Use the deterministic renderer.", bodyTruncated: false }],
+      continuationSummary: {
+        body: "# Continuation Summary\n\n## Objective\n\nRender the named artifact.\n\n## Files / Routes Touched\n\n- every-old-file",
+        bodyTruncated: false,
+      },
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, {
+      suppressIssueDescription: true,
+      suppressContinuationSummary: true,
+    });
+    expect(prompt).toContain("Use the deterministic renderer.");
+    expect(prompt).not.toContain("Issue continuation summary:");
+    expect(prompt).not.toContain("every-old-file");
+  });
+
   it("omits the issue description from non-assignment resume deltas and leaves a fetch breadcrumb", () => {
     const basePayload = {
       issue: {

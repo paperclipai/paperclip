@@ -1511,6 +1511,11 @@ export function renderPaperclipWakePrompt(
     // (the authoritative, uncapped brief) so the description is not delivered
     // twice in one prompt.
     suppressIssueDescription?: boolean;
+    // A fresh session with task-context markdown already has the authoritative
+    // brief and current wake comment. Suppress the previous-run summary in
+    // that case so a configuration-driven session rotation does not replay the
+    // same objective, acceptance criteria, and artifact inventory a second time.
+    suppressContinuationSummary?: boolean;
   } = {},
 ): string {
   const normalized = normalizePaperclipWakePayload(value);
@@ -1944,7 +1949,7 @@ export function renderPaperclipWakePrompt(
     lines.push("");
   }
 
-  if (normalized.continuationSummary) {
+  if (normalized.continuationSummary && options.suppressContinuationSummary !== true) {
     lines.push(
       "",
       "Issue continuation summary:",
