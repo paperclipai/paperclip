@@ -107,6 +107,7 @@ export function toolAccessRoutes(
       redirectUri: oauthRedirectUri(),
     });
   });
+  options.toolGateway?.configureGrantRefresh(svc.refreshUserGrant);
 
   function configuredPublicBaseUrl() {
     const raw = (

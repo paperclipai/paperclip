@@ -787,6 +787,19 @@ export function createToolGatewayService(
         issueId: string | null;
       }) => Promise<void>)
     | null = null;
+  // Same wiring rationale as startUserAuthorizationHook above: rotates a
+  // personal grant's access token via its refresh_token when possible, so a
+  // long-lived agent doesn't hit "reconnect" every time an access token's
+  // short lifetime expires. Returns null (not an error) when refresh isn't
+  // possible or fails -- resolveUserGrantAuthHeader falls through to the
+  // existing missing-grant/connect-card path either way.
+  let refreshUserGrantHook:
+    | ((input: {
+        companyId: string;
+        connectionId: string;
+        subjectUserId: string;
+      }) => Promise<{ accessToken: string; expiresAt: string | null } | null>)
+    | null = null;
 
   async function pruneExpiredProtocolRateLimitCounters(current: number) {
     if (current < nextProtocolRateLimitPruneAt) return;
@@ -2452,7 +2465,17 @@ export function createToolGatewayService(
     if (!grant) return null;
     const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
     if (!accessTokenRef) return null;
-    if (accessTokenRef.expiresAt && Date.parse(accessTokenRef.expiresAt) <= Date.now()) return null;
+    const isExpired = accessTokenRef.expiresAt && Date.parse(accessTokenRef.expiresAt) <= Date.now();
+    if (isExpired) {
+      if (!refreshUserGrantHook) return null;
+      const refreshed = await refreshUserGrantHook({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        subjectUserId,
+      });
+      if (!refreshed) return null;
+      return { Authorization: `Bearer ${refreshed.accessToken}` };
+    }
     try {
       const token = await secrets.resolveSecretValue(
         connection.companyId,
@@ -4668,6 +4691,11 @@ export function createToolGatewayService(
     // created.
     configureUserAuthorization(hook: typeof startUserAuthorizationHook) {
       startUserAuthorizationHook = hook;
+    },
+
+    // See refreshUserGrantHook above.
+    configureGrantRefresh(hook: typeof refreshUserGrantHook) {
+      refreshUserGrantHook = hook;
     },
 
     async recordRuntimeMcpDeliveryDiagnostic(input: {

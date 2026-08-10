@@ -5894,7 +5894,101 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
+  // Refreshes a per-user connection_grants row's access token via its stored
+  // refresh_token, without requiring the person to re-authorize. Called from
+  // the gateway (server/src/services/tool-gateway.ts,
+  // resolveUserGrantAuthHeader) when a personal_only connection's grant has
+  // an expired access token but a refresh_token is on file -- wired via the
+  // same post-construction hook pattern as configureUserAuthorization, since
+  // toolGatewayService is constructed first and can't take this as a
+  // constructor dependency. Returns null (never throws) on any failure so
+  // the caller falls through to its existing "connect your account" prompt
+  // rather than surfacing a raw OAuth error to the agent.
+  async function refreshUserGrant(input: {
+    companyId: string;
+    connectionId: string;
+    subjectUserId: string;
+  }): Promise<{ accessToken: string; expiresAt: string | null } | null> {
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(and(
+        eq(connectionGrants.companyId, input.companyId),
+        eq(connectionGrants.connectionId, input.connectionId),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, input.subjectUserId),
+        eq(connectionGrants.status, "active"),
+      ))
+      .limit(1);
+    if (!grant) return null;
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    const refreshTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+    if (!accessTokenRef || !refreshTokenRef) return null;
+
+    let connection: typeof toolConnections.$inferSelect;
+    try {
+      connection = await getConnectionRow(input.connectionId, input.companyId);
+    } catch {
+      return null;
+    }
+
+    try {
+      const refreshTokenValue = await secrets.resolveSecretValue(
+        input.companyId,
+        refreshTokenRef.secretId,
+        refreshTokenRef.versionSelector ?? "latest",
+        {
+          consumerType: "tool_connection",
+          consumerId: connection.id,
+          configPath: "oauth.refresh_token",
+          actorType: "system",
+        },
+      );
+      const endpoints = await oauthEndpointsForConnection(connection, null);
+      const client = await oauthClientForConnection(connection, endpoints.provider);
+      if (!client.clientId) return null;
+      const token = await exchangeOAuthToken({
+        tokenUrl: endpoints.tokenUrl,
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+        grantType: "refresh_token",
+        refreshToken: refreshTokenValue,
+      });
+
+      await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
+      const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
+      const updatedRefs = grant.credentialSecretRefs.map((ref) =>
+        ref.configPath === "oauth.access_token" ? { ...ref, expiresAt: expiresAt ?? undefined } : ref);
+      if (token.refreshToken) {
+        await secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {});
+      }
+      await db
+        .update(connectionGrants)
+        .set({ credentialSecretRefs: updatedRefs, lastUsedAt: new Date(), updatedAt: new Date() })
+        .where(eq(connectionGrants.id, grant.id));
+
+      return { accessToken: token.accessToken, expiresAt };
+    } catch (err) {
+      // A refresh_token itself expiring/being revoked is expected over a long
+      // enough time horizon, not a bug -- fail closed by marking the grant
+      // for reauthorization so the next call's missing-grant path posts a
+      // fresh connect prompt, rather than looping on the same failed refresh.
+      const errorCode = err instanceof HttpError && err.details && typeof err.details === "object" && "code" in err.details
+        ? (err.details as { code?: unknown }).code
+        : null;
+      if (errorCode === "oauth_reauthorization_required") {
+        await db
+          .update(connectionGrants)
+          .set({ status: "needs_reauthorization", updatedAt: new Date() })
+          .where(eq(connectionGrants.id, grant.id));
+      }
+      return null;
+    }
+  }
+
   return {
+    refreshUserGrant,
+
     approvedStdioTemplates: async (companyId: string): Promise<ToolStdioCommandTemplate[]> => {
       const adminTemplates = await db
         .select()
