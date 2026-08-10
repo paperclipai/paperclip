@@ -655,6 +655,56 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("recovers an explicit bare JSON disposition when the in-run API write failed", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: JSON.stringify({
+                disposition: "blocked",
+                reason: "Paperclip API was unreachable; use the recorded renderer evidence.",
+              }),
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-bare-json-disposition",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.summary).toContain("Reported disposition: blocked.");
+    expect(result.resultJson).toMatchObject({
+      disposition: {
+        status: "blocked",
+        hasBlocker: true,
+        blocker: "Paperclip API was unreachable; use the recorded renderer evidence.",
+      },
+    });
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

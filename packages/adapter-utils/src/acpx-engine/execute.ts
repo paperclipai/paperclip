@@ -111,6 +111,34 @@ type ParsedDisposition = {
   reviewer?: string;
 };
 
+const PAPERCLIP_DISPOSITION_STATUSES = new Set([
+  "done",
+  "cancelled",
+  "in_review",
+  "blocked",
+]);
+
+function parseDispositionRecord(value: unknown): ParsedDisposition | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status.trim() : "";
+  if (!PAPERCLIP_DISPOSITION_STATUSES.has(status)) return null;
+
+  const blocker = [record.blocker, record.reason, record.statusReason]
+    .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+    ?.trim();
+  const reviewer = typeof record.reviewer === "string" && record.reviewer.trim()
+    ? record.reviewer.trim()
+    : undefined;
+
+  return {
+    status,
+    hasBlocker: record.hasBlocker === true || status === "blocked",
+    ...(blocker ? { blocker } : {}),
+    ...(reviewer ? { reviewer } : {}),
+  };
+}
+
 /**
  * ACPX emits final assistant output as text deltas rather than through the
  * CLI transcript parsers used by the individual local adapters. Preserve the
@@ -126,20 +154,10 @@ function extractPaperclipDisposition(text: string): {
 
   while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
     try {
-      const parsed = JSON.parse(match[1] ?? "null") as Record<string, unknown> | null;
-      const status = typeof parsed?.status === "string" ? parsed.status.trim() : "";
-      if (!status) continue;
+      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
+      if (!disposition) continue;
       lastValid = {
-        disposition: {
-          status,
-          hasBlocker: parsed?.hasBlocker === true,
-          ...(typeof parsed?.blocker === "string" && parsed.blocker.trim()
-            ? { blocker: parsed.blocker.trim() }
-            : {}),
-          ...(typeof parsed?.reviewer === "string" && parsed.reviewer.trim()
-            ? { reviewer: parsed.reviewer.trim() }
-            : {}),
-        },
+        disposition,
         index: match.index,
         fullMatch: match[0],
       };
@@ -148,7 +166,32 @@ function extractPaperclipDisposition(text: string): {
     }
   }
 
-  if (!lastValid) return { disposition: null, cleanedText: text.trim() };
+  if (!lastValid) {
+    // Some ACP agents faithfully return a machine-readable final JSON result
+    // after an in-run Paperclip write fails, but omit the required marker.
+    // Treat only a *whole* final JSON object with an explicit `disposition`
+    // field as a fallback. This is intentionally narrower than accepting an
+    // arbitrary JSON blob, so prose and tool output cannot accidentally alter
+    // an issue state. It closes the otherwise expensive successful-run handoff
+    // loop for a verified blocked/done result.
+    try {
+      const parsed = JSON.parse(text.trim()) as Record<string, unknown>;
+      const rawDisposition = parsed?.disposition;
+      const fallback = typeof rawDisposition === "string"
+        ? parseDispositionRecord({ ...parsed, status: rawDisposition })
+        : parseDispositionRecord(rawDisposition);
+      if (fallback) {
+        const summary = [
+          `Reported disposition: ${fallback.status}.`,
+          fallback.blocker,
+        ].filter(Boolean).join(" ");
+        return { disposition: fallback, cleanedText: summary };
+      }
+    } catch {
+      // The strict marker path above remains the normal contract.
+    }
+    return { disposition: null, cleanedText: text.trim() };
+  }
   return {
     disposition: lastValid.disposition,
     cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
