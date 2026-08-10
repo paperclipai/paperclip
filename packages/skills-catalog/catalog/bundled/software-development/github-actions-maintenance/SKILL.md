@@ -50,7 +50,8 @@ Keep workflow files on current, supported action versions and avoid deprecated N
    - For `actions/*`: bump to the latest major version that uses Node.js 24 (`@v7` as of mid-2026).
    - For third-party actions: bump to the latest stable major release.
    - Always verify the changelog for breaking changes between major versions.
-   - Use pinned major tags (`@vN`) rather than floating SHA pins unless the repo policy requires SHA pinning.
+   - Prefer pinned major tags (`@vN`) for the actions you actively track and audit, since they make updates easier to apply and review.
+   - For supply-chain hardening, prefer immutable commit-SHA pins when the repo policy calls for maximum reproducibility, or when an action's tag can be reassigned.
 
 ## Common action version mappings (as of mid-2026)
 
