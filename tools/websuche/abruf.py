@@ -77,7 +77,10 @@ def hole_text(url: str, max_zeichen: int = 12000,
     except requests.exceptions.RequestException as e:
         return AbrufErgebnis(fehler=f"Abruf fehlgeschlagen: {e}")
 
-    text = kappe(extrahiere_text(antwort.text), max_zeichen)
+    try:
+        text = kappe(extrahiere_text(antwort.text), max_zeichen)
+    except Exception as e:
+        return AbrufErgebnis(fehler=f"Text-Extraktion fehlgeschlagen: {e}")
     if not text:
         return AbrufErgebnis(fehler="Seite enthielt keinen lesbaren Text")
     return AbrufErgebnis(text=text)

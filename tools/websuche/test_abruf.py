@@ -1,3 +1,4 @@
+import pytest
 import requests
 import requests_mock
 
@@ -108,3 +109,20 @@ def test_abruf_ergebnis_hat_nie_text_und_fehler():
         ergebnis = hole_text("https://a.de/seite")
     assert isinstance(ergebnis, AbrufErgebnis)
     assert (ergebnis.text is None) != (ergebnis.fehler is None)
+
+
+def test_hole_text_fangt_extraktion_fehler_auf(monkeypatch):
+    """hole_text darf nie eine Ausnahme nach oben werfen, auch nicht wenn
+    extrahiere_text kaputtes HTML nicht verarbeiten kann."""
+    def werfende_extraktion(html: str) -> str:
+        raise RecursionError("Pathologisch verschachteltes HTML")
+
+    monkeypatch.setattr("abruf.extrahiere_text", werfende_extraktion)
+
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", text=SEITE)
+        ergebnis = hole_text("https://a.de/seite")
+
+    assert ergebnis.text is None
+    assert "Text-Extraktion fehlgeschlagen" in ergebnis.fehler
