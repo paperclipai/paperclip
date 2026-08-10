@@ -5518,6 +5518,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interruptionSource: "issue_comment_interrupt",
       interruptedIssueId: issueId,
     });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, cancelled!.agentId));
+    expect(runs).toHaveLength(1);
 
     const events = await db
       .select()

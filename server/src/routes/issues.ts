@@ -2391,25 +2391,13 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
 }) {
-  // Local-CLI agents post comments under user auth, so the actor.type is "user"
-  // even though the comment originates from the same heartbeat run that owns
-  // the issue lock. Without this guard, an agent that closes its own issue and
-  // then posts a follow-up comment in the same run silently reopens it.
-  // Suppress the implicit move whenever the comment's source run matches the
-  // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string"
-    && input.actorRunId.length > 0
-    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
-  ) {
-    return false;
-  }
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
-  if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
-  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  return true;
+  // A comment is evidence or discussion, never permission to spend another
+  // agent run. Reopening/resuming requires the explicit `reopen` or `resume`
+  // intent handled by the caller. This applies even to board comments: making
+  // a terminal evidence note must not silently turn completed work back into
+  // an active task and launch a recovery chain.
+  void input;
+  return false;
 }
 
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
@@ -12660,6 +12648,7 @@ export function issueRoutes(
       const skipWake =
         selfComment
         || isClosedIssueStatus(currentIssue.status)
+        || currentIssue.status === "blocked"
         || suppressDuplicateBlockedCommentWake;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {

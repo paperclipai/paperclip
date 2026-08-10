@@ -18808,6 +18808,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+      const cancellation = parseObject(run.resultJson);
+      const isVerifiedOperatorCancellation =
+        run.errorCode === "operator_interrupted" &&
+        cancellation.operatorInterrupted === true &&
+        readNonEmptyString(cancellation.interruptedIssueId) === issue.id;
+      // A board cancellation is a terminal operating decision. Clear its lock,
+      // but never promote deferred work or invent a continuation/recovery run
+      // for the same issue. Otherwise cancelling an accidental wake can itself
+      // spend another agent turn.
+      if (isVerifiedOperatorCancellation) return { kind: "released" as const };
       const activeQuotaCooldown = readActiveQuotaCooldown(run);
 
       // Workspace-validation recovery: if the finalizing run failed workspace
