@@ -10647,6 +10647,15 @@ export function issueRoutes(
       isClosedIssueStatus(existing.status) &&
       issue.status === "todo" &&
       req.body.status !== undefined;
+    // A board can atomically record the completed work and move it to human review.
+    // That bookkeeping comment is evidence for the reviewer, not an instruction to
+    // re-run the assignee. Without this distinction every `blocked` -> `in_review`
+    // recovery creates a fresh `issue_commented` wake and can restart an already
+    // completed, token-bounded pack.
+    const statusChangedIntoReview =
+      existing.status !== "in_review" &&
+      issue.status === "in_review" &&
+      req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
@@ -10797,7 +10806,11 @@ export function issueRoutes(
         if (!selfComment && comment && comment.authorAgentId && comment.authorAgentId === assigneeId) {
           selfComment = true;
         }
-        const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status) || suppressDuplicateBlockedCommentWake;
+        const skipAssigneeCommentWake =
+          selfComment ||
+          isClosedIssueStatus(issue.status) ||
+          (statusChangedIntoReview && resumeRequested !== true) ||
+          suppressDuplicateBlockedCommentWake;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
