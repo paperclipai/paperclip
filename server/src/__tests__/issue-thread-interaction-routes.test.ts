@@ -896,6 +896,24 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
   });
 
+  it("rejects creator-agent cancellation outside the authorization boundary", async () => {
+    mockAccessDecide.mockResolvedValueOnce({
+      allowed: false,
+      action: "issue:mutate",
+      reason: "deny_explicit",
+      explanation: "Denied by test grant.",
+    });
+    const app = await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: "run-creator-boundary" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
   it("allows the assignee agent to cancel question interactions without waking itself", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
     const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-5" });
@@ -973,9 +991,42 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
   });
 
+  it("rejects creator-agent cancellation by watchdog-scoped runs", async () => {
+    mockResolveTaskWatchdogMutationScope.mockResolvedValueOnce({
+      kind: "watchdog",
+      watchdogId: "watchdog-1",
+      companyId: "company-1",
+      watchedIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      watchdogIssueId: null,
+      stopFingerprint: "stop-creator",
+    });
+    const app = await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: "run-watchdog-creator-cancel" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Task-watchdog");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
   it("rejects cancellation by low-trust actors", async () => {
     mockResolveCoreTrustPreset.mockReturnValueOnce({ kind: "low_trust_review" });
     const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-low-trust-cancel" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Low-trust");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
+  it("rejects creator-agent cancellation by low-trust actors", async () => {
+    mockResolveCoreTrustPreset.mockReturnValueOnce({ kind: "low_trust_review" });
+    const app = await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: "run-low-trust-creator-cancel" });
 
     const res = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
