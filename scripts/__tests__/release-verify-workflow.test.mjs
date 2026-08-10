@@ -47,6 +47,15 @@ test("release verify workflow covers the same split test surface as stable PR ve
     assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
   }
 
+  // workspaces-a splits with Vitest native --shard in pr.yml; release
+  // verification must keep the same two-shard coverage.
+  for (const shardIndex of [0, 1]) {
+    assert.match(
+      verifyWorkflow,
+      new RegExp(`group: general-workspaces-a[\\s\\S]*?shard_index: ${shardIndex}\\n\\s+shard_count: 2`),
+    );
+  }
+
   assert.match(verifyWorkflow, /pnpm test:run:general -- --group/);
   assert.match(verifyWorkflow, /pnpm test:run:serialized -- --shard-index/);
 });
