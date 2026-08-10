@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -19,7 +20,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
   it.skipIf(process.platform !== "linux")(
     "allows a long silent build while the child process group is consuming CPU",
     async () => {
-      const runId = `monitor-active-build-${Date.now()}`;
+      const runId = `monitor-active-build-${randomUUID()}`;
       // Leave enough room for the first /proc baseline on a busy CI host.
       // The test still exercises a multi-timeout period with no output, but
       // avoids treating scheduler contention as a product-level inactivity.
@@ -72,7 +73,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
   it(
     "kills a codex child that goes silent after one event and surfaces a monitor failure",
     async () => {
-      const runId = `monitor-integration-${Date.now()}`;
+      const runId = `monitor-integration-${randomUUID()}`;
       const timeoutMs = 250;
       const logs: Array<{ stream: string; chunk: string }> = [];
       let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
@@ -106,17 +107,24 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
         return false;
       };
 
-      const monitor = createCodexOutputInactivityMonitor({
-        timeoutMs,
-        onFire: (state) => {
-          monitorFired = true;
-          elapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
-          if (kill("SIGTERM")) terminationSignal = "SIGTERM";
-          sigkillTimer = setTimeout(() => {
-            if (kill("SIGKILL")) terminationSignal = "SIGKILL";
-          }, CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
-        },
-      });
+      const monitorRef: {
+        current: ReturnType<typeof createCodexOutputInactivityMonitor> | null;
+      } = { current: null };
+      const startMonitor = () => {
+        if (monitorRef.current) return monitorRef.current;
+        monitorRef.current = createCodexOutputInactivityMonitor({
+          timeoutMs,
+          onFire: (state) => {
+            monitorFired = true;
+            elapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+            if (kill("SIGTERM")) terminationSignal = "SIGTERM";
+            sigkillTimer = setTimeout(() => {
+              if (kill("SIGKILL")) terminationSignal = "SIGKILL";
+            }, CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+          },
+        });
+        return monitorRef.current;
+      };
 
       try {
         const proc = await runChildProcess(runId, process.execPath, ["-e", FAKE_CODEX_SCRIPT], {
@@ -130,12 +138,15 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
               pid: meta.pid,
               processGroupId: meta.processGroupId,
               intervalMs: 25,
-              onActivity: () => monitor.noteProcessActivity(),
+              onActivity: () => monitorRef.current?.noteProcessActivity(),
             });
           },
           onLog: async (stream, chunk) => {
             logs.push({ stream, chunk });
-            monitor.noteOutputChunk(stream, chunk);
+            // The behavior under test is silence *after* Codex's first event.
+            // Starting the short watchdog here avoids treating process startup
+            // scheduler latency as output inactivity on a busy CI runner.
+            startMonitor().noteOutputChunk(stream, chunk);
           },
         });
 
@@ -150,10 +161,10 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
           /^monitor: no codex activity \(output or process\) for \d+m \d+s$/,
         );
         // We should have observed exactly one parsed JSONL event before silence.
-        expect(monitor.state().parsedEventCount).toBe(1);
+        expect(monitorRef.current?.state().parsedEventCount).toBe(1);
       } finally {
         processActivityMonitor.current?.stop();
-        monitor.stop();
+        monitorRef.current?.stop();
         if (sigkillTimer) clearTimeout(sigkillTimer);
       }
     },
