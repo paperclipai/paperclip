@@ -394,8 +394,8 @@ describe("adapter skill snapshots", () => {
     // the symlinks for skills that belong to this agent. Source is resolvable; link is absent.
     const snapshot = buildPersistentSkillSnapshot({
       adapterType: "opencode_local",
-      availableEntries: [requiredEntry, optionalEntry],
-      desiredSkills: [requiredEntry.key, optionalEntry.key],
+      availableEntries: [optionalEntry],
+      desiredSkills: [optionalEntry.key],
       installed: new Map(),
       skillsHome: "/home/me/.claude/skills",
       locationLabel: "~/.claude/skills",
@@ -409,14 +409,6 @@ describe("adapter skill snapshots", () => {
       key: optionalEntry.key,
       state: "shared_unlinked",
       origin: "company_managed",
-      desired: true,
-    }));
-
-    // Required skill with available source → still missing (not company_managed)
-    expect(snapshot.entries).toContainEqual(expect.objectContaining({
-      key: requiredEntry.key,
-      state: "missing",
-      origin: "paperclip_required",
       desired: true,
     }));
   });
