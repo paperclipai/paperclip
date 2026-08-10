@@ -29,6 +29,10 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: { liveRunsForCompany: () => Promise.resolve([]) },
 }));
 
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: { getExperimental: () => Promise.resolve({}) },
+}));
+
 vi.mock("../components/AgentIconPicker", () => ({
   AgentIcon: () => <span data-testid="agent-icon" />,
 }));
