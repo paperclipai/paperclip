@@ -7,6 +7,7 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockDocumentsService = vi.hoisted(() => ({
@@ -240,6 +241,7 @@ describe("issue document revision routes", () => {
       title: "Document revisions",
       status: "in_progress",
     });
+    mockIssueService.list.mockResolvedValue([]);
     mockDocumentsService.listIssueDocuments.mockImplementation(
       async (_issueId, options: { includeSystem?: boolean } | undefined) =>
         options?.includeSystem ? [planDocument, systemDocument] : [planDocument],
