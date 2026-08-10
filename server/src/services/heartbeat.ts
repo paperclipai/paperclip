@@ -387,6 +387,37 @@ export function totalInputTokensIncludingCache(input: {
   return Math.max(0, input.inputTokens) + Math.max(0, input.cachedInputTokens);
 }
 
+/**
+ * A blocker created from a run disposition is a child of the same executable
+ * slice, not a new free-floating inbox item. Inheriting the source binding is
+ * essential for git-sensitive adapters: an unbound child resolves to agent_home
+ * and is correctly refused by the fallback-workspace guard.
+ */
+export function buildStatedDispositionBlockerIssueInput(input: {
+  sourceIdentifier: string | null;
+  sourceId: string;
+  blocker: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceSettings: Record<string, unknown> | null;
+  workMode: string | null;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}) {
+  return {
+    title: `Unblock: ${input.blocker.slice(0, 140)}`,
+    description: `Auto-created from a stated disposition on ${input.sourceIdentifier ?? input.sourceId}. The agent reported this issue is blocked on: ${input.blocker}`,
+    status: "todo" as const,
+    priority: "medium" as const,
+    projectId: input.projectId,
+    projectWorkspaceId: input.projectWorkspaceId,
+    executionWorkspaceSettings: input.executionWorkspaceSettings,
+    workMode: input.workMode === "plan" || input.workMode === "execute" ? input.workMode : "standard",
+    assigneeAgentId: input.assigneeAgentId,
+    assigneeUserId: input.assigneeUserId,
+  };
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -9827,6 +9858,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
         workMode: issues.workMode,
       })
       .from(issues)
@@ -10100,12 +10133,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           if (applied) appliedStatus = statedStatus;
         } else if (statedStatus === "blocked" && statedBlocker) {
-          const blockerIssue = await issuesSvc.create(issue.companyId, {
-            title: `Unblock: ${statedBlocker.slice(0, 140)}`,
-            description: `Auto-created from a stated disposition on ${issue.identifier ?? issue.id}. The agent reported this issue is blocked on: ${statedBlocker}`,
-            status: "todo",
-            priority: "medium",
-          });
+          const blockerIssue = await issuesSvc.create(issue.companyId, buildStatedDispositionBlockerIssueInput({
+            sourceIdentifier: issue.identifier,
+            sourceId: issue.id,
+            blocker: statedBlocker,
+            projectId: issue.projectId,
+            projectWorkspaceId: issue.projectWorkspaceId,
+            executionWorkspaceSettings: issue.executionWorkspaceSettings
+              ? parseObject(issue.executionWorkspaceSettings)
+              : null,
+            workMode: issue.workMode,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+          }));
           if (blockerIssue?.id) {
             createdBlockerId = blockerIssue.id;
             const applied = await issuesSvc.update(issue.id, {
