@@ -514,6 +514,21 @@ export function buildStatedDispositionBlockerIssueInput(input: {
   };
 }
 
+/**
+ * A failed call back to Paperclip is not a piece of work for another agent.
+ * During a restart the agent can truthfully report that its earlier PATCH or
+ * comment failed, while this finalizer is already connected to the control
+ * plane and has queued the single status-only reconciliation. Treating that
+ * prose as a task dependency created self-referential "Unblock" trees.
+ */
+export function isTransientPaperclipControlPlaneWriteFailure(value: string | null | undefined) {
+  if (!value) return false;
+  const normalized = value.toLowerCase();
+  const reportsPaperclipApi = /paperclip|127\.0\.0\.1:3100|paperclip_runtime_api_candidates_json/.test(normalized);
+  const reportsTransientConnectivity = /connection refused|econnrefused|api (?:is )?unreachable|control-plane write could not be recorded/.test(normalized);
+  return reportsPaperclipApi && reportsTransientConnectivity;
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -10472,6 +10487,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           if (applied) appliedStatus = statedStatus;
         } else if (statedStatus === "blocked" && statedBlocker) {
+          if (isTransientPaperclipControlPlaneWriteFailure(statedBlocker)) {
+            // The normal finalization path has either queued exactly one
+            // status-only comment reconcile or has deliberately exhausted
+            // that bounded retry. Never convert a local API outage into a
+            // child task: the child would inherit the same assignment and
+            // create an "Unblock" chain without advancing the real work.
+            await appendRunEvent(run, await nextRunEventSeq(run.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "Ignored transient Paperclip API blocker; no child recovery issue created",
+              payload: {
+                issueId: issue.id,
+                issueCommentStatus: run.issueCommentStatus,
+              },
+            });
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: run.agentId,
+              runId: run.id,
+              action: "issue.transient_control_plane_blocker_suppressed",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                label: "Transient control-plane blocker suppressed",
+                sourceRunId: run.id,
+                issueCommentStatus: run.issueCommentStatus,
+              },
+            });
+            return;
+          }
           const blockerIssue = await issuesSvc.create(issue.companyId, buildStatedDispositionBlockerIssueInput({
             sourceIdentifier: issue.identifier,
             sourceId: issue.id,
