@@ -96,23 +96,62 @@ def test_backend_fehler_gibt_exit_code_ungleich_null(capsys):
     assert ausgabe.out.strip() == ""
 
 
-def test_beende_leert_puffer_und_beendet_sofort(monkeypatch):
+class Beendet(Exception):
+    """Steht fuer os._exit: ab hier laeuft im echten Prozess nichts mehr."""
+
+
+def test_beende_leert_beide_puffer_vor_dem_harten_ende(monkeypatch):
     """Der Prozess darf nicht auf noch laufende Abruf-Threads warten.
 
     Pythons atexit joint die Worker des ThreadPoolExecutor; gemessen kehrte
     recherchiere() nach 0,21 s zurueck, der Prozess endete erst nach 3,04 s.
     Unter shell_exec zaehlt die Prozesslaufzeit, nicht die Funktionslaufzeit.
+
+    Der Ersatz fuer os._exit bricht den Kontrollfluss ab, statt
+    zurueckzukehren — sonst waere die Reihenfolge egal und der Test koennte
+    eine vertauschte Reihenfolge im Produktivcode nicht sehen: os._exit
+    umgeht die normale Aufraeumroutine, ein Flush DANACH kaeme nie an.
     """
     import cli as c
 
-    geleert, beendet = [], []
+    geleert, beim_ende = [], {}
+
+    def falsches_exit(code):
+        # Zustandsaufnahme im Moment des Endes, nicht danach.
+        beim_ende["code"] = code
+        beim_ende["geleert"] = list(geleert)
+        raise Beendet()
+
     monkeypatch.setattr(c.sys.stdout, "flush", lambda: geleert.append("out"))
     monkeypatch.setattr(c.sys.stderr, "flush", lambda: geleert.append("err"))
-    monkeypatch.setattr(c.os, "_exit", lambda code: beendet.append(code))
+    monkeypatch.setattr(c.os, "_exit", falsches_exit)
 
-    c.beende(2)
-    assert beendet == [2]
-    assert set(geleert) == {"out", "err"}
+    with pytest.raises(Beendet):
+        c.beende(2)
+
+    assert beim_ende["code"] == 2
+    assert beim_ende["geleert"] == ["out", "err"], (
+        "Beim Aufruf von os._exit waren nicht beide Puffer geleert: "
+        f"{beim_ende['geleert']}")
+
+
+def test_beende_kehrt_nicht_zurueck(monkeypatch):
+    """Nach beende() darf keine Zeile mehr laufen — sonst haelt genau das den
+    Prozess auf, den os._exit beenden sollte."""
+    import cli as c
+
+    danach = []
+
+    def falsches_exit(code):
+        raise Beendet()
+
+    monkeypatch.setattr(c.os, "_exit", falsches_exit)
+    try:
+        c.beende(0)
+        danach.append("weitergelaufen")
+    except Beendet:
+        pass
+    assert danach == []
 
 
 TREIBER = '''
