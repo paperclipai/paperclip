@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decideHighInputTokenRunGuard,
   HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+  totalInputTokensIncludingCache,
 } from "../services/heartbeat.js";
 
 describe("high input-token run guard", () => {
@@ -24,5 +25,18 @@ describe("high input-token run guard", () => {
       inputTokens: HIGH_INPUT_TOKEN_RUN_THRESHOLD + 25_000,
       highRunCount: 2,
     })).toBe("block");
+  });
+
+  it("counts cache-read context in the oversized-run threshold", () => {
+    const totalInputTokens = totalInputTokensIncludingCache({
+      inputTokens: 105_209,
+      cachedInputTokens: 3_294_208,
+    });
+
+    expect(totalInputTokens).toBe(3_399_417);
+    expect(decideHighInputTokenRunGuard({
+      inputTokens: totalInputTokens,
+      highRunCount: 1,
+    })).toBe("review");
   });
 });

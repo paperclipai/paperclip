@@ -374,6 +374,19 @@ export function decideHighInputTokenRunGuard(input: {
   return input.highRunCount >= 2 ? "block" : "review";
 }
 
+/**
+ * A provider may report prompt-cache reads separately from fresh prompt input.
+ * Both are context supplied to the model and therefore belong in the oversized
+ * task guard. Counting only fresh input hid long cached continuations from the
+ * >=1M policy even though they were consuming the same model context window.
+ */
+export function totalInputTokensIncludingCache(input: {
+  inputTokens: number;
+  cachedInputTokens: number;
+}) {
+  return Math.max(0, input.inputTokens) + Math.max(0, input.cachedInputTokens);
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -9643,10 +9656,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect;
     agent: typeof agents.$inferSelect;
     inputTokens: number;
+    cachedInputTokens: number;
   }) {
     const context = parseObject(input.run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
-    if (!issueId || input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+    const totalInputTokens = totalInputTokensIncludingCache(input);
+    if (!issueId || totalInputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
       return { decision: "none" as const, highRunCount: 0 };
     }
 
@@ -9660,12 +9675,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(costEvents.companyId, input.run.companyId),
           eq(costEvents.issueId, issueId),
-          gte(costEvents.inputTokens, HIGH_INPUT_TOKEN_RUN_THRESHOLD),
+          gte(
+            sql`${costEvents.inputTokens} + ${costEvents.cachedInputTokens}`,
+            HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+          ),
         ),
       );
     const highRunCount = Number(highRunCountRow?.count ?? 0);
     const decision = decideHighInputTokenRunGuard({
-      inputTokens: input.inputTokens,
+      inputTokens: totalInputTokens,
       highRunCount,
     });
     if (decision === "none") return { decision, highRunCount };
@@ -9683,7 +9701,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (!issue) return { decision: "none" as const, highRunCount };
 
-    const millionTokens = (input.inputTokens / 1_000_000).toFixed(2);
+    const millionTokens = (totalInputTokens / 1_000_000).toFixed(2);
     const interactionsSvc = issueThreadInteractionService(db);
     const isRepeat = decision === "block";
     const action = isRepeat
@@ -9707,7 +9725,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         allowDeclineReason: true,
         supersedeOnUserComment: false,
         detailsMarkdown:
-          `Run ${input.run.id} recorded **${millionTokens}M input tokens**. `
+          `Run ${input.run.id} recorded **${millionTokens}M total input tokens (including cache reads)**. `
           + `${action}\n\n`
           + "Required decision: split the task into bounded issues, route deterministic work to a shell handler/script, or document why this is an approved exception.",
       },
@@ -9733,7 +9751,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue.id,
       `## ${isRepeat ? "Second oversized run stopped" : "High-token run review required"}\n\n`
         + `- Run: \`${input.run.id}\`\n`
-        + `- Input tokens: **${millionTokens}M**\n`
+        + `- Total input tokens (including cache reads): **${millionTokens}M**\n`
+        + `- Fresh input: ${input.inputTokens.toLocaleString("en-US")}; cache reads: ${input.cachedInputTokens.toLocaleString("en-US")}\n`
         + `- Task threshold: **${(HIGH_INPUT_TOKEN_RUN_THRESHOLD / 1_000_000).toFixed(0)}M** input tokens\n`
         + `- Action: ${action}\n`
         + `- Review card: \`${interaction.id}\``,
@@ -9748,7 +9767,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? "Second oversized task run stopped pending board split/route decision"
         : "Oversized task run paused pending split/route decision",
       payload: {
-        inputTokens: input.inputTokens,
+        inputTokens: totalInputTokens,
+        freshInputTokens: input.inputTokens,
+        cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
         highRunCount,
         interactionId: interaction.id,
@@ -9766,7 +9787,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       entityId: issue.id,
       details: {
         label: isRepeat ? "Second high-input run blocked" : "High-input run review required",
-        inputTokens: input.inputTokens,
+        inputTokens: totalInputTokens,
+        freshInputTokens: input.inputTokens,
+        cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
         highRunCount,
         interactionId: interaction.id,
@@ -18018,6 +18041,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           run: livenessRun,
           agent,
           inputTokens: normalizedUsage?.inputTokens ?? 0,
+          cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
         });
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
