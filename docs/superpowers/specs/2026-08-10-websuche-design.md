@@ -253,8 +253,10 @@ Kontaktadresse. Zwischen zwei Abrufen derselben Domain liegt eine kurze Pause.
 
 ## Tests
 
-Hausstil: `test_<modul>.py` neben jedem Modul, `unittest`, Netzwerk gemockt wie
-in `tools/seo-geo/test_crawl.py`. Die Fälle, die zählen:
+Hausstil: `test_<modul>.py` neben jedem Modul, `pytest` mit schlichten
+`assert`-Zeilen, Netzwerk über `requests-mock` gemockt — dieselbe Kombination
+wie in `tools/seo-geo/` (`requirements.txt`: `requests`, `beautifulsoup4`,
+`pytest`, `requests-mock`). Die Fälle, die zählen:
 
 1. Domain-Deduplizierung — drei Treffer auf einer Domain ergeben eine Quelle
 2. `--gleiche-domain-erlauben` hebt die Deduplizierung auf
