@@ -121,6 +121,14 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     # Ergebnis wir per Deadline laengst aufgegeben haben. Python-Threads lassen
     # sich nicht von aussen abbrechen, also muss der Aufrufer zurueckkehren
     # duerfen, waehrend ein haengender Thread im Hintergrund weiterlaeuft.
+    #
+    # Im Dienst (wochenlang laufender Prozess) wird ein solcher Thread nicht
+    # eingesammelt — im CLI raeumt os._exit auf. Ein Waechter dafuer ist
+    # trotzdem nicht noetig, seit `abruf.hole_text` ein hartes Gesamtbudget
+    # je Seite fuehrt (robots + Weiterleitungen + Rumpf) und den Rumpf bei
+    # MAX_RUMPF_BYTES kappt: ein aufgegebener Thread endet damit von selbst
+    # kurz nach `seiten_timeout` und haelt hoechstens 2 MB. Vorher konnte er
+    # an einem troepfelnden Server beliebig lange leben — DAS war das Leck.
     pool = ThreadPoolExecutor(max_workers=max(1, len(gewaehlt)))
     laeufe = [pool.submit(hole, k.url, domain) for k, domain in gewaehlt]
 
