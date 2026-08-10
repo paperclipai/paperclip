@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -158,6 +159,31 @@ describeEmbeddedPostgres("productivity review service", () => {
     }
 
     return runs;
+  }
+
+  async function insertActiveRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    startedAt: Date;
+  }) {
+    const run: typeof heartbeatRuns.$inferInsert = {
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: input.startedAt,
+      finishedAt: null,
+      contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+      livenessState: "advanced",
+      nextAction: "Continue processing the next batch.",
+      createdAt: input.startedAt,
+      updatedAt: input.startedAt,
+    };
+    await db.insert(heartbeatRuns).values(run);
+    return run;
   }
 
   async function listProductivityReviews(companyId: string) {
@@ -486,7 +512,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
-      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      startedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000),
     });
     const service = productivityReviewService(db);
 
@@ -503,6 +529,45 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("does not create a long-active review while a run is still active on the source issue", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000),
+    });
+    await insertActiveRun({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      startedAt: new Date(now.getTime() - 17 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not create a long-active review below the long-active threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS).toBe(8);
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
