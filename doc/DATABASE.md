@@ -126,6 +126,29 @@ DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: k
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 ```
 
+### Connection circuit breaker (optional)
+
+When the database becomes unreachable, the driver parks every query until
+`connect_timeout` elapses. Under load that means request handlers accumulate
+faster than they drain, and a multi-minute connectivity blip can exhaust the
+process memory limit before the connection error ever surfaces.
+
+Turning the breaker on makes those queries reject immediately instead. After
+`DATABASE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` consecutive *connection* failures
+(a server that answers with a constraint or syntax error is reachable and does
+not count), the breaker opens and every query fails fast with
+`DATABASE_CIRCUIT_OPEN`. After the reset timeout it admits one probe query,
+which closes the breaker on success and restarts the cooldown on failure.
+
+```sh
+DATABASE_CIRCUIT_BREAKER=true                     # off unless set
+DATABASE_CIRCUIT_BREAKER_FAILURE_THRESHOLD=5      # consecutive connection failures; default: 5
+DATABASE_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS=5  # cooldown before the probe; default: 5
+```
+
+Setting either tuning variable turns the breaker on by itself. Set
+`DATABASE_CIRCUIT_BREAKER=false` to keep it off regardless.
+
 ### Push the schema
 
 ```sh
