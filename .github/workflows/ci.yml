@@ -18,8 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     # The upstream-resync candidate expands the workspace test surface. Keep
     # the complete typecheck → test → build gate intact instead of letting the
-    # job timeout race a healthy staging deployment.
-    timeout-minutes: 35
+    # general, workspace, and serialized test suites race a healthy staging
+    # deployment.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
