@@ -423,6 +423,18 @@ describe("sortAttentionItems", () => {
     expect(sortAttentionItems([a, b], "oldest").map((i) => i.id)).toEqual(["b", "a"]);
   });
 
+  it("priority puts blocking rows first, then rank, then recency", () => {
+    // Blocking wins over review even when it is older and higher-ranked.
+    const staleBlocking = buildItem({ id: "block", sourceKind: "blocker_attention", activityAt: "2026-07-01T00:00:00Z", rank: 9 });
+    const freshReview = buildItem({ id: "review", sourceKind: "approval", activityAt: "2026-07-09T00:00:00Z", rank: 0 });
+    expect(sortAttentionItems([freshReview, staleBlocking], "priority").map((i) => i.id)).toEqual(["block", "review"]);
+
+    // Within the same kind, lower rank (more urgent) wins over recency.
+    const urgent = buildItem({ id: "urgent", sourceKind: "failed_run", activityAt: "2026-07-01T00:00:00Z", rank: 1 });
+    const lessUrgent = buildItem({ id: "less", sourceKind: "failed_run", activityAt: "2026-07-09T00:00:00Z", rank: 5 });
+    expect(sortAttentionItems([lessUrgent, urgent], "priority").map((i) => i.id)).toEqual(["urgent", "less"]);
+  });
+
   it("does not mutate the input array", () => {
     const input = [older, newer];
     sortAttentionItems(input, "newest");

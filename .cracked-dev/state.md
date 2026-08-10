@@ -4,6 +4,18 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **Decisions desk: needs-you-first default sort (ADHD)** — `ui/src/lib/attention.ts`.
+  Added a `"priority"` AttentionSortOrder (blocking rows above review, then server
+  escalation `rank`, then recency) + made it the default (`loadAttentionSortOrder`). Fixes
+  the flat time-only desk where a fresh review sat above an older blocker. +1 test. VERIFY:
+  53/53 attention tests, ui typecheck — green. Self-audit: CLEAN (pure client sort of
+  already-authorized data). Shipped as an isolated local commit (NOT a PR): the tree carries
+  Trevor's budgets WIP + tonight's unpushed commits, so push/PR/auto-merge to shared `master`
+  would entangle them — flagged per the fences. Companion same-session desk fixes: graceful
+  "already resolved" + 45s self-clear (46a0433d3).
+  - Deferred (RISKY): auto-tuck stale (>3d) decisions into the Aging curtain — `attentionIsAging`
+    reads the SERVER-computed `item.shelf` (30d retention), so this is a server retention change
+    affecting the whole queue, not a client tweak. Needs Trevor's go before touching retention.
 - **run-classifier safety axis (TWE-182, partial)** — `server/src/services/run-liveness.ts`.
   Fixed the NEGATED_BLOCKER bypass (approval/manager now evaluated before the "not blocked"
   short-circuit) and routed `manager_review` to `needs_followup` before the concrete-evidence

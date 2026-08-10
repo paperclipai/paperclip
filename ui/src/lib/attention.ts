@@ -517,7 +517,7 @@ export function resolveAttentionDateRange(
 // ---------------------------------------------------------------------------
 
 export type AttentionGroupBy = "none" | "date" | "type" | "project" | "severity";
-export type AttentionSortOrder = "newest" | "oldest";
+export type AttentionSortOrder = "priority" | "newest" | "oldest";
 
 /** Ordered list used to render the group-by picker (label + value). */
 export const ATTENTION_GROUP_BY_OPTIONS: ReadonlyArray<[AttentionGroupBy, string]> = [
@@ -529,6 +529,7 @@ export const ATTENTION_GROUP_BY_OPTIONS: ReadonlyArray<[AttentionGroupBy, string
 ];
 
 export const ATTENTION_SORT_OPTIONS: ReadonlyArray<[AttentionSortOrder, string]> = [
+  ["priority", "Needs you first"],
   ["newest", "Newest first"],
   ["oldest", "Oldest first"],
 ];
@@ -599,9 +600,11 @@ export function saveAttentionGroupBy(groupBy: AttentionGroupBy) {
 export function loadAttentionSortOrder(): AttentionSortOrder {
   try {
     const raw = localStorage.getItem(ATTENTION_SORT_KEY);
-    return raw === "oldest" ? "oldest" : "newest";
+    // Default to "priority" (needs-you-first) — the ADHD-friendly desk order.
+    // An explicit newest/oldest choice is still honoured.
+    return raw === "newest" || raw === "oldest" || raw === "priority" ? raw : "priority";
   } catch {
-    return "newest";
+    return "priority";
   }
 }
 
@@ -703,12 +706,24 @@ function attentionActivityTimestamp(item: AttentionItem): number {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+/** Blocking rows sort above review rows in the "priority" order. */
+const ATTENTION_KIND_WEIGHT: Record<AttentionKind, number> = { blocking: 0, review: 1 };
+
 /**
- * Sort by activity time in the requested direction. `rank` is the stable
- * tiebreaker (lower rank = higher priority) so equal-timestamp rows keep the
- * server's escalation order.
+ * Sort the desk. "priority" (the default) is needs-you-first: blocking rows
+ * above review rows, then the server's escalation `rank` (lower = more urgent),
+ * then most-recent activity. "newest"/"oldest" sort purely by activity time,
+ * with `rank` as the stable tiebreaker for equal timestamps.
  */
 export function sortAttentionItems(items: AttentionItem[], order: AttentionSortOrder): AttentionItem[] {
+  if (order === "priority") {
+    return [...items].sort((a, b) => {
+      const kindDiff = ATTENTION_KIND_WEIGHT[attentionKind(a)] - ATTENTION_KIND_WEIGHT[attentionKind(b)];
+      if (kindDiff !== 0) return kindDiff;
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return attentionActivityTimestamp(b) - attentionActivityTimestamp(a);
+    });
+  }
   const sign = order === "oldest" ? -1 : 1;
   return [...items].sort((a, b) => {
     const diff = attentionActivityTimestamp(b) - attentionActivityTimestamp(a);
