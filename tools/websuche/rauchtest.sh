@@ -34,6 +34,8 @@ print(f"   Hinweis: {d['hinweis']}")
 assert len(set(domains)) == len(domains), "Domains nicht eindeutig!"
 assert all(q.get("abgerufen_am") for q in d["quellen"]), "Abrufdatum fehlt!"
 PY
+CODE=$?
+[ $CODE -eq 0 ] || { echo "   FEHLGESCHLAGEN: Domain-/Abrufdatum-Pruefung (Exit-Code $CODE)"; exit 1; }
 
 echo "== 4. Backend-Ausfall gibt Exit-Code ungleich null"
 # SIGTERM allein prueft nichts: launchd startet einen KeepAlive=true-Dienst
@@ -86,7 +88,11 @@ else
   exit 1
 fi
 
-searxng_wiederherstellen
+if ! searxng_wiederherstellen; then
+  trap - EXIT
+  echo "FEHLGESCHLAGEN: SearXNG nach dem Rauchtest nicht wiederhergestellt — Suchdienst bleibt abgeschaltet, von Hand pruefen!"
+  exit 1
+fi
 trap - EXIT
 
 echo "Rauchtest bestanden."
