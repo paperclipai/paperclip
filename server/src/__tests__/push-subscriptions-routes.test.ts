@@ -8,12 +8,19 @@ const mockPushSubscriptionService = vi.hoisted(() => ({
   revokeByEndpoint: vi.fn(),
   listActiveForUser: vi.fn(),
 }));
+const MockOwnershipConflictError = vi.hoisted(() => class PushSubscriptionOwnershipConflictError extends Error {
+  constructor() {
+    super("Push endpoint is already registered to another user");
+    this.name = "PushSubscriptionOwnershipConflictError";
+  }
+});
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     pushSubscriptionService: () => mockPushSubscriptionService,
     logActivity: mockLogActivity,
+    PushSubscriptionOwnershipConflictError: MockOwnershipConflictError,
   }));
 }
 
@@ -104,6 +111,25 @@ describe("push subscription routes", () => {
 
     expect(res.status).toBe(400);
     expect(mockPushSubscriptionService.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("returns a conflict without logging when another owner already holds the endpoint", async () => {
+    mockPushSubscriptionService.subscribe.mockRejectedValue(new MockOwnershipConflictError());
+    const app = await createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/push-subscriptions/me")
+      .send(SUBSCRIBE_BODY);
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "Push endpoint is already registered to another user" });
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("unsubscribes a device for board users and logs the activity", async () => {
