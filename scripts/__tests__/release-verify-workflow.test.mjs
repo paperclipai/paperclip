@@ -17,11 +17,28 @@ test("release workflow delegates stable and canary verification to the reusable 
     releaseWorkflow,
     /verify_canary:\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
   );
+  // The stable lane is gated on the stable channel since the nightly lane
+  // was added; a `needs:` line (for example a preflight job) may sit between
+  // the gate and the delegation.
   assert.match(
     releaseWorkflow,
-    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ inputs\.source_ref \}\}/,
+    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch' && inputs\.channel == 'stable'\n(?:\s+needs: [^\n]+\n)?\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ inputs\.source_ref \}\}/,
   );
   assert.doesNotMatch(releaseWorkflow, /verify_(?:canary|stable):[\s\S]*?pnpm test:run(?:\n|$)/);
+});
+
+test("release smoke workflow extends the container readiness budget for CI", () => {
+  const smokeWorkflow = readWorkflow("release-smoke.yml");
+  const harness = readFileSync(path.join(repoRoot, "scripts/docker-onboard-smoke.sh"), "utf8");
+
+  // CI containers cold-install paperclipai and embedded postgres, so the
+  // workflow must extend the harness's local-default readiness budget.
+  assert.match(smokeWorkflow, /SMOKE_READY_TIMEOUT_SECONDS=\d+/);
+  const ciBudget = Number(smokeWorkflow.match(/SMOKE_READY_TIMEOUT_SECONDS=(\d+)/)[1]);
+  assert.ok(ciBudget >= 300, `CI readiness budget ${ciBudget}s should be at least 300s`);
+
+  assert.match(harness, /SMOKE_READY_TIMEOUT_SECONDS="\$\{SMOKE_READY_TIMEOUT_SECONDS:-\d+\}"/);
+  assert.match(harness, /wait_for_http "\$PAPERCLIP_PUBLIC_URL\/api\/health" "\$SMOKE_READY_TIMEOUT_SECONDS" 1/);
 });
 
 test("release verify workflow covers the same split test surface as stable PR verification", () => {
