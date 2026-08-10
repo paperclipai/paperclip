@@ -1439,6 +1439,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       reason: "issue_assigned",
       payload: withRecoveryModelProfileHint({
         issueId: issue.id,
+        // Keep automatic dispatch on the same stable task-session key used by
+        // board-scoped issue wakes. `issue.id` remains the authority for issue
+        // lookup; the human identifier is the session address.
+        taskKey: issue.identifier,
         mutation: "assigned_todo_liveness_dispatch",
       }, "normal_model"),
       requestedByActorType: "system",
@@ -1446,6 +1450,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       contextSnapshot: withRecoveryModelProfileHint({
         issueId: issue.id,
         taskId: issue.id,
+        taskKey: issue.identifier,
         wakeReason: "issue_assigned",
         source: "issue.assigned_todo_liveness_dispatch",
       }, "normal_model"),
@@ -8213,11 +8218,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             reason: "issue_assignment_recovery",
             payload: {
               issueId: fresh.id,
+              taskKey: fresh.identifier,
               healedFrom: ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE,
             },
             contextSnapshot: {
               issueId: fresh.id,
               taskId: fresh.id,
+              taskKey: fresh.identifier,
               wakeReason: "issue_assignment_recovery",
               retryReason: "assignment_recovery",
               source,

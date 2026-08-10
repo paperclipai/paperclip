@@ -19042,6 +19042,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
             payload: withRecoveryModelProfileHint({
               issueId: issue.id,
+              taskKey: issue.identifier,
               retryOfRunId: run.id,
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               currentStageId: executionState?.currentStageId ?? null,
@@ -19067,6 +19068,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             contextSnapshot: withRecoveryModelProfileHint({
               issueId: issue.id,
               taskId: issue.id,
+              taskKey: issue.identifier,
               wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               source: "issue.execution_review_recovery",
@@ -19184,6 +19186,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const recoveryContextSnapshot = {
             issueId: issue.id,
             taskId: issue.id,
+            taskKey: issue.identifier,
             wakeReason: recoveryReason,
             retryReason,
             source: "issue.two_tier_qa_escalate",
@@ -19334,6 +19337,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recoveryContextSnapshot = withRecoveryModelProfileHint({
         issueId: issue.id,
         taskId: issue.id,
+        taskKey: issue.identifier,
         wakeReason: recoveryReason,
         retryReason,
         source: recoverySource,

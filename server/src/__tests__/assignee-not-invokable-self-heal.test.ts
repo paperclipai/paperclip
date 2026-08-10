@@ -266,10 +266,16 @@ describeEmbeddedPostgres("assignee-not-invokable self-heal (TSMC-19829)", () => 
     expect(enqueueWakeup).toHaveBeenCalled();
     expect(enqueueWakeup.mock.calls.some((call) => {
       const calledAgentId = (call as unknown[])[0];
-      const opts = (call as unknown[])[1] as { reason?: string; payload?: Record<string, unknown> } | undefined;
+      const opts = (call as unknown[])[1] as {
+        reason?: string;
+        payload?: Record<string, unknown>;
+        contextSnapshot?: Record<string, unknown>;
+      } | undefined;
       return calledAgentId === agentId
         && opts?.reason === "issue_assignment_recovery"
         && opts?.payload?.issueId === issueId
+        && opts?.payload?.taskKey === `${issuePrefix}-1`
+        && opts?.contextSnapshot?.taskKey === `${issuePrefix}-1`
         && opts?.payload?.healedFrom === ASSIGNEE_NOT_INVOKABLE_UNBLOCK_CAUSE;
     })).toBe(true);
 
