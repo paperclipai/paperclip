@@ -121,6 +121,50 @@ describe("codex local adapter skill injection", () => {
     );
   });
 
+  it("revokes only Paperclip-managed skills that are no longer desired", async () => {
+    const currentRepo = await makeTempDir("paperclip-codex-current-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(currentRepo);
+    cleanupDirs.add(skillsHome);
+
+    await createPaperclipRepoSkill(currentRepo, "keep");
+    await createPaperclipRepoSkill(currentRepo, "remove");
+    await fs.mkdir(path.join(skillsHome, "user-owned"), { recursive: true });
+    await fs.writeFile(path.join(skillsHome, "user-owned", "SKILL.md"), "# user-owned\n", "utf8");
+
+    const skillsEntries = [
+      {
+        key: "paperclipai/paperclip/keep",
+        runtimeName: "keep",
+        source: path.join(currentRepo, "skills", "keep"),
+      },
+      {
+        key: "paperclipai/paperclip/remove",
+        runtimeName: "remove",
+        source: path.join(currentRepo, "skills", "remove"),
+      },
+    ];
+
+    await ensureCodexSkillsInjected(async () => {}, {
+      skillsHome,
+      skillsEntries,
+      desiredSkillNames: skillsEntries.map((entry) => entry.key),
+    });
+    await ensureCodexSkillsInjected(async () => {}, {
+      skillsHome,
+      skillsEntries,
+      desiredSkillNames: [skillsEntries[0]!.key],
+    });
+
+    expect(await fs.realpath(path.join(skillsHome, "keep"))).toBe(
+      await fs.realpath(path.join(currentRepo, "skills", "keep")),
+    );
+    await expect(fs.lstat(path.join(skillsHome, "remove"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await fs.readFile(path.join(skillsHome, "user-owned", "SKILL.md"), "utf8")).toBe("# user-owned\n");
+  });
+
   it("prunes broken symlinks for unavailable Paperclip repo skills before Codex starts", async () => {
     const currentRepo = await makeTempDir("paperclip-codex-current-");
     const oldRepo = await makeTempDir("paperclip-codex-old-");
