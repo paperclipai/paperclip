@@ -87,6 +87,71 @@ def test_hole_text_kappt_auf_max_zeichen():
     assert ergebnis.text.endswith("… [gekappt bei 100 Zeichen]")
 
 
+def test_pdf_wird_nicht_als_quelltext_ausgegeben():
+    """Ein PDF-Treffer lieferte bisher 12.000 Zeichen '%PDF-1.4 ...' als text,
+    zaehlte damit als verwertbare Quelle und unterdrueckte den Hinweis.
+    Fuer Foerdermittel- und Behoerdenfragen sind PDFs der Normalfall.
+    """
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/merkblatt.pdf",
+              content=b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj" + b"\x00" * 200,
+              headers={"Content-Type": "application/pdf"})
+        ergebnis = hole_text("https://a.de/merkblatt.pdf")
+    assert ergebnis.text is None
+    assert "application/pdf" in ergebnis.fehler
+
+
+def test_bildformat_wird_abgelehnt():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/bild.png", content=b"\x89PNG\r\n\x1a\n" + b"\x00" * 50,
+              headers={"Content-Type": "image/png"})
+        ergebnis = hole_text("https://a.de/bild.png")
+    assert ergebnis.text is None
+    assert "image/png" in ergebnis.fehler
+
+
+def test_klartext_wird_akzeptiert():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/liste.txt", text="Erste Zeile\nZweite Zeile",
+              headers={"Content-Type": "text/plain; charset=utf-8"})
+        ergebnis = hole_text("https://a.de/liste.txt")
+    assert ergebnis.fehler is None
+    assert "Erste Zeile" in ergebnis.text
+
+
+def test_html_mit_charset_wird_akzeptiert():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", text=SEITE,
+              headers={"Content-Type": "text/html; charset=ISO-8859-1"})
+        ergebnis = hole_text("https://a.de/seite")
+    assert ergebnis.fehler is None
+
+
+def test_binaerinhalt_ohne_content_type_wird_abgelehnt():
+    """Kein Content-Type ist keine Erlaubnis: der Rumpf entscheidet."""
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/datei",
+              content=b"%PDF-1.7\n" + b"\x00\x01\x02" * 100,
+              headers={"Content-Type": ""})
+        ergebnis = hole_text("https://a.de/datei")
+    assert ergebnis.text is None
+    assert "Binaer" in ergebnis.fehler or "binaer" in ergebnis.fehler
+
+
+def test_hole_text_sendet_accept_header_fuer_text():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", text=SEITE)
+        hole_text("https://a.de/seite")
+        accept = m.request_history[-1].headers["Accept"]
+    assert "text/html" in accept
+
+
 def test_hole_text_sendet_ehrlichen_user_agent():
     with requests_mock.Mocker() as m:
         m.get("https://a.de/robots.txt", status_code=404)

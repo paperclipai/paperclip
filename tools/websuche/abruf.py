@@ -16,6 +16,17 @@ from bs4 import BeautifulSoup
 USER_AGENT = ("WHITESTAG-Websuche/1.0 "
               "(Recherche-Agent; kontakt: ws@whitestag.ai)")
 
+# Sagt dem Server, was wir verwerten koennen. Ersetzt keine Pruefung — viele
+# Server ignorieren Accept —, spart aber die Uebertragung offensichtlicher
+# Binaerformate.
+ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1"
+
+# Alles ausserhalb dieser Liste ist kein Fliesstext. Ein PDF lieferte bisher
+# 12.000 Zeichen "%PDF-1.4 ..." als `text`, zaehlte damit als verwertbare
+# Quelle und unterdrueckte den Hinweis auf zu wenige Quellen.
+TEXT_MIMES = {"text/html", "application/xhtml+xml", "text/plain",
+              "application/xml", "text/xml", "text/markdown"}
+
 # Alles, was auf jeder Seite steht und in keinem Zitat etwas verloren hat.
 BEIWERK = ("script", "style", "nav", "header", "footer", "aside", "noscript",
            "form", "iframe")
@@ -62,13 +73,31 @@ def darf_abrufen(url: str, timeout: float = 5.0) -> bool:
     return parser.can_fetch(USER_AGENT, url)
 
 
+def _formatfehler(content_type: str, rumpf: bytes) -> str | None:
+    """Gibt eine Fehlermeldung zurueck, wenn der Inhalt kein Fliesstext ist."""
+    mime = (content_type or "").split(";")[0].strip().lower()
+    if mime:
+        if mime.startswith("text/") or mime in TEXT_MIMES:
+            return None
+        return (f"Kein auswertbarer Text, sondern {mime} — Inhalt nicht "
+                f"zitierfaehig extrahierbar")
+    # Ohne Content-Type entscheidet der Rumpf: Nullbytes und die bekannten
+    # Dateisignaturen sind sichere Zeichen fuer Binaerinhalt.
+    probe = rumpf[:1024]
+    if b"\x00" in probe or probe.startswith((b"%PDF", b"\x89PNG", b"\xff\xd8\xff",
+                                             b"PK\x03\x04", b"GIF8")):
+        return "Binaerinhalt ohne Content-Type — nicht zitierfaehig extrahierbar"
+    return None
+
+
 def hole_text(url: str, max_zeichen: int = 12000,
               timeout: float = 10.0) -> AbrufErgebnis:
     if not darf_abrufen(url):
         return AbrufErgebnis(fehler="Abruf laut robots.txt nicht erlaubt")
     try:
         antwort = requests.get(url, timeout=timeout,
-                               headers={"User-Agent": USER_AGENT})
+                               headers={"User-Agent": USER_AGENT,
+                                        "Accept": ACCEPT})
         antwort.raise_for_status()
     except requests.exceptions.Timeout:
         return AbrufErgebnis(fehler=f"Zeit überschritten nach {timeout}s")
@@ -76,6 +105,11 @@ def hole_text(url: str, max_zeichen: int = 12000,
         return AbrufErgebnis(fehler=f"HTTP {e.response.status_code}")
     except requests.exceptions.RequestException as e:
         return AbrufErgebnis(fehler=f"Abruf fehlgeschlagen: {e}")
+
+    fehler = _formatfehler(antwort.headers.get("Content-Type", ""),
+                           antwort.content)
+    if fehler:
+        return AbrufErgebnis(fehler=fehler)
 
     try:
         text = kappe(extrahiere_text(antwort.text), max_zeichen)
