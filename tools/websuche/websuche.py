@@ -54,16 +54,21 @@ def _waehle_treffer(treffer, quellen, gleiche_domain_erlauben):
     return gewaehlt
 
 
-def _hinweis(quellen: list[dict]) -> str | None:
+def _hinweis(quellen: list[dict], backend_warnung: str | None = None) -> str | None:
     mit_text = sum(1 for q in quellen if "text" in q)
     if mit_text >= 2:
-        return None
-    if mit_text == 1:
-        return ("Nur eine Quelle lieferte verwertbaren Text. Fuer eine belastbare "
+        satz = None
+    elif mit_text == 1:
+        satz = ("Nur eine Quelle lieferte verwertbaren Text. Fuer eine belastbare "
                 "Aussage sind mindestens zwei unabhaengige Quellen noetig — "
                 "Suche mit anderen Begriffen wiederholen oder --quellen erhoehen.")
-    return ("Keine Quelle lieferte verwertbaren Text. Suche mit anderen "
-            "Begriffen wiederholen; die Frage ggf. enger fassen.")
+    else:
+        satz = ("Keine Quelle lieferte verwertbaren Text. Suche mit anderen "
+                "Begriffen wiederholen; die Frage ggf. enger fassen.")
+    # Die Backend-Warnung (ausgefallene Engines) ergaenzt den Quellen-Hinweis,
+    # statt ihn zu ersetzen: beides sind eigenstaendige Luecken im Ergebnis.
+    teile = [t for t in (satz, backend_warnung) if t]
+    return " ".join(teile) if teile else None
 
 
 def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
@@ -79,6 +84,9 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     # Ueberzaehlig abfragen: die Deduplizierung verwirft Treffer, und ohne
     # Reserve bleiben sonst regelmaessig weniger Quellen uebrig als angefordert.
     kandidaten = backend.suche(frage, limit=max(10, quellen * 3))
+    # Nicht-blockierende Meldung der Suchquelle (z.B. ausgefallene Engines).
+    # Optional per Duck-Typing, damit fremde Backends sie nicht kennen muessen.
+    backend_warnung = getattr(backend, "letzte_warnung", None)
     gewaehlt = _waehle_treffer(kandidaten, quellen, gleiche_domain_erlauben)
 
     heute = date.today().isoformat()
@@ -137,4 +145,4 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
         ausgabe.append(eintrag)
 
     return {"frage": frage, "abgerufen_am": heute, "quellen": ausgabe,
-            "hinweis": _hinweis(ausgabe)}
+            "hinweis": _hinweis(ausgabe, backend_warnung)}

@@ -111,6 +111,42 @@ def test_hinweis_wenn_gar_keine_treffer():
     assert ergebnis["hinweis"] is not None
 
 
+class WarnendesBackend(FakeBackend):
+    def __init__(self, treffer, warnung):
+        super().__init__(treffer)
+        self.letzte_warnung = warnung
+
+
+def test_backend_warnung_landet_im_hinweis():
+    """Ausgefallene Engines duerfen das Ergebnis nicht kippen, aber sie
+    muessen im Ergebnis sichtbar sein — sonst haelt der Agent eine
+    halbierte Trefferliste fuer die volle Lage."""
+    backend = WarnendesBackend([t("https://a.de/1"), t("https://b.de/2")],
+                               "3 Suchmaschinen waren ausgefallen (startpage, brave, ddg)")
+    ergebnis = recherchiere("f", quellen=2, backend=backend, abrufer=abrufer_ok)
+    assert len(ergebnis["quellen"]) == 2  # nicht blockiert
+    assert "startpage" in ergebnis["hinweis"]
+
+
+def test_backend_warnung_verdraengt_den_quellen_hinweis_nicht():
+    def abrufer(url, max_zeichen, timeout):
+        if "a.de" in url:
+            return AbrufErgebnis(text="ok")
+        return AbrufErgebnis(fehler="HTTP 403")
+
+    backend = WarnendesBackend([t("https://a.de/1"), t("https://b.de/2")],
+                               "3 Suchmaschinen waren ausgefallen")
+    ergebnis = recherchiere("f", quellen=2, backend=backend, abrufer=abrufer)
+    assert "Nur eine Quelle" in ergebnis["hinweis"]
+    assert "ausgefallen" in ergebnis["hinweis"]
+
+
+def test_ohne_backend_warnung_bleibt_hinweis_null():
+    backend = WarnendesBackend([t("https://a.de/1"), t("https://b.de/2")], None)
+    ergebnis = recherchiere("f", quellen=2, backend=backend, abrufer=abrufer_ok)
+    assert ergebnis["hinweis"] is None
+
+
 def test_jede_quelle_traegt_abrufdatum_und_url():
     backend = FakeBackend([t("https://a.de/1", titel="Titel A")])
     ergebnis = recherchiere("f", quellen=1, backend=backend,
