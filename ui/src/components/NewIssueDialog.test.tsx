@@ -902,10 +902,11 @@ describe("NewIssueDialog", () => {
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await flush();
 
-    expect(submitButton?.textContent).toContain("Creating...");
-    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    await vi.waitFor(() => {
+      expect(submitButton?.textContent).toContain("Creating...");
+      expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    });
     expect(container.textContent).not.toContain("Creating issue");
 
     act(() => root.unmount());
@@ -1352,17 +1353,21 @@ describe("NewIssueDialog", () => {
     // The watchdog row is hidden until the menu item is toggled on.
     expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).toBeNull();
 
-    const watchdogMenuItem = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Watchdog");
-    expect(watchdogMenuItem).not.toBeUndefined();
+    let watchdogMenuItem: HTMLButtonElement | undefined;
+    await vi.waitFor(() => {
+      watchdogMenuItem = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Watchdog");
+      expect(watchdogMenuItem).not.toBeUndefined();
+    });
 
     await act(async () => {
       watchdogMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await flush();
 
-    expect(container.textContent).toContain("Set watchdog");
-    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).not.toBeNull();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Set watchdog");
+      expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).not.toBeNull();
+    });
 
     act(() => root.unmount());
   });

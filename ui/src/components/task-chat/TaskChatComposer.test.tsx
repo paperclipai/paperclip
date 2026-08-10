@@ -411,13 +411,17 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
+    await vi.waitFor(() => {
+      expect(send.disabled).toBe(false);
+    });
     flushSync(() => send.click());
-    await flushAsync();
-    expect(onAdd).toHaveBeenCalledWith(
-      "Please review this.\n\n[notes.txt](/attachments/notes.txt)",
-      undefined,
-      undefined,
-    );
+    await vi.waitFor(() => {
+      expect(onAdd).toHaveBeenCalledWith(
+        "Please review this.\n\n[notes.txt](/attachments/notes.txt)",
+        undefined,
+        undefined,
+      );
+    });
   });
 
   it("blocks send while a file upload is pending, then includes the file once it lands", async () => {
