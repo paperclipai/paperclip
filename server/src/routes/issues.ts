@@ -27,6 +27,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -2043,9 +2044,7 @@ export function issueRoutes(
     try {
       updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     } catch (error) {
-      const err = error as { code?: string; constraint?: string; constraint_name?: string };
-      const constraint = err.constraint ?? err.constraint_name;
-      if (err.code === "23505" && constraint === "issues_open_routine_execution_uq") {
+      if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
         res.status(409).json({
           error: "Another execution for this routine is already in progress",
         });
