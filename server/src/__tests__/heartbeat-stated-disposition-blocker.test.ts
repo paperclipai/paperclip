@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildStatedDispositionBlockerIssueInput } from "../services/heartbeat.js";
+import {
+  buildStatedDispositionBlockerIssueInput,
+  isTransientPaperclipControlPlaneWriteFailure,
+} from "../services/heartbeat.js";
 
 describe("stated-disposition blocker issue inheritance", () => {
   it("keeps the source project, workspace, owner, and work mode", () => {
@@ -24,5 +27,17 @@ describe("stated-disposition blocker issue inheritance", () => {
       assigneeUserId: null,
     });
     expect(blocker.description).toContain("TSMC-20696");
+  });
+
+  it("recognizes a transient Paperclip write failure rather than treating it as task work", () => {
+    expect(isTransientPaperclipControlPlaneWriteFailure(
+      "Could not record issue state because Paperclip API is unreachable at http://127.0.0.1:3100 (connection refused).",
+    )).toBe(true);
+    expect(isTransientPaperclipControlPlaneWriteFailure(
+      "Paperclip control-plane write could not be recorded: ECONNREFUSED",
+    )).toBe(true);
+    expect(isTransientPaperclipControlPlaneWriteFailure(
+      "Waiting for the approved design source package from the media team.",
+    )).toBe(false);
   });
 });
