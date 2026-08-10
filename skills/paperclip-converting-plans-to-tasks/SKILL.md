@@ -29,6 +29,28 @@ Before or while creating tasks, write a compact task matrix with each planned ta
 
 After creating the tasks, re-fetch the created issues or otherwise verify the issue graph before marking the source planning issue done. Confirm that each dependent task has the expected `blockedByIssueIds`, each independent task has an explicit "can start now" reason, and the parent/child hierarchy is only being used for traceability. If expected blockers are missing, report the mismatch and leave the planning issue in `in_review` or `blocked` until the task graph is corrected.
 
+## Mandatory scope split gate
+
+Before assigning an implementation task, record a one-line scope decision in
+the task description or routing comment. Split it into children when **any**
+of these are true:
+
+- it crosses two or more implementation domains (for example renderer + brand
+  assets + site integration);
+- it needs both code/change verification and a separate visual/release proof;
+- it has more than three independently verifiable acceptance outcomes;
+- the first pass is expected to exceed 400K input tokens, or has already
+  exceeded that threshold once.
+
+Each child must own one concrete deliverable, one bounded test/evidence set,
+one token cap, and explicit dependencies. The parent becomes a routing and
+acceptance container; it must not also be the implementation lane. A second
+over-cap run on the same child is a stop-and-split escalation, not a retry.
+
+This is a system runbook, not optional advice: do the split before waking an
+LLM. For deterministic or mechanical work, route the child to its script or
+shell handler instead of an LLM lane.
+
 ## Quick checklist before you publish a plan
 
 - [ ] Enough detail that assignees can act without re-asking.

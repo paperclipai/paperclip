@@ -104,6 +104,22 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
+### Browser execution rule
+
+For a Paperclip-owned browser check, do not launch the macOS Chrome app, a
+global Playwright install, or a shared persistent profile directly. Use the
+repository-pinned launcher instead:
+
+```sh
+node scripts/managed-playwright.mjs --url "https://example.test" --screenshot /absolute/path/proof.png
+```
+
+It serializes launches, uses a throwaway profile, has a hard timeout, and
+cleans up after itself. It preserves browser capability; a browser failure is
+an explicit typed blocker, not permission to repeatedly relaunch Chrome. For
+mechanical PDFs or governed documents, prefer the existing deterministic
+renderer (for example Exemplar Studio) over a browser screenshot.
+
 ### Generated Artifacts and Work Products
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition and create an artifact work product. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
