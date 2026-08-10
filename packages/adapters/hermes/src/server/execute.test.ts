@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +22,7 @@ import { execute } from "./execute.js";
 const tempRoots: string[] = [];
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
+const previousHermesStateDb = process.env.HERMES_STATE_DB;
 
 async function makeHermesHome(configLines: string[]) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-execute-"));
@@ -39,6 +41,8 @@ afterEach(async () => {
   else process.env.HOME = previousHome;
   if (previousUserProfile === undefined) delete process.env.USERPROFILE;
   else process.env.USERPROFILE = previousUserProfile;
+  if (previousHermesStateDb === undefined) delete process.env.HERMES_STATE_DB;
+  else process.env.HERMES_STATE_DB = previousHermesStateDb;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -215,5 +219,65 @@ describe("hermes execute", () => {
     const prompt = call[2][call[2].indexOf("-q") + 1];
     expect(prompt).toContain("Recovery contract");
     expect(prompt).not.toContain("Very large managed instruction bundle");
+  });
+
+  it("records Hermes session usage from the per-model usage ledger", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const stateDbPath = path.join(root, ".hermes", "state.db");
+    process.env.HERMES_STATE_DB = stateDbPath;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY);",
+        "CREATE TABLE session_model_usage (",
+        "session_id TEXT NOT NULL, model TEXT NOT NULL, billing_provider TEXT NOT NULL DEFAULT '',",
+        "billing_base_url TEXT NOT NULL DEFAULT '', billing_mode TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '',",
+        "input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+        ");",
+        "INSERT INTO sessions (id) VALUES ('sess-ledger');",
+        "INSERT INTO session_model_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens)",
+        "VALUES ('sess-ledger', 'grok-4.5', 120, 30, 450);",
+        "INSERT INTO session_model_usage (session_id, model, task, input_tokens, output_tokens, cache_read_tokens)",
+        "VALUES ('sess-ledger', 'grok-4.5', 'follow-up', 80, 20, 150);",
+      ].join(" "),
+    ]);
+    expect(
+      JSON.parse(
+        execFileSync("sqlite3", [
+          "-readonly",
+          "-json",
+          stateDbPath,
+          "SELECT SUM(input_tokens) AS inputTokens FROM session_model_usage WHERE session_id = 'sess-ledger';",
+        ]).toString(),
+      ),
+    ).toEqual([{ inputTokens: 200 }]);
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-ledger\nDone",
+      stderr: "",
+    });
+
+    const result = await execute({
+      runId: "run-ledger",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.resultJson?.session_id).toBe("sess-ledger");
+    expect(result.usage).toEqual({ inputTokens: 200, outputTokens: 50, cachedInputTokens: 600 });
+    expect(result.usageBasis).toBe("session_cumulative");
+    expect(result.resultJson?.usage).toEqual({ inputTokens: 200, outputTokens: 50, cachedInputTokens: 600 });
   });
 });

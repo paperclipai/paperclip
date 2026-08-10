@@ -403,11 +403,15 @@ async function readHermesSessionUsage(sessionId: string): Promise<UsageSummary |
   const stateDbPath = process.env.HERMES_STATE_DB || path.join(os.homedir(), ".hermes", "state.db");
   try {
     await fs.access(stateDbPath);
+    // `sessions` contains session metadata only. Hermes keeps its token
+    // ledger separately, per model/provider/task, so aggregate those rows
+    // into the cumulative session total that the heartbeat service can delta.
     const query = [
-      "SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,",
-      "cache_read_tokens AS cachedInputTokens",
-      "FROM sessions",
-      `WHERE id = '${sessionId}'`,
+      "SELECT COALESCE(SUM(input_tokens), 0) AS inputTokens,",
+      "COALESCE(SUM(output_tokens), 0) AS outputTokens,",
+      "COALESCE(SUM(cache_read_tokens), 0) AS cachedInputTokens",
+      "FROM session_model_usage",
+      `WHERE session_id = '${sessionId}'`,
       "LIMIT 1;",
     ].join(" ");
     const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, query], {
