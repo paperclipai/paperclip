@@ -91,6 +91,23 @@ export function toolAccessRoutes(
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
 
+  // Wires the gateway's personal-only credential resolution (see
+  // startUserAuthorizationHook in tool-gateway.ts) back to this service's
+  // existing OAuth-start logic, rather than duplicating PKCE/state handling
+  // in the gateway. The gateway is constructed before this service (it's a
+  // constructor dependency of toolAccessService), so this can't be wired at
+  // construction time -- it's set post-construction here instead.
+  options.toolGateway?.configureUserAuthorization(async (input) => {
+    await svc.startAuthorizationForAgent({
+      companyId: input.companyId,
+      connectionId: input.connectionId,
+      agentId: input.agentId,
+      runId: input.runId,
+      subjectUserId: input.subjectUserId,
+      redirectUri: oauthRedirectUri(),
+    });
+  });
+
   function configuredPublicBaseUrl() {
     const raw = (
       process.env.PAPERCLIP_PUBLIC_URL?.trim()

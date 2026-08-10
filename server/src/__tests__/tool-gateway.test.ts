@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -1606,6 +1607,185 @@ rl.on("line", (line) => {
         activity: await db.select().from(activityLog),
       });
       expect(persisted).not.toContain(credentialValue);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("refuses a public/shared agent on a personal_only connection before any grant lookup", async () => {
+    const company = await createCompany(db);
+    const publicAgent = await createAgent(db, company.id);
+    await db.update(agents).set({ isPublic: true }).where(eq(agents.id, publicAgent.id));
+    const { run } = await createIssueAndRun(db, company.id, publicAgent.id);
+    const fake = await startFakeRemoteMcpServer(async () => {
+      throw new Error("fake remote MCP server should not be called for a refused public agent");
+    });
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "personal-google",
+        connectionName: "Personal Google (test)",
+        toolName: "list_calendars",
+        url: fake.url,
+      });
+      await db.update(toolConnections)
+        .set({
+          config: { url: fake.url, identityModel: "personal_only" },
+          transportConfig: { url: fake.url, identityModel: "personal_only" },
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await allowAllToolsForAgent(db, company.id, publicAgent.id);
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: publicAgent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const error = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: {},
+      }).catch((err: unknown) => err);
+      expectGatewayError(error, 403, "agent_not_personal");
+      expect(fake.requests).toHaveLength(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("refuses a personal_only connection call with no grant for the run's responsible user, and posts a connect prompt", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const responsibleUserId = `user-${randomUUID()}`;
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { ...(run.contextSnapshot as Record<string, unknown>), responsibleUserId } })
+      .where(eq(heartbeatRuns.id, run.id));
+    const fake = await startFakeRemoteMcpServer(async () => {
+      throw new Error("fake remote MCP server should not be called with no grant");
+    });
+    let authorizationStarted: unknown = null;
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "personal-google-2",
+        connectionName: "Personal Google (test, no grant)",
+        toolName: "list_calendars",
+        url: fake.url,
+      });
+      await db.update(toolConnections)
+        .set({
+          config: { url: fake.url, identityModel: "personal_only" },
+          transportConfig: { url: fake.url, identityModel: "personal_only" },
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+
+      const gateway = createTestToolGatewayService(db);
+      gateway.configureUserAuthorization(async (input) => {
+        authorizationStarted = input;
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const error = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: {},
+      }).catch((err: unknown) => err);
+      expectGatewayError(error, 403, "user_authorization_required");
+      expect((error as ToolGatewayHttpError).details).toMatchObject({ subjectUserId: responsibleUserId });
+      expect(fake.requests).toHaveLength(0);
+      expect(authorizationStarted).toMatchObject({
+        companyId: company.id,
+        connectionId: remoteTool.connection.id,
+        agentId: agent.id,
+        runId: run.id,
+        subjectUserId: responsibleUserId,
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("uses the responsible user's own grant, not the connection's own credentials, for a personal_only connection", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const responsibleUserId = `user-${randomUUID()}`;
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { ...(run.contextSnapshot as Record<string, unknown>), responsibleUserId } })
+      .where(eq(heartbeatRuns.id, run.id));
+    const personalAccessToken = `personal-token-${randomUUID()}`;
+    const secret = await secretService(db).create(company.id, {
+      name: `Personal Google token ${randomUUID()}`,
+      key: `personal_google_token_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: personalAccessToken,
+    });
+    const fake = await startFakeRemoteMcpServer(async (fakeRequest) => {
+      expect(fakeRequest.headers.authorization).toBe(`Bearer ${personalAccessToken}`);
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "ok" }], structuredContent: { calendars: [] } },
+        },
+      };
+    });
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "personal-google-3",
+        connectionName: "Personal Google (test, with grant)",
+        toolName: "list_calendars",
+        url: fake.url,
+        // Deliberately no connection-level credentialRefs -- a personal_only
+        // connection must never fall back to these even if present.
+      });
+      await db.update(toolConnections)
+        .set({
+          config: { url: fake.url, identityModel: "personal_only" },
+          transportConfig: { url: fake.url, identityModel: "personal_only" },
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await db.insert(connectionGrants).values({
+        companyId: company.id,
+        connectionId: remoteTool.connection.id,
+        kind: "user",
+        subjectUserId: responsibleUserId,
+        status: "active",
+        credentialSecretRefs: [{
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "oauth.access_token",
+          required: true,
+          label: "Access token",
+        }],
+      });
+      await db.insert(companySecretBindings).values({
+        companyId: company.id,
+        secretId: secret.id,
+        targetType: "tool_connection",
+        targetId: remoteTool.connection.id,
+        configPath: "oauth.access_token",
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: {},
+      });
+      expect(result).toMatchObject({ status: "completed" });
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]!.headers.authorization).toBe(`Bearer ${personalAccessToken}`);
     } finally {
       await fake.close();
     }

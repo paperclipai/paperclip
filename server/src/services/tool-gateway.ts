@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  connectionGrants,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -769,6 +770,23 @@ export function createToolGatewayService(
   const secrets = secretService(db);
   const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
   let nextProtocolRateLimitPruneAt = 0;
+  // Wired post-construction by whoever also constructs toolAccessService, since
+  // that service owns OAuth-endpoint discovery and PKCE state and this service
+  // is constructed first (see server/src/routes/tool-access.ts). Personal-only
+  // connections (no legitimate non-personal identity -- Gmail, Calendar, a
+  // user-scoped Slack grant) call this to post the "Connect your account"
+  // interaction card when the run's responsible user has no grant yet, instead
+  // of duplicating OAuth-start logic here.
+  let startUserAuthorizationHook:
+    | ((input: {
+        companyId: string;
+        connectionId: string;
+        agentId: string;
+        runId: string;
+        subjectUserId: string;
+        issueId: string | null;
+      }) => Promise<void>)
+    | null = null;
 
   async function pruneExpiredProtocolRateLimitCounters(current: number) {
     if (current < nextProtocolRateLimitPruneAt) return;
@@ -2366,6 +2384,158 @@ export function createToolGatewayService(
     return headers;
   }
 
+  // Gmail, Calendar, and any user-scoped Slack grant have no legitimate
+  // non-personal identity -- there is no "the company's calendar" to fall
+  // back to. A connection is marked personal_only in its config (either
+  // copied from the connecting AppDefinition's method, or set directly for
+  // link-connected servers like rh-google-mcp that have no gallery entry).
+  function isPersonalOnlyConnection(connection: typeof toolConnections.$inferSelect): boolean {
+    return asRecord(connection.config)?.identityModel === "personal_only";
+  }
+
+  async function isAgentPublic(companyId: string, agentId: string): Promise<boolean> {
+    const [agent] = await db
+      .select({ isPublic: agents.isPublic })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .limit(1);
+    return agent?.isPublic ?? false;
+  }
+
+  // Mirrors loadBrokerRunContext's responsibleUserId resolution in
+  // tool-access.ts (duplicated rather than imported: the two services are
+  // constructed independently and neither currently depends on the other's
+  // internals -- see startUserAuthorizationHook above for the one place that
+  // does need cross-service wiring).
+  async function resolveResponsibleUserId(session: ToolGatewaySession): Promise<string | null> {
+    if (!session.runId || !session.agentId) return null;
+    const [run] = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, session.runId))
+      .limit(1);
+    if (!run || run.companyId !== session.companyId || run.agentId !== session.agentId) return null;
+    const snapshot = asRecord(run.contextSnapshot) ?? {};
+    const paperclipIssue = asRecord(snapshot.paperclipIssue) ?? {};
+    const fromSnapshot = snapshot.responsibleUserId ?? snapshot.responsible_user_id;
+    if (typeof fromSnapshot === "string" && fromSnapshot.trim()) return fromSnapshot;
+    const fromIssue = paperclipIssue.responsibleUserId ?? paperclipIssue.responsible_user_id;
+    return typeof fromIssue === "string" && fromIssue.trim() ? fromIssue : null;
+  }
+
+  // Never falls back to a workspace grant or the connection's own
+  // credentialRefs -- for a personal_only connection there is no valid
+  // fallback identity, only this specific person's or nothing. A grant past
+  // its access-token expiry is treated the same as no grant (refresh-token
+  // rotation for gateway-resolved grants is not yet implemented; the token
+  // was minted fresh by the connect-card OAuth flow, so falling through to
+  // "reconnect" on expiry is fail-closed, not a regression).
+  async function resolveUserGrantAuthHeader(
+    connection: typeof toolConnections.$inferSelect,
+    subjectUserId: string,
+  ): Promise<Record<string, string> | null> {
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, subjectUserId),
+        eq(connectionGrants.status, "active"),
+      ))
+      .limit(1);
+    if (!grant) return null;
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    if (!accessTokenRef) return null;
+    if (accessTokenRef.expiresAt && Date.parse(accessTokenRef.expiresAt) <= Date.now()) return null;
+    try {
+      const token = await secrets.resolveSecretValue(
+        connection.companyId,
+        accessTokenRef.secretId,
+        accessTokenRef.versionSelector ?? "latest",
+        {
+          consumerType: "tool_connection",
+          consumerId: connection.id,
+          configPath: "oauth.access_token",
+          actorType: "system",
+        },
+      );
+      return { Authorization: `Bearer ${token}` };
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolvePersonalOrConnectionCredentialHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<Record<string, string>> {
+    if (!isPersonalOnlyConnection(connection)) {
+      return resolveCredentialHeaders(connection);
+    }
+    if (!session.agentId) {
+      throw new ToolGatewayHttpError(
+        403,
+        "This app can only be used by an agent acting for a specific person.",
+        "agent_not_personal",
+        { connectionId: connection.id },
+      );
+    }
+    // Refused before any grant lookup, deliberately -- a public/shared agent
+    // has no single person it acts for, and Gmail/Calendar/personal Slack
+    // have no non-personal identity to fall back to. This is a structural
+    // refusal, not a per-agent allowlist someone has to maintain.
+    if (await isAgentPublic(session.companyId, session.agentId)) {
+      throw new ToolGatewayHttpError(
+        403,
+        "This app can only be used by an agent that belongs to one specific person, not a shared or public agent.",
+        "agent_not_personal",
+        { connectionId: connection.id, agentId: session.agentId },
+      );
+    }
+    const responsibleUserId = await resolveResponsibleUserId(session);
+    if (!responsibleUserId) {
+      throw new ToolGatewayHttpError(
+        403,
+        "Could not determine which person this agent run is acting for.",
+        "responsible_user_unknown",
+        { connectionId: connection.id, agentId: session.agentId, runId: session.runId },
+      );
+    }
+    const grantHeaders = await resolveUserGrantAuthHeader(connection, responsibleUserId);
+    if (grantHeaders) return grantHeaders;
+    if (startUserAuthorizationHook) {
+      // Best-effort: posting the connect card is a courtesy on top of the
+      // 403 below, not a precondition for it. A card-creation failure (e.g.
+      // the run's broker status doesn't allow starting authorization right
+      // now) must not replace the clear, structured user_authorization_
+      // required error with an opaque one.
+      try {
+        await startUserAuthorizationHook({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          agentId: session.agentId,
+          runId: session.runId ?? "",
+          subjectUserId: responsibleUserId,
+          issueId: session.issueId,
+        });
+      } catch {
+        // swallow -- see comment above
+      }
+    }
+    throw new ToolGatewayHttpError(
+      403,
+      "This person needs to connect their own account before this agent can use it on their behalf.",
+      "user_authorization_required",
+      { connectionId: connection.id, subjectUserId: responsibleUserId, remediation: { action: "start_authorization" } },
+    );
+  }
+
   function credentialVersionRefHash(value: Record<string, unknown>): string {
     return stableHash(value);
   }
@@ -3011,7 +3181,7 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const endpoint = await assertRemoteEndpointAllowed(connection.config ?? {});
-    const credentialHeaders = await resolveCredentialHeaders(connection);
+    const credentialHeaders = await resolvePersonalOrConnectionCredentialHeaders(session, connection);
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,
       connection,
@@ -4491,6 +4661,15 @@ export function createToolGatewayService(
   }
 
   return {
+    // See startUserAuthorizationHook above: toolAccessService is constructed
+    // after this service (it takes the gateway as a dependency), so the two
+    // are wired together here rather than at construction time. Called once
+    // from server/src/routes/tool-access.ts right after toolAccessService is
+    // created.
+    configureUserAuthorization(hook: typeof startUserAuthorizationHook) {
+      startUserAuthorizationHook = hook;
+    },
+
     async recordRuntimeMcpDeliveryDiagnostic(input: {
       companyId: string;
       agentId: string;
