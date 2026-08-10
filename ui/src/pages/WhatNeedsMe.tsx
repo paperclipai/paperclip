@@ -14,7 +14,9 @@ import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
+  ATTENTION_STALE_DAYS,
   attentionIsAging,
+  attentionIsStale,
   buildAttentionFilterOptions,
   defaultAttentionFilterState,
   filterAttentionItems,
@@ -111,6 +113,7 @@ export function WhatNeedsMe() {
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
   const [agingOpen, setAgingOpen] = useState(false);
+  const [staleOpen, setStaleOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
 
@@ -236,7 +239,16 @@ export function WhatNeedsMe() {
   // Aging shelf (§4.4): items the server flags as idle past retention leave the
   // live desk for their own curtain, so today's desk shows only fresh decisions.
   const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
+  // Client-side stale-fold: review-kind rows idle past the threshold leave the
+  // desk for their own curtain (blockers never fold). Keeps the live desk short.
+  const staleItems = useMemo(
+    () => activeItems.filter((item) => !attentionIsAging(item) && attentionIsStale(item, now)),
+    [activeItems, now],
+  );
+  const deskItems = useMemo(
+    () => activeItems.filter((item) => !attentionIsAging(item) && !attentionIsStale(item, now)),
+    [activeItems, now],
+  );
   const snoozedItems = useMemo(
     () =>
       allItems.filter(
@@ -704,6 +716,35 @@ export function WhatNeedsMe() {
                 Idle past {ATTENTION_AGING_DAYS} days — kept off the desk. Keep any you still want surfaced.
               </p>
               {agingItems.map((item) => (
+                <AgingItemRow
+                  key={item.id}
+                  item={item}
+                  companyId={selectedCompanyId}
+                  now={now}
+                  agentMap={agentMap}
+                  agents={agents}
+                  currentUserId={currentUserId}
+                  expanded={expandedId === item.id}
+                  onToggleExpand={handleToggleExpand}
+                  onDismiss={handleDismiss}
+                  onSnooze={handleSnooze}
+                  onTrain={handleTrain}
+                />
+              ))}
+            </Curtain>
+          )}
+
+          {staleItems.length > 0 && (
+            <Curtain
+              label="Stale"
+              count={staleItems.length}
+              open={staleOpen}
+              onToggle={() => setStaleOpen((prev) => !prev)}
+            >
+              <p className="text-xs text-muted-foreground">
+                Review decisions idle {ATTENTION_STALE_DAYS}+ days — folded off the desk so blockers and fresh items stay on top. Blockers never fold; reopen any you still want surfaced.
+              </p>
+              {staleItems.map((item) => (
                 <AgingItemRow
                   key={item.id}
                   item={item}

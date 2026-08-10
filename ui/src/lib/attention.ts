@@ -404,6 +404,19 @@ export function attentionIdleDays(item: AttentionItem, now: number): number {
   return Math.floor(attentionIdleMs(item, now) / MS_PER_DAY_DECIDE);
 }
 
+/** Client-side staleness threshold (days) for folding idle *review* rows off the
+ *  desk. Distinct from the server's 30-day aging shelf (ATTENTION_AGING_DAYS). */
+export const ATTENTION_STALE_DAYS = 3;
+
+/**
+ * A review-kind row idle past ATTENTION_STALE_DAYS folds into its own "Stale"
+ * curtain so blockers and fresh decisions keep the desk short. Blocking rows
+ * never fold — an old blocker is still blocking.
+ */
+export function attentionIsStale(item: AttentionItem, now: number): boolean {
+  return attentionKind(item) === "review" && attentionIdleDays(item, now) >= ATTENTION_STALE_DAYS;
+}
+
 // ---------------------------------------------------------------------------
 // Decide-by control (triage strip) — the segmented options an operator/agent
 // picks from. `date` is handled separately by a date input.

@@ -4,6 +4,13 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **Follow-ups: cap permanence + synthesis schedule + stale-fold** — (1) self-start `HARD_CEIL`
+  default 3->5 so the compute win survives reboot (twentyfour-artifacts `e18bc0c`). (2) Weekly
+  launchd job `com.rhen.agent-synthesis` runs the synthesis -> vault report Sundays 07:00
+  (twentyfour-artifacts `1538d17`; needs abs node path — launchd PATH lacks Homebrew). (3)
+  Client-side stale-fold: review-kind rows idle >=3d (`attentionIsStale`, `ATTENTION_STALE_DAYS`)
+  fold into a new "Stale" curtain; blockers never fold (an old blocker is still blocking). +test;
+  54 attention tests + ui typecheck green. Self-audit: CLEAN.
 - **Decisions desk: needs-you-first default sort (ADHD)** — `ui/src/lib/attention.ts`.
   Added a `"priority"` AttentionSortOrder (blocking rows above review, then server
   escalation `rank`, then recency) + made it the default (`loadAttentionSortOrder`). Fixes

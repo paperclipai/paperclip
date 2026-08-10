@@ -22,6 +22,7 @@ import {
   planAttentionRenderRows,
   saveAttentionGroupBy,
   severityStyle,
+  attentionIsStale,
   sortAttentionItems,
   sourceMeta,
 } from "./attention";
@@ -439,6 +440,19 @@ describe("sortAttentionItems", () => {
     const input = [older, newer];
     sortAttentionItems(input, "newest");
     expect(input.map((i) => i.id)).toEqual(["old", "new"]);
+  });
+});
+
+describe("attentionIsStale", () => {
+  const now = new Date("2026-07-10T00:00:00Z").getTime();
+
+  it("folds review rows idle past the threshold, but never blockers or fresh rows", () => {
+    const staleReview = buildItem({ sourceKind: "approval", activityAt: "2026-07-05T00:00:00Z" }); // 5d idle
+    const oldBlocker = buildItem({ sourceKind: "blocker_attention", activityAt: "2026-07-05T00:00:00Z" }); // 5d idle, blocking
+    const freshReview = buildItem({ sourceKind: "approval", activityAt: "2026-07-09T00:00:00Z" }); // 1d idle
+    expect(attentionIsStale(staleReview, now)).toBe(true);
+    expect(attentionIsStale(oldBlocker, now)).toBe(false);
+    expect(attentionIsStale(freshReview, now)).toBe(false);
   });
 });
 
