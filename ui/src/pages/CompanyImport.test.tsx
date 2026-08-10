@@ -420,7 +420,7 @@ describe("CompanyImport", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Preview failed: stream disconnected");
-    expect(container.textContent).toContain("Retry, or use the CLI folder import");
+    expect(container.textContent).toContain("Retry, or re-export the package without large attachments");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
 
     // Changing the package supersedes the failed request: the error panel resets.

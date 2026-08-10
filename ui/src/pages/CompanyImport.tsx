@@ -1779,7 +1779,7 @@ export function CompanyImport() {
               {previewMutation.error instanceof Error
                 ? previewMutation.error.message
                 : "the request did not complete."}{" "}
-              Retry, or use the CLI folder import for very large packages.
+              Retry, or re-export the package without large attachments to shrink it.
             </p>
           </div>
         )}

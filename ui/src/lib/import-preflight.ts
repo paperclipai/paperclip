@@ -2,7 +2,8 @@ import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 // Inline imports post the whole parsed package as one JSON body, so oversized
 // packages must be blocked before the request is built. Packages past this
-// limit go through the CLI folder import today; a blob-store relay is planned.
+// limit go through the zip upload path (a far higher, operator-configurable
+// server cap); a blob-store relay is planned for arbitrarily large migrations.
 export const INLINE_IMPORT_MAX_BYTES = 56 * 1024 * 1024;
 
 export function isBlobStoreFilePath(filePath: string): boolean {
