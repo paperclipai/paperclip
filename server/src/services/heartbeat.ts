@@ -102,6 +102,11 @@ import {
   readQuotaFailureResetAt,
 } from "./automatic-retry-policy.js";
 import {
+  classifyEquivalentFailure,
+  EQUIVALENT_FAILURE_WINDOW_MS,
+  type FailureObservation,
+} from "./recovery/equivalent-failure.js";
+import {
   getActivityWindowScheduleSkip,
   isActivityWindowExemptAgent,
   runGateService,
@@ -18529,6 +18534,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agent,
           );
         }
+        // Apply the breaker only after every ordinary failure follow-up has
+        // had its chance to enqueue. The breaker then cancels that complete,
+        // bounded set atomically enough for the next scheduler pass to see no
+        // retry or continuation escape hatch.
+        if (outcome === "failed" || outcome === "timed_out") {
+          await enforceEquivalentFailureCircuitBreaker(livenessRun);
+        }
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -21997,6 +22009,209 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
+  }
+
+  /**
+   * The second genuine equivalent failure is a local circuit breaker, not a
+   * recovery workflow.  Keep the action deliberately narrow: pause only the
+   * implicated agent or routine, remove only its queued retry/continuation
+   * runs, and give the responsible human one stable incident to resolve.
+   */
+  async function enforceEquivalentFailureCircuitBreaker(run: typeof heartbeatRuns.$inferSelect) {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - EQUIVALENT_FAILURE_WINDOW_MS);
+    const currentIssueId = issueIdFromRunContext(run.contextSnapshot);
+    if (!currentIssueId) return false;
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId),
+        inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+        gte(heartbeatRuns.finishedAt, cutoff),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${currentIssueId}`,
+      ));
+
+    const issueIds = [...new Set(recentRuns
+      .map((candidate) => issueIdFromRunContext(candidate.contextSnapshot))
+      .filter((value): value is string => Boolean(value)))];
+    const issueRows = issueIds.length > 0
+      ? await db
+        .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId, responsibleUserId: issues.responsibleUserId })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, issueIds)))
+      : [];
+    const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
+    const observations: FailureObservation[] = recentRuns.map((candidate) => {
+      const issueId = issueIdFromRunContext(candidate.contextSnapshot);
+      const issue = issueId ? issueById.get(issueId) : null;
+      return {
+        agentId: candidate.agentId,
+        issueId,
+        routineId: issue?.originKind === "routine_execution" ? issue.originId : null,
+        // A typed failure code is stable across wording changes; untyped
+        // failures intentionally do not take the routine-level breaker path.
+        fingerprint: candidate.errorCode ?? null,
+        occurredAt: candidate.finishedAt ?? candidate.createdAt,
+        status: candidate.status as FailureObservation["status"],
+        errorCode: candidate.errorCode,
+      };
+    });
+    let match = classifyEquivalentFailure(observations, now);
+    const currentIssue = issueById.get(currentIssueId) ?? null;
+    if (!match && currentIssue?.originKind === "routine_execution" && currentIssue.originId) {
+      const routineId = currentIssue.originId;
+      const routineRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          finishedAt: heartbeatRuns.finishedAt,
+          createdAt: heartbeatRuns.createdAt,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+          gte(heartbeatRuns.finishedAt, cutoff),
+        ))
+        .limit(500);
+      const routineIssueIds = [...new Set(routineRuns
+        .map((candidate) => issueIdFromRunContext(candidate.contextSnapshot))
+        .filter((value): value is string => Boolean(value)))];
+      const routineIssues = routineIssueIds.length > 0
+        ? await db
+          .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, routineIssueIds)))
+        : [];
+      const routineIssueById = new Map(routineIssues.map((issue) => [issue.id, issue]));
+      const routineObservations: FailureObservation[] = routineRuns.flatMap((candidate) => {
+        const issueId = issueIdFromRunContext(candidate.contextSnapshot);
+        const issue = issueId ? routineIssueById.get(issueId) : null;
+        if (!issue || issue.originKind !== "routine_execution" || issue.originId !== routineId) return [];
+        return [{
+          agentId: candidate.agentId,
+          issueId,
+          routineId,
+          fingerprint: candidate.errorCode ?? null,
+          occurredAt: candidate.finishedAt ?? candidate.createdAt,
+          status: candidate.status as FailureObservation["status"],
+          errorCode: candidate.errorCode,
+        }];
+      });
+      const routineMatch = classifyEquivalentFailure(routineObservations, now);
+      if (
+        routineMatch?.kind === "routine_fingerprint"
+        && routineMatch.fingerprint === (run.errorCode ?? "")
+      ) {
+        match = routineMatch;
+      }
+    }
+    if (!match) return false;
+
+    const scope = match.kind === "agent_issue"
+      ? { type: "agent" as const, id: match.agentId, issueId: match.issueId }
+      : { type: "routine" as const, id: match.routineId, issueId: null };
+    const reason = "Automatic retry and continuation cancelled after a second equivalent genuine failure within 24 hours.";
+    const allRoutineIssuesById = scope.type === "routine"
+      ? new Map((await db
+        .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, scope.id),
+        ))).map((issue) => [issue.id, issue]))
+      : new Map<string, { id: string; originKind: string; originId: string | null }>();
+
+    if (scope.type === "agent") {
+      await db.update(agents).set({
+        status: "paused",
+        pauseReason: "system",
+        pausedAt: now,
+        updatedAt: now,
+      }).where(and(eq(agents.id, scope.id), eq(agents.companyId, run.companyId), notInArray(agents.status, ["terminated"])));
+    } else {
+      await db.update(routines).set({
+        status: "paused",
+        pauseReason: "system",
+        pausedAt: now,
+        updatedAt: now,
+      }).where(and(eq(routines.id, scope.id), eq(routines.companyId, run.companyId)));
+    }
+
+    const retryCandidates = await db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        continuationAttempt: heartbeatRuns.continuationAttempt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+        scope.type === "agent" ? eq(heartbeatRuns.agentId, scope.id) : undefined,
+      ));
+    for (const candidate of retryCandidates) {
+      const candidateIssueId = issueIdFromRunContext(candidate.contextSnapshot);
+      const candidateIssue = candidateIssueId
+        ? issueById.get(candidateIssueId) ?? allRoutineIssuesById.get(candidateIssueId)
+        : null;
+      const candidateRoutineId = candidateIssue?.originKind === "routine_execution"
+        ? candidateIssue.originId
+        : readNonEmptyString(parseObject(candidate.contextSnapshot).routineId);
+      if (scope.type === "routine" && candidateRoutineId !== scope.id) continue;
+      await cancelRunInternal(candidate.id, reason, { errorCode: "equivalent_failure_circuit_open" });
+    }
+
+    const sourceIssue = scope.issueId ? issueById.get(scope.issueId) : null;
+    const responsibleUserId = sourceIssue?.responsibleUserId ?? await resolveCompanyDefaultResponsibleUserId(run.companyId);
+    const incidentKey = `equivalent_failure_circuit:${run.companyId}:${scope.type}:${scope.id}`;
+    await issuesSvc.create(run.companyId, {
+      title: `BOARD ACTION REQUIRED: Equivalent failure circuit open — ${scope.type}`,
+      description: [
+        "Automatic retries and continuations were stopped after two equivalent genuine failures in 24 hours.",
+        "",
+        `- Incident key: \`${incidentKey}\``,
+        `- Paused ${scope.type}: \`${scope.id}\``,
+        `- Failure code: \`${match.failures[0].errorCode ?? "untyped"}\``,
+        "- Owner action: inspect the failure, correct it, then explicitly resume the paused scope.",
+      ].join("\n"),
+      status: "in_review",
+      priority: "critical",
+      responsibleUserId,
+      originKind: "equivalent_failure_circuit",
+      originId: incidentKey,
+      originFingerprint: incidentKey,
+      actorRunId: run.id,
+      idempotencyKey: incidentKey,
+      allowDuplicate: false,
+    });
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "equivalent_failure_circuit_breaker",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "recovery.equivalent_failure_circuit_opened",
+      entityType: scope.type,
+      entityId: scope.id,
+      details: { incidentKey, failureCode: match.failures[0].errorCode ?? null },
+    });
+    return true;
   }
 
   return {

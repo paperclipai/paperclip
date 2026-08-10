@@ -34,11 +34,13 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
 const MAX_TURN_TEST_ADAPTER = "max_turn_test";
+const EQUIVALENT_FAILURE_TEST_ADAPTER = "equivalent_failure_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -109,6 +111,27 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: EQUIVALENT_FAILURE_TEST_ADAPTER,
+      execute: async () => {
+        // Leave a small window for tests to enqueue retry/continuation work
+        // while the second failure is genuinely in flight.
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Equivalent failure test adapter failed.",
+          errorCode: "equivalent_failure_test",
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType: EQUIVALENT_FAILURE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -125,6 +148,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
     unregisterServerAdapter(MAX_TURN_TEST_ADAPTER);
+    unregisterServerAdapter(EQUIVALENT_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -342,6 +366,137 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("opens one scoped equivalent-failure circuit, cancels queued retry work, and ignores expired failures", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Equivalent Failure Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: EQUIVALENT_FAILURE_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Equivalent failure target",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const first = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
+    expect(first).not.toBeNull();
+    await waitForRunToFinish(heartbeat, first!.id);
+    const second = await heartbeat.invoke(agentId, "on_demand", { issueId, taskId: issueId }, "manual");
+    expect(second).not.toBeNull();
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "scheduled_retry",
+        retryOfRunId: first!.id,
+        scheduledRetryAt: new Date(Date.now() + 60_000),
+        contextSnapshot: { issueId, taskId: issueId },
+      },
+      {
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "queued",
+        continuationAttempt: 1,
+        contextSnapshot: { issueId, taskId: issueId },
+      },
+    ]);
+    await waitForRunToFinish(heartbeat, second!.id);
+
+    await expect.poll(
+      () => db.select({ status: agents.status, pauseReason: agents.pauseReason }).from(agents)
+        .where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null),
+      { timeout: 5_000, interval: 50 },
+    ).toEqual({ status: "paused", pauseReason: "system" });
+    const pendingWork = await db.select({
+      status: heartbeatRuns.status,
+      retryOfRunId: heartbeatRuns.retryOfRunId,
+      continuationAttempt: heartbeatRuns.continuationAttempt,
+      invocationSource: heartbeatRuns.invocationSource,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    }).from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+      ));
+    expect(pendingWork).toEqual([]);
+    await expect.poll(
+      () => db.select({ id: issues.id, responsibleUserId: issues.responsibleUserId }).from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "equivalent_failure_circuit")))
+        .then((rows) => rows.length),
+      { timeout: 5_000, interval: 50 },
+    ).toBe(1);
+    const incidents = await db.select({ id: issues.id, responsibleUserId: issues.responsibleUserId }).from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "equivalent_failure_circuit")));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]?.responsibleUserId).toBe("responsible-user");
+
+    // The circuit's idempotency key keeps a repeated terminal callback from
+    // minting a second owner incident for the same scoped failure.
+    const incidentKey = `equivalent_failure_circuit:${companyId}:agent:${agentId}`;
+    await issueService(db).create(companyId, {
+      title: "BOARD ACTION REQUIRED: Equivalent failure circuit open — agent",
+      status: "in_review",
+      priority: "critical",
+      responsibleUserId: "responsible-user",
+      originKind: "equivalent_failure_circuit",
+      originId: incidentKey,
+      originFingerprint: incidentKey,
+      idempotencyKey: incidentKey,
+      allowDuplicate: false,
+    });
+    const deduplicatedIncidents = await db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "equivalent_failure_circuit")));
+    expect(deduplicatedIncidents).toHaveLength(1);
+
+    const expiryAgentId = randomUUID();
+    const expiryIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: expiryAgentId, companyId, name: "Expired Failure Test", role: "engineer", status: "idle",
+      adapterType: EQUIVALENT_FAILURE_TEST_ADAPTER, adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values({
+      id: expiryIssueId, companyId, title: "Expired equivalent failure target", status: "todo", priority: "medium",
+      responsibleUserId: "responsible-user", assigneeAgentId: expiryAgentId, issueNumber: 999, identifier: `${issuePrefix}-999`,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: expiryAgentId, invocationSource: "assignment", status: "failed",
+      errorCode: "equivalent_failure_test", finishedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      contextSnapshot: { issueId: expiryIssueId, taskId: expiryIssueId },
+    });
+    const fresh = await heartbeat.invoke(expiryAgentId, "on_demand", { issueId: expiryIssueId, taskId: expiryIssueId }, "manual");
+    expect(fresh).not.toBeNull();
+    await waitForRunToFinish(heartbeat, fresh!.id);
+    const expiryAgent = await db.select({ status: agents.status }).from(agents).where(eq(agents.id, expiryAgentId))
+      .then((rows) => rows[0] ?? null);
+    expect(expiryAgent?.status).not.toBe("paused");
   });
 
   it("blocks a max-turn run without a terminal disposition instead of queuing a continuation", async () => {
