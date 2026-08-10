@@ -1,6 +1,7 @@
 import type {
   AttentionDetailImage,
   AttentionFeed,
+  AttentionFeedQuery,
   AttentionItem,
   AttentionItemDetail,
   AttentionProjectRef,
@@ -9,17 +10,27 @@ import type {
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
 
+export type AttentionListOptions = AttentionFeedQuery;
+
 /**
  * Source kinds the queue can fully resolve in-row. Everything else deep-links
- * to its native surface — reviews are *never* inline (converged PAP-12628),
- * and the remaining state-derived sources (recovery, failures, budget) expose
- * verbs too rich to safely inline here, so they open their surface.
+ * to its native surface — the state-derived sources (recovery, failures,
+ * budget) expose verbs too rich to safely inline here, so they open their
+ * surface.
+ *
+ * `review` is inline *only when stalled* (PAP-16080 §4.4): a stalled review has
+ * no interaction/approval/monitor to open, so the three review verbs
+ * (approve / request changes / send back) actuate in-row — the server flips
+ * `inlineResolvable` on for exactly those rows (`isInlineResolvable` still ANDs
+ * that flag). A *covered* review keeps deep-linking, since its real action
+ * lives on the issue (the pending card, a monitor, a live run).
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
   "decision",
   "issue_thread_interaction",
   "join_request",
+  "review",
 ]);
 
 export function isInlineResolvable(item: AttentionItem): boolean {
@@ -252,13 +263,248 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * Decisions-only badge count. Every feed row *is* a pending decision (the
- * server drops anything without a decision verb into Activity, per the §0
- * invariant), and mentions/unread never enter the feed — so the row count is
- * the decisions-only number. `/inbox` keeps its own unread count untouched.
+ * The sidebar badge: distinct items that either surfaced today or carry an
+ * explicit decide-by deadline that is due today/past. The server computes this
+ * before pagination (`deskBadgeCount`), so badge polling can fetch a small
+ * first page without losing the company-wide signal.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
-  return feed?.items.length ?? 0;
+  return feed?.deskBadgeCount ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Today's desk
+//
+// The default ungrouped desk reflects *what came up*, not a judgement about
+// what "can wait". It builds up to three shelves in order:
+//   • "Decide now" — only when an item has an explicit decide-by deadline that
+//     is due today/past. No deadline set anywhere → no shelf, no claim.
+//   • "New today"   — decisions that surfaced today (arrival grouping).
+//   • "Earlier"     — everything else, older arrivals.
+// The server owns the authoritative decide-by ranking (`sort=decide`) and the
+// badge (`deskBadgeCount`); these client helpers mirror that logic *exactly*
+// (same UTC day boundaries) so the on-page split and the badge never disagree.
+// Keep in lockstep with `server/src/services/attention.ts`
+// (`decideOrder`/`isDecideNow`/`isNewToday`).
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY_DECIDE = 24 * 60 * 60 * 1_000;
+
+function startOfUtcDay(now: number): number {
+  const value = new Date(now);
+  return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+}
+
+function endOfUtcDay(now: number): number {
+  return startOfUtcDay(now) + MS_PER_DAY_DECIDE - 1;
+}
+
+function endOfUtcWeek(now: number): number {
+  const start = startOfUtcDay(now);
+  const weekday = new Date(start).getUTCDay();
+  const daysUntilSunday = weekday === 0 ? 0 : 7 - weekday;
+  return start + (daysUntilSunday + 1) * MS_PER_DAY_DECIDE - 1;
+}
+
+/** [bucket, deadline] — lower bucket / earlier deadline sorts first. */
+export function attentionDecideOrder(item: AttentionItem, now: number): [number, number] {
+  if (item.decideBy === "today") return [0, endOfUtcDay(now)];
+  if (item.decideBy === "this_week") return [0, endOfUtcWeek(now)];
+  if (item.decideBy && /^\d{4}-\d{2}-\d{2}$/.test(item.decideBy)) {
+    const deadline = Date.parse(`${item.decideBy}T23:59:59.999Z`);
+    if (Number.isFinite(deadline)) return [0, deadline];
+  }
+  if (item.decideBy === "whenever") return [1, Number.MAX_SAFE_INTEGER];
+  return [2, Number.MAX_SAFE_INTEGER];
+}
+
+/** Due today or overdue — the "Decide now" shelf. Only fires when `decideBy` is set. */
+export function attentionIsDecideNow(item: AttentionItem, now: number): boolean {
+  const [bucket, deadline] = attentionDecideOrder(item, now);
+  return bucket === 0 && deadline <= endOfUtcDay(now);
+}
+
+/** Surfaced today (arrival) — the "New today" desk group. Uses UTC day, matching the badge. */
+export function attentionIsNewToday(item: AttentionItem, now: number): boolean {
+  const ts = new Date(item.createdAt).getTime();
+  return Number.isFinite(ts) && ts >= startOfUtcDay(now);
+}
+
+/** A rendered desk shelf: shares the shape of {@link AttentionGroup}. */
+export interface DeskShelf {
+  key: string;
+  label: string;
+  items: AttentionItem[];
+}
+
+/**
+ * Build the default (ungrouped) desk layout — the arrival-based grouping that
+ * replaced the "Decide now" / "Can wait" split:
+ *
+ *   • "Decide now" — items with an explicit decide-by deadline due today/past,
+ *     ordered by deadline. Omitted entirely when nothing has a due deadline, so
+ *     the desk never leads with a shelf built on unset metadata.
+ *   • "New today"  — remaining items that surfaced today, newest arrival first.
+ *   • "Earlier"    — remaining older arrivals, newest arrival first.
+ *
+ * A decide-now item is only ever on the "Decide now" shelf, so the three shelves
+ * are disjoint and their sizes sum to `items.length`.
+ */
+export function buildDeskShelves(items: AttentionItem[], now: number): DeskShelf[] {
+  const decideNow = items
+    .filter((item) => attentionIsDecideNow(item, now))
+    .sort((a, b) => {
+      const [, aDeadline] = attentionDecideOrder(a, now);
+      const [, bDeadline] = attentionDecideOrder(b, now);
+      if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+      return a.rank - b.rank;
+    });
+  const rest = items
+    .filter((item) => !attentionIsDecideNow(item, now))
+    .sort((a, b) => {
+      const diff = attentionArrivalTimestamp(b) - attentionArrivalTimestamp(a);
+      if (diff !== 0) return diff;
+      return a.rank - b.rank;
+    });
+  const newToday = rest.filter((item) => attentionIsNewToday(item, now));
+  const earlier = rest.filter((item) => !attentionIsNewToday(item, now));
+
+  const shelves: DeskShelf[] = [];
+  if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
+  if (newToday.length > 0) shelves.push({ key: "desk:new-today", label: "New today", items: newToday });
+  if (earlier.length > 0) shelves.push({ key: "desk:earlier", label: "Earlier", items: earlier });
+  return shelves;
+}
+
+function attentionArrivalTimestamp(item: AttentionItem): number {
+  const ts = new Date(item.createdAt).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Aging shelf (PAP-16032 §4.4) — items idle past the threshold leave the desk.
+// ---------------------------------------------------------------------------
+
+/** Default idle threshold before an item drops from the desk to the shelf. */
+export const ATTENTION_AGING_DAYS = 30;
+
+/** Milliseconds since the item last saw activity. */
+export function attentionIdleMs(item: AttentionItem, now: number): number {
+  const ts = new Date(item.activityAt).getTime();
+  return Number.isFinite(ts) ? Math.max(0, now - ts) : 0;
+}
+
+/** Server-computed shelf membership, including per-queue retention overrides. */
+export function attentionIsAging(item: AttentionItem): boolean {
+  return item.shelf;
+}
+
+/** Idle duration in whole days, for the shelf's "idle N days" label. */
+export function attentionIdleDays(item: AttentionItem, now: number): number {
+  return Math.floor(attentionIdleMs(item, now) / MS_PER_DAY_DECIDE);
+}
+
+// ---------------------------------------------------------------------------
+// Decide-by control (triage strip) — the segmented options an operator/agent
+// picks from. `date` is handled separately by a date input.
+// ---------------------------------------------------------------------------
+
+export type DecideByPreset = "today" | "this_week" | "whenever";
+
+export const DECIDE_BY_OPTIONS: ReadonlyArray<[DecideByPreset, string]> = [
+  ["today", "Today"],
+  ["this_week", "This week"],
+  ["whenever", "Whenever"],
+];
+
+/** Human label for any stored `decideBy` value (preset or `YYYY-MM-DD`). */
+export function decideByLabel(decideBy: string | null): string {
+  if (!decideBy) return "Not set";
+  if (decideBy === "today") return "Today";
+  if (decideBy === "this_week") return "This week";
+  if (decideBy === "whenever") return "Whenever";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(decideBy)) {
+    const parsed = new Date(`${decideBy}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime())
+      ? parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+      : decideBy;
+  }
+  return decideBy;
+}
+
+// ---------------------------------------------------------------------------
+// Date-range chips (PAP-16032 §4.2) — resolve to server-side activity bounds.
+// The desk filters `activityAt` server-side (activitySince/Until) rather than
+// shipping the whole feed and filtering on the client.
+// ---------------------------------------------------------------------------
+
+export type AttentionDateRangeId = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "custom";
+
+export const ATTENTION_DATE_RANGE_OPTIONS: ReadonlyArray<[AttentionDateRangeId, string]> = [
+  ["all", "All"],
+  ["today", "Today"],
+  ["yesterday", "Yesterday"],
+  ["last_7_days", "Last 7 days"],
+  ["this_month", "This month"],
+];
+
+export interface AttentionActivityBounds {
+  activitySince?: string;
+  activityUntil?: string;
+}
+
+/**
+ * Resolve a range chip to `{activitySince, activityUntil}` ISO bounds. Uses
+ * local calendar boundaries (what the operator means by "today"); `custom`
+ * takes the caller's explicit from/to dates.
+ */
+export function resolveAttentionDateRange(
+  range: AttentionDateRangeId,
+  now: number,
+  custom?: { from?: string | null; to?: string | null },
+): AttentionActivityBounds {
+  const startOfLocalDay = (ms: number) => {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+  const endOfLocalDay = (ms: number) => {
+    const d = new Date(ms);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  };
+  switch (range) {
+    case "all":
+      return {};
+    case "today":
+      return { activitySince: startOfLocalDay(now).toISOString() };
+    case "yesterday": {
+      const start = startOfLocalDay(now - MS_PER_DAY_DECIDE);
+      const end = endOfLocalDay(now - MS_PER_DAY_DECIDE);
+      return { activitySince: start.toISOString(), activityUntil: end.toISOString() };
+    }
+    case "last_7_days":
+      return { activitySince: startOfLocalDay(now - 6 * MS_PER_DAY_DECIDE).toISOString() };
+    case "this_month": {
+      const d = new Date(now);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+      return { activitySince: start.toISOString() };
+    }
+    case "custom": {
+      const bounds: AttentionActivityBounds = {};
+      if (custom?.from) {
+        const from = new Date(`${custom.from}T00:00:00`);
+        if (Number.isFinite(from.getTime())) bounds.activitySince = from.toISOString();
+      }
+      if (custom?.to) {
+        const to = new Date(`${custom.to}T23:59:59.999`);
+        if (Number.isFinite(to.getTime())) bounds.activityUntil = to.toISOString();
+      }
+      return bounds;
+    }
+    default:
+      return {};
+  }
 }
 
 // ---------------------------------------------------------------------------

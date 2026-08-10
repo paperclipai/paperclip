@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  runWithoutActiveStep,
+  runWithRuntimeParent,
+  type RuntimeSpanRunner,
+  type StartupSpanContext,
+} from "./acpx-engine/startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -17,6 +23,10 @@ const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
+
+/** Span name that wraps one Paperclip-API callback request — read the request,
+ * write the response, and remove the request file. */
+const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
 
@@ -72,10 +82,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
   { method: "PATCH", path: /^\/api\/work-products\/[^/]+$/ },
 
-  // Issue-thread interactions (suggest tasks, ask questions, request confirmation)
+  // Issue-thread interactions (create, resolve, verdict, and withdraw)
   { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond)$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond|verdicts|withdraw)$/ },
 
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
@@ -226,6 +236,13 @@ async function runShell(
     },
     timeoutMs,
     stdin,
+    // Every command that rides this helper is bridge control-plane plumbing:
+    // input delivery, output read, callback relay, and queue/setup bookkeeping.
+    // It must run concurrently with the agent, so force it off the persistent
+    // session. In streamed mode the agent holds that single serialized session
+    // for the whole run; a control write on the same session queues behind the
+    // agent command that never returns — a permanent deadlock.
+    bypassSession: true,
   });
 }
 
@@ -619,6 +636,18 @@ export async function startSandboxCallbackBridgeWorker(input: {
     body?: string;
   }>;
   maxBodyBytes?: number | null;
+  // Return the current-run parent-context token. The worker reads it per request
+  // and runs the request work under it, so the request `sandbox.exec` span
+  // parents to the live run span (`agent.turn` during the turn, `task.run`
+  // otherwise). When it is absent, the request work runs with an empty store,
+  // exactly like the earlier `runWithoutActiveStep` behavior.
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each Paperclip-API callback request in a
+  // `sandbox.callbackBridge.relayRequest` span, so the request's read, write, and
+  // remove execs group under one named span. When it is absent, the request work
+  // runs under the run parent with no wrapper span, exactly like the earlier
+  // behavior.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
@@ -745,7 +774,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
   };
 
-  const loop = (async () => {
+  // Start the long-lived poll loop outside the measured startup-step store.
+  // The `makeDir` calls above are startup work and must keep the active
+  // `bridge.paperclip` step. The loop runs run-time execs for the whole run,
+  // so each loop `sandbox.exec` span must not parent to the ended step or copy
+  // its `criticalPath` flag. `runWithoutActiveStep` empties the store for the
+  // loop only; Node keeps the empty store on every later poll continuation.
+  const loop = runWithoutActiveStep(() => (async () => {
     try {
       while (true) {
         const fileNames = await input.client.listJsonFiles(directories.requestsDir);
@@ -760,7 +795,20 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
-            await processRequestFile(fileName);
+            // A request is run-time work, not startup work. Wrap it in a
+            // `sandbox.callbackBridge.relayRequest` span, so its read, write, and
+            // remove execs group under one named span that parents to the live
+            // run span. The span runner reads the run parent per request: the
+            // live parent switches to `agent.turn` during the turn and back to
+            // `task.run` after it. Without a runner, the request runs under the
+            // run parent with no wrapper span, exactly like the earlier behavior.
+            await (input.runtimeSpan
+              ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
+                  processRequestFile(fileName),
+                )
+              : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
+                  processRequestFile(fileName),
+                ));
           } finally {
             inFlight -= 1;
           }
@@ -785,7 +833,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         settleResolve();
       }
     }
-  })();
+  })());
 
   void loop;
 

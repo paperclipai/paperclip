@@ -28,6 +28,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -2662,10 +2663,12 @@ function SkillLocationCard({
           size="sm"
           variant="outline"
           onClick={() => {
-            void navigator.clipboard?.writeText(canonical).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-            });
+            void copyTextToClipboard(canonical)
+              .then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              })
+              .catch(() => {});
           }}
         >
           <Copy className="mr-1.5 h-3.5 w-3.5" />
@@ -4847,7 +4850,7 @@ export function CompanySkills() {
 
   const attachAgentsMutation = useMutation({
     mutationFn: async (input: { agentId: string; desiredSkills: Array<string | AgentDesiredSkillEntry> }) => {
-      return agentsApi.syncSkills(input.agentId, input.desiredSkills, selectedCompanyId ?? undefined);
+      return agentsApi.syncSkills(input.agentId, input.desiredSkills, "replace", selectedCompanyId ?? undefined);
     },
     onSuccess: async () => {
       await Promise.all([

@@ -390,9 +390,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               : null,
             workspace: availableWorkspace,
             executionWorkspaceId: existing.id,
-            config: { workspaceRuntime: effectiveRuntimeConfig },
+            config: {
+              workspaceRuntime: effectiveRuntimeConfig,
+              runtimeProvisionCommand:
+                existing.config?.runtimeProvisionCommand
+                ?? projectPolicy?.workspaceStrategy?.runtimeProvisionCommand
+                ?? null,
+            },
             adapterEnv: {},
             onLog,
+            recorder,
             serviceIndex: selectedServiceIndex,
           });
           runtimeServiceCount = startedServices.length;
@@ -402,7 +409,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
           existing.config?.desiredState
-          ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+          ?? ((existing.runtimeServices ?? []).some((service) =>
+            service.status === "provisioning" || service.status === "starting" || service.status === "running"
+          )
             ? "running"
             : "stopped");
         const nextRuntimeState: {

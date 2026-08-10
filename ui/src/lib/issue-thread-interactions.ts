@@ -183,6 +183,7 @@ export function buildIssueThreadInteractionSummary(
     : null;
   if (administrativeOutcome === "withdrawn") return "Withdrawn interaction";
   if (administrativeOutcome === "issue_closed") return "Expired when issue closed";
+  if (administrativeOutcome === "addressee_deleted") return "Cancelled when addressee was deleted";
   if (interaction.kind === "suggest_tasks") {
     const count = interaction.payload.tasks.length;
     if (interaction.status === "accepted") {

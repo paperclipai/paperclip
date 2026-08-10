@@ -1022,6 +1022,58 @@ export interface PluginLogger {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin tracer
+// ---------------------------------------------------------------------------
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free span contract. The plugin worker
+ * builds a real span through this surface; the host records it through the real
+ * tracer. The shape is a subset of the `@opentelemetry/api` `Span` shape, so the
+ * plugin SDK never imports `@opentelemetry/api`.
+ *
+ * A span with no active host trace context is a no-op: it accepts the calls and
+ * ends without an effect. So a lifecycle hook can always open a span, and the
+ * span records nothing until tracing is on.
+ */
+export interface PluginSpan {
+  /** Set one bounded attribute. The host re-clamps every attribute at its trust
+   * boundary, so an out-of-allowlist attribute never reaches a recorded span. */
+  setAttribute(key: string, value: string | number | boolean): void;
+  /** Set the span status. The host maps it onto the recorded span. */
+  setStatus(status: { code: number; message?: string }): void;
+  /** End the span. The worker sends the span data to the host once, here. */
+  end(): void;
+}
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free tracer contract. The plugin uses
+ * it the same way as `ctx.logger`. The default is a no-op that never throws, so
+ * a plugin span changes nothing until the host injects a live tracer and an
+ * active host trace context.
+ */
+export interface PluginTracer {
+  /** Start one span. `options.attributes` seeds the span attributes. */
+  startSpan(
+    name: string,
+    options?: { attributes?: Record<string, string | number | boolean> },
+  ): PluginSpan;
+}
+
+/** A shared no-op span. It satisfies the span contract and does nothing, so a
+ * plugin with no injected tracer changes no behavior. */
+export const NOOP_PLUGIN_SPAN: PluginSpan = {
+  setAttribute() {},
+  setStatus() {},
+  end() {},
+};
+
+/** The default tracer. It opens no real span, so a lifecycle hook that wraps
+ * work in a span behaves exactly as before when no live tracer is injected. */
+export const NOOP_PLUGIN_TRACER: PluginTracer = {
+  startSpan: () => NOOP_PLUGIN_SPAN,
+};
+
+// ---------------------------------------------------------------------------
 // Plugin metrics
 // ---------------------------------------------------------------------------
 
@@ -1932,6 +1984,30 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2042,6 +2118,11 @@ export interface PluginContext {
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
 
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
+
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;
 
@@ -2053,4 +2134,8 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Tracer for provider spans. The default is a no-op; the host records a span
+   * only when tracing is on and an active host trace context is present. */
+  tracer: PluginTracer;
 }

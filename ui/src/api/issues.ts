@@ -17,6 +17,8 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  StalledReviewDecision,
+  StalledReviewDecisionResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -164,6 +166,8 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  decideStalledReview: (id: string, data: StalledReviewDecision) =>
+    api.post<StalledReviewDecisionResponse>(`/issues/${id}/stalled-review-decision`, data),
   resolveRecoveryAction: (
     id: string,
     data: {

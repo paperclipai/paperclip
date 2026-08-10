@@ -16,7 +16,6 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
-  issueReadStates,
   issues,
   pluginManagedResources,
   plugins,
@@ -88,6 +87,7 @@ const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_unmarked",
   "issue.inbox_archived",
   "issue.inbox_unarchived",
+  "issue.inbox_touched",
 ];
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
@@ -1583,22 +1583,17 @@ export function routineService(
       touchedAt: Date;
     },
   ) {
-    await executor
-      .insert(issueReadStates)
-      .values({
-        companyId: input.companyId,
-        issueId: input.issueId,
-        userId: input.userId,
-        lastReadAt: input.touchedAt,
-        updatedAt: input.touchedAt,
-      })
-      .onConflictDoUpdate({
-        target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
-        set: {
-          lastReadAt: input.touchedAt,
-          updatedAt: input.touchedAt,
-        },
-      });
+    await executor.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.userId,
+      action: "issue.inbox_touched",
+      entityType: "issue",
+      entityId: input.issueId,
+      responsibleUserId: input.userId,
+      details: { source: "manual_routine_run" },
+      createdAt: input.touchedAt,
+    });
 
     await executor
       .delete(issueInboxArchives)

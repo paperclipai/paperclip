@@ -31,10 +31,26 @@ export const lowTrustReviewPresetPolicySchema = z.object({
   rawOutputDisposition: z.literal(LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION),
 }).strict();
 
+export const assignmentAuthorizationPolicySchema = z.object({
+  mode: z.enum(["company_default", "protected"]).optional(),
+  // Legacy compatibility only. This remains a hard block and never creates an approval.
+  protectedAgentRequiresApproval: z.boolean().optional(),
+}).catchall(z.unknown());
+
+export const protectedAgentAuthorizationPolicySchema = z.object({
+  blockAssignment: z.boolean().optional(),
+  blockReason: z.string().trim().min(1).optional(),
+  // Legacy compatibility only. These fields do not create an approval.
+  requiresApproval: z.boolean().optional(),
+  approvalReason: z.string().optional(),
+}).catchall(z.unknown());
+
 export const trustAuthorizationPolicySchema = z.object({
   trustPreset: trustPresetSchema.optional(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   trustBoundary: lowTrustBoundarySchema.optional(),
+  assignmentPolicy: assignmentAuthorizationPolicySchema.optional(),
+  protectedAgent: protectedAgentAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
 
 export const sourceTrustArtifactKindSchema = z.enum(["issue", "comment", "document", "work_product"]);

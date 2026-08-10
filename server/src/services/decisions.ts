@@ -1,33 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
-import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
+import { companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { ATTENTION_SOURCE_KINDS, decisionEffectTargetIssueIds } from "@paperclipai/shared";
+import type { AttentionArchiveManifestEntry, DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
+import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
-  descendantCount?: number; descendantIds?: string[]; childCount?: number };
+  descendantCount?: number; descendantIds?: string[]; childCount?: number; attentionArchive?: unknown };
 type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" | "cancelled" }) => Promise<unknown>;
 export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
 
-function effectTargetIds(effect: DecisionEffect) {
-  const result = new Set([effect.targetIssueId]);
-  if (effect.type === "create_issue") {
-    if (effect.draft.parentId) result.add(effect.draft.parentId);
-    for (const id of effect.draft.blockedByIssueIds ?? []) result.add(id);
-  }
-  if (effect.type === "resolve_blocker") for (const id of effect.removeBlockedByIssueIds) result.add(id);
-  return [...result];
-}
-
 function targetIds(options: DecisionOption[]) {
   const result = new Set<string>();
-  for (const option of options) for (const effect of option.effects) for (const id of effectTargetIds(effect)) result.add(id);
+  for (const option of options) for (const effect of option.effects) for (const id of decisionEffectTargetIssueIds(effect)) result.add(id);
   return [...result];
 }
 
@@ -35,7 +27,7 @@ function targetActions(options: DecisionOption[]) {
   const result = new Map<string, Set<"issue:comment" | "issue:mutate">>();
   for (const option of options) for (const effect of option.effects) {
     const action = effect.type === "comment_on_issue" ? "issue:comment" as const : "issue:mutate" as const;
-    for (const id of effectTargetIds(effect)) {
+    for (const id of decisionEffectTargetIssueIds(effect)) {
       const actions = result.get(id) ?? new Set();
       actions.add(action);
       result.set(id, actions);
@@ -78,6 +70,43 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function parseAttentionArchiveManifest(
+  companyId: string,
+  targetSnapshots: Record<string, Snapshot>,
+): AttentionArchiveManifestEntry[] | null {
+  const entries: AttentionArchiveManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const [key, snapshot] of Object.entries(targetSnapshots)) {
+    if (!key.startsWith("attention:")) return null;
+    const entry = snapshot.attentionArchive;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const candidate = entry as Record<string, unknown>;
+    if (candidate.companyId !== companyId
+      || typeof candidate.sourceKind !== "string"
+      || !ATTENTION_SOURCE_KINDS.includes(candidate.sourceKind as (typeof ATTENTION_SOURCE_KINDS)[number])
+      || typeof candidate.sourceId !== "string"
+      || !candidate.sourceId
+      || !Number.isInteger(candidate.expectedVersion)
+      || Number(candidate.expectedVersion) < 1
+      || typeof candidate.activityAt !== "string"
+      || !Number.isFinite(Date.parse(candidate.activityAt))
+      || typeof candidate.reason !== "string"
+      || !candidate.reason.trim()) return null;
+    const expectedKey = `attention:${candidate.sourceKind}:${candidate.sourceId}`;
+    if (key !== expectedKey || seen.has(expectedKey)) return null;
+    seen.add(expectedKey);
+    entries.push({
+      companyId,
+      sourceKind: candidate.sourceKind,
+      sourceId: candidate.sourceId,
+      expectedVersion: Number(candidate.expectedVersion),
+      activityAt: candidate.activityAt,
+      reason: candidate.reason,
+    });
+  }
+  return entries.length > 0 ? entries : null;
+}
+
 function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
   if (actor.type !== "board") return false;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
@@ -91,6 +120,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   type CreateInput = { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
     ruleKey?: string | null; title: string; body: string; options: DecisionOption[]; inputs?: DecisionInput[] | null; expiresAt?: Date | null;
     idempotencyKey?: string | null; continuationPolicy?: "none" | "wake_origin_agent"; metadata?: Record<string, unknown> };
+  type CreateInputWithSnapshots = CreateInput & { additionalTargetSnapshots?: Record<string, Snapshot> };
 
   async function origin(companyId: string, agentId: string, runId: string) {
     const run = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
@@ -155,7 +185,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return result;
   }
 
-  async function createInStore(input: CreateInput, dbOrTx: Db) {
+  async function createInStore(input: CreateInputWithSnapshots, dbOrTx: Db) {
     if (input.idempotencyKey) {
       const lockKey = `decision-create:${input.companyId}:${input.idempotencyKey}`;
       await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
@@ -165,8 +195,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const existing = await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey)))
         .then((rows) => rows[0] ?? null);
       if (existing) {
+        const archiveEquivalent = input.additionalTargetSnapshots === undefined || (
+          canonicalJson(existing.metadata ?? {}) === canonicalJson(input.metadata ?? {}) &&
+          canonicalJson(Object.fromEntries(Object.entries(existing.targetSnapshots as Record<string, Snapshot>)
+            .filter(([key]) => key.startsWith("attention:")))) === canonicalJson(input.additionalTargetSnapshots)
+        );
         const equivalent = existing.title === input.title && existing.body === input.body &&
-          canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
+          canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null) &&
+          archiveEquivalent;
         if (!equivalent) throw conflict("Decision idempotency key already used with a different payload");
         return existing;
       }
@@ -179,7 +215,10 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const ids = targetIds(input.options);
     const cancellationTargetIds = new Set(input.options.flatMap((option) => option.effects
       .filter((effect) => effect.type === "cancel_issue_tree").map((effect) => effect.targetIssueId)));
-    const targetSnapshots = await snapshots(input.companyId, ids, input.actor, targetActions(input.options), cancellationTargetIds, dbOrTx);
+    const targetSnapshots = {
+      ...await snapshots(input.companyId, ids, input.actor, targetActions(input.options), cancellationTargetIds, dbOrTx),
+      ...(input.additionalTargetSnapshots ?? {}),
+    };
     const id = randomUUID();
     const [created] = await dbOrTx.insert(decisions).values({ id, companyId: input.companyId, bundleId: input.bundleId ?? null,
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
@@ -190,8 +229,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const existing = input.idempotencyKey
         ? await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0] ?? null)
         : null;
+      const archiveEquivalent = !existing || input.additionalTargetSnapshots === undefined || (
+        canonicalJson(existing.metadata ?? {}) === canonicalJson(input.metadata ?? {}) &&
+        canonicalJson(Object.fromEntries(Object.entries(existing.targetSnapshots as Record<string, Snapshot>)
+          .filter(([key]) => key.startsWith("attention:")))) === canonicalJson(input.additionalTargetSnapshots)
+      );
       const equivalent = existing && existing.title === input.title && existing.body === input.body &&
-        canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
+        canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null) &&
+        archiveEquivalent;
       if (equivalent) return existing;
       throw conflict("Decision idempotency key already used with a different payload");
     }
@@ -202,7 +247,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return created;
   }
 
-  async function create(input: CreateInput, dbOrTx?: Db) {
+  async function create(input: CreateInputWithSnapshots, dbOrTx?: Db) {
     if (dbOrTx) return createInStore(input, dbOrTx);
     return db.transaction((tx) => createInStore(input, tx as unknown as Db));
   }
@@ -226,13 +271,29 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     }
     const rows = await db.select().from(decisions).where(and(...conditions)).orderBy(desc(decisions.createdAt)).limit(Math.min(filter.limit ?? 50, 100));
     const openDecisionIds = rows.filter((decision) => decision.status === "open").map((decision) => decision.id);
-    const currentTargets = openDecisionIds.length
+    const currentIssueTargetIds = rows.flatMap((decision) => Object.keys(decision.targetSnapshots as Record<string, Snapshot>))
+      .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id));
+    const currentTargets = openDecisionIds.length && currentIssueTargetIds.length
       ? await db.select({ id: issues.id, updatedAt: issues.updatedAt })
         .from(decisionTargetIssues)
         .innerJoin(issues, and(eq(issues.companyId, companyId), eq(issues.id, decisionTargetIssues.issueId)))
-        .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds)))
+        .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds), inArray(issues.id, currentIssueTargetIds)))
       : [];
     const currentTargetsById = new Map(currentTargets.map((target) => [target.id, target.updatedAt]));
+    const attentionSnapshotIds = rows.flatMap((decision) => Object.values(decision.targetSnapshots as Record<string, Snapshot>))
+      .map((snapshot) => snapshot.attentionArchive as AttentionArchiveManifestEntry | undefined)
+      .filter((entry): entry is AttentionArchiveManifestEntry => Boolean(entry))
+      .map((entry) => entry.sourceId);
+    const currentAttentionStates = attentionSnapshotIds.length
+      ? await db.select().from(decisionRetention).where(and(
+        eq(decisionRetention.companyId, companyId),
+        inArray(decisionRetention.sourceId, attentionSnapshotIds),
+      ))
+      : [];
+    const currentAttentionByKey = new Map(currentAttentionStates.map((state) => [
+      `attention:${state.sourceKind}:${state.sourceId}`,
+      state,
+    ]));
     const terminalDecisionIds = rows.filter((decision) => decision.status !== "open").map((decision) => decision.id);
     const terminalExecutions = terminalDecisionIds.length
       ? await db.select().from(decisionEffectExecutions)
@@ -248,6 +309,13 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return rows.map((decision) => {
       const changed: Record<string, boolean> = {};
       if (decision.status === "open") for (const [id, snapshot] of Object.entries(decision.targetSnapshots as Record<string, Snapshot>)) {
+        if (id.startsWith("attention:")) {
+          const entry = snapshot.attentionArchive as AttentionArchiveManifestEntry | undefined;
+          const current = currentAttentionByKey.get(id);
+          changed[id] = !entry || !current || current.version !== entry.expectedVersion
+            || current.sourceActivityAt.toISOString() !== entry.activityAt || Boolean(current.archivedAt);
+          continue;
+        }
         const currentUpdatedAt = currentTargetsById.get(id);
         changed[id] = !currentUpdatedAt || currentUpdatedAt.toISOString() !== snapshot.updatedAt;
       }
@@ -337,7 +405,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      const executionResult = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
         let execution = await tx.select().from(decisionEffectExecutions).where(and(eq(decisionEffectExecutions.decisionId, decision.id), eq(decisionEffectExecutions.effectIndex, effectIndex)))
           .then((rows) => rows[0] ?? null);
@@ -352,7 +421,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
           const [row] = await tx.update(decisionEffectExecutions).set({ status, error: reason, result: details, activityLogId: activity?.id ?? null, executedAt: new Date() }).where(eq(decisionEffectExecutions.id, execution!.id)).returning();
           return row;
         };
-        const directReferencedIds = new Set(effectTargetIds(effect));
+        const directReferencedIds = new Set(decisionEffectTargetIssueIds(effect));
         const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
         const cancellationDescendantIds = effect.type === "cancel_issue_tree"
           ? snapshots[effect.targetIssueId]?.descendantIds
@@ -391,23 +460,45 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             await collectDescendantIds(decision.companyId, target.id, tx as unknown as Db));
           if (staleReference || changedTree) return finish("skipped", "target_changed", { reason: "target_changed" });
         }
-        const svc = issueService(tx as unknown as Db);
+        const svc = issueService(db);
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
         if (effect.type === "comment_on_issue") {
           const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId }, undefined, tx);
           result = { commentId: comment.id };
         } else if (effect.type === "update_issue_status") {
-          const updated = await svc.update(target.id, { status: effect.status, actorUserId: decidedByUserId }, tx);
+          const updated = await svc.update(
+            target.id,
+            { status: effect.status, actorUserId: decidedByUserId },
+            tx,
+            postCommitActivityPublications,
+          );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id, status: updated?.status };
         } else if (effect.type === "assign_issue") {
-          const updated = await svc.update(target.id, { assigneeAgentId: effect.assigneeAgentId ?? null, assigneeUserId: effect.assigneeUserId ?? null, actorUserId: decidedByUserId }, tx);
+          const updated = await svc.update(
+            target.id,
+            {
+              assigneeAgentId: effect.assigneeAgentId ?? null,
+              assigneeUserId: effect.assigneeUserId ?? null,
+              actorUserId: decidedByUserId,
+            },
+            tx,
+            postCommitActivityPublications,
+          );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id };
         } else if (effect.type === "resolve_blocker") {
           const current = await tx.select({ id: issueRelations.issueId }).from(issueRelations).where(and(eq(issueRelations.companyId, decision.companyId), eq(issueRelations.relatedIssueId, target.id), eq(issueRelations.type, "blocks")));
-          await svc.update(target.id, { blockedByIssueIds: current.map((row) => row.id).filter((id) => !effect.removeBlockedByIssueIds.includes(id)), actorUserId: decidedByUserId }, tx);
+          await svc.update(
+            target.id,
+            {
+              blockedByIssueIds: current.map((row) => row.id).filter((id) => !effect.removeBlockedByIssueIds.includes(id)),
+              actorUserId: decidedByUserId,
+            },
+            tx,
+            postCommitActivityPublications,
+          );
           result = { removedBlockedByIssueIds: effect.removeBlockedByIssueIds };
         } else if (effect.type === "create_issue") {
           const draft = effect.draft;
@@ -418,7 +509,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
           result = { issueId: created.id };
         } else {
           const cancelled = [target.id, ...cancellationDescendantIds!].reverse();
-          for (const id of cancelled) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);
+          for (const id of cancelled) {
+            await svc.update(
+              id,
+              { status: "cancelled", actorUserId: decidedByUserId },
+              tx,
+              postCommitActivityPublications,
+            );
+          }
           await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
           result = { cancelledIssueIds: cancelled };
         }
@@ -426,6 +524,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const [row] = await tx.update(decisionEffectExecutions).set({ status: "executed", result, error: null, activityLogId: activity?.id ?? null, executedAt: new Date() }).where(eq(decisionEffectExecutions.id, execution.id)).returning();
         return row;
       });
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
+      return executionResult;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Decision effect execution failed";
       return recordFailure("effect_execution_failed", { reason: "effect_execution_failed", message });
@@ -436,6 +536,58 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const option = decision.options.find((item) => item.id === decision.chosenOptionId);
     if (!option || !decision.decidedByUserId) throw unprocessable("Stored decision outcome is invalid");
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, decision.originRunId)).then((rows) => rows[0] ?? null);
+    const metadata = decision.metadata as Record<string, unknown>;
+    if (metadata.kind === "attention_archive_proposal") {
+      if (!verifyDecisionSpec(spec({
+        id: decision.id,
+        options: decision.options,
+        targetSnapshots: decision.targetSnapshots as Record<string, Snapshot>,
+      }), decision.signedSpec)) {
+        await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "invalid_signature" } })
+          .where(eq(decisions.id, decision.id));
+        return outcome(decision.id);
+      }
+      if (option.id === "archive") {
+        const manifest = parseAttentionArchiveManifest(
+          decision.companyId,
+          decision.targetSnapshots as Record<string, Snapshot>,
+        );
+        const manifestHash = manifest ? hashAttentionArchiveManifest(manifest) : null;
+        if (!manifest || manifestHash !== metadata.manifestHash) {
+          await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "manifest_mismatch" } })
+            .where(eq(decisions.id, decision.id));
+          return outcome(decision.id);
+        }
+        const originActor: AuthorizationActor = {
+          type: "agent",
+          agentId: decision.originAgentId,
+          companyId: decision.companyId,
+          runId: decision.originRunId,
+          onBehalfOfUserId: run?.responsibleUserId ?? null,
+          source: "agent_jwt",
+        };
+        try {
+          await decisionRetentionService(db).archiveReviewedManifest({
+            companyId: decision.companyId,
+            manifest,
+            originActor,
+            decidingActor: userActor,
+            decidedByUserId: decision.decidedByUserId,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "archive_proposal_failed";
+          await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: message } })
+            .where(eq(decisions.id, decision.id));
+          return outcome(decision.id);
+        }
+      }
+      await db.update(decisions).set({
+        executionStatus: "succeeded",
+        updatedAt: new Date(),
+        metadata: { ...metadata, ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) },
+      }).where(eq(decisions.id, decision.id));
+      return outcome(decision.id);
+    }
     for (let index = 0; index < option.effects.length; index += 1) await executeEffect(decision, option.effects[index]!, index, userActor, decision.decidedByUserId, run?.responsibleUserId ?? null);
     const rows = await db.select().from(decisionEffectExecutions).where(eq(decisionEffectExecutions.decisionId, decision.id));
     const successful = rows.filter((row) => row.status === "executed").length;
@@ -595,13 +747,21 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       : [];
     targetSweepCursor = targetRows.length === remaining && targetRows.length > 0 ? targetRows[targetRows.length - 1]!.id : null;
     const rows = [...new Map([...ttlRows, ...targetRows].map((row) => [row.id, row])).values()]; let expired = 0;
-    for (const decision of rows) { const strictTargetIds = new Set(decision.options.flatMap((option) => option.effects.filter((effect) => effect.staleness === "strict").map((effect) => effect.targetIssueId)));
+    for (const decision of rows) { const strictTargetIds = new Set(decision.options.flatMap((option) => option.effects.filter((effect) => effect.staleness === "strict").flatMap(decisionEffectTargetIssueIds)));
       const targets = strictTargetIds.size > 0
         ? await db.select({ id: issues.id, status: issues.status }).from(issues).where(and(eq(issues.companyId, decision.companyId), inArray(issues.id, [...strictTargetIds])))
         : [];
       const targetGone = targets.length !== strictTargetIds.size || targets.some((target) => target.status === "cancelled");
-      if (!targetGone && decision.expiresAt >= now) continue;
-      const reason = targetGone ? "target_gone" : "ttl";
+      // A decision whose strict targets all completed after it was proposed is moot:
+      // the strict guard would skip its effects anyway, so retire it instead of
+      // leaving it pending until TTL. Targets that were already done at proposal
+      // time don't count — those decisions intentionally act on a done issue.
+      const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
+      const targetsCompleted = !targetGone && strictTargetIds.size > 0 &&
+        targets.every((target) => target.status === "done") &&
+        targets.some((target) => snapshots[target.id]?.status !== "done");
+      if (!targetGone && !targetsCompleted && decision.expiresAt >= now) continue;
+      const reason = targetGone ? "target_gone" : targetsCompleted ? "target_completed" : "ttl";
       const [updated] = await db.update(decisions).set({ status: "expired", updatedAt: now, metadata: { ...decision.metadata, expiredReason: reason,
         ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.status, "open"))).returning();
       if (!updated) continue; expired += 1;

@@ -84,6 +84,20 @@ describe("issue thread interaction schemas", () => {
       .toBeUndefined();
   });
 
+  it("parses superseded confirmation results with a replacement pointer", () => {
+    const result = requestConfirmationResultSchema.parse({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(result).toEqual({
+      version: 1,
+      outcome: "superseded_by_newer_request",
+      supersededByInteractionId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
   it("accepts issue document targets for request_confirmation interactions", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",

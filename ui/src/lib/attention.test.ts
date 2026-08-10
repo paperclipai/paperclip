@@ -6,10 +6,12 @@ import {
   attentionBadgeCount,
   attentionDateBucket,
   attentionDetailLine,
+  attentionIsNewToday,
   attentionKind,
   attentionStatus,
   attentionTaskRef,
   buildAttentionFilterOptions,
+  buildDeskShelves,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
   filterAttentionItems,
@@ -45,6 +47,18 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     relatedIssue: null,
     project: null,
     workspace: null,
+    expiresAt: null,
+    ruleKey: null,
+    originAgentName: null,
+    queues: [],
+    shelf: false,
+    retentionDays: 30,
+    keep: false,
+    archivedAt: null,
+    retentionVersion: 1,
+    decideBy: null,
+    decideByAttribution: null,
+    snoozedUntil: null,
     detail: null,
     dismissal: null,
     ...overrides,
@@ -82,8 +96,12 @@ describe("isInlineResolvable", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "approval", inlineResolvable: false }))).toBe(false);
   });
 
-  it("is never inline for reviews even when flagged", () => {
-    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: true }))).toBe(false);
+  it("inlines a stalled review the server flagged (PAP-16080 §4.4)", () => {
+    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: true }))).toBe(true);
+  });
+
+  it("keeps a covered review deep-linking (server leaves inlineResolvable off)", () => {
+    expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: false }))).toBe(false);
   });
 
   it("deep-links recovery/failure/budget rows rather than inlining", () => {
@@ -94,20 +112,75 @@ describe("isInlineResolvable", () => {
 });
 
 describe("attentionBadgeCount", () => {
-  it("counts every queue row as a decision (mentions/unread never enter the feed)", () => {
+  it("uses the server's pre-pagination desk badge count", () => {
     const feed: AttentionFeed = {
       companyId: "c1",
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
+      deskBadgeCount: 2,
+      nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],
     };
-    expect(attentionBadgeCount(feed)).toBe(3);
+    expect(attentionBadgeCount(feed)).toBe(2);
   });
 
   it("is zero for an empty or missing feed", () => {
     expect(attentionBadgeCount(null)).toBe(0);
     expect(attentionBadgeCount(undefined)).toBe(0);
+  });
+});
+
+// Desk grouping — arrival-based ("New today" / "Earlier") with a "Decide now"
+// shelf only when an explicit decide-by deadline is due.
+describe("buildDeskShelves", () => {
+  const NOW = Date.parse("2026-07-09T12:00:00Z");
+  const todayIso = "2026-07-09T09:00:00Z";
+  const earlierIso = "2026-07-01T09:00:00Z";
+
+  it("groups by arrival with no shelf when nothing has a due deadline", () => {
+    const items = [
+      buildItem({ id: "new-1", createdAt: todayIso }),
+      buildItem({ id: "old-1", createdAt: earlierIso }),
+      buildItem({ id: "new-2", createdAt: "2026-07-09T02:00:00Z" }),
+    ];
+    const shelves = buildDeskShelves(items, NOW);
+    expect(shelves.map((s) => s.key)).toEqual(["desk:new-today", "desk:earlier"]);
+    expect(shelves[0]!.label).toBe("New today");
+    expect(shelves[0]!.items.map((i) => i.id).sort()).toEqual(["new-1", "new-2"]);
+    expect(shelves[1]!.items.map((i) => i.id)).toEqual(["old-1"]);
+  });
+
+  it("adds the 'Decide now' shelf only for items with a due decide-by, and never double-buckets them", () => {
+    const items = [
+      buildItem({ id: "due", decideBy: "today", createdAt: todayIso }),
+      buildItem({ id: "overdue", decideBy: "2026-07-01", createdAt: earlierIso }),
+      buildItem({ id: "new", createdAt: "2026-07-09T05:00:00Z" }),
+      buildItem({ id: "old", createdAt: earlierIso }),
+      buildItem({ id: "whenever", decideBy: "whenever", createdAt: "2026-07-09T11:00:00Z" }),
+    ];
+    const shelves = buildDeskShelves(items, NOW);
+    expect(shelves.map((s) => s.key)).toEqual(["desk:decide-now", "desk:new-today", "desk:earlier"]);
+    // Decide-now items are pulled out of the arrival groups (disjoint shelves).
+    expect(shelves[0]!.items.map((i) => i.id)).toEqual(["overdue", "due"]);
+    // "New today" is newest-arrival-first: whenever (11:00) before new (05:00).
+    expect(shelves[1]!.items.map((i) => i.id)).toEqual(["whenever", "new"]);
+    expect(shelves[2]!.items.map((i) => i.id)).toEqual(["old"]);
+    // Every item lands in exactly one shelf.
+    const total = shelves.reduce((n, s) => n + s.items.length, 0);
+    expect(total).toBe(items.length);
+  });
+
+  it("returns no shelves for an empty desk", () => {
+    expect(buildDeskShelves([], NOW)).toEqual([]);
+  });
+});
+
+describe("attentionIsNewToday", () => {
+  const NOW = Date.parse("2026-07-09T12:00:00Z");
+  it("is true when the item surfaced on the current UTC day", () => {
+    expect(attentionIsNewToday(buildItem({ createdAt: "2026-07-09T00:00:01Z" }), NOW)).toBe(true);
+    expect(attentionIsNewToday(buildItem({ createdAt: "2026-07-08T23:59:59Z" }), NOW)).toBe(false);
   });
 });
 

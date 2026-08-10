@@ -45,6 +45,15 @@ This starts:
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
+### Mobile-friendly preview (`pnpm dev:mobile`)
+
+The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.
+
+- `pnpm dev:mobile` — build the UI and start the preview server on `:3101`. Rebuild manually to pick up UI source changes.
+- `pnpm dev:both` — run `pnpm dev` and `pnpm dev:mobile` together with prefixed output and shared signal handling.
+
+The preview server binds `0.0.0.0` and accepts any Host, so a tailnet or LAN address (e.g. `http://<host>.ts.net:3101/`) works out of the box. The `/api` proxy sets `x-forwarded-host` and `x-forwarded-proto`, which the server's board mutation guard uses to trust the browser's Origin — mutations from `:3101` succeed against the API on `:3100` without further configuration. An HTTPS tunnel in front of the preview server (ngrok, tailscale funnel) is also supported: the tunnel's `x-forwarded-proto` header is preserved when set.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
@@ -127,7 +136,12 @@ at least one identity source. Supported-platform process probes fail explicitly
 instead of silently treating a live PID as either the original owner or a
 recycled process when identity cannot be established.
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for any queue-claim callback already in flight, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. ACP-backed local runs use server-owned stdio and cannot survive their parent server, so the old server instead persists their complete snapshot, changes the marker to `drainRequired` with `drainReason: "active_acp_run"`, and drains only those runs to queued retries. Detached CLI runs remain eligible for adoption during the same mixed restart. If an ACP process terminates but its terminal run update does not persist, startup classifies it as lost with reason `selective_drain_not_finalized` rather than treating the drain as successful. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eager
+`SIGINT`/`SIGTERM` cleanup hooks. Paperclip owns signal ordering so the heartbeat
+snapshot and any required drain complete while the database is still available;
+the coordinated shutdown path stops embedded PostgreSQL afterward.
 
 The request command records the preflight set of running heartbeat IDs and writes
 an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
@@ -177,6 +191,13 @@ jq -e --arg run "$RUN_ID" \
 An alive child appears in `adoptedRunIds`; a child that completed during the
 restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
 `lostRunIds` entry remains a failed deploy and must not be waived.
+
+For a recovery from a version that can stop embedded PostgreSQL before writing
+its shutdown snapshot, use `--drain-required` once to cross the broken boundary.
+After the fixed server is live, perform another ordinary hot restart. Require
+`lostRunIds` to be empty and every preflight run to appear in either
+`adoptedRunIds` or `finalizedWhileDownRunIds`; an ACP-backed original should be
+finalized and have a queued retry rather than be adopted.
 
 Tailscale/private-auth dev mode:
 
@@ -315,6 +336,14 @@ Every local install keeps runtime state directly under the selected instance roo
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 
+Config updates preserve unrecognized top-level and nested keys so provider or
+plugin extensions survive `configure` and worktree port repair. Likely
+misspellings of known keys produce a warning but are not removed. If an
+existing `config.json` is malformed, `onboard` and `configure` first create a
+byte-for-byte sibling backup named `config.json.invalid-1` (then `-2`, and so
+on). Repair from defaults requires an interactive confirmation; non-interactive
+runs stop without replacing the original.
+
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
@@ -429,6 +458,30 @@ After `worktree init`, both the server and the CLI auto-load the repo-local `.pa
 
 `pnpm dev` now fails fast in a linked git worktree when `.paperclip/.env` is missing, instead of silently booting against the default instance/port. If that happens, run `paperclipai worktree init` in the worktree first.
 
+### Lean worktrees and deferred seeding
+
+Seeding a worktree database is the heaviest part of `worktree init`. That work can be deferred so a worktree is cheap to create and only pays the seed cost the first time it is actually used — the CLI/dev-time analog of the server's lazy runtime provisioning (see the board-operator guide's "Lazy runtime provisioning" section).
+
+Seeding state is tracked with two marker files under the worktree's `.paperclip/` directory:
+
+- `seed-pending` — the isolated database has not been seeded yet (a **lean** worktree). Written by `worktree init` before any seed runs.
+- `seed-complete` — the database was seeded; the pending marker is removed.
+
+The default `worktree init` still seeds eagerly and writes `seed-complete` immediately. A lean worktree (created without an eager seed) keeps its `seed-pending` marker until something seeds it on demand:
+
+- `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: a present `seed-complete` marker or a missing `seed-pending` marker short-circuits it, so it is safe to call repeatedly and from concurrent processes. It reads the source instance from the `seed-pending` marker unless you pass `--from-config`.
+- `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot, so `run` transparently seeds a lean worktree on first launch.
+- Managed git-worktree runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when a legacy workspace policy has no explicit runtime provision command and the worktree is still `seed-pending`. An explicitly configured runtime provision command always takes precedence.
+- Worktrees created before lazy seeding shipped have neither marker; they are treated as already-seeded for backward compatibility (never re-cloned).
+
+**Seed-pending guard.** `pnpm dev` (the dev-runner) refuses to boot a worktree whose database is still `seed-pending` and points you at the fix:
+
+```
+[paperclip] this worktree database is seed-pending. Run `pnpm paperclipai worktree ensure-seeded` before `pnpm dev`.
+```
+
+This guard (`isWorktreeSeedPending` in `server/src/dev-runner-worktree.ts`) prevents `pnpm dev` from starting the app against an empty, unseeded database — run `worktree ensure-seeded` once and re-run `pnpm dev`.
+
 Provisioned git worktrees also pause seeded routines that still have enabled schedule triggers in the isolated worktree database by default. This prevents copied daily/cron routines from firing unexpectedly inside the new workspace instance during development without disabling webhook/API-only routines.
 
 That repo-local env also sets:
@@ -441,6 +494,8 @@ That repo-local env also sets:
 The server/UI use those values for worktree-specific branding such as the top banner and dynamically colored favicon.
 Authenticated worktree servers also use the `PAPERCLIP_INSTANCE_ID` value to scope Better Auth cookie names.
 Browser cookies are shared by host rather than port, so this prevents logging into one `127.0.0.1:<port>` worktree from replacing another worktree server's session cookie.
+
+When Paperclip closes a server-managed git worktree, it also reclaims the isolated instance referenced by that worktree's repo-local `.paperclip/.env`. New server-managed worktrees use a collision-resistant instance id derived from the resolved absolute worktree path, and Paperclip persists the resulting instance root as execution-workspace ownership metadata. Cleanup requires the env pointer to match that persisted root, stops a running embedded PostgreSQL process, and then removes the instance directory. The deletion guard only accepts canonical instance paths below `PAPERCLIP_WORKTREES_DIR/instances/`; legacy or mismatched ownership, pointers to the default/live Paperclip home, and all other locations are logged and left untouched.
 
 Print shell exports explicitly when needed:
 
@@ -589,6 +644,8 @@ eval "$(pnpm paperclipai worktree env)"
 ```
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
+
+Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
 
 ## App-Shipped Skills Catalog
 

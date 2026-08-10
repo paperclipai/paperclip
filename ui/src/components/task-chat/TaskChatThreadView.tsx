@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import type { TaskChatInteractionItem, TaskChatItem } from "./task-chat-model";
+import type {
+  TaskChatInteractionItem,
+  TaskChatItem,
+  TaskChatMessageItem,
+} from "./task-chat-model";
 import { TaskChatTurn } from "./TaskChatTurn";
 import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
-import { TaskChatThinkingBlock } from "./TaskChatThinkingBlock";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 
@@ -25,6 +28,18 @@ interface TaskChatThreadViewProps {
    * items render nothing without it — the harness has no control plane.
    */
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode;
+  /**
+   * Renders the description-as-first-bubble placeholder (PAP-375). The live
+   * thread binds TaskChatDescriptionBubble to the issue; brief items render
+   * nothing without it.
+   */
+  renderBrief?: () => ReactNode;
+  /**
+   * Renders the copy/👍/👎 action cluster prepended to an agent bubble's footer
+   * line (PAP-413). The live thread binds it to the feedback-vote API; harness
+   * fixtures omit it and the bubbles render actionless.
+   */
+  renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -34,14 +49,42 @@ function renderItem(
   item: TaskChatItem,
   onApprovalDecision?: (statusItemId: string, optionId: string) => void,
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
+  renderBrief?: () => ReactNode,
+  renderMessageActions?: (item: TaskChatMessageItem) => ReactNode,
 ) {
   switch (item.kind) {
-    case "message":
-      return <TaskChatBubble item={item} />;
+    case "message": {
+      // Compute the actions once: the bubble renders them for a runless reply
+      // (footer = actions + timestamp), while an attached turn hands them to
+      // TaskChatTurn's `leading` slot so they ride the summary line and stay
+      // put when the tool history expands (PAP-413). The two paths are mutually
+      // exclusive at runtime, so only one host ever mounts the node.
+      const actions = renderMessageActions?.(item);
+      return (
+        <TaskChatBubble
+          item={item}
+          actions={actions}
+          attachedTurn={
+            item.attachedTurn ? (
+              <TaskChatTurn
+                item={item.attachedTurn}
+                timestampPrefix={item.timestamp}
+                leading={actions}
+                renderChild={(child) => renderItem(child, onApprovalDecision)}
+              />
+            ) : undefined
+          }
+        />
+      );
+    }
     case "marker":
       return <TaskChatMarker item={item} />;
     case "thinking":
-      return <TaskChatThinkingBlock item={item} />;
+      // Thinking never renders as a row (PAP-361): its live signal is the
+      // pill's "Thinking…" state, and the text stays in the run log / classic
+      // transcript. The kind survives in the model because the transcript
+      // parser still emits it (both nesting rules filter it out).
+      return null;
     case "tool":
       return <TaskChatToolCard item={item} />;
     case "status":
@@ -55,6 +98,8 @@ function renderItem(
       return <TaskChatUsageReadout item={item} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
+    case "brief":
+      return renderBrief ? renderBrief() : null;
     case "turn":
       return (
         <TaskChatTurn
@@ -81,6 +126,8 @@ export function TaskChatThreadView({
   header,
   onApprovalDecision,
   renderInteraction,
+  renderBrief,
+  renderMessageActions,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
@@ -92,25 +139,40 @@ export function TaskChatThreadView({
         </div>
       ) : null}
       {items.map((item) => (
-        <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction)}</div>
+        <div key={item.id}>
+          {renderItem(item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions)}
+        </div>
       ))}
     </div>
   );
 
   if (!scroll) return body;
 
-  // Include a cheap content signature so streaming growth (text lengthening
-  // without the item count changing) still advances the auto-follow key.
-  const signatureOf = (it: TaskChatItem): number => {
-    if (it.kind === "message") return it.text.length;
-    if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
-    if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
-    if (it.kind === "turn") {
-      return it.settled ? 1 : it.items.reduce((n, child) => n + signatureOf(child), it.items.length);
-    }
-    return 1;
-  };
-  const contentKey = items.reduce((acc, it) => acc + signatureOf(it), items.length);
+  return <TaskMessageScroller contentKey={taskChatContentKey(items)}>{body}</TaskMessageScroller>;
+}
 
-  return <TaskMessageScroller contentKey={contentKey}>{body}</TaskMessageScroller>;
+// Cheap content signature so streaming growth (text lengthening without the
+// item count changing) still advances the auto-follow key. Shared by the
+// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+function signatureOf(it: TaskChatItem): number {
+  if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
+  if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
+  if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
+  if (it.kind === "turn") {
+    if (it.settled) return 1;
+    // The live parent row's header changes (gerund ↔ tool-state flashes,
+    // streaming interstitial text growing) count too, so the collapsed
+    // single-line turn still advances the key.
+    const headerSig = it.liveStatus
+      ? it.liveStatus.label.length +
+        (it.liveStatus.detail?.length ?? 0) +
+        (it.liveStatus.selfTalk?.length ?? 0)
+      : 0;
+    return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
+  }
+  return 1;
+}
+
+export function taskChatContentKey(items: TaskChatItem[]): number {
+  return items.reduce((acc, it) => acc + signatureOf(it), items.length);
 }

@@ -66,6 +66,12 @@ export interface LogActivityInput {
   responsibleUserIdOverride?: string | null;
 }
 
+export interface ActivityPublication {
+  companyId: string;
+  payload: Record<string, unknown>;
+  pluginEvent: PluginEvent | null;
+}
+
 export async function createActivityDetailsRedactor(db: Db) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -142,7 +148,16 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export function publishActivity(publication: ActivityPublication) {
+  publishLiveEvent({
+    companyId: publication.companyId,
+    type: "activity.logged",
+    payload: publication.payload,
+  });
+  if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+}
+
+export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const [activity] = await db.insert(activityLog).values({
@@ -158,42 +173,57 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   }).returning({ id: activityLog.id });
 
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      responsibleUserId,
-      details: redactedDetails,
-    },
-  });
-
+  const payload = {
+    actorType: input.actorType,
+    actorId: input.actorId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    agentId: input.agentId ?? null,
+    runId: input.runId ?? null,
+    responsibleUserId,
+    details: redactedDetails,
+  };
   const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
-    const event: PluginEvent = {
-      eventId: randomUUID(),
-      eventType: pluginEventType,
-      occurredAt: new Date().toISOString(),
-      actorId: input.actorId,
-      actorType: input.actorType,
-      entityId: input.entityId,
-      entityType: input.entityType,
-      companyId: input.companyId,
-      payload: {
-        ...redactedDetails,
-        agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
-        responsibleUserId,
-      },
-    };
-    publishPluginDomainEvent(event);
-  }
+  const pluginEvent: PluginEvent | null = pluginEventType
+    ? {
+        eventId: randomUUID(),
+        eventType: pluginEventType,
+        occurredAt: new Date().toISOString(),
+        actorId: input.actorId,
+        actorType: input.actorType,
+        entityId: input.entityId,
+        entityType: input.entityType,
+        companyId: input.companyId,
+        payload: {
+          ...redactedDetails,
+          agentId: input.agentId ?? null,
+          runId: input.runId ?? null,
+          responsibleUserId,
+        },
+      }
+    : null;
 
+  return {
+    activity,
+    publication: {
+      companyId: input.companyId,
+      payload,
+      pluginEvent,
+    } satisfies ActivityPublication,
+  };
+}
+
+export async function logActivity(
+  db: Db,
+  input: LogActivityInput,
+  postCommitPublications?: ActivityPublication[],
+) {
+  const { activity, publication } = await persistActivity(db, input);
+  if (postCommitPublications) {
+    postCommitPublications.push(publication);
+  } else {
+    publishActivity(publication);
+  }
   return activity;
 }

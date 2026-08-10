@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRuns,
   issueComments,
+  issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
   issues,
@@ -26,6 +27,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -140,6 +142,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
+    await db.delete(issueInboxArchives);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -379,6 +382,80 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       );
     },
   );
+
+  it("stands down while the latest run was cancelled by a board operator", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "cancelled",
+      error: "Cancelled by a board operator",
+      errorCode: "cancelled",
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("stands down after an operator interrupt cancellation", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "cancelled",
+      error: "Interrupted by board comment",
+      errorCode: "operator_interrupted",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("still recovers system-cancelled runs with no operator attribution", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "cancelled",
+      error: "Cancelled because the workspace lease expired",
+      errorCode: "cancelled",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.operatorCancelExempted).toBe(0);
+    // The system-cancelled run still flows into the pre-existing recovery
+    // behavior (a continuation requeue or escalation — either produces a
+    // wake), proving the stand-down is scoped to operator attribution.
+    expect(enqueueWakeup).toHaveBeenCalled();
+  });
 
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
@@ -1067,21 +1144,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.presentation).toMatchObject({
+    const escalationComments = comments.filter((comment) =>
+      noticeMetadataReferencesRecoveryAction(comment.metadata, actionRows[0]!.id),
+    );
+    expect(escalationComments).toHaveLength(1);
+    expect(escalationComments[0]?.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "warning",
-      title: "Recovery: workspace validation failed — moved to blocked (owner: CTO)",
-      density: "compact",
-    });
-    expect(comments[0]?.metadata).toMatchObject({
-      version: 1,
-      sections: [expect.objectContaining({
-        rows: expect.arrayContaining([
-          expect.objectContaining({ type: "key_value", label: "Recovery action", value: actionRows[0]?.id }),
-          expect.objectContaining({ type: "key_value", label: "Cause", value: "workspace_validation_failed" }),
-        ]),
-      })],
+      tone: "danger",
+      title: "Workspace validation failed",
     });
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
     expect(enqueueWakeup).toHaveBeenCalledWith(
@@ -1155,7 +1225,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Recovery action:");
+    // Dedupe for structured notices is metadata-based: the short body no longer
+    // carries the `Recovery action: \`id\`` marker line.
+    expect(comments[0]?.body).not.toContain("Recovery action:");
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
@@ -1315,6 +1389,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     expect(resolved.body.recoveryAction.resolvedAt).toBeTruthy();
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(issueInboxArchives)
+        .where(eq(issueInboxArchives.issueId, sourceIssueId)),
+    ).toHaveLength(1);
 
     const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
     expect(detail.body.activeRecoveryAction).toBeNull();

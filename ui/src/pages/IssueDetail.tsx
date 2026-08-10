@@ -91,6 +91,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
@@ -110,6 +111,9 @@ import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
+import { IssueFieldChangeReceipt } from "../components/IssueFieldChangeReceipt";
+import { IssueWriteDenialNotice } from "../components/IssueWriteDenialNotice";
+import { issueWriteDenialForActivity } from "../lib/issue-write-denial-activity";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import {
   IssueMonitorBanner,
@@ -118,7 +122,6 @@ import {
 } from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
-import { PendingDecisionStrip } from "../components/PendingDecisionStrip";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -132,6 +135,7 @@ import { ArtifactFileChip } from "../components/ArtifactFileChip";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -703,7 +707,8 @@ function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon status={headerSeed.status} blockerAttention={headerSeed.blockerAttention} />
-              <PriorityIcon priority={headerSeed.priority} />
+              {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+              {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority={headerSeed.priority} />}
               {identifier ? (
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
@@ -872,6 +877,8 @@ type IssueDetailChatTabProps = {
   companyId: string;
   projectId: string | null;
   issueStatus: Issue["status"];
+  /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId: Issue["assigneeAgentId"];
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -913,6 +920,11 @@ type IssueDetailChatTabProps = {
    * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
    */
   threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble in the
+   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   */
+  issueBrief?: TaskChatIssueBrief;
   footer?: ReactNode;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -973,6 +985,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   projectId,
   issueWorkMode,
   issueStatus,
+  issueAssigneeAgentId,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -1003,6 +1016,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   composerRef,
   composerAccessory,
   threadHeader,
+  issueBrief,
   footer,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -1219,6 +1233,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             </>
           ) : undefined
         }
+        issueBrief={issueBrief}
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}
@@ -1250,6 +1265,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
+        issueAssigneeAgentId={issueAssigneeAgentId}
         agentMap={agentMap}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
@@ -1531,6 +1547,24 @@ function IssueDetailActivityTab({
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
                 <IssueReferenceActivitySummary event={evt} />
+                {/* Field-level who/what/why receipt for agent and board edits alike. */}
+                <IssueFieldChangeReceipt
+                  event={evt}
+                  resolveAgentLabel={(agentId) => agentMap.get(agentId)?.name ?? null}
+                  resolveUserLabel={(userId) => userProfileMap.get(userId)?.label ?? null}
+                />
+                {/* A refused write explains itself here, not just in the API error. */}
+                {(() => {
+                  const denial = issueWriteDenialForActivity(evt.action, evt.details, {
+                    actorLabel: evt.agentId ? agentMap.get(evt.agentId)?.name ?? null : null,
+                    responsibleUserName: evt.responsibleUserId
+                      ? userProfileMap.get(evt.responsibleUserId)?.label ?? null
+                      : null,
+                  });
+                  return denial ? (
+                    <IssueWriteDenialNotice code={denial.code} context={denial.context} />
+                  ) : null;
+                })()}
               </div>
             );
           }}
@@ -1946,7 +1980,10 @@ export function IssueDetail() {
     },
     [issue?.id, rawChildIssues],
   );
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(companyLiveRuns), [companyLiveRuns]);
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(companyLiveRuns, issue ? [issue, ...childIssues] : childIssues),
+    [childIssues, companyLiveRuns, issue],
+  );
   const issuePanelKey = useMemo(
     () => buildIssuePropertiesPanelKey(issue ?? null, childIssues),
     [childIssues, issue],
@@ -2010,6 +2047,7 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
+  const breadcrumbIdentifier = issue?.identifier ?? issueHeaderSeed?.identifier ?? undefined;
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -3177,12 +3215,14 @@ export function IssueDetail() {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
         label: breadcrumbTitle,
+        identifier: breadcrumbIdentifier,
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
       },
     ]);
   }, [
     breadcrumbTitle,
+    breadcrumbIdentifier,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,
@@ -4160,10 +4200,13 @@ export function IssueDetail() {
             blockerAttention={issue.blockerAttention}
             onChange={(status) => updateIssue.mutate({ status })}
           />
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => updateIssue.mutate({ priority })}
-          />
+          {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && (
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => updateIssue.mutate({ priority })}
+            />
+          )}
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
@@ -4493,8 +4536,6 @@ export function IssueDetail() {
           checkingNow={checkIssueMonitorNow.isPending}
         />
 
-        <PendingDecisionStrip companyId={issue.companyId} issueId={issue.id} />
-
         {taskChatShellEnabled ? null : (
           <InlineEditor
             value={issue.description ?? ""}
@@ -4576,10 +4617,13 @@ export function IssueDetail() {
     <div
       className={
         taskChatShellEnabled
-          ? // Fill main exactly so the outer page never scrolls — the thread's
-            // own viewport is the only scroll surface (h-full is inert on
-            // mobile, where main has no fixed height and the page scrolls).
-            "flex h-full min-h-0 w-full flex-col gap-6"
+          ? isMobile
+            ? // Mobile shell scrolls the DOCUMENT (main is overflow-visible,
+              // auto height) — the thread renders in normal flow (PAP-360).
+              "flex w-full flex-col gap-6"
+            : // Fill main exactly so the outer page never scrolls — the
+              // thread's own viewport is the only scroll surface.
+              "flex h-full min-h-0 w-full flex-col gap-6"
           : "max-w-3xl space-y-6"
       }
     >
@@ -4842,7 +4886,7 @@ export function IssueDetail() {
       <Tabs
         value={resolvedDetailTab}
         onValueChange={setDetailTab}
-        className={taskChatShellEnabled ? "min-h-0 flex-1" : "space-y-3"}
+        className={taskChatShellEnabled ? (isMobile ? undefined : "min-h-0 flex-1") : "space-y-3"}
       >
         {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
             strip is hidden and the thread renders as the only surface. */}
@@ -4873,15 +4917,49 @@ export function IssueDetail() {
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent
           value="chat"
-          className={taskChatShellEnabled ? "-mx-4 md:-mx-6 flex min-h-0 flex-col" : undefined}
+          className={
+            taskChatShellEnabled
+              ? isMobile
+                ? "-mx-4"
+                : "-mx-4 md:-mx-6 flex min-h-0 flex-col"
+              : undefined
+          }
         >
           {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
+              issueBrief={
+                taskChatShellEnabled
+                  ? {
+                      description: issue.description ?? "",
+                      author: issue.createdByAgentId ? "agent" : "human",
+                      authorName: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.name ?? "Agent"
+                        : undefined,
+                      agentIcon: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.icon
+                        : undefined,
+                      createdAt: issue.createdAt,
+                      onSave: (description) => updateIssue.mutateAsync({ description }),
+                      mentions: mentionOptions,
+                      externalReferences: externalObjectsState.isEnabled
+                        ? externalObjectsState.markdownReferences
+                        : undefined,
+                      imageUploadHandler: async (file) => {
+                        const attachment = await uploadAttachment.mutateAsync(file);
+                        return attachment.contentPath;
+                      },
+                      onDropFile: async (file) => {
+                        await uploadAttachment.mutateAsync(file);
+                      },
+                    }
+                  : undefined
+              }
               issueId={issue.id}
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}
               issueStatus={issue.status}
+              issueAssigneeAgentId={issue.assigneeAgentId}
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}

@@ -17,11 +17,17 @@ const {
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
   environmentCustomImagesServiceFactoryMock,
+  executionWorkspaceServiceFactoryMock,
+  executionWorkspaceServiceMock,
+  externalObjectsServiceMock,
+  externalObjectsServiceFactoryMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
+  issueThreadInteractionServiceFactoryMock,
+  issueThreadInteractionServiceMock,
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
@@ -29,7 +35,11 @@ const {
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
-  const createDbMock = vi.fn(() => ({}) as never);
+  const createDbMock = vi.fn(() => ({
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({ where: vi.fn(async () => []) })),
+    })),
+  }) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
@@ -63,10 +73,37 @@ const {
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
+  const issueThreadInteractionServiceMock = {
+    sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
+    sweepMergedPullRequestConfirmations: vi.fn(async () => ({
+      checked: 0,
+      candidates: 0,
+      accepted: 0,
+      woken: 0,
+    })),
+  };
+  const issueThreadInteractionServiceFactoryMock = vi.fn(() => issueThreadInteractionServiceMock);
   const environmentCustomImagesServiceMock = {
     cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
   };
   const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
+  const executionWorkspaceServiceMock = {
+    sweepTerminalWorkspaces: vi.fn(async () => ({
+      checked: 0,
+      eligible: 0,
+      archived: 0,
+      cleanupFailed: 0,
+      skippedActiveRun: 0,
+      skippedNonTerminalTree: 0,
+      skippedUndelivered: 0,
+      skippedRace: 0,
+    })),
+  };
+  const executionWorkspaceServiceFactoryMock = vi.fn(() => executionWorkspaceServiceMock);
+  const externalObjectsServiceMock = {
+    refreshDueObjectsForActiveCompanies: vi.fn(async () => ({ companies: 0, checked: 0, refreshed: 0 })),
+  };
+  const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
@@ -94,11 +131,17 @@ const {
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
     environmentCustomImagesServiceFactoryMock,
+    executionWorkspaceServiceFactoryMock,
+    executionWorkspaceServiceMock,
+    externalObjectsServiceMock,
+    externalObjectsServiceFactoryMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
+    issueThreadInteractionServiceFactoryMock,
+    issueThreadInteractionServiceMock,
     loadConfigMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
@@ -207,16 +250,30 @@ vi.mock("../services/index.js", () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  attentionService: vi.fn(() => ({
+    list: vi.fn(async () => ({ items: [], nextCursor: null })),
+  })),
   decisionService: vi.fn(() => ({
     sweepExpired: vi.fn(async () => ({ expired: 0 })),
+  })),
+  decisionRetentionService: vi.fn(() => ({
+    autoArchive: vi.fn(async () => 0),
+    deliverNotifications: vi.fn(async () => ({ notifiedAgents: 0, delivered: 0 })),
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   applyManagedEnvironments: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
+  executionWorkspaceService: executionWorkspaceServiceFactoryMock,
+  externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn(async () => ({
+      enableExternalObjects: true,
+      enableStatusCards: false,
+    })),
     getGeneral: vi.fn(async () => ({
       backupRetention: {
         dailyDays: 7,
@@ -252,6 +309,12 @@ vi.mock("../services/index.js", () => ({
       needsAttention: 0,
       failed: 0,
     })),
+  })),
+}));
+
+vi.mock("../services/secret-proposals.js", () => ({
+  createSecretProposalsService: vi.fn(() => ({
+    sweepExpired: vi.fn(async () => 0),
   })),
 }));
 
@@ -433,8 +496,41 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
 
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
+      expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
     }

@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import {
+  isCodexAuthCacheEnabled,
+  readSubscriptionAccountId,
+  writeCodexAuthCacheEntry,
+} from "./codex-auth-cache.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -41,6 +46,19 @@ export interface CopyBackCodexAuthInput {
   hostAuthPath: string;
   /** Non-leaking progress sink: receives decision/outcome lines only. */
   log: (line: string) => void | Promise<void>;
+  /**
+   * Resolves and ensures the per-identity cache slot path for a sandbox
+   * `account_id`. When this is provided AND the cache off-switch is on, the
+   * copy-back also writes the fresher, usable subscription credential into its
+   * per-identity cache slot as a second, additive write, keyed by the real
+   * `account_id`. This is independent of the host default overwrite: it can
+   * write a cache slot for a different identity than the host holds (matrix rows
+   * 1b, 3), and it never touches the host default store. When absent, no cache
+   * write happens.
+   */
+  resolveCacheEntryPath?: (accountId: string) => Promise<string>;
+  /** Environment for the cache off-switch read. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
@@ -93,7 +111,7 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
  * Never logs token bytes — only the decision outcome.
  */
 export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<CopyBackCodexAuthOutcome> {
-  const { readSandboxAuth, hostAuthPath, log } = input;
+  const { readSandboxAuth, hostAuthPath, log, resolveCacheEntryPath, env } = input;
 
   // Read first (outside the lock) — a read never mutates the host, so there is
   // nothing to serialize yet. A genuinely absent sandbox `auth.json` (ENOENT —
@@ -116,7 +134,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
 
   const hostDir = path.dirname(hostAuthPath);
   await mkdir(hostDir, { recursive: true });
-  return withDirectoryMergeLock(hostDir, async () => {
+  const hostOutcome = await withDirectoryMergeLock(hostDir, async () => {
     // Stage on the same filesystem as the host target so both the predicate read
     // and the final rename stay device-local (rename across devices is not
     // atomic and would fail with EXDEV).
@@ -151,4 +169,43 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       await rm(stagedTempPath, { force: true }).catch(() => undefined);
     }
   });
+
+  // Additive cache write. Independent of the host default overwrite above: it
+  // runs on its own directory lock, keys the slot by the real sandbox
+  // `account_id`, and can write a slot for a different identity than the host
+  // holds. It never touches the host default store. The off-switch (default on)
+  // makes this a no-op when disabled. Only a usable subscription credential has
+  // an identity to key; an api-key or unusable sandbox credential is skipped.
+  //
+  // The cache write is best-effort. The host copy-back above already finished
+  // and set `hostOutcome`, so a failure of this additive write must not replace
+  // that successful result. Catch the error, log it, and return `hostOutcome`.
+  // The cache stays a hint: the next teardown re-attempts the write.
+  if (resolveCacheEntryPath && isCodexAuthCacheEnabled(env)) {
+    try {
+      const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
+      if (sandboxAccountId) {
+        const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
+        await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log });
+      }
+    } catch (error) {
+      // Log only the errno code, never the error message. The message embeds the
+      // cache slot path, and the slot path embeds the raw `account_id`; the code
+      // (for example EACCES or ENOSPC) makes the failure diagnosable without a
+      // leak. Token bytes never reach the log.
+      const code = (error as NodeJS.ErrnoException | null)?.code ?? "unknown";
+      // The host copy-back above already finished and set `hostOutcome`. This
+      // diagnostic log is the last step, so a rejecting logger must not throw
+      // and turn that successful result into a failed copy-back. Guard the log:
+      // a rejection here is swallowed, and the function still returns
+      // `hostOutcome` below.
+      await Promise.resolve(
+        log(
+          `[paperclip] Codex auth cache: additive cache write failed (${code}); host copy-back result kept.`,
+        ),
+      ).catch(() => undefined);
+    }
+  }
+
+  return hostOutcome;
 }

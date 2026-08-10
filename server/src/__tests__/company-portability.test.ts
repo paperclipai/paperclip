@@ -154,7 +154,7 @@ vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
 
-const { companyPortabilityService, parseGitHubSourceUrl } = await import("../services/company-portability.js");
+const { companyPortabilityService, parseGitHubSourceUrl, renderYamlBlock, renderFrontmatter } = await import("../services/company-portability.js");
 
 function asTextFile(entry: CompanyPortabilityFileEntry | undefined) {
   expect(typeof entry).toBe("string");
@@ -455,6 +455,29 @@ describe("company portability", () => {
         instructionsFilePath: `/tmp/${agent.id}/AGENTS.md`,
       },
     }));
+  });
+
+  it("renders high-volume YAML blocks without overflowing the call stack", () => {
+    const tasks = Array.from({ length: 130_000 }, (_, index) => `issue-${index}`);
+
+    const lines = renderYamlBlock({ tasks }, 0);
+
+    expect(lines[0]).toBe("tasks:");
+    expect(lines[1]).toBe('  - "issue-0"');
+    expect(lines.at(-1)).toBe('  - "issue-129999"');
+  });
+
+  it("renders high-volume frontmatter arrays without overflowing the call stack", () => {
+    const tasks = Array.from({ length: 130_000 }, (_, index) => `issue-${index}`);
+
+    const rendered = renderFrontmatter({ tasks });
+    const lines = rendered.split("\n");
+
+    expect(lines[0]).toBe("---");
+    expect(lines[1]).toBe("tasks:");
+    expect(lines[2]).toBe('  - "issue-0"');
+    expect(lines[130_001]).toBe('  - "issue-129999"');
+    expect(lines[130_002]).toBe("---");
   });
 
   it("parses canonical GitHub import URLs with explicit ref and package path", () => {
@@ -2982,6 +3005,18 @@ describe("company portability", () => {
       id: "agent-created",
       name: "ClaudeCoder",
     });
+    companySkillSvc.importPackageFiles.mockResolvedValueOnce([{
+      skill: {
+        id: "skill-imported",
+        key: paperclipKey,
+        slug: "paperclip",
+      },
+      action: "renamed",
+      originalKey: "paperclip",
+      originalSlug: "paperclip",
+      requestedRefs: ["paperclip"],
+      reason: "Existing skill matched; renamed to paperclip-2.",
+    }]);
 
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -2994,7 +3029,7 @@ describe("company portability", () => {
 
     agentSvc.list.mockResolvedValue([]);
 
-    await portability.importBundle({
+    const result = await portability.importBundle({
       source: {
         type: "inline",
         rootPath: exported.rootPath,
@@ -3016,8 +3051,17 @@ describe("company portability", () => {
 
     const textOnlyFiles = Object.fromEntries(Object.entries(exported.files).filter(([, v]) => typeof v === "string"));
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith("company-imported", textOnlyFiles, {
-      onConflict: "replace",
+      onConflict: "rename",
     });
+    expect(result.skills).toEqual([{
+      originalKey: "paperclip",
+      originalSlug: "paperclip",
+      key: paperclipKey,
+      slug: "paperclip",
+      id: "skill-imported",
+      action: "renamed",
+      reason: "Existing skill matched; renamed to paperclip-2.",
+    }]);
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.objectContaining({
         paperclipSkillSync: {
@@ -3278,7 +3322,7 @@ describe("company portability", () => {
         "agents/cmo/AGENTS.md": expect.any(String),
       }),
       {
-        onConflict: "replace",
+        onConflict: "rename",
       },
     );
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith(
@@ -3287,7 +3331,7 @@ describe("company portability", () => {
         "agents/claudecoder/AGENTS.md": expect.any(String),
       }),
       {
-        onConflict: "replace",
+        onConflict: "rename",
       },
     );
     expect(agentSvc.create).toHaveBeenCalledTimes(1);

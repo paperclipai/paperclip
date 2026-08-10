@@ -54,19 +54,79 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "thinking":
+      // The surviving thinking signal (PAP-361): the live line's "Thinking…"
+      // state — Brain icon + shimmer on the pill. Thinking rows no longer
+      // render in the thread or nest under turns.
       return {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "th-1", kind: "thinking", streaming: true, lines: ["The login route is in server/src/routes/auth.ts.", "There's already an ipRateLimit helper I can reuse.", "I'll add a per-account bucket keyed on the email."] },
+          {
+            id: "turn-thinking",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 1, added: 0, removed: 0 },
+            liveStatus: { id: "st-thinking", kind: "status", status: "running", label: "Thinking", startedAtMs: Date.now() - 6100, tokens: { used: 18240, size: 200000 } },
+            items: [
+              { id: "th-grep", kind: "tool", name: "Grep", target: "rateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
         ],
       };
     case "responding":
+      // A streaming interstitial update gets its own row directly above the
+      // status line (PAP-361, amended): it wraps into the 1lh viewport
+      // line-scroll while the gerund rotation below runs uninterrupted.
+      // Ephemeral — when it finishes, the row slides out and the text renders
+      // nowhere.
       return {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-stream", kind: "message", author: "agent", authorName: AGENT, streaming: true, text: "I found an existing ipRateLimit helper, so I'll extend it with a per-account bucket and" },
+          {
+            id: "turn-responding",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 1, added: 0, removed: 0 },
+            liveStatus: {
+              id: "st-responding", kind: "status", status: "running", label: "Responding", startedAtMs: Date.now() - 9300, tokens: { used: 18240, size: 200000 },
+              selfTalk:
+                "I found an existing ipRateLimit helper, so I'll extend it with a per-account token bucket keyed on the email address instead of adding a second limiter. The bucket refills at six requests a minute, matching the lockout policy the auth spec documents, and failed attempts drain it twice as fast so brute-force runs hit the ceiling quickly while a fat-fingered password barely registers.",
+            },
+            items: [
+              { id: "resp-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+            ],
+          },
+        ],
+      };
+    case "responding-burst":
+      // A run emitting several interstitial updates in quick succession
+      // (PAP-368): the lab replay streams each blank-line-separated segment as
+      // its own update with a short gap between. The pill HOLDS each finished
+      // update until the next swaps in, paced by --motion-interstitial-dwell
+      // (latest-wins when updates outpace the dwell).
+      return {
+        surface: "thread",
+        items: [
+          ...exchangePrefix(),
+          {
+            id: "turn-responding-burst",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 2, added: 0, removed: 0 },
+            liveStatus: {
+              id: "st-responding-burst", kind: "status", status: "running", label: "Responding", startedAtMs: Date.now() - 21400, tokens: { used: 18240, size: 200000 },
+              selfTalk:
+                "Found the existing ipRateLimit helper — extending it beats adding a second limiter.\n\n" +
+                "Wiring a per-account token bucket keyed on the email address, refilling at six requests a minute per the auth spec.\n\n" +
+                "Failed attempts drain the bucket twice as fast, so brute-force runs hit the ceiling while a fat-fingered password barely registers.\n\n" +
+                "Now updating the login route to consume from the bucket before the password check and adding tests for the lockout path.",
+            },
+            items: [
+              { id: "burst-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "burst-grep", kind: "tool", name: "Grep", target: "ipRateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
         ],
       };
     case "tool-call":
@@ -96,17 +156,41 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "working":
+      // Parent-row live turn (PAP-354): the tool-state line owns the activity;
+      // expanding nests the chronological history underneath.
       return {
         surface: "thread",
         items: [
-          { id: "st-working", kind: "status", status: "working", label: "Editing files", detail: "Edit · server/src/routes/auth.ts", toolName: "Edit", startedAtMs: Date.now() - 4200 },
+          ...exchangePrefix(),
+          {
+            id: "turn-working",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 2, added: 0, removed: 0 },
+            liveStatus: { id: "st-working", kind: "status", status: "working", label: "Editing files", detail: "Edit · server/src/routes/auth.ts", toolName: "Edit", startedAtMs: Date.now() - 4200 },
+            items: [
+              { id: "w-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "w-edit", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "in_progress" },
+            ],
+          },
         ],
       };
     case "running":
+      // Generic label → the parent row header rotates whimsical gerunds.
       return {
         surface: "thread",
         items: [
-          { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
+          ...exchangePrefix(),
+          {
+            id: "turn-running",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 1, added: 0, removed: 0 },
+            liveStatus: { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
+            items: [
+              { id: "r-grep", kind: "tool", name: "Grep", target: "rateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
         ],
       };
     case "completed":
@@ -114,18 +198,31 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
+          // Round 9: the settled turn attaches to the final reply bubble — the
+          // "✓ Worked · …" summary renders on the bubble's always-visible
+          // timestamp line ("2:34 PM · ✓ Worked · 38s · 2 tools").
           {
-            id: "turn-done",
-            kind: "turn",
-            settled: true,
-            summary: { durationLabel: "38s", toolCount: 3, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
-            items: [
-              { id: "th-done", kind: "thinking", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
-              { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
-              { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
-            ],
+            id: "m-done",
+            kind: "message",
+            author: "agent",
+            authorName: AGENT,
+            agentIcon: "bot",
+            modeLabel: "Agent mode",
+            text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.",
+            timestamp: "2:34 PM",
+            attachedTurn: {
+              id: "turn-done",
+              kind: "turn",
+              settled: true,
+              // "Worked · N tools" expands to exactly the tool rows (PAP-361):
+              // toolCount matches the nested rows, no thinking row.
+              summary: { durationLabel: "38s", toolCount: 2, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
+              items: [
+                { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+                { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
+              ],
+            },
           },
-          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
         ],
       };
     case "awaiting-approval":

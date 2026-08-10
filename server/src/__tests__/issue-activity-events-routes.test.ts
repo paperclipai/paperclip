@@ -113,6 +113,7 @@ function registerModuleMocks() {
     }),
     issueThreadInteractionService: () => ({
       listForIssue: vi.fn(async () => []),
+      expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
     }),
@@ -473,6 +474,12 @@ describe("issue activity event routes", () => {
       ...issue,
       ...patch,
       updatedAt: new Date(),
+      changes: {
+        executionWorkspaceId: {
+          from: issue.executionWorkspaceId,
+          to: nextExecutionWorkspaceId,
+        },
+      },
     }));
 
     const dbMock = {

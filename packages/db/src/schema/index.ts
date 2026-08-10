@@ -84,6 +84,14 @@ export { userInboxAgentPolicies } from "./user_inbox_agent_policies.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { decisionTrainingExamples } from "./decision_training_examples.js";
+export {
+  decisionQueues,
+  decisionQueueItems,
+  decisionTriage,
+  decisionTriageEvents,
+  decisionRetention,
+  decisionArchiveNotificationOutbox,
+} from "./decision_queues.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
@@ -111,6 +119,7 @@ export { userSecretDefinitions } from "./user_secret_definitions.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export {

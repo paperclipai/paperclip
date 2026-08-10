@@ -8,6 +8,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface AgentActionAuditFilters {
   companyId: string;
+  actorScope?: "agents" | "all";
   agentId?: string;
   responsibleUserId?: string;
   runId?: string;
@@ -53,7 +54,10 @@ export function agentActionAuditService(db: Db) {
       const cursor = decodeCursor(filters.cursor);
       if (filters.cursor && !cursor) throw badRequest("Invalid audit cursor");
       const effectiveResponsibleUserId = sql<string | null>`coalesce(${activityLog.responsibleUserId}, ${heartbeatRuns.responsibleUserId})`;
-      const conditions = [eq(activityLog.companyId, filters.companyId), isNotNull(activityLog.agentId)];
+      const conditions = [eq(activityLog.companyId, filters.companyId)];
+      // Preserve the historical agent-audit query unless the caller opts into
+      // the unified all-actors feed explicitly.
+      if (filters.actorScope !== "all") conditions.push(isNotNull(activityLog.agentId));
       if (filters.agentId) conditions.push(eq(activityLog.agentId, filters.agentId));
       if (filters.responsibleUserId) conditions.push(or(
         eq(activityLog.responsibleUserId, filters.responsibleUserId),

@@ -69,6 +69,10 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockDecisionsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
@@ -132,6 +136,10 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/decisions", () => ({
+  decisionsApi: mockDecisionsApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -280,6 +288,13 @@ vi.mock("../components/IssueChatThread", () => ({
       </div>
     );
   },
+}));
+
+// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
+// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+vi.mock("../components/TaskChatThread", () => ({
+  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
 }));
 
 vi.mock("../components/IssueDocumentsSection", () => ({
@@ -1003,6 +1018,7 @@ describe("IssueDetail", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
+    mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
@@ -1059,7 +1075,40 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
-  it("updates status and priority from the task header controls", async () => {
+  it("does not load or render decision sections in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      reviewAttention: {
+        state: "covered",
+        reason: "Review has a maintained action path.",
+        paths: [
+          {
+            kind: "interaction",
+            label: "Pending request confirmation",
+            responder: "Board",
+            since: "2026-04-21T00:00:00.000Z",
+            ref: "interaction-1",
+          },
+        ],
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Issue detail smoke");
+    expect(container.querySelector('[data-testid="issue-review-panel"]')).toBeNull();
+    expect(mockDecisionsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("updates status from the task header control and hides the priority control (PAP-411)", async () => {
     const issue = createIssue({ status: "todo", priority: "medium" });
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
@@ -1084,7 +1133,9 @@ describe("IssueDetail", () => {
       'button[aria-label="Change priority (current: medium)"]',
     );
     expect(statusButton).not.toBeNull();
-    expect(priorityButton).not.toBeNull();
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off), so the header
+    // priority control must not render.
+    expect(priorityButton).toBeNull();
 
     await act(async () => {
       statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -1092,13 +1143,10 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
     });
-
-    await act(async () => {
-      priorityButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
-    await waitForAssertion(() => {
-      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { priority: "high" });
-    });
+    expect(mockIssuesApi.update).not.toHaveBeenCalledWith(
+      issue.identifier,
+      expect.objectContaining({ priority: expect.anything() }),
+    );
 
     mockIssuesApi.update.mockReset();
   });

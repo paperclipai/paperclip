@@ -71,6 +71,7 @@ interface AgentResetSessionOptions extends BaseClientOptions {
 
 interface AgentSkillsSyncOptions extends BaseClientOptions {
   desiredSkills: string;
+  mode: string;
 }
 
 interface AgentInstructionsFileOptions extends BaseClientOptions {
@@ -589,10 +590,17 @@ export function registerAgentCommands(program: Command): void {
       .description("Sync desired skills onto an agent")
       .argument("<agentId>", "Agent ID")
       .requiredOption("--desired-skills <csv>", "Desired skill names")
+      .requiredOption(
+        "--mode <mode>",
+        "Merge mode: add keeps other skills; remove deletes only named skills; replace destructively overwrites the complete set",
+      )
       .action(async (agentId: string, opts: AgentSkillsSyncOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = agentSkillSyncSchema.parse({ desiredSkills: parseCsv(opts.desiredSkills) });
+          const payload = agentSkillSyncSchema.parse({
+            desiredSkills: parseCsv(opts.desiredSkills),
+            mode: opts.mode,
+          });
           const result = await ctx.api.post(apiPath`/api/agents/${agentId}/skills/sync`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {

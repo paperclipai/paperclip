@@ -20,6 +20,8 @@ export type ExecutionWorkspaceMode =
   | "reuse_existing"
   | "agent_default";
 
+export type SharedWorkspaceConcurrency = "auto" | "serialize" | "allow";
+
 export type ExecutionWorkspaceProviderType =
   | "local_fs"
   | "git_worktree"
@@ -32,6 +34,12 @@ export type ExecutionWorkspaceStatus =
   | "in_review"
   | "archived"
   | "cleanup_failed";
+
+export type ExecutionWorkspaceDeliveryState =
+  | "merged_via_pr"
+  | "merged_by_ancestry"
+  | "unmerged"
+  | "unknown";
 
 export type ExecutionWorkspaceCloseReadinessState =
   | "ready"
@@ -76,12 +84,14 @@ export interface ExecutionWorkspaceStrategy {
   branchTemplate?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand?: string | null;
 }
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
   provisionCommand: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand: string | null;
   cleanupCommand: string | null;
   workspaceRuntime: Record<string, unknown> | null;
@@ -133,6 +143,7 @@ export interface ExecutionWorkspaceCloseGitReadiness {
 
 export interface ExecutionWorkspaceCloseReadiness {
   workspaceId: string;
+  deliveryState: ExecutionWorkspaceDeliveryState;
   state: ExecutionWorkspaceCloseReadinessState;
   blockingReasons: string[];
   warnings: string[];
@@ -147,6 +158,7 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
@@ -162,6 +174,7 @@ export interface ProjectExecutionWorkspacePolicy {
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
@@ -246,6 +259,7 @@ export interface ExecutionWorkspace {
   strategyType: ExecutionWorkspaceStrategyType;
   name: string;
   status: ExecutionWorkspaceStatus;
+  deliveryState: ExecutionWorkspaceDeliveryState;
   cwd: string | null;
   repoUrl: string | null;
   baseRef: string | null;
@@ -275,7 +289,7 @@ export interface WorkspaceRuntimeService {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
   serviceName: string;
-  status: "starting" | "running" | "stopped" | "failed";
+  status: "provisioning" | "starting" | "running" | "stopped" | "failed";
   lifecycle: "shared" | "ephemeral";
   reuseKey: string | null;
   command: string | null;
@@ -345,6 +359,7 @@ export interface WorkspaceRealizationRequest {
   }>;
   runtimeOverlay: {
     provisionCommand: string | null;
+    runtimeProvisionCommand: string | null;
     teardownCommand: string | null;
     cleanupCommand: string | null;
     workspaceRuntime: Record<string, unknown> | null;

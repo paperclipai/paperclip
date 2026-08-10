@@ -14,7 +14,7 @@ import {
   installInfoNotice,
   type InstallState,
 } from "@/lib/tool-installs";
-import { QuarantinePill } from "./SetupPanel";
+import { QuarantinedActionsReview } from "./SetupPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
 
 type ActionPermission = "off" | "allowed" | "ask";
@@ -34,7 +34,7 @@ export function PermissionsPanel({
   onSaveAccess,
   onSaveInstall,
   onSetActionPermission,
-  onTurnOnQuarantined,
+  onReviewQuarantined,
   onRefreshActions,
   refreshPending,
 }: Pick<
@@ -47,7 +47,7 @@ export function PermissionsPanel({
   onSaveAccess: (next: AccessDraft) => void;
   onSaveInstall: (next: InstallState) => void;
   onSetActionPermission: (id: string, next: ActionPermission) => void;
-  onTurnOnQuarantined: (ids: string[]) => void;
+  onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
   refreshPending: boolean;
 }) {
@@ -76,7 +76,7 @@ export function PermissionsPanel({
         refreshPending={refreshPending}
         focusId={focusId}
         onSetPermission={onSetActionPermission}
-        onTurnOnQuarantined={onTurnOnQuarantined}
+        onReviewQuarantined={onReviewQuarantined}
         onRefreshActions={onRefreshActions}
       />
     </div>
@@ -316,7 +316,7 @@ function ActionsSection({
   refreshPending,
   focusId,
   onSetPermission,
-  onTurnOnQuarantined,
+  onReviewQuarantined,
   onRefreshActions,
 }: {
   readOnly: ToolCatalogEntry[];
@@ -328,7 +328,7 @@ function ActionsSection({
   refreshPending: boolean;
   focusId?: string | null;
   onSetPermission: (id: string, next: ActionPermission) => void;
-  onTurnOnQuarantined: (ids: string[]) => void;
+  onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
 }) {
   return (
@@ -359,11 +359,10 @@ function ActionsSection({
       </div>
 
       {quarantined.length > 0 && (
-        <QuarantinePill
-          count={quarantined.length}
+        <QuarantinedActionsReview
           entries={quarantined}
           disabled={disabled}
-          onTurnOn={onTurnOnQuarantined}
+          onSubmit={onReviewQuarantined}
         />
       )}
 

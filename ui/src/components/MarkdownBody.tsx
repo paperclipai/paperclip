@@ -32,6 +32,7 @@ import {
   externalObjectProviderLabel,
 } from "../lib/external-objects";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import { copyTextToClipboard } from "../lib/clipboard";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
@@ -118,7 +119,7 @@ function MarkdownIssueLink({
       aria-label={issueLabel}
     >
       {status ? (
-        <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
+        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>
@@ -556,22 +557,7 @@ function CodeBlock({
   const handleCopy = useCallback(async () => {
     const text = preRef.current?.innerText ?? flattenText(children);
     try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.style.position = "fixed";
-        textarea.style.left = "-9999px";
-        document.body.appendChild(textarea);
-        try {
-          textarea.select();
-          const success = document.execCommand("copy");
-          if (!success) throw new Error("execCommand copy failed");
-        } finally {
-          document.body.removeChild(textarea);
-        }
-      }
+      await copyTextToClipboard(text);
       setFailed(false);
       setCopied(true);
     } catch {

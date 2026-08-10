@@ -44,6 +44,7 @@ function createApp(
   db?: Db,
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
+  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
 ) {
   const app = express();
   app.use(
@@ -55,6 +56,7 @@ function createApp(
       companyDeletionEnabled: true,
       serverInfo,
       databaseBackupHealth,
+      runtimeEnv,
     }),
   );
   return app;
@@ -76,6 +78,43 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
+
+  it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    const baseline = {
+      status: "ok",
+      version: serverVersion,
+      serverVersion,
+      commit: testServerInfo.git.fullSha,
+      serverInfo: testServerInfo,
+    };
+    expect(res.text).toBe(JSON.stringify(baseline));
+    expect(Object.prototype.hasOwnProperty.call(res.body, "cloud")).toBe(false);
+  });
+
+  it("exposes public stack metadata on cloud-simulated health", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_CLOUD_STACK_ID: "stack-1",
+      PAPERCLIP_STACK_SLUG: "acme",
+      PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID: "account-group-1",
+      PAPERCLIP_PRIMARY_HOST: "acme.paperclip.app",
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://app.paperclip.app",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.cloud).toEqual({
+      managed: true,
+      managedBy: "paperclip-cloud",
+      stackSlug: "acme",
+      cloudBaseUrl: "https://app.paperclip.app",
+    });
+  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {

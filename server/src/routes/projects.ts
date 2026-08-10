@@ -557,7 +557,9 @@ export function projectRoutes(db: Db) {
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
           workspace.runtimeConfig?.desiredState
-          ?? ((workspace.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+          ?? ((workspace.runtimeServices ?? []).some((service) =>
+            service.status === "provisioning" || service.status === "starting" || service.status === "running"
+          )
             ? "running"
             : "stopped");
         const nextRuntimeState: {

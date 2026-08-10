@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
+import { CheckCircle2, Inbox } from "lucide-react";
 import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -13,10 +13,9 @@ import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
 import {
-  ATTENTION_GROUP_BY_OPTIONS,
-  ATTENTION_SORT_OPTIONS,
+  ATTENTION_AGING_DAYS,
+  attentionIsAging,
   buildAttentionFilterOptions,
-  countActiveAttentionFilters,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
@@ -25,36 +24,31 @@ import {
   loadAttentionGroupBy,
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
-  NO_GROUP_SENTINEL,
+  buildDeskShelves,
   planAttentionRenderRows,
+  resolveAttentionDateRange,
   saveAttentionFilters,
   saveAttentionGroupBy,
   saveAttentionSortOrder,
   saveCollapsedAttentionGroupKeys,
   sortAttentionItems,
-  sourceMeta,
+  type AttentionDateRangeId,
   type AttentionFilterState,
+  type AttentionGroup,
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
 import { decisionTrainingHref } from "../lib/decisionTraining";
-import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionsToolbar } from "../components/DecisionsToolbar";
+import { Curtain, AgingItemRow } from "../components/DecisionShelf";
+import { DecisionQueueRail } from "../components/DecisionQueueRail";
+import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
 import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
-import { Button } from "../components/ui/button";
-import { Checkbox } from "../components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
-
-const SEVERITY_LABELS: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
 
 /** Curtain rows never expand; module-level so memoized rows see one identity. */
 const noopToggleExpand = () => {};
@@ -116,8 +110,18 @@ export function WhatNeedsMe() {
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [agingOpen, setAgingOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
+
+  // Date-range chips (PAP-16032 §4.2) — resolve to server-side activity bounds.
+  const [dateRange, setDateRange] = useState<AttentionDateRangeId>("all");
+  const [customRange, setCustomRange] = useState<AttentionCustomRange>({ from: null, to: null });
+
+  // `?decisionId=` deep link (PAP-16032 §4.7) — focus/expand the referenced card.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkDecisionId = searchParams.get("decisionId");
+  const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -126,6 +130,14 @@ export function WhatNeedsMe() {
   const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
   const { pushToast } = useToastActions();
   const navigate = useNavigate();
+
+  // Date chips resolve to server-side activity bounds. Anchored to start-of-day,
+  // so the resolved ISO strings are stable across renders within the same day —
+  // safe to key the feed query on without thrashing.
+  const activityBounds = useMemo(
+    () => resolveAttentionDateRange(dateRange, Date.now(), customRange),
+    [dateRange, customRange],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Decisions" }]);
@@ -145,8 +157,17 @@ export function WhatNeedsMe() {
     // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
     // (needed for the curtains) never inflate the badge count. Invalidating the
     // `["attention", companyId]` prefix still cascades to this query.
-    queryKey: [...queryKeys.attention(selectedCompanyId!), "with-dismissed"],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { includeDismissed: true }),
+    queryKey: [
+      ...queryKeys.attention(selectedCompanyId!),
+      "with-dismissed",
+      activityBounds.activitySince ?? null,
+      activityBounds.activityUntil ?? null,
+    ],
+    queryFn: () => attentionApi.list(selectedCompanyId!, {
+      includeDismissed: true,
+      all: true,
+      ...activityBounds,
+    }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
   });
@@ -199,6 +220,19 @@ export function WhatNeedsMe() {
       ),
     [allItems, pendingHide, pendingRestore],
   );
+
+  // The server's clock at feed time — used for the arrival/decide-by shelves and
+  // the aging idle labels so they match `deskBadgeCount` and the sidebar badge
+  // exactly, and stay stable across renders (Date.now() only as a pre-load fallback).
+  const now = useMemo(
+    () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
+    [feed?.generatedAt],
+  );
+
+  // Aging shelf (§4.4): items the server flags as idle past retention leave the
+  // live desk for their own curtain, so today's desk shows only fresh decisions.
+  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
+  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
   const snoozedItems = useMemo(
     () =>
       allItems.filter(
@@ -216,14 +250,21 @@ export function WhatNeedsMe() {
     [allItems, pendingRestore],
   );
 
-  const filterOptions = useMemo(() => buildAttentionFilterOptions(activeItems), [activeItems]);
+  const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
 
-  // Filter → sort → group, all client-side so switching re-buckets without a refetch.
-  const groups = useMemo(() => {
-    const filtered = filterAttentionItems(activeItems, filters);
+  // Filter → sort → group, all client-side so switching re-buckets without a
+  // refetch. In the default (ungrouped) view the desk groups by arrival —
+  // "New today" then "Earlier" — with a "Decide now" shelf only when something
+  // carries an explicit, due decide-by. Any explicit
+  // group-by keeps the Inbox-style activity grouping.
+  const groups = useMemo<AttentionGroup[]>(() => {
+    const filtered = filterAttentionItems(deskItems, filters);
+    if (groupBy === "none") {
+      return buildDeskShelves(filtered, now);
+    }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [activeItems, filters, sortOrder, groupBy]);
+  }, [deskItems, filters, sortOrder, groupBy, now]);
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -317,14 +358,39 @@ export function WhatNeedsMe() {
     document.getElementById(`attention-row-${selectedAttentionId}`)?.scrollIntoView({ block: "nearest" });
   }, [selectedAttentionId]);
 
+  // `?decisionId=` deep link (§4.7): focus and expand the referenced decision
+  // card once the feed lands, then drop the param so a later manual collapse is
+  // not re-forced on the next refetch. Wins over the generic auto-expand below.
+  useEffect(() => {
+    if (deepLinkConsumed || !deepLinkDecisionId || allItems.length === 0) return;
+    const target = allItems.find(
+      (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
+    );
+    setDeepLinkConsumed(true);
+    setAutoExpandDone(true);
+    if (target) {
+      setExpandedId(target.id);
+      setSelectedAttentionId(target.id);
+      setSelectionFromKeyboard(true);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("decisionId");
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
+
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
-    if (autoExpandDone || activeItems.length === 0) return;
-    const sorted = sortAttentionItems(activeItems, sortOrder);
+    if (autoExpandDone || deskItems.length === 0) return;
+    const sorted = sortAttentionItems(deskItems, sortOrder);
     const topInline = sorted.find((item) => isInlineResolvable(item));
     if (topInline) setExpandedId(topInline.id);
     setAutoExpandDone(true);
-  }, [activeItems, autoExpandDone, sortOrder]);
+  }, [deskItems, autoExpandDone, sortOrder]);
 
   const updateGroupBy = (next: AttentionGroupBy) => {
     setGroupBy(next);
@@ -448,7 +514,6 @@ export function WhatNeedsMe() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
-  const activeFilterCount = countActiveAttentionFilters(filters);
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select a company first.</p>;
@@ -464,112 +529,31 @@ export function WhatNeedsMe() {
     <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Decisions</h1>
-        <div className="flex items-center gap-2">
-          {visibleCount > 0 && (
-            <span className="text-sm text-muted-foreground">
-              {visibleCount} {visibleCount === 1 ? "decision" : "decisions"}
-            </span>
-          )}
-          {/* Filter */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn("h-8 w-8 shrink-0", activeFilterCount > 0 && "bg-accent")}
-                title="Filter"
-                aria-label="Filter"
-              >
-                <ListFilter className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-64 p-0">
-              <FilterMenu
-                options={filterOptions}
-                filters={filters}
-                onChange={updateFilters}
-              />
-            </PopoverContent>
-          </Popover>
-          {/* Group by */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                title="Group"
-                aria-label="Group"
-              >
-                <Layers className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-40 p-2">
-              <div className="space-y-0.5">
-                {ATTENTION_GROUP_BY_OPTIONS.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
-                      groupBy === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                    onClick={() => updateGroupBy(value)}
-                  >
-                    <span>{label}</span>
-                    {groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            title="Training"
-            aria-label="Training"
-            onClick={() => navigate(decisionTrainingHref())}
-          >
-            <GraduationCap className="h-3.5 w-3.5" />
-          </Button>
-          {/* Sort */}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                title="Sort"
-                aria-label="Sort"
-              >
-                <ArrowUpDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-2">
-              <div className="space-y-0.5">
-                {ATTENTION_SORT_OPTIONS.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
-                      sortOrder === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                    onClick={() => updateSortOrder(value)}
-                  >
-                    <span>{label}</span>
-                    {sortOrder === value ? <Check className="h-3.5 w-3.5" /> : null}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
+        <DecisionsToolbar
+          visibleCount={visibleCount}
+          filterOptions={filterOptions}
+          filters={filters}
+          onFiltersChange={updateFilters}
+          groupBy={groupBy}
+          onGroupByChange={updateGroupBy}
+          sortOrder={sortOrder}
+          onSortOrderChange={updateSortOrder}
+          onOpenTraining={() => navigate(decisionTrainingHref())}
+        />
+      </div>
+
+      {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
+          when the company has no queues; the chips filter the desk server-side. */}
+      <div className="space-y-2">
+        <DecisionQueueRail companyId={selectedCompanyId} activeQueueKey={null} />
+        <DecisionDateChips
+          value={dateRange}
+          custom={customRange}
+          onChange={(value, custom) => {
+            setDateRange(value);
+            setCustomRange(custom);
+          }}
+        />
       </div>
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
@@ -579,9 +563,10 @@ export function WhatNeedsMe() {
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote filtered={activeItems.length > 0} />
+            <CaughtUpNote filtered={deskItems.length > 0} />
           ) : (
-            groups.map((group) => {
+            <>
+              {groups.map((group) => {
               const groupLabel = group.label;
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
@@ -638,6 +623,8 @@ export function WhatNeedsMe() {
                                   onSnooze={handleSnooze}
                                   onTrain={handleTrain}
                                   agentMap={agentMap}
+                                  agents={agents}
+                                  showTriage
                                   currentUserId={currentUserId}
                                   selected={selectionFromKeyboard && selectedAttentionId === item.id}
                                 />
@@ -650,7 +637,8 @@ export function WhatNeedsMe() {
                   )}
                 </section>
               );
-            })
+              })}
+            </>
           )}
 
           {snoozedItems.length > 0 && (
@@ -696,6 +684,35 @@ export function WhatNeedsMe() {
                   onRestore={handleRestore}
                   agentMap={agentMap}
                   currentUserId={currentUserId}
+                />
+              ))}
+            </Curtain>
+          )}
+
+          {agingItems.length > 0 && (
+            <Curtain
+              label="Aging"
+              count={agingItems.length}
+              open={agingOpen}
+              onToggle={() => setAgingOpen((prev) => !prev)}
+            >
+              <p className="text-xs text-muted-foreground">
+                Idle past {ATTENTION_AGING_DAYS} days — kept off the desk. Keep any you still want surfaced.
+              </p>
+              {agingItems.map((item) => (
+                <AgingItemRow
+                  key={item.id}
+                  item={item}
+                  companyId={selectedCompanyId}
+                  now={now}
+                  agentMap={agentMap}
+                  agents={agents}
+                  currentUserId={currentUserId}
+                  expanded={expandedId === item.id}
+                  onToggleExpand={handleToggleExpand}
+                  onDismiss={handleDismiss}
+                  onSnooze={handleSnooze}
+                  onTrain={handleTrain}
                 />
               ))}
             </Curtain>
@@ -802,165 +819,6 @@ export function DecisionBundleHeader({
       {title && <span className="text-muted-foreground">· {title}</span>}
       <span className="text-muted-foreground">· {count} pending</span>
     </div>
-  );
-}
-
-function FilterMenu({
-  options,
-  filters,
-  onChange,
-}: {
-  options: ReturnType<typeof buildAttentionFilterOptions>;
-  filters: AttentionFilterState;
-  onChange: (next: AttentionFilterState) => void;
-}) {
-  const toggle = (key: keyof AttentionFilterState, value: string) => {
-    const list = filters[key] as string[];
-    const nextList = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
-    onChange({ ...filters, [key]: nextList });
-  };
-  const hasActive = countActiveAttentionFilters(filters) > 0;
-
-  return (
-    <div className="max-h-(--sz-70vh) overflow-y-auto">
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filter</span>
-        {hasActive && (
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => onChange(defaultAttentionFilterState)}
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {options.sourceKinds.length > 1 && (
-        <FilterSection title="Type">
-          {options.sourceKinds.map((kind) => (
-            <FilterRow
-              key={kind}
-              label={sourceMeta(kind).label}
-              checked={filters.sourceKinds.includes(kind)}
-              onToggle={() => toggle("sourceKinds", kind)}
-            />
-          ))}
-        </FilterSection>
-      )}
-
-      {options.severities.length > 1 && (
-        <FilterSection title="Severity">
-          {options.severities.map((severity) => (
-            <FilterRow
-              key={severity}
-              label={SEVERITY_LABELS[severity] ?? severity}
-              checked={filters.severities.includes(severity)}
-              onToggle={() => toggle("severities", severity)}
-            />
-          ))}
-        </FilterSection>
-      )}
-
-      {(options.projects.length > 0 || options.hasNoProject) && (
-        <FilterSection title="Project">
-          {options.projects.map((project) => (
-            <FilterRow
-              key={project.id}
-              label={project.name}
-              checked={filters.projectIds.includes(project.id)}
-              onToggle={() => toggle("projectIds", project.id)}
-            />
-          ))}
-          {options.hasNoProject && (
-            <FilterRow
-              label="No project"
-              checked={filters.projectIds.includes(NO_GROUP_SENTINEL)}
-              onToggle={() => toggle("projectIds", NO_GROUP_SENTINEL)}
-            />
-          )}
-        </FilterSection>
-      )}
-
-      {(options.workspaces.length > 0 || options.hasNoWorkspace) && (
-        <FilterSection title="Workspace">
-          {options.workspaces.map((workspace) => (
-            <FilterRow
-              key={workspace.id}
-              label={workspace.name}
-              checked={filters.workspaceIds.includes(workspace.id)}
-              onToggle={() => toggle("workspaceIds", workspace.id)}
-            />
-          ))}
-          {options.hasNoWorkspace && (
-            <FilterRow
-              label="No workspace"
-              checked={filters.workspaceIds.includes(NO_GROUP_SENTINEL)}
-              onToggle={() => toggle("workspaceIds", NO_GROUP_SENTINEL)}
-            />
-          )}
-        </FilterSection>
-      )}
-    </div>
-  );
-}
-
-function FilterSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="border-t border-border/60 px-2 py-1.5">
-      <p className="px-1 pb-1 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-        {title}
-      </p>
-      <div className="space-y-0.5">{children}</div>
-    </div>
-  );
-}
-
-function FilterRow({
-  label,
-  checked,
-  onToggle,
-}: {
-  label: string;
-  checked: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-2 rounded-sm px-1 py-1 text-left text-sm hover:bg-accent/50"
-      onClick={onToggle}
-    >
-      <Checkbox checked={checked} className="pointer-events-none" tabIndex={-1} />
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
-function Curtain({
-  label,
-  count,
-  open,
-  onToggle,
-  children,
-}: {
-  label: string;
-  count?: number | string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <section className="space-y-2">
-      <IssueGroupHeader
-        label={count == null ? label : `${label} (${count})`}
-        collapsible
-        collapsed={!open}
-        onToggle={onToggle}
-        className="text-muted-foreground"
-      />
-      {open && <div className="space-y-4">{children}</div>}
-    </section>
   );
 }
 

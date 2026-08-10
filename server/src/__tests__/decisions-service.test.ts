@@ -12,6 +12,7 @@ import {
   companyMemberships,
   createDb,
   decisionEffectExecutions,
+  decisionRetention,
   decisions,
   decisionTargetIssues,
   heartbeatRuns,
@@ -22,6 +23,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
+import type { AttentionArchiveManifestEntry, AttentionArchiveTargetSnapshot } from "@paperclipai/shared";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -69,7 +72,7 @@ describePg("decisionService", () => {
     delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
     delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
+    await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(decisionRetention); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(issueRelations); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
   afterAll(async () => tempDb?.cleanup());
@@ -84,6 +87,16 @@ describePg("decisionService", () => {
     options: [{ id: "yes", label: "Yes", effects: [{ type: "comment_on_issue", targetIssueId, staleness, bodyMarkdown: "hello" }] }],
     ...extra,
   });
+
+  // Make an existing decision TTL-expired for the next sweep. Creating a
+  // decision that is already expired is impossible (create rejects a past
+  // expiresAt), and creating one that expires a few milliseconds later races
+  // the service's own clock read — under CI load the create itself can fail
+  // with "expiresAt must be within 30 days". Create with a comfortable future
+  // expiry instead, then move expiresAt into the past directly in the store.
+  const nearFutureExpiry = () => new Date(Date.now() + 60_000);
+  const expireDecisionNow = (id: string) =>
+    db.update(decisions).set({ expiresAt: new Date(Date.now() - 1_000) }).where(eq(decisions.id, id));
 
   it("returns the existing decision for concurrent idempotent creates", async () => {
     const input = {
@@ -117,6 +130,64 @@ describePg("decisionService", () => {
     expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((item) => item.status === "rejected")).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+  });
+
+  it("binds bulk archive acceptance to the exact signed, versioned manifest", async () => {
+    const extraIssueId = randomUUID();
+    const unreviewedIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: extraIssueId, companyId, title: "Second aging item", status: "in_review", priority: "medium", createdByAgentId: agentId, assigneeUserId: decidedByUserId },
+      { id: unreviewedIssueId, companyId, title: "Not reviewed", status: "in_review", priority: "medium", createdByAgentId: agentId, assigneeUserId: decidedByUserId },
+    ]);
+    const activityAt = new Date("2026-04-01T00:00:00.000Z");
+    await db.insert(decisionRetention).values([targetIssueId, extraIssueId, unreviewedIssueId].map((sourceId) => ({
+      companyId,
+      sourceKind: "review",
+      sourceId,
+      sourceActivityAt: activityAt,
+    })));
+    const manifest: AttentionArchiveManifestEntry[] = [targetIssueId, extraIssueId].map((sourceId) => ({
+      companyId,
+      sourceKind: "review",
+      sourceId,
+      expectedVersion: 1,
+      activityAt: activityAt.toISOString(),
+      reason: `Archive ${sourceId}`,
+    }));
+    const snapshots = Object.fromEntries(manifest.map((entry) => [
+      `attention:${entry.sourceKind}:${entry.sourceId}`,
+      {
+        status: "attention",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        updatedAt: entry.activityAt,
+        attentionArchive: entry,
+      } satisfies AttentionArchiveTargetSnapshot,
+    ]));
+    const created = await service().create({
+      companyId,
+      actor: agentActor(),
+      agentId,
+      runId,
+      title: "Archive two?",
+      body: "Reviewed exact set",
+      options: [
+        { id: "archive", label: "Archive", style: "destructive", effects: [] },
+        { id: "keep", label: "Keep", effects: [] },
+      ],
+      metadata: { kind: "attention_archive_proposal", manifestHash: hashAttentionArchiveManifest(manifest) },
+      additionalTargetSnapshots: snapshots,
+    });
+    const result = await service().decide({
+      id: created.id,
+      optionId: "archive",
+      decidedByUserId,
+      userActor: boardActor(),
+    });
+    expect(result.executionStatus).toBe("succeeded");
+    const states = await db.select().from(decisionRetention);
+    expect(states.filter((row) => row.archivedAt).map((row) => row.sourceId).sort()).toEqual([extraIssueId, targetIssueId].sort());
+    expect(states.find((row) => row.sourceId === unreviewedIssueId)?.archivedAt).toBeNull();
   });
 
   it("skips strict stale targets and fails closed on intersection denial", async () => {
@@ -440,32 +511,90 @@ describePg("decisionService", () => {
 
   it("bounds expiration work to the configured batch size", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "1";
-    await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const first = await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: nearFutureExpiry() });
+    const second = await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: nearFutureExpiry() });
+    await expireDecisionNow(first.id);
+    await expireDecisionNow(second.id);
     expect((await service().sweepExpired()).expired).toBe(1);
     expect((await service().sweepExpired()).expired).toBe(1);
   });
 
   it("falls back to the default sweep batch size for invalid configuration", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "not-a-number";
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const first = await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: nearFutureExpiry() });
+    const second = await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: nearFutureExpiry() });
+    await expireDecisionNow(first.id);
+    await expireDecisionNow(second.id);
 
     await expect(service().sweepExpired()).resolves.toMatchObject({ expired: 2 });
   });
 
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {
-    const ttl = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
+    const ttl = await createCommentDecision("lenient", { expiresAt: nearFutureExpiry() });
     const gone = await createCommentDecision("strict", { idempotencyKey: "gone" });
+    await db.update(decisions).set({ expiresAt: new Date(0) }).where(eq(decisions.id, ttl.id));
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, targetIssueId));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expireDecisionNow(ttl.id);
     expect((await service().sweepExpired()).expired).toBe(2);
     const rows = await db.select().from(decisions);
     expect(rows.find((row) => row.id === ttl.id)?.metadata).toMatchObject({ expiredReason: "ttl" });
     expect(rows.find((row) => row.id === gone.id)?.metadata).toMatchObject({ expiredReason: "target_gone" });
     expect(wakes).toHaveLength(2);
+  });
+
+  it("expires strict decisions whose targets completed after they were proposed", async () => {
+    const completed = await createCommentDecision("strict", { idempotencyKey: "target-completed" });
+    const lenient = await createCommentDecision("lenient", { idempotencyKey: "lenient-survives" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, targetIssueId));
+
+    expect((await service().sweepExpired()).expired).toBe(1);
+
+    expect((await service().get(completed.id))?.metadata).toMatchObject({ expiredReason: "target_completed" });
+    expect((await service().get(lenient.id))?.status).toBe("open");
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: completed.id, outcome: "expired" }]);
+  });
+
+  it("keeps strict decisions that intentionally target an already-done issue", async () => {
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, targetIssueId));
+    const reopen = await createCommentDecision("strict", { idempotencyKey: "already-done" });
+
+    expect((await service().sweepExpired()).expired).toBe(0);
+    expect((await service().get(reopen.id))?.status).toBe("open");
+  });
+
+  it("expires when a strict secondary target completes after proposal", async () => {
+    const blockerId = randomUUID();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, targetIssueId));
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Secondary blocker",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: decidedByUserId,
+    });
+    const created = await service().create({
+      companyId,
+      actor: agentActor(),
+      agentId,
+      runId,
+      title: "Create follow-up?",
+      body: "Body",
+      options: [{
+        id: "yes",
+        label: "Yes",
+        effects: [{
+          type: "create_issue",
+          targetIssueId,
+          staleness: "strict",
+          draft: { title: "Follow-up", blockedByIssueIds: [blockerId] },
+        }],
+      }],
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+
+    expect((await service().sweepExpired()).expired).toBe(1);
+    expect((await service().get(created.id))?.metadata).toMatchObject({ expiredReason: "target_completed" });
   });
 
   it("groups rule-key stats and separates explicit dismissals from expiry", async () => {
@@ -481,14 +610,14 @@ describePg("decisionService", () => {
       companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign again?", body: "Body",
       options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
     });
-    await service().create({
+    const stale = await service().create({
       companyId, actor: agentActor(), agentId, runId, ruleKey: "cleanup.stale", title: "Clean up?", body: "Body",
-      options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: new Date(Date.now() + 5),
+      options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: nearFutureExpiry(),
     });
     await service().decide({ id: accepted.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
     await service().decide({ id: acceptedAgain.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
     await service().dismiss(rejected.id, decidedByUserId, boardActor(), "Not this time");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expireDecisionNow(stale.id);
     await service().sweepExpired();
 
     const stats = await service().stats(companyId, { originAgentId: agentId });

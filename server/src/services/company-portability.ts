@@ -203,7 +203,7 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
-  if (mode === "board_full") return "replace" as const;
+  if (mode === "board_full") return collisionStrategy;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
 }
 
@@ -2340,72 +2340,91 @@ function orderedYamlEntries(value: Record<string, unknown>) {
   return Object.entries(value).sort(([leftKey], [rightKey]) => compareYamlKeys(leftKey, rightKey));
 }
 
-function renderYamlBlock(value: unknown, indentLevel: number): string[] {
-  const indent = "  ".repeat(indentLevel);
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) return [`${indent}[]`];
-    const lines: string[] = [];
-    for (const entry of value) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}- ${renderYamlScalar(entry)}`);
-        continue;
-      }
-      lines.push(`${indent}-`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
-    }
-    return lines;
-  }
-
-  if (isPlainRecord(value)) {
-    const entries = orderedYamlEntries(value);
-    if (entries.length === 0) return [`${indent}{}`];
-    const lines: string[] = [];
-    for (const [key, entry] of entries) {
-      const scalar =
-        entry === null ||
-        typeof entry === "string" ||
-        typeof entry === "boolean" ||
-        typeof entry === "number" ||
-        Array.isArray(entry) && entry.length === 0 ||
-        isEmptyObject(entry);
-      if (scalar) {
-        lines.push(`${indent}${key}: ${renderYamlScalar(entry)}`);
-        continue;
-      }
-      lines.push(`${indent}${key}:`);
-      lines.push(...renderYamlBlock(entry, indentLevel + 1));
-    }
-    return lines;
-  }
-
-  return [`${indent}${renderYamlScalar(value)}`];
+function isYamlScalarValue(value: unknown) {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    (Array.isArray(value) && value.length === 0) ||
+    isEmptyObject(value)
+  );
 }
 
-function renderFrontmatter(frontmatter: Record<string, unknown>) {
+type YamlRenderFrame =
+  | { kind: "line"; text: string }
+  | { kind: "value"; value: unknown; indentLevel: number };
+
+export function renderYamlBlock(value: unknown, indentLevel: number): string[] {
+  const lines: string[] = [];
+  const stack: YamlRenderFrame[] = [{ kind: "value", value, indentLevel }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "line") {
+      lines.push(frame.text);
+      continue;
+    }
+
+    const indent = "  ".repeat(frame.indentLevel);
+    const current = frame.value;
+
+    if (Array.isArray(current)) {
+      if (current.length === 0) {
+        lines.push(`${indent}[]`);
+        continue;
+      }
+
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const entry = current[index];
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}- ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}-` });
+      }
+      continue;
+    }
+
+    if (isPlainRecord(current)) {
+      const entries = orderedYamlEntries(current);
+      if (entries.length === 0) {
+        lines.push(`${indent}{}`);
+        continue;
+      }
+
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, entry] = entries[index]!;
+        if (isYamlScalarValue(entry)) {
+          stack.push({ kind: "line", text: `${indent}${key}: ${renderYamlScalar(entry)}` });
+          continue;
+        }
+        stack.push({ kind: "value", value: entry, indentLevel: frame.indentLevel + 1 });
+        stack.push({ kind: "line", text: `${indent}${key}:` });
+      }
+      continue;
+    }
+
+    lines.push(`${indent}${renderYamlScalar(current)}`);
+  }
+
+  return lines;
+}
+
+export function renderFrontmatter(frontmatter: Record<string, unknown>) {
   const lines: string[] = ["---"];
   for (const [key, value] of orderedYamlEntries(frontmatter)) {
     // Skip null/undefined values — don't export empty fields
     if (value === null || value === undefined) continue;
-    const scalar =
-      typeof value === "string" ||
-      typeof value === "boolean" ||
-      typeof value === "number" ||
-      Array.isArray(value) && value.length === 0 ||
-      isEmptyObject(value);
-    if (scalar) {
+    if (isYamlScalarValue(value)) {
       lines.push(`${key}: ${renderYamlScalar(value)}`);
       continue;
     }
     lines.push(`${key}:`);
-    lines.push(...renderYamlBlock(value, 1));
+    // Append each rendered line without a spread. A spread of a large array as
+    // function arguments overflows the argument limit and throws RangeError.
+    for (const line of renderYamlBlock(value, 1)) lines.push(line);
   }
   lines.push("---");
   return `${lines.join("\n")}\n`;
@@ -5310,7 +5329,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         desiredSkillRefMap.set(importedSkill.originalSlug, importedSkill.skill.key);
         if (importedSkill.action === "skipped") {
           warnings.push(`Skipped skill ${importedSkill.originalSlug}; existing skill ${importedSkill.skill.slug} was kept.`);
-        } else if (importedSkill.originalKey !== importedSkill.skill.key) {
+        } else if (importedSkill.action === "renamed") {
           warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
         }
       }
@@ -6129,6 +6148,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           action: companyAction,
         },
         agents: resultAgents,
+        skills: importedSkills.map((result) => ({
+          originalKey: result.originalKey,
+          originalSlug: result.originalSlug,
+          key: result.skill.key,
+          slug: result.skill.slug,
+          id: result.skill.id,
+          action: result.action,
+          reason: result.reason,
+        })),
         projects: resultProjects,
         routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],

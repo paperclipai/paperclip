@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { BackupRetentionPolicy, RunDatabaseBackupResult } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { assertInstanceAdmin } from "./authz.js";
 
 export type InstanceDatabaseBackupTrigger = "manual" | "scheduled";

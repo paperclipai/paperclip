@@ -309,6 +309,70 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
   });
 
+  it("marks an escalated successful-run handoff live while a run targets the issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Escalated handoff issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_escalated",
+      entityType: "issue",
+      entityId: issueId,
+      agentId,
+      details: { sourceRunId: randomUUID() },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { taskId: issueId },
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body[0]?.successfulRunHandoff).toMatchObject({
+      state: "escalated",
+      required: false,
+      hasLiveContinuation: true,
+      liveRunId: runId,
+    });
+  });
+
   it("logs resolved when a valid-path skip closes a stale required handoff", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

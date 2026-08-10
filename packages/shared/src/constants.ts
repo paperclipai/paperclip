@@ -213,6 +213,8 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
+export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
@@ -261,6 +263,13 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_item_verdicts",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  "board_only",
+  "board_or_agents",
+] as const;
+export type IssueThreadInteractionResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;

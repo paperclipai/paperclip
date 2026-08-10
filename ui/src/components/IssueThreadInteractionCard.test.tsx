@@ -28,6 +28,10 @@ import {
   supersededRequestItemVerdictsInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
+  agentAddressedRequestConfirmationInteraction,
+  agentResolvedRequestConfirmationInteraction,
+  withdrawnRequestConfirmationInteraction,
+  issueClosedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -261,8 +265,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before this confirmation was resolved.");
+    expect(host.textContent).toContain("Expired · issue closed");
+    expect(host.textContent).toContain("This confirmation expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("Expired by target change");
   });
 
@@ -301,8 +305,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Questions expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before these questions were answered.");
+    expect(host.textContent).toContain("Questions expired when the issue closed");
+    expect(host.textContent).toContain("This question request expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("expired by comment");
   });
 
@@ -784,5 +788,83 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Approve the plan and let the responsible start implementation?");
     expect(host.textContent).not.toContain("Approve & run");
     expect(host.textContent).not.toContain("Technical details");
+  });
+
+  it("renders the agents-may-resolve policy badge and addressee chip", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+    });
+
+    const policyBadge = host.querySelector('[data-testid="interaction-policy-badge"]');
+    expect(policyBadge?.textContent).toContain("Agents may resolve");
+
+    const addresseeBadge = host.querySelector('[data-testid="interaction-addressee-badge"]');
+    expect(addresseeBadge?.textContent).toContain("For ");
+  });
+
+  it("omits the policy and addressee badges for a board-only interaction", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+    });
+
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
+    expect(host.querySelector('[data-testid="interaction-addressee-badge"]')).toBeNull();
+  });
+
+  it("marks agent resolution with an audit chip in the resolved footer", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+    });
+
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(
+      host.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders a withdrawn footer with the withdrawer, reason, and agent chip", () => {
+    const host = renderCard({
+      interaction: withdrawnRequestConfirmationInteraction,
+    });
+
+    // Header status reads "Withdrawn", not the raw "Cancelled" status.
+    expect(host.textContent).toContain("Withdrawn");
+    // Withdrawn is a neutral administrative retraction — it must NOT wear the
+    // cancelled/rejected costume (rose/red border + XCircle). The shell is muted
+    // (border-border), never a rose/red alarm colour (design review R2).
+    const cardRoot = host.querySelector("div.rounded-lg.p-5.shadow-none");
+    expect(cardRoot?.className).toContain("border-border");
+    expect(cardRoot?.className).not.toMatch(/border-(rose|red)/);
+    // The header status icon is MinusCircle ("retracted"), never XCircle ("denied").
+    const statusIcon = cardRoot?.querySelector("svg");
+    expect(statusIcon?.getAttribute("class")).toContain("lucide-circle-minus");
+    expect(statusIcon?.getAttribute("class")).not.toContain("lucide-circle-x");
+    const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
+    expect(footer?.textContent).toContain("Withdrawn by");
+    expect(footer?.textContent).toContain("Plan superseded by a newer revision");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+    // The generic "Resolved by" footer must not double-render.
+    expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+
+  it("renders an issue-closed expiry footer for terminal auto-expiry", () => {
+    const host = renderCard({
+      interaction: issueClosedRequestConfirmationInteraction,
+    });
+
+    // Footer is trimmed to just the audit timestamp — the header status badge
+    // already carries the "Expired · issue closed" label, so the footer must
+    // not restate it.
+    const footer = host.querySelector('[data-testid="interaction-issue-closed-footer"]');
+    expect(footer?.textContent).toContain("Apr 20");
+    expect(footer?.textContent).not.toContain("Expired when the issue closed");
+    // The "Expired · issue closed" label survives exactly once (the header
+    // status badge); the duplicate body eyebrow was dropped.
+    const label = "Expired · issue closed";
+    const occurrences = (host.textContent ?? "").split(label).length - 1;
+    expect(occurrences).toBe(1);
   });
 });

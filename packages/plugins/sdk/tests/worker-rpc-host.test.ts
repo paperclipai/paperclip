@@ -484,3 +484,274 @@ describe("worker configChanged cross-tenant guard", () => {
     }
   });
 });
+
+describe("worker provider tracer", () => {
+  it("default plugin tracer is a no-op that starts and ends a span without throwing", async () => {
+    const { NOOP_PLUGIN_TRACER } = await import("../src/types.js");
+    const span = NOOP_PLUGIN_TRACER.startSpan("pack", { attributes: { a: 1 } });
+    expect(() => {
+      span.setAttribute("b", 2);
+      span.setStatus({ code: 1 });
+      span.end();
+    }).not.toThrow();
+  });
+
+  // Drive a plugin data handler that opens a provider span, and capture the
+  // worker→host traffic. The host injects a `traceparent` on the invocation, so
+  // the worker must emit one `span.record` request that echoes the invocation id
+  // and carries the span name and attributes.
+  async function runSpanProbe(invocation: PluginInvocationContext) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const spanRecords: Array<{ params: unknown; invocationId?: string }> = [];
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => {
+          const span = ctx.tracer.startSpan("pack", {
+            attributes: { "paperclip.sandbox.startup.pack.wall_ms": 12 },
+          });
+          span.setAttribute("paperclip.sandbox.startup.provider", "daytona");
+          span.end();
+          return { ok: true };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown, inv?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(inv ? { paperclipInvocation: inv } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method === "span.record") {
+        spanRecords.push({
+          params: message.params,
+          invocationId: (message as { paperclipInvocationId?: string }).paperclipInvocationId,
+        });
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, null)));
+      }
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.tracer-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Tracer test",
+          description: "Tracer test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+      await callWorker("getData", { key: "probe", companyId: "company-a", params: {} }, invocation);
+      // Let the fire-and-forget span.record flush.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return spanRecords;
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  }
+
+  it("emits one span.record with the name and attributes when a host trace context is active", async () => {
+    const spanRecords = await runSpanProbe({
+      id: "invocation-a",
+      scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    });
+    expect(spanRecords).toHaveLength(1);
+    const record = spanRecords[0]!;
+    expect(record.invocationId).toBe("invocation-a");
+    expect(record.params).toMatchObject({
+      name: "pack",
+      attributes: {
+        "paperclip.sandbox.startup.pack.wall_ms": 12,
+        "paperclip.sandbox.startup.provider": "daytona",
+      },
+    });
+  });
+
+  it("sends a finite startTimeMs and endTimeMs with endTimeMs >= startTimeMs", async () => {
+    const spanRecords = await runSpanProbe({
+      id: "invocation-a",
+      scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    });
+    expect(spanRecords).toHaveLength(1);
+    const params = spanRecords[0]!.params as {
+      startTimeMs?: number;
+      endTimeMs?: number;
+    };
+    expect(Number.isFinite(params.startTimeMs)).toBe(true);
+    expect(Number.isFinite(params.endTimeMs)).toBe(true);
+    expect(params.endTimeMs!).toBeGreaterThanOrEqual(params.startTimeMs!);
+  });
+
+  it("emits no span.record when the invocation carries no traceparent (tracing off)", async () => {
+    const spanRecords = await runSpanProbe({
+      id: "invocation-a",
+      scope: { companyId: "company-a" },
+    });
+    expect(spanRecords).toHaveLength(0);
+  });
+});
+
+describe("worker execute.log emitter", () => {
+  // Run one data handler that calls `ctx.execution.log`, and capture the
+  // `execute.log` notifications the worker sends to the host.
+  async function runExecuteLogProbe(
+    invocation: PluginInvocationContext | undefined,
+    entries: Array<{ stream: "stdout" | "stderr"; chunk: string }>,
+  ) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const logRecords: Array<{ params: unknown; invocationId?: string }> = [];
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("emit-logs", async () => {
+          for (const entry of entries) {
+            ctx.execution.log(entry.stream, entry.chunk);
+          }
+          return { ok: true };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown, inv?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(inv ? { paperclipInvocation: inv } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      // `execute.log` is a fire-and-forget notification (no id), so it is not a
+      // JSON-RPC request. Match on the method name directly.
+      if ((message as { method?: string }).method === "execute.log") {
+        logRecords.push({
+          params: (message as { params?: unknown }).params,
+          invocationId: (message as { paperclipInvocationId?: string }).paperclipInvocationId,
+        });
+      }
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.execute-log-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Execute log test",
+          description: "Execute log test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+      await callWorker("getData", { key: "emit-logs", companyId: "company-a", params: {} }, invocation);
+      // Let the fire-and-forget execute.log notifications flush.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return logRecords;
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  }
+
+  it("stamps the active invocation id on each execute.log notification", async () => {
+    const records = await runExecuteLogProbe(
+      { id: "invocation-a", scope: { companyId: "company-a" } },
+      [
+        { stream: "stdout", chunk: "one" },
+        { stream: "stderr", chunk: "two" },
+      ],
+    );
+    expect(records).toHaveLength(2);
+    expect(records[0]).toEqual({
+      params: { stream: "stdout", chunk: "one" },
+      invocationId: "invocation-a",
+    });
+    expect(records[1]).toEqual({
+      params: { stream: "stderr", chunk: "two" },
+      invocationId: "invocation-a",
+    });
+  });
+
+  it("drops an empty chunk before it reaches the host", async () => {
+    const records = await runExecuteLogProbe(
+      { id: "invocation-a", scope: { companyId: "company-a" } },
+      [
+        { stream: "stdout", chunk: "" },
+        { stream: "stdout", chunk: "kept" },
+      ],
+    );
+    expect(records).toEqual([
+      { params: { stream: "stdout", chunk: "kept" }, invocationId: "invocation-a" },
+    ]);
+  });
+});

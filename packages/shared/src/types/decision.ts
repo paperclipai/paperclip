@@ -67,6 +67,18 @@ export type DecisionEffect =
   | CancelIssueTreeDecisionEffect
   | ResolveBlockerDecisionEffect;
 
+export function decisionEffectTargetIssueIds(effect: DecisionEffect): string[] {
+  const ids = new Set([effect.targetIssueId]);
+  if (effect.type === "create_issue") {
+    if (effect.draft.parentId) ids.add(effect.draft.parentId);
+    for (const id of effect.draft.blockedByIssueIds ?? []) ids.add(id);
+  }
+  if (effect.type === "resolve_blocker") {
+    for (const id of effect.removeBlockedByIssueIds) ids.add(id);
+  }
+  return [...ids];
+}
+
 export interface DecisionOption {
   id: string;
   label: string;
@@ -100,4 +112,21 @@ export interface DecisionStatsResponse {
   };
   totals: DecisionStatsCounts;
   groups: DecisionRuleKeyStats[];
+}
+
+export interface AttentionArchiveManifestEntry {
+  companyId: string;
+  sourceKind: string;
+  sourceId: string;
+  expectedVersion: number;
+  activityAt: string;
+  reason: string;
+}
+
+export interface AttentionArchiveTargetSnapshot {
+  status: "attention";
+  assigneeAgentId: null;
+  assigneeUserId: null;
+  updatedAt: string;
+  attentionArchive: AttentionArchiveManifestEntry;
 }
