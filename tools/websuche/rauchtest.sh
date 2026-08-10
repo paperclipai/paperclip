@@ -36,15 +36,57 @@ assert all(q.get("abgerufen_am") for q in d["quellen"]), "Abrufdatum fehlt!"
 PY
 
 echo "== 4. Backend-Ausfall gibt Exit-Code ungleich null"
-launchctl kill SIGTERM gui/$UID/de.whitestag.searxng 2>/dev/null
-sleep 3
-"$ZIEL/venv/bin/python" "$ZIEL/cli.py" "egal" >/dev/null 2>/tmp/websuche-fehler.txt
-CODE=$?
-launchctl kickstart gui/$UID/de.whitestag.searxng
-if [ $CODE -ne 0 ]; then
-  echo "   ok (Exit-Code $CODE): $(cat /tmp/websuche-fehler.txt)"
-else
-  echo "   FEHLGESCHLAGEN: Exit-Code 0 trotz totem Backend"; exit 1
+# SIGTERM allein prueft nichts: launchd startet einen KeepAlive=true-Dienst
+# binnen 2-3s automatisch neu, lange bevor das CLI laeuft. bootout hebt die
+# Registrierung auf, KeepAlive greift dann nicht mehr.
+
+SEARXNG_PLIST="$HOME/Library/LaunchAgents/de.whitestag.searxng.plist"
+
+searxng_lebt() {
+  curl -sf "http://127.0.0.1:8888/search?q=test&format=json" >/dev/null 2>&1
+}
+
+# Sicherheitsnetz: laeuft auch, wenn das Skript vorzeitig abbricht (z.B. weil
+# der Tot-Nachweis oder das CLI unerwartet haengt) — sonst bleibt der
+# Suchdienst nach einem fehlgeschlagenen Rauchtest dauerhaft abgeschaltet.
+searxng_wiederherstellen() {
+  local i
+  if ! launchctl print gui/$UID/de.whitestag.searxng >/dev/null 2>&1; then
+    launchctl bootstrap gui/$UID "$SEARXNG_PLIST" 2>/dev/null
+  fi
+  for i in $(seq 1 15); do
+    searxng_lebt && { echo "   SearXNG wiederhergestellt (nach ${i}s)."; return 0; }
+    sleep 1
+  done
+  echo "   WARNUNG: SearXNG antwortet nach dem Wiederherstellungsversuch nicht — von Hand pruefen!" >&2
+  return 1
+}
+trap searxng_wiederherstellen EXIT
+
+echo "   Stoppe SearXNG per bootout..."
+launchctl bootout gui/$UID/de.whitestag.searxng 2>/dev/null
+
+TOT=0
+for i in $(seq 1 15); do
+  searxng_lebt || { TOT=1; break; }
+  sleep 1
+done
+if [ $TOT -ne 1 ]; then
+  echo "   FEHLGESCHLAGEN: SearXNG liess sich nach 15s nicht abschalten (Port 8888 weiterhin erreichbar)"
+  exit 1
 fi
+echo "   SearXNG bestaetigt tot (nach ${i}s)."
+
+OUT=$("$ZIEL/venv/bin/python" "$ZIEL/cli.py" "egal" 2>/tmp/websuche-fehler.txt)
+CODE=$?
+if [ $CODE -ne 0 ] && [ -z "$OUT" ]; then
+  echo "   ok (Exit-Code $CODE, stdout leer): $(cat /tmp/websuche-fehler.txt)"
+else
+  echo "   FEHLGESCHLAGEN: Exit-Code $CODE, stdout: '$OUT'"
+  exit 1
+fi
+
+searxng_wiederherstellen
+trap - EXIT
 
 echo "Rauchtest bestanden."

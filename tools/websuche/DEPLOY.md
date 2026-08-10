@@ -132,6 +132,25 @@ launchctl kickstart -k gui/$UID/de.whitestag.searxng
 Danach den Rauchtest laufen lassen (`zsh rauchtest.sh`), bevor der
 Dienst als aktualisiert gilt.
 
+**SearXNG für einen Test sauber anhalten:** `launchctl kill SIGTERM
+gui/$UID/de.whitestag.searxng` reicht nicht — beide Plists setzen
+`KeepAlive = true`, launchd startet den Dienst binnen 2-3 Sekunden von
+selbst neu, ein reines Signal simuliert also keinen echten Ausfall. Wer
+das Backend wirklich stilllegen will (z.B. um zu prüfen, dass Aufrufer
+korrekt auf einen toten Dienst reagieren), muss die Registrierung
+aufheben:
+
+```bash
+launchctl bootout gui/$UID/de.whitestag.searxng
+# ... Port 8888 ist jetzt tatsaechlich tot, KeepAlive greift nicht ...
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/de.whitestag.searxng.plist
+```
+
+`rauchtest.sh` macht das in Abschnitt 4 automatisch (inklusive Warteschleife
+auf den tatsächlichen Port-Tod, Wiederherstellung per `bootstrap` und einem
+`trap ... EXIT`, das den Dienst auch bei einem vorzeitigen Abbruch des
+Skripts zurückholt) — als Vorlage für eigene Tests gegen den toten Dienst.
+
 **Wichtig:** `~/.paperclip/scripts/websuche/` ist ein reiner Spiegel,
 kein Repo. Änderungen dort direkt gehen beim nächsten `deploy.sh`
 verloren (der Sync läuft mit `--delete`). Die Quelle ist immer
