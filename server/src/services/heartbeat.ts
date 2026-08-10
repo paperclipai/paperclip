@@ -138,6 +138,7 @@ import {
   evaluateIssueRewakeThrottle,
   isImmediateNoopLifecycleIssueRewake,
   isThrottleCandidateIssueRewake,
+  shouldSuppressImmediateNoopLifecycleRewake,
 } from "./issue-rewake-throttle.js";
 import {
   BATCH_ISSUE_PICKUP_CONTEXT_KEY,
@@ -20777,7 +20778,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .limit(1)
               : [];
 
-            const throttleDecision = evaluateIssueRewakeThrottle({
+            const throttleInput = {
               now: throttleNow,
               recentTerminalRuns,
               runIdsWithIssueProgress: new Set(
@@ -20786,8 +20787,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   .filter((runId): runId is string => Boolean(runId)),
               ),
               hasNewIssueInputSinceLastRun: newInputRows.length > 0,
-              noProgressThreshold: immediateNoopLifecycleWake ? 1 : undefined,
-            });
+            };
+            if (immediateNoopLifecycleWake && shouldSuppressImmediateNoopLifecycleRewake(throttleInput)) {
+              const lastRunFinishedAt = recentTerminalRuns[0]?.finishedAt;
+              await tx.insert(agentWakeupRequests).values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_lifecycle_noop_suppressed",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  heartbeatSkip: {
+                    reason: "issue_lifecycle_noop_suppressed",
+                    requestedReason: reason,
+                    immediateNoopLifecycleWake: true,
+                    lastRunFinishedAt: lastRunFinishedAt?.toISOString() ?? null,
+                    remediation: "A user/dependency/issue-state change is required before another lifecycle wake can run.",
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: throttleNow,
+              });
+              return { kind: "skipped" as const };
+            }
+
+            const throttleDecision = evaluateIssueRewakeThrottle(throttleInput);
 
             if (throttleDecision.blocked) {
               await tx.insert(agentWakeupRequests).values({

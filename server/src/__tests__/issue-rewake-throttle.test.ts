@@ -7,6 +7,7 @@ import {
   evaluateIssueRewakeThrottle,
   isImmediateNoopLifecycleIssueRewake,
   isThrottleCandidateIssueRewake,
+  shouldSuppressImmediateNoopLifecycleRewake,
 } from "../services/issue-rewake-throttle.ts";
 
 const NOW = new Date("2026-07-12T18:14:00.000Z");
@@ -110,19 +111,19 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
   });
 
-  it("blocks a lifecycle echo after one no-progress success when requested", () => {
-    const decision = evaluateIssueRewakeThrottle({
+  it("suppresses a lifecycle echo after one no-progress success until real input lands", () => {
+    const input = {
       now: NOW,
       recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 10 })],
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
-      noProgressThreshold: 1,
-    });
-    expect(decision.blocked).toBe(true);
-    if (decision.blocked) {
-      expect(decision.noProgressStreak).toBe(1);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
-    }
+    };
+    expect(shouldSuppressImmediateNoopLifecycleRewake(input)).toBe(true);
+    expect(shouldSuppressImmediateNoopLifecycleRewake({ ...input, hasNewIssueInputSinceLastRun: true })).toBe(false);
+    expect(shouldSuppressImmediateNoopLifecycleRewake({
+      ...input,
+      recentTerminalRuns: [runSample({ id: "r1", status: "failed", finishedSecondsAgo: 10 })],
+    })).toBe(false);
   });
 
   it("blocks inside the cooldown once the streak reaches the threshold", () => {

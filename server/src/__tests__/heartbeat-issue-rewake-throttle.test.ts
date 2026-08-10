@@ -279,11 +279,10 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     expect(wake).toBeNull();
     const skipped = await latestWakeRequest(agentId);
-    expect(skipped?.reason).toBe("issue_rewake_throttled");
+    expect(skipped?.reason).toBe("issue_lifecycle_noop_suppressed");
     expect((skipped?.payload as Record<string, unknown>)?.heartbeatSkip).toMatchObject({
       requestedReason: "finish_successful_run_handoff",
       immediateNoopLifecycleWake: true,
-      noProgressStreak: 1,
     });
   });
 

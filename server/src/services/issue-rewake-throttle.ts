@@ -138,6 +138,23 @@ export function isImmediateNoopLifecycleIssueRewake(input: IssueRewakeCandidateI
   return input.reason !== null && IMMEDIATE_NOOP_LIFECYCLE_WAKE_REASONS.has(input.reason);
 }
 
+/**
+ * A successful run that left no issue-visible state cannot be advanced by one
+ * of its own lifecycle echoes. Unlike an external poll, this is not a
+ * time-based retry: it stays suppressed until real issue input/progress lands,
+ * or a failed run creates a recovery path.
+ */
+export function shouldSuppressImmediateNoopLifecycleRewake(input: IssueRewakeThrottleInput): boolean {
+  if (input.hasNewIssueInputSinceLastRun) return false;
+  const latestRun = input.recentTerminalRuns[0];
+  return Boolean(
+    latestRun &&
+    latestRun.status === "succeeded" &&
+    latestRun.finishedAt &&
+    !input.runIdsWithIssueProgress.has(latestRun.id),
+  );
+}
+
 export interface RecentIssueRunSample {
   id: string;
   status: string;
@@ -152,11 +169,6 @@ export interface IssueRewakeThrottleInput {
   runIdsWithIssueProgress: ReadonlySet<string>;
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
-  /**
-   * Normal reconciliation wakes need two no-progress runs before cooling down.
-   * A lifecycle echo immediately after a no-progress success needs only one.
-   */
-  noProgressThreshold?: number;
 }
 
 export type IssueRewakeThrottleDecision =
@@ -190,19 +202,14 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
     noProgressStreak += 1;
   }
 
-  const noProgressThreshold = input.noProgressThreshold ?? ISSUE_REWAKE_NO_PROGRESS_THRESHOLD;
-  if (noProgressStreak < noProgressThreshold) {
+  if (noProgressStreak < ISSUE_REWAKE_NO_PROGRESS_THRESHOLD) {
     return { blocked: false, noProgressStreak };
   }
 
   const lastRunFinishedAt = runs[0]?.finishedAt;
   if (!lastRunFinishedAt) return { blocked: false, noProgressStreak };
 
-  // Keep the ordinary cooldown curve: an immediate lifecycle echo is denied
-  // for the base two-minute window rather than creating another full session.
-  const cooldownMs = computeIssueRewakeCooldownMs(
-    Math.max(noProgressStreak, ISSUE_REWAKE_NO_PROGRESS_THRESHOLD),
-  );
+  const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
   if (input.now.getTime() < nextAllowedAt.getTime()) {
     return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
