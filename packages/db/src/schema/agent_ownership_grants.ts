@@ -17,7 +17,7 @@ import { companies } from "./companies.js";
  * Renders a CHECK constraint's `in (...)` value list from a TS constant, so
  * the constraint text is derived rather than hand-typed a second time.
  * `multiline` reproduces the exact indentation already committed in
- * 0211_agent_ownership_roles.sql / meta/0211_snapshot.json for the source
+ * 0212_cooing_zaran.sql / meta/0212_snapshot.json for the source
  * check -- this must stay byte-identical to what's already shipped, since
  * drizzle-kit diffs the rendered constraint text against the snapshot to
  * decide whether a new migration is needed.
@@ -185,11 +185,15 @@ export const agentOwnershipGrants = pgTable(
       .on(table.agentId)
       .where(sql`${table.role} = 'owner' and ${table.revokedAt} is null`),
     // A given principal can only hold one *active* non-owner role per
-    // agent at a time (they can hold admin OR user, not both, and not two
-    // rows of the same role).
+    // agent at a time (they can hold admin OR user, not both -- this is the
+    // documented invariant above). Scoped to (agentId, principalType,
+    // principalId) only -- NOT including `role` -- so a second active row
+    // in either role is rejected, not just a duplicate of the same role.
+    // `role != 'owner'` excludes owner rows, which are governed separately
+    // by `oneActiveOwnerPerAgentIdx` above.
     activeRolePerPrincipalIdx: uniqueIndex("agent_ownership_grants_active_role_idx")
-      .on(table.agentId, table.principalType, table.principalId, table.role)
-      .where(sql`${table.revokedAt} is null`),
+      .on(table.agentId, table.principalType, table.principalId)
+      .where(sql`${table.revokedAt} is null and ${table.role} != 'owner'`),
     agentIdx: index("agent_ownership_grants_agent_idx").on(table.agentId),
     companyIdx: index("agent_ownership_grants_company_idx").on(table.companyId),
     principalIdx: index("agent_ownership_grants_principal_idx").on(

@@ -66,6 +66,9 @@ export const agentOwnershipTransfers = pgTable(
     agentIdx: index("agent_ownership_transfers_agent_idx").on(table.agentId),
     companyIdx: index("agent_ownership_transfers_company_idx").on(table.companyId),
     toUserIdx: index("agent_ownership_transfers_to_user_idx").on(table.toUserId, table.status),
+    // Backs "transfers initiated by user X" queries (offboarding/admin
+    // flows), mirroring toUserIdx above for the inverse direction.
+    fromUserIdx: index("agent_ownership_transfers_from_user_idx").on(table.fromUserId, table.status),
     agentStatusIdx: index("agent_ownership_transfers_agent_status_idx").on(table.agentId, table.status),
     // Backs the resultingGrantId FK below. Without it, deleting a grant row
     // (via the agentId cascade off DELETE /agents/:id) does a sequential

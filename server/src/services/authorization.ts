@@ -2456,7 +2456,7 @@ export function authorizationService(db: Db) {
       return Boolean(row?.enforceAgentOwnership);
     } catch (error) {
       // Deploy-ordering guard: if the app server rolls out before migration
-      // 0212_blushing_elektra.sql (which adds this column) has run against
+      // 0212_cooing_zaran.sql (which adds this column) has run against
       // the database, every `decide()` call for an agent-related action
       // would otherwise throw here with no catch. Undefined-column (42703)
       // is treated as "column not there yet" and mapped to `false`, matching

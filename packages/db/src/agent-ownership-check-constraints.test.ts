@@ -14,7 +14,7 @@ import {
  * exist to give bad values a compile-time error instead of an opaque CHECK
  * failure at write time. That guarantee only holds if those TS unions stay
  * byte-for-byte in sync with the CHECK constraints actually enforced in
- * Postgres (0211_agent_ownership_roles.sql). Nothing else keeps them in
+ * Postgres (0212_cooing_zaran.sql). Nothing else keeps them in
  * sync -- a comment would only catch drift someone remembers to read. This
  * test introspects `pg_constraint` on a real embedded Postgres instance
  * after running the migrations, and fails loudly the moment the two sides
@@ -89,7 +89,9 @@ describeEmbeddedPostgres("agent ownership CHECK constraints vs TS constants", ()
         SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
         FROM pg_constraint c
         JOIN pg_namespace n ON n.oid = c.connamespace
+        JOIN pg_class t ON t.oid = c.conrelid
         WHERE n.nspname = 'public'
+          AND t.relname = 'agent_ownership_grants'
           AND c.conname IN (
             'agent_ownership_grants_principal_type_check',
             'agent_ownership_grants_role_check',

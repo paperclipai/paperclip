@@ -1,5 +1,5 @@
 {
-  "id": "b6ec56f5-7e56-42b1-bcb6-2ec5c12fccad",
+  "id": "db1e0985-81fa-4849-a7ba-d0a35fd4030e",
   "prevId": "c56d3441-2ed4-4249-a115-99d55d395899",
   "version": "7",
   "dialect": "postgresql",
@@ -874,16 +874,10 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            },
-            {
-              "expression": "role",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"agent_ownership_grants\".\"revoked_at\" is null",
+          "where": "\"agent_ownership_grants\".\"revoked_at\" is null and \"agent_ownership_grants\".\"role\" != 'owner'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1151,6 +1145,27 @@
           "columns": [
             {
               "expression": "to_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_ownership_transfers_from_user_idx": {
+          "name": "agent_ownership_transfers_from_user_idx",
+          "columns": [
+            {
+              "expression": "from_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

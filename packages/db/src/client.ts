@@ -24,6 +24,14 @@ const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journa
  * replicas costs nothing meaningful on this rarely-run, startup-time path.
  * Using the two-int32 overload of `pg_advisory_xact_lock` avoids bigint
  * precision pitfalls of passing a single 64-bit key through JS numbers.
+ *
+ * IMPORTANT: this exact `(0x706c6970, 1)` key pair is reserved for
+ * migration-reconciliation locking only. The two-int4 `pg_advisory_lock` /
+ * `pg_advisory_xact_lock` overload shares a single lock-key namespace across
+ * an entire Postgres database, so any other code taking an advisory lock via
+ * that same two-int4 overload must use a different key pair - do not reuse
+ * `MIGRATION_RECONCILE_INSERT_LOCK_KEYS` (or the literal `0x706c6970, 1`) for
+ * application-level locking elsewhere.
  */
 export const MIGRATION_RECONCILE_INSERT_LOCK_KEYS: readonly [number, number] = [0x706c6970, 1];
 
@@ -51,6 +59,11 @@ function quoteLiteral(value: string): string {
  * were collapsed to spaces first, a `--` comment on one line would have
  * nothing to stop it from swallowing real SQL that originally lived on a
  * later line, since `.` in `--.*`-style matching does not stop at spaces.
+ *
+ * Does not track single-quoted string literals - a `--` inside a SQL string
+ * literal will be incorrectly treated as a comment. If migration SQL ever
+ * needs `--` inside a string literal, this function needs a quote-aware
+ * rewrite.
  */
 function stripSqlLineComments(text: string): string {
   return text
@@ -225,19 +238,31 @@ async function orderMigrationsByJournal(migrationFiles: string[]): Promise<strin
 
 type SqlExecutor = Pick<ReturnType<typeof postgres>, "unsafe">;
 
-async function runInTransaction(sql: SqlExecutor, action: () => Promise<void>): Promise<void> {
-  await sql.unsafe("BEGIN");
-  try {
-    await action();
-    await sql.unsafe("COMMIT");
-  } catch (error) {
-    try {
-      await sql.unsafe("ROLLBACK");
-    } catch {
-      // Ignore rollback failures and surface the original error.
-    }
-    throw error;
-  }
+/**
+ * Runs `action` inside a Postgres transaction using postgres.js's native
+ * `sql.begin()` API, which reserves a single physical connection for the
+ * duration of the callback and issues BEGIN/COMMIT/ROLLBACK on that
+ * reserved connection automatically. `action` receives that
+ * connection-scoped executor (`tx` below) and MUST use it (not the
+ * outer `sql`) for every query it runs, so that statements like
+ * `pg_advisory_xact_lock` - which only serializes callers when run on the
+ * same connection as the surrounding transaction - are guaranteed to share
+ * a connection with the rest of the transaction. This makes that
+ * connection-affinity guarantee an explicit, structural property of
+ * `sql.begin()` rather than an implicit side effect of the utility pool
+ * happening to be configured with `max: 1` (see `createUtilitySql`).
+ *
+ * Error/rollback semantics match the previous hand-rolled
+ * BEGIN/COMMIT/ROLLBACK implementation: `sql.begin()` rolls back the
+ * transaction if `action` throws and rethrows the original error.
+ */
+async function runInTransaction(
+  sql: ReturnType<typeof postgres>,
+  action: (tx: SqlExecutor) => Promise<void>,
+): Promise<void> {
+  await sql.begin(async (tx) => {
+    await action(tx);
+  });
 }
 
 async function latestMigrationCreatedAt(
@@ -358,13 +383,13 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
+      await runInTransaction(sql, async (tx) => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          await tx.unsafe(statement);
         }
 
         await recordMigrationHistoryEntry(
-          sql,
+          tx,
           qualifiedTable,
           columnNames,
           migrationFile,
@@ -825,11 +850,18 @@ export async function reconcilePendingMigrationHistory(
     // typically at most one stale orphan row at a time, and the list is kept
     // in sync in-memory (via splice, below) as rows get repointed during the
     // loop, so a fresh DB read per pending migration would be redundant.
+    const staleOrphanOrderClauses: string[] = [];
+    if (columnNames.has("created_at")) staleOrphanOrderClauses.push("created_at ASC");
+    if (columnNames.has("id")) staleOrphanOrderClauses.push("id ASC");
+    const staleOrphanOrderBySql =
+      staleOrphanOrderClauses.length > 0 ? ` ORDER BY ${staleOrphanOrderClauses.join(", ")}` : "";
+
+    const staleOrphanSelectColumns = ["hash"];
+    if (columnNames.has("name")) staleOrphanSelectColumns.push("name");
+
     const staleOrphanRows = columnNames.has("hash")
-      ? await sql.unsafe<{ hash: string }[]>(
-          columnNames.has("created_at")
-            ? `SELECT hash FROM ${qualifiedTable} ORDER BY created_at ASC, id ASC`
-            : `SELECT hash FROM ${qualifiedTable} ORDER BY id ASC`,
+      ? await sql.unsafe<{ hash: string; name?: string }[]>(
+          `SELECT ${staleOrphanSelectColumns.join(", ")} FROM ${qualifiedTable}${staleOrphanOrderBySql}`,
         )
       : [];
 
@@ -879,7 +911,40 @@ export async function reconcilePendingMigrationHistory(
       // replicas race this UPDATE, only the first affects a row (it moves
       // the row's hash away from the stale value); the second then matches
       // zero rows and becomes a safe no-op instead of creating a duplicate.
-      const staleOrphanIndex = staleOrphanRows.findIndex((row) => !validHashes.has(row.hash));
+      // Only rows whose hash matches none of the migrations on disk are even
+      // candidates for repair. Among those, when the table has a `name`
+      // column, a candidate is only safe to repoint at `migrationFile` if it
+      // was actually recorded under that migration's name - otherwise we
+      // would be hijacking an orphan that belongs to some other (possibly
+      // deleted) migration file, silently mislabeling it. If no `name`
+      // column exists we cannot make that distinction, so fall back to the
+      // previous behavior of taking the first hash-mismatched row.
+      const invalidHashIndexes = staleOrphanRows.reduce<number[]>((acc, row, index) => {
+        if (!validHashes.has(row.hash)) acc.push(index);
+        return acc;
+      }, []);
+
+      let staleOrphanIndex = -1;
+      if (invalidHashIndexes.length > 0) {
+        if (columnNames.has("name")) {
+          const matchingIndexes = invalidHashIndexes.filter(
+            (index) => staleOrphanRows[index].name === migrationFile,
+          );
+          if (matchingIndexes.length > 1) {
+            throw new Error(
+              `Cannot reconcile migration history for "${migrationFile}": found ${matchingIndexes.length} stale orphan rows in ${qualifiedTable} recorded under this migration's name with mismatched hashes. Refusing to guess which one to repair - resolve the ambiguity manually.`,
+            );
+          }
+          if (matchingIndexes.length === 0) {
+            throw new Error(
+              `Cannot reconcile migration history for "${migrationFile}": ${invalidHashIndexes.length} stale orphan row(s) exist in ${qualifiedTable} with hashes that match no migration on disk, but none of them is recorded under this migration's name. Refusing to repoint an unrelated row - resolve the ambiguity manually.`,
+            );
+          }
+          staleOrphanIndex = matchingIndexes[0];
+        } else {
+          staleOrphanIndex = invalidHashIndexes[0];
+        }
+      }
       const staleOrphan = staleOrphanIndex >= 0 ? staleOrphanRows[staleOrphanIndex] : undefined;
 
       if (staleOrphan) {
@@ -888,34 +953,32 @@ export async function reconcilePendingMigrationHistory(
         if (columnNames.has("created_at")) {
           updateAssignments.push(`created_at = ${quoteLiteral(String(folderMillis))}`);
         }
-        await sql.unsafe(
-          `UPDATE ${qualifiedTable} SET ${updateAssignments.join(", ")} WHERE hash = ${quoteLiteral(staleOrphan.hash)}`,
+        const updatedRows = await sql.unsafe<{ hash: string }[]>(
+          `UPDATE ${qualifiedTable} SET ${updateAssignments.join(", ")} WHERE hash = ${quoteLiteral(staleOrphan.hash)} RETURNING hash`,
         );
-        // Keep the in-memory candidate list in sync: this row's hash is now
-        // the current migration's hash (valid), so it is no longer a stale
-        // orphan candidate for a later iteration of this loop.
+        // Keep the in-memory candidate list in sync regardless of who won
+        // the race below: this row's hash is either now the current
+        // migration's hash (valid), or another replica already claimed it -
+        // either way it is no longer a stale orphan candidate for a later
+        // iteration of this loop.
         staleOrphanRows.splice(staleOrphanIndex, 1);
-        repairedMigrations.push(migrationFile);
+        if (updatedRows.length === 0) {
+          // Another replica concurrently repointed this same orphan row
+          // first (it matched on the pre-update `hash = <stale hash>` WHERE
+          // clause, which only one racer can satisfy). This replica did not
+          // actually perform the repair, so - mirroring the INSERT path's
+          // `alreadyRecordedByOtherReplica` handling below - it must not be
+          // counted in `repairedMigrations`.
+          alreadyRecordedByOtherReplica.push(migrationFile);
+        } else {
+          repairedMigrations.push(migrationFile);
+        }
         continue;
       }
 
-      const insertColumns: string[] = [];
-      const insertValues: string[] = [];
-
-      if (columnNames.has("hash")) {
-        insertColumns.push(quoteIdentifier("hash"));
-        insertValues.push(quoteLiteral(hash));
+      if (!columnNames.has("hash") && !columnNames.has("name") && !columnNames.has("created_at")) {
+        break;
       }
-      if (columnNames.has("name")) {
-        insertColumns.push(quoteIdentifier("name"));
-        insertValues.push(quoteLiteral(migrationFile));
-      }
-      if (columnNames.has("created_at")) {
-        insertColumns.push(quoteIdentifier("created_at"));
-        insertValues.push(quoteLiteral(String(folderMillis)));
-      }
-
-      if (insertColumns.length === 0) break;
 
       // There is no UNIQUE constraint on `hash` in `__drizzle_migrations`, so
       // Postgres has no conflict to infer here - `ON CONFLICT DO NOTHING`
@@ -932,13 +995,23 @@ export async function reconcilePendingMigrationHistory(
       // immediately below is guaranteed accurate for whoever holds it, and a
       // second replica - once it acquires the lock after the first commits -
       // will see the row the first one inserted and skip its own insert.
-      await runInTransaction(sql, async () => {
-        await sql.unsafe(
+      //
+      // NOTE: `pg_advisory_xact_lock` only serializes callers that run it on
+      // the same connection as each other for the duration of their
+      // transactions; `runInTransaction` uses `sql.begin()` so every query
+      // below runs on the `tx` executor it hands back, guaranteeing this
+      // lock call and the re-check/insert that follow all share that same
+      // reserved connection.
+      await runInTransaction(sql, async (tx) => {
+        await tx.unsafe(
+          // Reserved lock key - see MIGRATION_RECONCILE_INSERT_LOCK_KEYS's
+          // doc comment: this exact (0x706c6970, 1) pair must not be reused
+          // by other two-int4 pg_advisory_lock/pg_advisory_xact_lock callers.
           `SELECT pg_advisory_xact_lock(${MIGRATION_RECONCILE_INSERT_LOCK_KEYS[0]}, ${MIGRATION_RECONCILE_INSERT_LOCK_KEYS[1]})`,
         );
 
         const alreadyRecordedByAnotherReplica = await migrationHistoryEntryExists(
-          sql,
+          tx,
           qualifiedTable,
           columnNames,
           migrationFile,
@@ -959,9 +1032,15 @@ export async function reconcilePendingMigrationHistory(
           return;
         }
 
-        await sql.unsafe(
-          `INSERT INTO ${qualifiedTable} (${insertColumns.join(", ")}) VALUES (${insertValues.join(", ")})`,
-        );
+        // Delegate to `recordMigrationHistoryEntry` (used elsewhere for the
+        // exact same insert-a-new-history-row job) rather than
+        // hand-building the INSERT here, so this path gets the same
+        // monotonicity guarantee: `created_at` is computed from the latest
+        // row's `created_at` under the advisory lock we now hold, not from
+        // the raw `folderMillis` alone. Drizzle orders applied migrations by
+        // `created_at ASC`, so a non-monotonic `created_at` here would
+        // produce non-deterministic ordering on next startup.
+        await recordMigrationHistoryEntry(tx, qualifiedTable, columnNames, migrationFile, hash, folderMillis);
         repairedMigrations.push(migrationFile);
       });
     }

@@ -45,6 +45,13 @@ CREATE TABLE "agent_ownership_transfers" (
 	CONSTRAINT "agent_ownership_transfers_status_check" CHECK ("agent_ownership_transfers"."status" in ('pending', 'accepted', 'declined', 'cancelled', 'forced'))
 );
 --> statement-breakpoint
+-- These ALTER TABLE ADD COLUMN statements target existing, potentially
+-- high-traffic tables and briefly acquire ACCESS EXCLUSIVE locks. Postgres 11+
+-- adds a constant-default column as a metadata-only change, but the lock must
+-- still wait for any open transaction on the table to finish. Fail fast under
+-- contention instead of stalling the deploy indefinitely.
+SET LOCAL lock_timeout = '2s';--> statement-breakpoint
+SET LOCAL statement_timeout = '30s';--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "is_public" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "companies" ADD COLUMN "enforce_agent_ownership" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "agent_ownership_grants" ADD CONSTRAINT "agent_ownership_grants_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -54,7 +61,7 @@ ALTER TABLE "agent_ownership_transfers" ADD CONSTRAINT "agent_ownership_transfer
 ALTER TABLE "agent_ownership_transfers" ADD CONSTRAINT "agent_ownership_transfers_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_ownership_transfers" ADD CONSTRAINT "aot_resulting_grant_id_fk" FOREIGN KEY ("resulting_grant_id") REFERENCES "public"."agent_ownership_grants"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "agent_ownership_grants_one_active_owner_idx" ON "agent_ownership_grants" USING btree ("agent_id") WHERE "agent_ownership_grants"."role" = 'owner' and "agent_ownership_grants"."revoked_at" is null;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_ownership_grants_active_role_idx" ON "agent_ownership_grants" USING btree ("agent_id","principal_type","principal_id","role") WHERE "agent_ownership_grants"."revoked_at" is null;--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_ownership_grants_active_role_idx" ON "agent_ownership_grants" USING btree ("agent_id","principal_type","principal_id") WHERE "agent_ownership_grants"."revoked_at" is null and "agent_ownership_grants"."role" != 'owner';--> statement-breakpoint
 CREATE INDEX "agent_ownership_grants_agent_idx" ON "agent_ownership_grants" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "agent_ownership_grants_company_idx" ON "agent_ownership_grants" USING btree ("company_id");--> statement-breakpoint
 CREATE INDEX "agent_ownership_grants_principal_idx" ON "agent_ownership_grants" USING btree ("company_id","principal_type","principal_id");--> statement-breakpoint
@@ -62,6 +69,7 @@ CREATE INDEX "agent_ownership_grants_transition_from_grant_id_idx" ON "agent_own
 CREATE INDEX "agent_ownership_transfers_agent_idx" ON "agent_ownership_transfers" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "agent_ownership_transfers_company_idx" ON "agent_ownership_transfers" USING btree ("company_id");--> statement-breakpoint
 CREATE INDEX "agent_ownership_transfers_to_user_idx" ON "agent_ownership_transfers" USING btree ("to_user_id","status");--> statement-breakpoint
+CREATE INDEX "agent_ownership_transfers_from_user_idx" ON "agent_ownership_transfers" USING btree ("from_user_id","status");--> statement-breakpoint
 CREATE INDEX "agent_ownership_transfers_agent_status_idx" ON "agent_ownership_transfers" USING btree ("agent_id","status");--> statement-breakpoint
 CREATE INDEX "agent_ownership_transfers_resulting_grant_id_idx" ON "agent_ownership_transfers" USING btree ("resulting_grant_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "agent_ownership_transfers_one_pending_idx" ON "agent_ownership_transfers" USING btree ("agent_id") WHERE "agent_ownership_transfers"."status" = 'pending';

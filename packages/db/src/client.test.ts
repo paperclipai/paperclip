@@ -1957,40 +1957,87 @@ describeEmbeddedPostgres("migrationContentAlreadyApplied", () => {
 
 describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
   it(
-    "repairs migration 0212 (leading SET statements) instead of treating it as unrecognized",
+    "repairs migration 0212 (stale pre-consolidation hash) instead of treating it as unrecognized",
     async () => {
       const connectionString = await createTempDatabase();
 
       await applyPendingMigrations(connectionString);
 
       // Reproduce the real production failure mode: a history row for 0212
-      // already exists, but it was recorded before this PR rewrote the
-      // migration's SQL to add the leading `SET` statements (and before the
-      // parallel fix upgraded them to `SET LOCAL`). Its hash was computed
-      // from that pre-rewrite file content, so it no longer matches the
-      // hash of the migration file on disk today — this is a stale/mismatched
+      // already exists, but it was recorded before a later commit in this
+      // same PR consolidated what had originally been a separate
+      // schema-flag migration into this file — folding the `agents.is_public`
+      // and `companies.enforce_agent_ownership` ALTER TABLE statements (plus
+      // their supporting foreign keys and indexes) directly onto the end of
+      // what had, at the time this row was recorded, been just the two
+      // `CREATE TABLE` statements for `agent_ownership_grants` and
+      // `agent_ownership_transfers`. Its hash was computed from that
+      // pre-consolidation file content, so it no longer matches the hash of
+      // 0212_cooing_zaran.sql on disk today — this is a stale/mismatched
       // row, not a missing one.
-      // Append a trailing newline before hashing: readMigrationFileContent()
-      // (and migrationHash() below, via fs.promises.readFile) read the raw
-      // file bytes, which include a standard trailing newline — confirmed
-      // present in this repo's other migration files. Without appending it
-      // here, this simulated "pre-rewrite" hash would not match what a real
-      // production database recorded for the pre-rewrite file, undermining
-      // the claim that this reproduces the real failure mode.
-      const preRewriteBlushingElektraContent = `${[
-        "SET lock_timeout = '2s';--> statement-breakpoint",
-        "SET statement_timeout = '30s';--> statement-breakpoint",
-        'ALTER TABLE "companies" ADD COLUMN IF NOT EXISTS "enforce_agent_ownership" boolean DEFAULT false NOT NULL;',
+      // The two CREATE TABLE statements below are reproduced from the
+      // current migration file (see
+      // packages/db/src/migrations/0212_cooing_zaran.sql) since those
+      // predate the consolidation and are unchanged; everything from the
+      // `agents.is_public` column addition onward is omitted, to simulate
+      // the file's content as it existed when this stale row was recorded.
+      const preConsolidationCooingZaranContent = `${[
+        'CREATE TABLE "agent_ownership_grants" (',
+        '  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,',
+        '  "company_id" uuid NOT NULL,',
+        '  "agent_id" uuid NOT NULL,',
+        '  "principal_type" text NOT NULL,',
+        '  "principal_id" text NOT NULL,',
+        '  "role" text NOT NULL,',
+        '  "granted_by_user_id" text,',
+        '  "granted_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "revoked_at" timestamp with time zone,',
+        '  "revoked_by_user_id" text,',
+        '  "revoked_reason" text,',
+        '  "transition_from_grant_id" uuid,',
+        '  "is_instance_admin_override" boolean DEFAULT false NOT NULL,',
+        '  "source" text NOT NULL,',
+        '  "created_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  CONSTRAINT "agent_ownership_grants_principal_type_check" CHECK ("agent_ownership_grants"."principal_type" in (\'user\', \'agent\')),',
+        '  CONSTRAINT "agent_ownership_grants_role_check" CHECK ("agent_ownership_grants"."role" in (\'owner\', \'admin\', \'user\')),',
+        '  CONSTRAINT "agent_ownership_grants_source_check" CHECK ("agent_ownership_grants"."source" in (',
+        "        'agent_create',",
+        "        'agent_created_default',",
+        "        'agent_hire',",
+        "        'manual_grant',",
+        "        'transfer_accept',",
+        "        'instance_admin_override',",
+        "        'instance_admin_bootstrap'",
+        '      ))',
+        ');',
+        '--> statement-breakpoint',
+        'CREATE TABLE "agent_ownership_transfers" (',
+        '  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,',
+        '  "company_id" uuid NOT NULL,',
+        '  "agent_id" uuid NOT NULL,',
+        '  "from_user_id" text NOT NULL,',
+        '  "to_user_id" text NOT NULL,',
+        '  "status" text DEFAULT \'pending\' NOT NULL,',
+        '  "proposed_by_user_id" text NOT NULL,',
+        '  "proposed_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "responded_by_user_id" text,',
+        '  "responded_at" timestamp with time zone,',
+        '  "forced_by_instance_admin_user_id" text,',
+        '  "resulting_grant_id" uuid,',
+        '  "created_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  CONSTRAINT "agent_ownership_transfers_status_check" CHECK ("agent_ownership_transfers"."status" in (\'pending\', \'accepted\', \'declined\', \'cancelled\', \'forced\'))',
+        ');',
       ].join("\n")}\n`;
       const stalePreRewriteHash = createHash("sha256")
-        .update(preRewriteBlushingElektraContent)
+        .update(preConsolidationCooingZaranContent)
         .digest("hex");
-      const blushingElektraHash = await migrationHash("0212_blushing_elektra.sql");
+      const cooingZaranHash = await migrationHash("0212_cooing_zaran.sql");
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${blushingElektraHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
         );
         await sql.unsafe(
           `
@@ -2005,16 +2052,20 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0212_blushing_elektra.sql"],
+        pendingMigrations: ["0212_cooing_zaran.sql"],
         reason: "pending-migrations",
       });
 
-      // Before the fix, the unrecognized `SET ...` statements would make
-      // migrationContentAlreadyApplied() return false for the whole file,
-      // and reconcilePendingMigrationHistory()'s `if (!alreadyApplied) break;`
-      // would leave this (and any later pending migrations) unrepaired.
+      // Before the orphan-repointing fix, reconcilePendingMigrationHistory()
+      // had no notion of a stale orphan row at all: finding no existing row
+      // whose hash or name matched the current migration file, it would
+      // simply INSERT a brand-new row for 0212 alongside the pre-existing
+      // stale-hash row rather than repointing that row — leaving two rows in
+      // the history table for a single applied migration. The assertions
+      // below (single row remaining, total row count matching available
+      // migrations) confirm the fix repoints the orphan instead.
       const repair = await reconcilePendingMigrationHistory(connectionString);
-      expect(repair.repairedMigrations).toEqual(["0212_blushing_elektra.sql"]);
+      expect(repair.repairedMigrations).toEqual(["0212_cooing_zaran.sql"]);
       expect(repair.remainingMigrations).toEqual([]);
 
       const finalState = await inspectMigrations(connectionString);
@@ -2027,10 +2078,10 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const rows = await verifySql.unsafe<{ hash: string }[]>(
-          `SELECT hash FROM "drizzle"."__drizzle_migrations" WHERE hash = '${blushingElektraHash}' OR hash = '${stalePreRewriteHash}'`,
+          `SELECT hash FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}' OR hash = '${stalePreRewriteHash}'`,
         );
         expect(rows).toHaveLength(1);
-        expect(rows[0]?.hash).toBe(blushingElektraHash);
+        expect(rows[0]?.hash).toBe(cooingZaranHash);
 
         const totalRows = await verifySql.unsafe<{ count: number }[]>(
           `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations"`,
@@ -2059,11 +2110,11 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
 
       await applyPendingMigrations(connectionString);
 
-      const blushingElektraHash = await migrationHash("0212_blushing_elektra.sql");
+      const cooingZaranHash = await migrationHash("0212_cooing_zaran.sql");
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${blushingElektraHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
         );
       } finally {
         await sql.end();
@@ -2072,7 +2123,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0212_blushing_elektra.sql"],
+        pendingMigrations: ["0212_cooing_zaran.sql"],
         reason: "pending-migrations",
       });
 
@@ -2141,7 +2192,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
           first.repairedMigrations.length + second.repairedMigrations.length;
         expect(totalRepairedCount).toBe(1);
         expect([...first.repairedMigrations, ...second.repairedMigrations]).toEqual([
-          "0212_blushing_elektra.sql",
+          "0212_cooing_zaran.sql",
         ]);
 
         // The winning replica is whichever call actually performed the
@@ -2161,10 +2212,10 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
         // shape, which is what makes the test deterministic.
         const [winner, loser] =
           first.repairedMigrations.length > 0 ? [first, second] : [second, first];
-        expect(winner.repairedMigrations).toEqual(["0212_blushing_elektra.sql"]);
+        expect(winner.repairedMigrations).toEqual(["0212_cooing_zaran.sql"]);
         expect(winner.alreadyRecordedByOtherReplica).toEqual([]);
         expect(loser.repairedMigrations).toEqual([]);
-        expect(loser.alreadyRecordedByOtherReplica).toEqual(["0212_blushing_elektra.sql"]);
+        expect(loser.alreadyRecordedByOtherReplica).toEqual(["0212_cooing_zaran.sql"]);
       } finally {
         await lockSql.end();
       }
@@ -2175,7 +2226,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const rows = await verifySql.unsafe<{ count: number }[]>(
-          `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations" WHERE hash = '${blushingElektraHash}'`,
+          `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
         );
         expect(rows[0]?.count).toBe(1);
       } finally {
