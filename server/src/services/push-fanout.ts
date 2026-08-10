@@ -11,6 +11,7 @@ import { subscribeGlobalLiveEvents } from "./live-events.js";
 const ALLOWLISTED_ACTIONS: ReadonlySet<string> = new Set(["issue.thread_interaction_created"]);
 const IMMEDIATE_EVENT_TYPES = new Set(["issue.user_assigned", "issue.interaction.pending"]);
 const DIGEST_EVENT_TYPES = new Set(["issue.blocked", "issue.stale"]);
+const MAX_IMMEDIATE_DEDUP_ENTRIES = 10_000;
 const immediateDedup = new Map<string, number>();
 const digestBuffer = new Map<string, { blocked: number; stale: number }>();
 const digestTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -80,8 +81,24 @@ function millisUntilQuietHoursEnd(): number {
 function isDuplicate(issueId: string, eventType: string): boolean {
   const key = `${issueId}:${eventType}`;
   const now = Date.now();
+  const ttlMs = envHours("PAPERCLIP_PUSH_DEDUP_TTL_HOURS", 4) * 3_600_000;
   const last = immediateDedup.get(key);
-  if (last !== undefined && now - last < envHours("PAPERCLIP_PUSH_DEDUP_TTL_HOURS", 4) * 3_600_000) return true;
+  if (last !== undefined && now - last < ttlMs) return true;
+
+  // The cache is process-global: prune expired entries and cap retained keys so
+  // high-cardinality issue events cannot turn deduplication into an unbounded
+  // memory sink in a long-lived server.
+  if (immediateDedup.size >= MAX_IMMEDIATE_DEDUP_ENTRIES) {
+    for (const [entryKey, seenAt] of immediateDedup) {
+      if (now - seenAt >= ttlMs) immediateDedup.delete(entryKey);
+    }
+    while (immediateDedup.size >= MAX_IMMEDIATE_DEDUP_ENTRIES) {
+      const oldestKey = immediateDedup.keys().next().value;
+      if (oldestKey === undefined) break;
+      immediateDedup.delete(oldestKey);
+    }
+  }
+
   immediateDedup.set(key, now);
   return false;
 }
