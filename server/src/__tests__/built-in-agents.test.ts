@@ -18,6 +18,7 @@ import {
   createDb,
   issueThreadInteractions,
   issues,
+  instanceSettings,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -39,6 +40,7 @@ import {
   validateBuiltInAgentDefinitions,
 } from "../services/built-in-agents.ts";
 import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -138,6 +140,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(agents);
     await db.delete(budgetPolicies);
     await db.delete(companies);
+    await db.delete(instanceSettings);
     // Some tests drop the built-in marker unique index to simulate legacy
     // (pre-migration 0192) duplicates; restore it now that all rows are gone.
     await db.execute(sql.raw(BUILT_IN_MARKER_UNIQUE_INDEX_DDL));
@@ -166,6 +169,43 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     return companyId;
   }
+
+  async function enableBuiltInAgents() {
+    await instanceSettingsService(db).updateExperimental({ enableBuiltInAgents: true });
+  }
+
+  it("skips automatic bundled-agent provisioning when the instance flag is disabled", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+    const service = builtInAgentService(db);
+
+    const direct = await service.autoProvisionBundledAgents(companyId);
+    expect(direct).toEqual({
+      autoEnsured: 0,
+      pendingApprovals: 0,
+      defaultGrantsEnsured: 0,
+      outcomes: {
+        skipped_by_flag: 2,
+        skipped_by_tombstone: 0,
+        provisioned: 0,
+        already_present: 0,
+      },
+    });
+
+    const startup = await reconcileBuiltInAgentsOnStartup(db);
+    expect(startup).toMatchObject({
+      autoEnsured: 0,
+      pendingApprovals: 0,
+      defaultGrantsEnsured: 0,
+      outcomes: {
+        skipped_by_flag: 2,
+        skipped_by_tombstone: 0,
+        provisioned: 0,
+        already_present: 0,
+      },
+    });
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
+  });
 
   it("validates the static registry and rejects invalid definitions", () => {
     const definitions = listBuiltInAgentDefinitions();
@@ -570,6 +610,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
+    await enableBuiltInAgents();
     const companyId = await seedCompany({ requireApproval: false });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -694,6 +735,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
+    await enableBuiltInAgents();
     const companyId = await seedCompany({ requireApproval: true });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -788,6 +830,55 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
     expect(approvalRows).toHaveLength(2);
+  });
+
+  it("treats a rejected built-in hire as a restart-safe tombstone while allowing manual reprovision", async () => {
+    await enableBuiltInAgents();
+    const companyId = await seedCompany({ requireApproval: true });
+    const service = builtInAgentService(db);
+
+    await service.autoProvisionBundledAgents(companyId);
+    const initialState = await service.get(companyId, "reflection-coach");
+    const initialApprovals = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    const initialApproval = initialApprovals.find(
+      (row) => (row.payload as { sourceBuiltInAgentKey?: string }).sourceBuiltInAgentKey === "reflection-coach",
+    );
+    expect(initialApproval).toBeDefined();
+    await approvalService(db).reject(initialApproval!.id, "board-user", "Opt out");
+
+    const restart = await reconcileBuiltInAgentsOnStartup(db);
+    expect(restart.outcomes).toMatchObject({
+      skipped_by_flag: 0,
+      skipped_by_tombstone: 1,
+      provisioned: 0,
+      already_present: 1,
+    });
+    const afterRestartRows = (await db.select().from(agents).where(eq(agents.companyId, companyId)))
+      .filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
+    expect(afterRestartRows).toHaveLength(1);
+    expect(afterRestartRows[0]).toMatchObject({ id: initialState.agentId, status: "terminated" });
+    const afterRestartApprovals = (await db.select().from(approvals).where(eq(approvals.companyId, companyId)))
+      .filter((row) => (row.payload as { sourceBuiltInAgentKey?: string }).sourceBuiltInAgentKey === "reflection-coach");
+    expect(afterRestartApprovals).toHaveLength(1);
+    expect(afterRestartApprovals[0]?.status).toBe("rejected");
+
+    const manual = await service.provision(companyId, "reflection-coach", {}, { requestedByUserId: "board-user" });
+    expect(manual.state).toMatchObject({ status: "pending_approval" });
+    expect(manual.state.agentId).not.toBe(initialState.agentId);
+    expect(manual.approval).toMatchObject({ status: "pending" });
+
+    const secondRestart = await reconcileBuiltInAgentsOnStartup(db);
+    expect(secondRestart.outcomes).toMatchObject({
+      skipped_by_tombstone: 0,
+      provisioned: 0,
+      already_present: 2,
+    });
+    const finalRows = (await db.select().from(agents).where(eq(agents.companyId, companyId)))
+      .filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
+    expect(finalRows).toHaveLength(2);
+    const finalApprovals = (await db.select().from(approvals).where(eq(approvals.companyId, companyId)))
+      .filter((row) => (row.payload as { sourceBuiltInAgentKey?: string }).sourceBuiltInAgentKey === "reflection-coach");
+    expect(finalApprovals).toHaveLength(2);
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {
@@ -1058,6 +1149,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("self-heals duplicates during startup reconciliation without aborting later companies", async () => {
+    await enableBuiltInAgents();
     const affectedCompanyId = await seedCompany({ requireApproval: false });
     const { olderId, newerId } = await seedLegacyDuplicateBriefs(affectedCompanyId);
     // A second company created after the affected one — previously skipped

@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -25,6 +26,7 @@ import {
 import { companyService } from "../services/companies.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -59,6 +61,7 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
@@ -81,7 +84,18 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
+  it("does not auto-provision bundled agents for a new company while the flag is disabled", async () => {
+    const created = await companyService(db).create({
+      name: "Opted-out Company",
+    });
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, created.id))).toHaveLength(0);
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, created.id))).toHaveLength(0);
+    expect(await db.select().from(routines).where(eq(routines.companyId, created.id))).toHaveLength(0);
+  });
+
   it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableBuiltInAgents: true });
     const created = await companyService(db).create({
       name: "Fresh Company",
     });
