@@ -311,6 +311,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     expect(resolveRuntimeSessionParamsForWorkspace({
       agentId: "agent-1",
       previousSessionParams,
+      previousWorkspaceSource: null,
       resolvedWorkspace,
     }).sessionParams).toMatchObject({
       sessionId: "20260601_141558_c861e4",
@@ -1035,6 +1036,7 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
         cwd: fallbackCwd,
         workspaceId: "workspace-1",
       },
+      previousWorkspaceSource: null,
       resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
     });
 
@@ -1051,6 +1053,7 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
         cwd: "/tmp/some-other-cwd",
         workspaceId: "workspace-1",
       },
+      previousWorkspaceSource: "project_primary",
       resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
     });
 
@@ -1062,7 +1065,7 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
     expect(result.warning).toBeNull();
   });
 
-  it("does not migrate when resolved workspace id differs from previous session workspace id", () => {
+  it("rotates when a prior session has a non-project workspace provenance", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
 
@@ -1073,18 +1076,15 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
         cwd: fallbackCwd,
         workspaceId: "workspace-1",
       },
+      previousWorkspaceSource: "agent_home",
       resolvedWorkspace: buildResolvedWorkspace({
         cwd: "/tmp/new-project-cwd",
         workspaceId: "workspace-2",
       }),
     });
 
-    expect(result.sessionParams).toEqual({
-      sessionId: "session-1",
-      cwd: fallbackCwd,
-      workspaceId: "workspace-1",
-    });
-    expect(result.warning).toBeNull();
+    expect(result.sessionParams).toBeNull();
+    expect(result.resetReason).toBe("project_workspace_migration_from_fallback");
   });
 });
 

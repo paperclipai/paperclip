@@ -4112,16 +4112,17 @@ export function computeSessionCompactionReason(input: {
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
+  previousWorkspaceSource: string | null;
   resolvedWorkspace: ResolvedWorkspaceForRun;
 }): {
   sessionParams: Record<string, unknown> | null;
   warning: string | null;
   resetReason: string | null;
 } {
-  const { agentId, previousSessionParams, resolvedWorkspace } = input;
+  const { agentId, previousSessionParams, previousWorkspaceSource, resolvedWorkspace } = input;
   const previousSessionId = readNonEmptyString(previousSessionParams?.sessionId);
   const previousCwd = readNonEmptyString(previousSessionParams?.cwd);
-  if (!previousSessionId || !previousCwd) {
+  if (!previousSessionId) {
     return {
       sessionParams: previousSessionParams,
       warning: null,
@@ -4143,27 +4144,10 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       resetReason: null,
     };
   }
-  const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
-  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null,
-      resetReason: null,
-    };
-  }
-  if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null,
-      resetReason: null,
-    };
-  }
-  const previousWorkspaceId = readNonEmptyString(previousSessionParams?.workspaceId);
-  if (
-    previousWorkspaceId &&
-    resolvedWorkspace.workspaceId &&
-    previousWorkspaceId !== resolvedWorkspace.workspaceId
-  ) {
+  // Resume is safe only when the prior session is proven to have run in a
+  // project-primary workspace. Hermes persists a session ID without a cwd, so
+  // old rows cannot be inferred safely; they get one clean migration run.
+  if (previousWorkspaceSource === "project_primary") {
     return {
       sessionParams: previousSessionParams,
       warning: null,
@@ -4180,7 +4164,7 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     sessionParams: null,
     warning:
       `Project workspace "${projectCwd}" is now available. ` +
-      `Starting a fresh session instead of resuming "${previousSessionId}" from fallback workspace "${previousCwd}".`,
+      `Starting a fresh session instead of resuming "${previousSessionId}" from ${previousWorkspaceSource ?? "an unproven legacy workspace"}${previousCwd ? ` (cwd "${previousCwd}")` : ""}.`,
     resetReason: "project_workspace_migration_from_fallback",
   };
 }
@@ -4472,12 +4456,14 @@ const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
 const SESSION_CONFIG_FINGERPRINT_VERSION_KEY = "__paperclipConfigFingerprintVersion";
 const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
 const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY = "__paperclipConfigCategoryFingerprints";
+const SESSION_WORKSPACE_SOURCE_KEY = "__paperclipWorkspaceSource";
 const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
   SESSION_CONFIGURED_MODEL_KEY,
   SESSION_CONFIG_FINGERPRINT_KEY,
   SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
   SESSION_CONFIG_CATEGORIES_KEY,
   SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
+  SESSION_WORKSPACE_SOURCE_KEY,
 ]);
 const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
@@ -5325,8 +5311,9 @@ function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
   configMetadata?: EffectiveRunSessionConfigMetadata | null,
+  workspaceSource?: string | null,
 ) {
-  if (!configuredModel && !configMetadata) return sessionParams ?? null;
+  if (!configuredModel && !configMetadata && !workspaceSource) return sessionParams ?? null;
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
@@ -5335,7 +5322,14 @@ function attachPaperclipSessionMetadataToSessionParams(
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
     next[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY] = configMetadata.categoryFingerprints;
   }
+  if (workspaceSource) next[SESSION_WORKSPACE_SOURCE_KEY] = workspaceSource;
   return next;
+}
+
+function readSessionWorkspaceSource(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  return readNonEmptyString(sessionParams?.[SESSION_WORKSPACE_SOURCE_KEY]);
 }
 
 function readConfiguredModelFromSessionParams(
@@ -16298,6 +16292,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
+    const taskSessionParamsWithMetadata = normalizeSessionParams(
+      sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+    );
+    const previousSessionWorkspaceSource =
+      readSessionWorkspaceSource(explicitResumeSessionParams) ??
+      readSessionWorkspaceSource(taskSessionParamsWithMetadata);
     const ephemeralStatusOnlyRecoverySession = isEphemeralStatusOnlyRecoverySession(context);
     const previousSessionParams =
       explicitResumeSessionParams ??
@@ -16819,6 +16819,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
+      previousWorkspaceSource: previousSessionWorkspaceSource,
       resolvedWorkspace: {
         ...resolvedWorkspace,
         cwd: executionWorkspace.cwd,
@@ -18121,6 +18122,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 nextSessionState.params,
                 configuredModel,
                 sessionConfigMetadata,
+                executionWorkspace.source,
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
@@ -18259,6 +18261,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               previousSessionParams,
               configuredModel,
               sessionConfigMetadata,
+              previousSessionWorkspaceSource,
             ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
