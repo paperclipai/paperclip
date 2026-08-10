@@ -476,6 +476,76 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(agent?.spentMonthlyCents).toBe(0);
   });
 
+  it("surfaces only issue-less on-demand heartbeat usage in the unscoped rollup", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const unscopedRunId = randomUUID();
+    const scopedRunId = randomUUID();
+    const assignedRunId = randomUUID();
+    const occurredAt = new Date("2026-04-10T12:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: `T-${issueId.slice(0, 8)}`,
+      title: "Scoped work",
+      status: "in_progress",
+    });
+    await db.insert(heartbeatRuns).values([
+      { id: unscopedRunId, companyId, agentId, invocationSource: "on_demand", status: "completed" },
+      { id: scopedRunId, companyId, agentId, invocationSource: "on_demand", status: "completed" },
+      { id: assignedRunId, companyId, agentId, invocationSource: "assignment", status: "completed" },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId, agentId, heartbeatRunId: unscopedRunId, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", model: "gpt-5", inputTokens: 200_000,
+        cachedInputTokens: 30_000, outputTokens: 20_000, costCents: 75, occurredAt,
+      },
+      {
+        companyId, agentId, issueId, heartbeatRunId: scopedRunId, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", model: "gpt-5", inputTokens: 1, cachedInputTokens: 2,
+        outputTokens: 3, costCents: 10, occurredAt,
+      },
+      {
+        companyId, agentId, heartbeatRunId: assignedRunId, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", model: "gpt-5", inputTokens: 4, cachedInputTokens: 5,
+        outputTokens: 6, costCents: 20, occurredAt,
+      },
+    ]);
+
+    const summary = await costs.summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-30T23:59:59.999Z"),
+    });
+
+    expect(summary.unscopedOnDemand).toEqual({
+      runCount: 1,
+      costCents: 75,
+      inputTokens: 200_000,
+      cachedInputTokens: 30_000,
+      outputTokens: 20_000,
+    });
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

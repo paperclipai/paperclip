@@ -1471,6 +1471,13 @@
       "when": 1785804060000,
       "tag": "9010_routine_cadence_budget_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1785890400000,
+      "tag": "9011_board_token_exceptions",
+      "breakpoints": true
     }
   ]
 }

@@ -13,21 +13,21 @@ describe("high input-token run guard", () => {
     })).toBe("none");
   });
 
-  it("requires a split or route review for the first oversized run", () => {
+  it("hard-blocks the first oversized raw-input run", () => {
     expect(decideHighInputTokenRunGuard({
       inputTokens: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
       highRunCount: 1,
-    })).toBe("review");
+    })).toBe("block");
   });
 
-  it("blocks the second oversized run on the same task", () => {
+  it("continues to block later oversized runs on the same task", () => {
     expect(decideHighInputTokenRunGuard({
       inputTokens: HIGH_INPUT_TOKEN_RUN_THRESHOLD + 25_000,
       highRunCount: 2,
     })).toBe("block");
   });
 
-  it("counts cache-read context in the oversized-run threshold", () => {
+  it("keeps cache reads in total accounting but does not use them for the raw-input hard ceiling", () => {
     const totalInputTokens = totalInputTokensIncludingCache({
       inputTokens: 105_209,
       cachedInputTokens: 3_294_208,
@@ -35,8 +35,8 @@ describe("high input-token run guard", () => {
 
     expect(totalInputTokens).toBe(3_399_417);
     expect(decideHighInputTokenRunGuard({
-      inputTokens: totalInputTokens,
+      inputTokens: 105_209,
       highRunCount: 1,
-    })).toBe("review");
+    })).toBe("none");
   });
 });
