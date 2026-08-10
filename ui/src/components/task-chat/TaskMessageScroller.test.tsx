@@ -48,6 +48,20 @@ describe("TaskMessageScroller", () => {
     });
   }
 
+  function renderNewest(contentKey: unknown = 0) {
+    flushSync(() => {
+      root.render(
+        <TaskMessageScroller contentKey={contentKey} newestFirst>
+          <div>messages</div>
+        </TaskMessageScroller>,
+      );
+    });
+  }
+
+  function newestPill(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('button[aria-label="Scroll to newest"]');
+  }
+
   function scroller(): HTMLDivElement {
     return container.querySelector<HTMLDivElement>('[data-testid="task-chat-scroller"]')!;
   }
@@ -211,5 +225,42 @@ describe("TaskMessageScroller", () => {
     expect(pill()).not.toBeNull();
     await scrollTo(el, 600);
     expect(pill()).toBeNull(); // no animationend needed
+  });
+
+  // Newest-first inverts the pinned edge to the TOP.
+  it("newest-first: holds position and shows the 'Scroll to newest' pill when scrolled down", async () => {
+    renderNewest(1);
+    const el = scroller();
+    fakeGeometry(el);
+    await scrollTo(el, 200); // 200px from the top → unpinned (threshold 48)
+    const btn = newestPill();
+    expect(btn).not.toBeNull();
+    expect(btn!.className).toContain("top-3");
+    expect(btn!.className).not.toContain("bottom-3");
+    // New content must not yank the held position.
+    renderNewest(2);
+    expect(el.scrollTop).toBe(200);
+  });
+
+  it("newest-first: follows new content to the top while pinned to the top", async () => {
+    renderNewest(1);
+    const el = scroller();
+    fakeGeometry(el);
+    await scrollTo(el, 20); // within 48px of the top → pinned
+    el.scrollTop = 500; // drift the position; a pinned follow should reset it
+    renderNewest(2);
+    expect(el.scrollTop).toBe(0);
+  });
+
+  it("newest-first: clicking the pill smooth-scrolls to the top", async () => {
+    renderNewest(1);
+    const el = scroller();
+    fakeGeometry(el);
+    const scrollToSpy = vi.fn();
+    el.scrollTo = scrollToSpy as unknown as typeof el.scrollTo;
+    await scrollTo(el, 200);
+    newestPill()!.click();
+    await flushEvents();
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
   });
 });

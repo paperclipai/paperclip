@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { IssueChatThread } from "@/components/IssueChatThread";
+import { TaskDecisionBar } from "@/components/task-chat/TaskDecisionBar";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
@@ -25,7 +26,12 @@ import type {
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
 import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
-import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/TaskChatThreadView";
+import {
+  TaskChatThreadView,
+  taskChatContentKey,
+  loadTaskChatNewestFirst,
+  saveTaskChatNewestFirst,
+} from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
@@ -117,6 +123,26 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     feedbackTermsUrl = null,
     onVote,
     draftKey,
+    // Decision / Next action bar inputs. These arrive from IssueDetail but were
+    // previously unused here — so the redesign silently dropped the blocked /
+    // recovery / retry / handoff banners. Destructuring and feeding the bar
+    // restores them (PAP task-chat redesign).
+    blockedBy = [],
+    liveIssueIds,
+    blockerAttention = null,
+    successfulRunHandoff = null,
+    scheduledRetry = null,
+    recoveryAction = null,
+    onResolveRecoveryAction,
+    onReissueIsolatedRecoveryAction,
+    reissueIsolatedRecoveryActionPending,
+    onReconcileForwardRecoveryAction,
+    onBreakGlassOverrideRecoveryAction,
+    onQuarantineRestoreRecoveryAction,
+    quarantineRestoreRecoveryActionPending,
+    canBreakGlassRecoveryAction,
+    reconcileRecoveryActionPending,
+    canFalsePositiveRecoveryAction,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -470,14 +496,55 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // collapses the absolute-inset transcript viewport to 0px. Render the thread
   // in document flow instead (the same scroll={false} path the previews use)
   // and track auto-follow against window scroll. Desktop stays byte-identical.
+  // Newest-first is an independent localStorage sub-toggle: it flips ONLY the
+  // render order (TaskChatThreadView) and the auto-follow edge — assembly above
+  // stays chronological, so it reverts cleanly when off.
+  const [newestFirst, setNewestFirst] = useState(loadTaskChatNewestFirst);
+  const handleToggleNewestFirst = useCallback(() => {
+    setNewestFirst((current) => {
+      const next = !current;
+      saveTaskChatNewestFirst(next);
+      return next;
+    });
+  }, []);
+
   const { isMobile } = useSidebar();
-  useWindowAutoFollow(isMobile ? taskChatContentKey(items) : 0, isMobile);
+  useWindowAutoFollow(isMobile ? taskChatContentKey(items) : 0, isMobile, newestFirst);
 
   return (
     <div
       className={cn("flex flex-col", !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1")}
       data-testid="task-chat-thread"
     >
+      {/* Sticky Decision / Next action bar — the chat seam (above the scroll
+          viewport, not the Activity tab). Always rendered; the two positive
+          rungs are the reassuring states. */}
+      <TaskDecisionBar
+        issueId={issueId}
+        issueStatus={issueStatus}
+        isMobile={isMobile}
+        hasLiveRun={Boolean(liveRun)}
+        agentName={liveRun?.agentName ?? null}
+        newestFirst={newestFirst}
+        blockedBy={blockedBy}
+        liveIssueIds={liveIssueIds}
+        blockerAttention={blockerAttention}
+        successfulRunHandoff={successfulRunHandoff}
+        scheduledRetry={scheduledRetry}
+        recoveryAction={recoveryAction}
+        interactions={interactions}
+        agentMap={agentMap}
+        onResolveRecoveryAction={onResolveRecoveryAction}
+        onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
+        reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
+        onReconcileForwardRecoveryAction={onReconcileForwardRecoveryAction}
+        onBreakGlassOverrideRecoveryAction={onBreakGlassOverrideRecoveryAction}
+        onQuarantineRestoreRecoveryAction={onQuarantineRestoreRecoveryAction}
+        quarantineRestoreRecoveryActionPending={quarantineRestoreRecoveryActionPending}
+        canBreakGlassRecoveryAction={canBreakGlassRecoveryAction}
+        reconcileRecoveryActionPending={reconcileRecoveryActionPending}
+        canFalsePositiveRecoveryAction={canFalsePositiveRecoveryAction}
+      />
       <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
         {items.length === 0 ? (
           <div className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
@@ -499,6 +566,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
             scroll={!isMobile}
+            newestFirst={newestFirst}
+            onToggleNewestFirst={handleToggleNewestFirst}
           />
         )}
       </div>

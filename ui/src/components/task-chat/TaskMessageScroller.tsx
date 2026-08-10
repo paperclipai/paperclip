@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 
 const PIN_THRESHOLD_PX = 48;
 
@@ -22,6 +22,12 @@ interface TaskMessageScrollerProps {
   /** Value that changes whenever content that could grow the thread updates. */
   contentKey: unknown;
   className?: string;
+  /**
+   * Newest-first ordering: newest content sits at the TOP, so the auto-follow
+   * edge flips — pin to the top, follow/glide to top, and the pill ("Scroll to
+   * newest") rides the top. Default false keeps the bottom-pinned behavior.
+   */
+  newestFirst?: boolean;
 }
 
 /**
@@ -40,7 +46,7 @@ interface TaskMessageScrollerProps {
  * the glide cancels it and treats the user as unpinned. Content-driven follow
  * while pinned stays instant, so no reflow/jump happens during streaming.
  */
-export function TaskMessageScroller({ children, contentKey, className }: TaskMessageScrollerProps) {
+export function TaskMessageScroller({ children, contentKey, className, newestFirst = false }: TaskMessageScrollerProps) {
   const ref = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const easingRef = useRef(false);
@@ -59,14 +65,17 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   const isPinned = useCallback(() => {
     const el = ref.current;
     if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_THRESHOLD_PX;
-  }, []);
+    // Pinned edge flips with the order: top when newest-first, else bottom.
+    return newestFirst
+      ? el.scrollTop <= PIN_THRESHOLD_PX
+      : el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_THRESHOLD_PX;
+  }, [newestFirst]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToPinnedEdge = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight; // instant, never smooth
-  }, []);
+    el.scrollTop = newestFirst ? 0 : el.scrollHeight; // instant, never smooth
+  }, [newestFirst]);
 
   const handleScroll = useCallback(() => {
     const pinned = isPinned();
@@ -95,16 +104,17 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       return;
     }
     easingRef.current = true;
+    const top = newestFirst ? 0 : el.scrollHeight;
     if (typeof el.scrollTo === "function") {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      el.scrollTo({ top, behavior: "smooth" });
     } else {
       // Environments without scrollTo (older jsdom): fall back to instant.
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = top;
       easingRef.current = false;
       pinnedRef.current = true;
       hidePill();
     }
-  }, [isPinned, hidePill]);
+  }, [isPinned, hidePill, newestFirst]);
 
   // A user gesture during the smooth glide cancels the re-follow: stop
   // treating scroll events as easing and consider the user unpinned.
@@ -127,13 +137,15 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
 
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
-    if (pinnedRef.current) scrollToBottom();
-  }, [contentKey, scrollToBottom]);
+    if (pinnedRef.current) scrollToPinnedEdge();
+  }, [contentKey, scrollToPinnedEdge]);
 
+  // Initial follow, and re-pin to the newest edge whenever the order flips
+  // (scrollToPinnedEdge's identity changes with `newestFirst`).
   useEffect(() => {
-    scrollToBottom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    pinnedRef.current = true;
+    scrollToPinnedEdge();
+  }, [scrollToPinnedEdge]);
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -151,19 +163,21 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       {pillPhase !== "hidden" ? (
         <button
           type="button"
-          aria-label="Scroll to latest"
+          aria-label={newestFirst ? "Scroll to newest" : "Scroll to latest"}
           onClick={handleJumpToLatest}
           onAnimationEnd={() => {
             if (pillPhase === "out") setPillPhase("hidden");
           }}
           // The tc-scroll-pill-* keyframes carry the translate(-50%) X-centering
           // (fill: both keeps it after the animation) — no -translate-x-1/2 here.
+          // Newest-first rides the top edge (newest is at the top); else bottom.
           className={cn(
-            "absolute bottom-3 left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            "absolute left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            newestFirst ? "top-3" : "bottom-3",
             pillPhase === "out" ? "tc-scroll-pill-out" : "tc-scroll-pill-in",
           )}
         >
-          <ArrowDown className="h-4 w-4" />
+          {newestFirst ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
         </button>
       ) : null}
     </div>

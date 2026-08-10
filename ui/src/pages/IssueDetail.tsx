@@ -91,6 +91,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import { TaskContextDigest } from "../components/task-chat/TaskContextDigest";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
@@ -4608,6 +4609,16 @@ export function IssueDetail() {
     <>
       {ancestorsNav}
       {issueHeaderBlock}
+      {/* Per-task context digest (zero-backend): sources the continuation-handoff
+          document, falls back to the issue description. Rides the header so it
+          scrolls with content. */}
+      <TaskContextDigest
+        issueId={issue.id}
+        fallbackDescription={issue.description}
+        externalReferences={
+          externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined
+        }
+      />
       {pluginOutletsBlock}
     </>
   ) : undefined;

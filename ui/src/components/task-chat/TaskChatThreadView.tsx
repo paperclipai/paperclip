@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
@@ -43,6 +45,34 @@ interface TaskChatThreadViewProps {
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
+  /**
+   * Render newest → oldest (top → bottom). Independent localStorage sub-toggle
+   * (see {@link loadTaskChatNewestFirst}); default false keeps the chronological
+   * order byte-identical. Only the RENDER order flips here — assembly upstream
+   * stays chronological.
+   */
+  newestFirst?: boolean;
+  /** Flip {@link newestFirst}. When omitted, the order control is not shown. */
+  onToggleNewestFirst?: () => void;
+}
+
+const NEWEST_FIRST_KEY = "paperclip:task-chat:newest-first";
+
+/** Newest-first sub-toggle — mirrors lib/attention.ts's localStorage pattern. */
+export function loadTaskChatNewestFirst(): boolean {
+  try {
+    return localStorage.getItem(NEWEST_FIRST_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveTaskChatNewestFirst(newestFirst: boolean) {
+  try {
+    localStorage.setItem(NEWEST_FIRST_KEY, newestFirst ? "true" : "false");
+  } catch {
+    // Ignore localStorage failures.
+  }
 }
 
 function renderItem(
@@ -130,25 +160,57 @@ export function TaskChatThreadView({
   renderMessageActions,
   className,
   scroll = true,
+  newestFirst = false,
+  onToggleNewestFirst,
 }: TaskChatThreadViewProps) {
+  // Render inversion only — assembly upstream stays chronological.
+  const ordered = newestFirst ? [...items].reverse() : items;
+
+  const headerNode = header ? (
+    <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
+      {header}
+    </div>
+  ) : null;
+
+  const orderToggle = onToggleNewestFirst ? (
+    <div className="flex justify-end">
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        className="gap-1 text-muted-foreground"
+        aria-pressed={newestFirst}
+        onClick={onToggleNewestFirst}
+        data-testid="task-chat-order-toggle"
+      >
+        {newestFirst ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+        {newestFirst ? "Newest first" : "Oldest first"}
+      </Button>
+    </div>
+  ) : null;
+
   const body = (
     <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
-      {header ? (
-        <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
-          {header}
-        </div>
-      ) : null}
-      {items.map((item) => (
-        <div key={item.id}>
+      {orderToggle}
+      {/* The header (issue context + "load older") anchors the OLDEST end: top
+          in chronological order, bottom when newest-first (older = scroll down). */}
+      {newestFirst ? null : headerNode}
+      {ordered.map((item) => (
+        <div key={item.id} data-item-id={item.id}>
           {renderItem(item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions)}
         </div>
       ))}
+      {newestFirst ? headerNode : null}
     </div>
   );
 
   if (!scroll) return body;
 
-  return <TaskMessageScroller contentKey={taskChatContentKey(items)}>{body}</TaskMessageScroller>;
+  return (
+    <TaskMessageScroller contentKey={taskChatContentKey(items)} newestFirst={newestFirst}>
+      {body}
+    </TaskMessageScroller>
+  );
 }
 
 // Cheap content signature so streaming growth (text lengthening without the

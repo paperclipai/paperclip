@@ -5,8 +5,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWindowAutoFollow } from "./useWindowAutoFollow";
 
-function Host({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
-  useWindowAutoFollow(contentKey, enabled);
+function Host({
+  contentKey,
+  enabled,
+  newestFirst = false,
+}: {
+  contentKey: unknown;
+  enabled: boolean;
+  newestFirst?: boolean;
+}) {
+  useWindowAutoFollow(contentKey, enabled, newestFirst);
   return <div>thread</div>;
 }
 
@@ -32,6 +40,12 @@ describe("useWindowAutoFollow", () => {
   function render(contentKey: unknown, enabled = true) {
     flushSync(() => {
       root.render(<Host contentKey={contentKey} enabled={enabled} />);
+    });
+  }
+
+  function renderNewest(contentKey: unknown, enabled = true) {
+    flushSync(() => {
+      root.render(<Host contentKey={contentKey} enabled={enabled} newestFirst />);
     });
   }
 
@@ -99,6 +113,30 @@ describe("useWindowAutoFollow", () => {
     render(0, false);
     expect(scrollToCalls).toHaveLength(0);
     render(1, false);
+    expect(scrollToCalls).toHaveLength(0);
+  });
+
+  // Newest-first inverts the pinned edge to the TOP.
+  it("newest-first: scrolls the window to the top on mount", () => {
+    renderNewest(0);
+    expect(scrollToCalls).toContain(0);
+  });
+
+  it("newest-first: follows content growth while pinned to the top", async () => {
+    renderNewest(0);
+    await flushRaf();
+    await scrollWindowTo(20); // within 48px of the top → pinned
+    scrollToCalls = [];
+    renderNewest(1);
+    expect(scrollToCalls).toContain(0);
+  });
+
+  it("newest-first: holds position when the user has scrolled down", async () => {
+    renderNewest(0);
+    await flushRaf();
+    await scrollWindowTo(500); // far from the top → unpinned
+    scrollToCalls = [];
+    renderNewest(1);
     expect(scrollToCalls).toHaveLength(0);
   });
 });

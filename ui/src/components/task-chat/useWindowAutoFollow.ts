@@ -6,16 +6,19 @@ function scrollingElement(): Element | null {
   return document.scrollingElement ?? document.documentElement;
 }
 
-function windowPinned(): boolean {
+function windowPinned(newestFirst: boolean): boolean {
   const el = scrollingElement();
   if (!el) return true;
-  return el.scrollHeight - window.scrollY - window.innerHeight <= PIN_THRESHOLD_PX;
+  // Pinned edge flips with the order: top when newest-first, else bottom.
+  return newestFirst
+    ? window.scrollY <= PIN_THRESHOLD_PX
+    : el.scrollHeight - window.scrollY - window.innerHeight <= PIN_THRESHOLD_PX;
 }
 
-function scrollWindowToBottom(): void {
+function scrollWindowToPinnedEdge(newestFirst: boolean): void {
   const el = scrollingElement();
   if (!el) return;
-  window.scrollTo({ top: el.scrollHeight, left: 0, behavior: "auto" });
+  window.scrollTo({ top: newestFirst ? 0 : el.scrollHeight, left: 0, behavior: "auto" });
 }
 
 /**
@@ -31,33 +34,34 @@ function scrollWindowToBottom(): void {
  * layout effects in the same commit — deferring past them keeps the reset
  * from clobbering the follow.
  */
-export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void {
+export function useWindowAutoFollow(contentKey: unknown, enabled: boolean, newestFirst = false): void {
   const pinnedRef = useRef(true);
 
   useEffect(() => {
     if (!enabled) return;
     const onScroll = () => {
-      pinnedRef.current = windowPinned();
+      pinnedRef.current = windowPinned(newestFirst);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, [enabled]);
+  }, [enabled, newestFirst]);
 
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
     if (!enabled) return;
-    if (pinnedRef.current) scrollWindowToBottom();
-  }, [contentKey, enabled]);
+    if (pinnedRef.current) scrollWindowToPinnedEdge(newestFirst);
+  }, [contentKey, enabled, newestFirst]);
 
+  // Initial follow, and re-pin to the newest edge whenever the order flips.
   useEffect(() => {
     if (!enabled) return;
-    scrollWindowToBottom();
+    scrollWindowToPinnedEdge(newestFirst);
     const raf = requestAnimationFrame(() => {
-      scrollWindowToBottom();
+      scrollWindowToPinnedEdge(newestFirst);
       pinnedRef.current = true;
     });
     return () => cancelAnimationFrame(raf);
     // Initial follow only — content-driven follow is the layout effect above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+  }, [enabled, newestFirst]);
 }
