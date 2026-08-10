@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
@@ -79,8 +80,18 @@ function createApp() {
   return app;
 }
 
+// Route files may compose paths from shared path constants inside template
+// literals; substitute the constants' values before normalizing.
+const routePathConstantSubstitutions: Record<string, string> = {
+  "${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}": COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+};
+
 function normalizeExpressPath(routePath: string) {
-  return routePath
+  let substituted = routePath;
+  for (const [placeholder, value] of Object.entries(routePathConstantSubstitutions)) {
+    substituted = substituted.split(placeholder).join(value);
+  }
+  return substituted
     .replace(/\*([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/:([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/\/+/g, "/");
@@ -125,6 +136,9 @@ function loadActualRoutes() {
 
     if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")) {
       routes.add("POST /api/companies/import");
+    }
+    if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH")) {
+      routes.add(`POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`);
     }
   }
 
