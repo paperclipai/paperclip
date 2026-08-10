@@ -2834,6 +2834,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  // These deliberately use long-overdue schedules. On a loaded CI runner the
+  // minute-by-minute cron calculation can exceed Vitest's 5s default even
+  // though the resulting dispatch behavior is correct.
   it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
@@ -2863,7 +2866,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const scheduleAfter = await db.select().from(routineTriggers).where(eq(routineTriggers.id, scheduleTrigger.id)).then((rows) => rows[0]);
     expect(scheduleAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
     expect((await db.select().from(issues).where(eq(issues.companyId, companyId))).filter((issue) => issue.originKind === "routine_execution")).toHaveLength(1);
-  });
+  }, 20_000);
 
   it("dispatches only post-cutoff scheduled routines in an armed worktree", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
@@ -2894,7 +2897,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
     const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
-  });
+  }, 20_000);
 
   it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
     const { routine, svc } = await seedFixture();
@@ -3084,7 +3087,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routineRuns.routineId, routine.id));
     expect(runsAfterResume).toHaveLength(2);
     expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
-  });
+  }, 20_000);
 
   it("skips a gated scheduled tick when quiet without advancing the activity window", async () => {
     const { companyId, routine, svc } = await seedFixture();
