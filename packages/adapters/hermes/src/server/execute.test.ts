@@ -280,4 +280,38 @@ describe("hermes execute", () => {
     expect(result.usageBasis).toBe("session_cumulative");
     expect(result.resultJson?.usage).toEqual({ inputTokens: 200, outputTokens: 50, cachedInputTokens: 600 });
   });
+
+  it("treats the Hermes-owned max-turn marker as a typed failed stop", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-max-turns\nI made partial progress.",
+      stderr: "paperclip_stop_reason: max_turns_exhausted\n",
+    });
+
+    const result = await execute({
+      runId: "run-max-turns",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      errorCode: "max_turns_exhausted",
+      resultJson: { stopReason: "max_turns_exhausted", session_id: "sess-max-turns" },
+      sessionParams: { sessionId: "sess-max-turns" },
+    });
+    expect(result.errorMessage).toContain("maximum tool turns");
+  });
 });

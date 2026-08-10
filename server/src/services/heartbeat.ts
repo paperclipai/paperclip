@@ -510,22 +510,12 @@ export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 
 type ReadExecutor = Pick<Db, "select">;
-const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
-const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
-const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
-const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
   | "fresh_session"
   | "fresh_session_safer_invocation";
-
-interface MaxTurnContinuationPolicy {
-  enabled: boolean;
-  maxAttempts: number;
-  delayMs: number;
-}
 
 export class WorkspaceValidationFailure extends Error {
   code = WORKSPACE_VALIDATION_FAILURE_CODE;
@@ -9831,6 +9821,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { decision, highRunCount };
   }
 
+  async function enforceMaxTurnDispositionGuard(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+  }) {
+    const context = parseObject(input.run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!issueId) return { decision: "not_applicable" as const };
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return { decision: "not_applicable" as const };
+
+    // A durable issue state is the only valid terminal disposition here. The
+    // adapter never promotes model prose to lifecycle data, and a genuine
+    // prior `done`, `cancelled`, `in_review`, or `blocked` disposition needs
+    // no additional automated intervention.
+    if (["done", "cancelled", "in_review", "blocked"].includes(issue.status)) {
+      await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Max-turn stop retained an existing terminal issue disposition",
+        payload: { issueId: issue.id, issueStatus: issue.status },
+      });
+      return { decision: "already_disposed" as const };
+    }
+
+    const interactionsSvc = issueThreadInteractionService(db);
+    const interaction = await interactionsSvc.create(issue, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: `max_turn_missing_disposition:${issue.id}:${input.run.id}`,
+      sourceRunId: input.run.id,
+      title: "Turn limit reached without a terminal disposition",
+      summary: "Automatic continuation is blocked because the run exhausted its turn budget without closing, blocking, or routing the issue.",
+      payload: {
+        version: 1,
+        prompt: "Review the partial work, then choose one explicit disposition: split into bounded tasks, route deterministic work to a handler, assign a new owner with context, or keep the issue blocked.",
+        acceptLabel: "Resume with an approved route",
+        rejectLabel: "Keep blocked",
+        rejectRequiresReason: true,
+        allowDeclineReason: true,
+        supersedeOnUserComment: false,
+        detailsMarkdown:
+          `Run ${input.run.id} reached its configured tool-turn limit before recording a terminal Paperclip disposition. `
+          + "Paperclip has not queued a retry or a successful-run handoff. Review the existing session and partial evidence before explicitly resuming.",
+      },
+    }, { agentId: input.agent.id });
+
+    await issuesSvc.update(issue.id, {
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Review the max-turn partial work and approve a bounded split, deterministic route, or explicit new-owner handoff before resuming.",
+      },
+      actorAgentId: input.agent.id,
+    });
+    await issuesSvc.addComment(
+      issue.id,
+      "## Turn limit reached — automatic continuation stopped\n\n"
+        + `- Run: \`${input.run.id}\`\n`
+        + "- Cause: the agent exhausted its configured tool-turn budget without a terminal Paperclip disposition.\n"
+        + "- Automatic retry: **not queued**\n"
+        + "- Successful-run handoff: **not queued**\n"
+        + "- Required next step: review partial evidence/session context; then split, reroute, assign a new owner, or explicitly resume with an approved bounded plan.\n"
+        + `- Review card: \`${interaction.id}\``,
+      { runId: input.run.id },
+      { authorType: "system" },
+    );
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Max-turn run blocked pending explicit disposition; no continuation queued",
+      payload: { issueId: issue.id, interactionId: interaction.id },
+    });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.max_turn_missing_disposition_blocked",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        label: "Turn-limit run blocked without an automated continuation",
+        issue: issueUiLink(issue),
+        interactionId: interaction.id,
+      },
+    });
+    return { decision: "blocked" as const, interactionId: interaction.id };
+  }
+
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     // POPULATION FIX (2026-08-05, TSMC-19765). Shell-handler runs execute scripts — they cannot
@@ -12929,20 +13022,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return parseObject(run.contextSnapshot).timerClaimWasFirstHeartbeat === true
       ? true
       : undefined;
-  }
-
-  function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
-    const configured = parseObject(heartbeat.maxTurnContinuation);
-    const rawMaxAttempts = Math.floor(asNumber(configured.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS));
-    const rawDelayMs = Math.floor(asNumber(configured.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS));
-
-    return {
-      enabled: asBoolean(configured.enabled, true),
-      maxAttempts: Math.max(0, Math.min(MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP, rawMaxAttempts)),
-      delayMs: Math.max(0, Math.min(MAX_TURN_CONTINUATION_MAX_DELAY_MS, rawDelayMs)),
-    };
   }
 
   function issueRunPriorityRank(priority: string | null | undefined) {
@@ -18077,12 +18156,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
-        const highTokenGuard = await enforceHighInputTokenRunGuard({
-          run: livenessRun,
-          agent,
-          inputTokens: normalizedUsage?.inputTokens ?? 0,
-          cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
-        });
+        // `livenessRun` can be an earlier row snapshot after liveness
+        // classification; use the just-finalized error code as the primary
+        // signal so a typed adapter stop cannot be lost between writes.
+        const maxTurnExhausted = outcome === "failed" && (
+          runErrorCode === "max_turns_exhausted" || isMaxTurnExhaustionRun(livenessRun)
+        );
+        // A max-turn stop owns its route review. Do not pile a second generic
+        // high-token interaction onto the same event.
+        const highTokenGuard = maxTurnExhausted
+          ? { decision: "none" as const, highRunCount: 0 }
+          : await enforceHighInputTokenRunGuard({
+            run: livenessRun,
+            agent,
+            inputTokens: normalizedUsage?.inputTokens ?? 0,
+            cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+          });
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
@@ -18101,32 +18190,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (highTokenGuard.decision === "none" && outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
-          const policy = parseMaxTurnContinuationPolicy(agent);
-          if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: policy.maxAttempts,
-              delayMs: policy.delayMs,
-            });
-          } else {
-            await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
-              payload: {
-                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-                policy,
-              },
-            });
-          }
-        } else if (highTokenGuard.decision === "none" && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        if (highTokenGuard.decision === "none" && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
-        const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        // A failed max-turn run is already headed to a durable human review;
+        // a mechanical "missing issue comment" wake would only re-run the
+        // same incomplete work and undermine the stop/escalate contract.
+        const issueCommentPolicyResult = maxTurnExhausted
+          ? await (async () => {
+              await patchRunIssueCommentStatus(livenessRun.id, {
+                issueCommentStatus: "not_applicable",
+                issueCommentSatisfiedByCommentId: null,
+                issueCommentRetryQueuedAt: null,
+              });
+              await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: "Missing-comment follow-up suppressed for max-turn stop",
+              });
+              return { outcome: "not_applicable" as const, queuedRun: null };
+            })()
+          : await finalizeIssueCommentPolicy(livenessRun, agent);
+        // Release the execution lock before applying the max-turn disposition
+        // so the guarded state cannot be overwritten by the normal failure
+        // release path. Suppression also prevents that release path from
+        // creating its own immediate-recovery wake in the gap.
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: maxTurnExhausted,
+        });
+        if (maxTurnExhausted) {
+          await enforceMaxTurnDispositionGuard({ run: livenessRun, agent });
+        }
         if (highTokenGuard.decision === "none") {
           await handleRunLivenessContinuation(livenessRun);
           await handleSuccessfulRunHandoff(

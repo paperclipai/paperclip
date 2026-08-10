@@ -293,12 +293,21 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
+/**
+ * Hermes emits this line from its CLI (not from model output) whenever its
+ * configured tool-turn budget is exhausted.  Keep the transport marker
+ * deliberately narrow: Paperclip must never infer a scheduler stop state
+ * from arbitrary assistant/tool prose.
+ */
+const PAPERCLIP_STOP_REASON_REGEX = /^paperclip_stop_reason:\s*(max_turns_exhausted)\s*$/mi;
+
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+  stopReason?: "max_turns_exhausted";
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +356,14 @@ function cleanResponse(raw: string): string {
 function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
+
+  // This marker is emitted by Hermes' own single-query CLI after it receives
+  // the structured turn_exit_reason from the runtime. Do not inspect the
+  // response text for phrases such as "maximum iterations": that text is
+  // model-controlled and cannot safely drive task lifecycle state.
+  if (PAPERCLIP_STOP_REASON_REGEX.test(stderr)) {
+    result.stopReason = "max_turns_exhausted";
+  }
 
   // In quiet mode, Hermes outputs:
   //   <response text>
@@ -684,6 +701,11 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   }
 
+  if (parsed.stopReason === "max_turns_exhausted") {
+    executionResult.errorCode = "max_turns_exhausted";
+    executionResult.errorMessage = "Hermes reached its configured maximum tool turns before recording a terminal Paperclip disposition.";
+  }
+
   if (sessionUsage || parsed.usage) {
     executionResult.usage = sessionUsage ?? parsed.usage;
     // The state database holds cumulative usage for a persisted Hermes session;
@@ -706,6 +728,7 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: sessionUsage ?? parsed.usage ?? null,
     cost_usd: parsed.costUsd ?? null,
+    ...(parsed.stopReason ? { stopReason: parsed.stopReason } : {}),
   };
 
   // Store session ID for next run

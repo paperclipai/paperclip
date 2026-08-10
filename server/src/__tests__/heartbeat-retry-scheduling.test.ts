@@ -14,6 +14,8 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issueThreadInteractions,
   issueRelations,
   issues,
   projects,
@@ -36,6 +38,7 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const MAX_TURN_TEST_ADAPTER = "max_turn_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -89,6 +92,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: MAX_TURN_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "The configured tool-turn budget was exhausted.",
+        errorCode: "max_turns_exhausted",
+        resultJson: { stopReason: "max_turns_exhausted" },
+      }),
+      testEnvironment: async () => ({
+        adapterType: MAX_TURN_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -104,6 +124,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(MAX_TURN_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -131,6 +152,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
@@ -319,6 +342,73 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("blocks a max-turn run without a terminal disposition instead of queuing a continuation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Max Turn Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: MAX_TURN_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bounded task",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.invoke(
+      agentId,
+      "on_demand",
+      { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      "manual",
+    );
+    expect(run).not.toBeNull();
+    const finished = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finished).toMatchObject({ status: "failed", errorCode: "max_turns_exhausted" });
+    expect(finished?.contextSnapshot).toMatchObject({ issueId });
+
+    await expect.poll(
+      () => db
+        .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+      { timeout: 5_000, interval: 50 },
+    ).toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board" } });
+
+    const continuations = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(continuations).toEqual([]);
   });
 
   async function seedMaxTurnFixture(input?: {
