@@ -6020,6 +6020,30 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/import/transfers/{transferId}/preview",
+  tags: ["companies"],
+  summary: "Preview a completed company import transfer",
+  description:
+    "Runs the import preview against the assembled spool without consuming the transfer: the " +
+    "ledger run stays open and the parts stay spooled, so the subsequent apply reuses them " +
+    "instead of re-uploading. The JSON body carries the same fields as the multipart preview " +
+    "route's `meta` field (include, target, collisionStrategy, ...).",
+  request: {
+    params: z.object({ transferId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema.omit({ source: true })),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: { description: "Parts are still missing or the transfer was already applied" },
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/import/transfers/{transferId}/apply",
   tags: ["companies"],
   summary: "Apply a completed company import transfer",

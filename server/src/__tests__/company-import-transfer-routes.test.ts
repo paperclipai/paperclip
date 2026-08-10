@@ -331,6 +331,65 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     expect(finished.body.missingParts).toEqual([]);
   });
 
+  it("previews the assembled spool without consuming it, then applies the same transfer", async () => {
+    mockCompanyPortabilityService.previewImport.mockResolvedValue({
+      plan: { companyAction: "update" },
+      warnings: [],
+      errors: [],
+    });
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 3));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    for (const [index, slice] of slices.entries()) {
+      expect((await putPart(transferId, index, slice)).status).toBe(200);
+    }
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(200);
+    expect(previewed.body.plan).toEqual({ companyAction: "update" });
+
+    // The assembled zip fed the existing preview pipeline unchanged.
+    expect(mockCompanyPortabilityService.previewImport).toHaveBeenCalledTimes(1);
+    const previewBody = mockCompanyPortabilityService.previewImport.mock.calls[0]![0];
+    expect(previewBody.source.type).toBe("inline");
+    expect(previewBody.source.files["COMPANY.md"]).toContain("Chunked Import");
+    expect(previewBody.target).toEqual(importMeta.target);
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+
+    // Preview consumed nothing: the run stays open, the spool stays on disk,
+    // and no part needs re-uploading before the apply.
+    const run = (await companyTransferRunService.getRun(db, transferId))!;
+    expect(run.status).not.toBe("completed");
+    await expect(fs.stat(path.join(spoolRoot, transferId))).resolves.toBeDefined();
+    const status = await request(app).get(`/api/companies/import/transfers/${transferId}`);
+    expect(status.body.missingParts).toEqual([]);
+
+    const applied = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/apply`)
+      .send(importMeta);
+    expect(applied.status).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledTimes(1);
+    expect((await companyTransferRunService.getRun(db, transferId))!.status).toBe("completed");
+  });
+
+  it("refuses to preview while parts are missing", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 3));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 1, slices[1]!)).status).toBe(200);
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(409);
+    expect(previewed.body.missingParts).toEqual([0, 2]);
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
   it("applies through the async import job machinery when requested", async () => {
     const zip = buildFixtureZip();
     const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
