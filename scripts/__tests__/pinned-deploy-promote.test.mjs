@@ -244,6 +244,54 @@ test("prepare-candidate provisions .paperclip/.env and records worktree_env + ca
   }
 });
 
+test("promotion gives the serving tree its own Git metadata, not the candidate's", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-git-"));
+  try {
+    const source = path.join(tmp, "source");
+    const deploy = path.join(tmp, "deploy");
+    const candidate = path.join(tmp, "candidate");
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    const current = path.join(state, "current.json");
+    mkdirSync(receipts, { recursive: true });
+    mkdirSync(source, { recursive: true });
+    runOk("git", ["init", "-b", "live"], {}, { cwd: source });
+    runOk("git", ["config", "user.email", "test@example.com"], {}, { cwd: source });
+    runOk("git", ["config", "user.name", "test"], {}, { cwd: source });
+    writeFileSync(path.join(source, "README"), "isolated deploy metadata\n");
+    writeFileSync(path.join(source, ".gitignore"), ".paperclip/\n");
+    runOk("git", ["add", "."], {}, { cwd: source });
+    runOk("git", ["commit", "-m", "init"], {}, { cwd: source });
+    const sha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+
+    runOk("bash", [PROMOTE, "prepare-candidate", sha], {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_DEPLOY_ROOT: deploy,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH: "live",
+      PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY: "1",
+    });
+    writeFileSync(path.join(receipts, "working-receipt.json"), JSON.stringify(greenReceipt(sha), null, 2));
+    runOk("bash", [PROMOTE, "promote-pointer", "--allow-live-pointer"], {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_DEPLOY_ROOT: deploy,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_DEPLOY_RECEIPT: current,
+      PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE: "1",
+    });
+    const deployGitDir = runOk("git", ["rev-parse", "--absolute-git-dir"], {}, { cwd: deploy }).stdout.trim();
+    const candidateGitDir = runOk("git", ["rev-parse", "--absolute-git-dir"], {}, { cwd: candidate }).stdout.trim();
+    assert.notEqual(deployGitDir, candidateGitDir);
+    assert.equal(runOk("git", ["status", "--porcelain"], {}, { cwd: deploy }).stdout, "");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("promote-and-restart refuses without allow flags (fail closed, no pointer move)", () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-restart-refuse-"));
   try {

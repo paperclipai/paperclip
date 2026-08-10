@@ -367,14 +367,32 @@ cmd_promote_pointer() {
 
   log "staging candidate -> $staging"
   rm -rf "$staging"
-  # Prefer hardlink-friendly copy of worktree content without .git cross-links mess:
-  # move worktree directory into place via rename of a sync'd tree.
-  mkdir -p "$staging"
+
+  # A copied linked-worktree `.git` file keeps pointing at the candidate's
+  # administrative directory. The next prepare-candidate then removes or
+  # recreates that directory and silently rewires the serving tree. Create a
+  # distinct linked worktree for the staged pointer, then overlay runtime files
+  # while preserving that worktree's own Git metadata.
+  local candidate_sha=""
+  candidate_sha="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.candidateSha||""))' "$(working_receipt_path)")"
+  local staged_as_worktree=0
+  if git -C "$SOURCE_ROOT" rev-parse --verify "${candidate_sha}^{commit}" >/dev/null 2>&1; then
+    git -C "$SOURCE_ROOT" worktree add --detach "$staging" "$candidate_sha" \
+      || fail "promote-pointer: unable to create isolated staging worktree"
+    staged_as_worktree=1
+  else
+    # Retain the lightweight fixture path for promotion-script tests. Live
+    # receipts always carry a committed candidate SHA, so production never
+    # takes this branch.
+    mkdir -p "$staging"
+  fi
+
+  # Copy candidate runtime content but never its linked-worktree control file.
   # Use rsync if present else cp
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete "$CANDIDATE_ROOT"/ "$staging"/
+    rsync -a --delete --exclude='.git' "$CANDIDATE_ROOT"/ "$staging"/
   else
-    cp -a "$CANDIDATE_ROOT"/. "$staging"/
+    (cd "$CANDIDATE_ROOT" && tar --exclude=.git -cf - .) | (cd "$staging" && tar -xf -)
   fi
 
   # Re-assert worktree env on the staged tree before pointer swap (TSMC-20021).
@@ -386,11 +404,22 @@ cmd_promote_pointer() {
     log "moving existing deploy to $backup"
     mv "$DEPLOY_ROOT" "$backup"
   fi
-  mv "$staging" "$DEPLOY_ROOT"
+  if [ "$staged_as_worktree" = "1" ]; then
+    # `worktree move` updates the unique Git administrative path as it moves
+    # the staged tree into the serving location.
+    git -C "$SOURCE_ROOT" worktree move "$staging" "$DEPLOY_ROOT" \
+      || fail "promote-pointer: unable to install isolated serving worktree"
+  else
+    mv "$staging" "$DEPLOY_ROOT"
+  fi
 
   # Final belt-and-braces on the live pointer path.
   ensure_worktree_env "$DEPLOY_ROOT"
   [ -f "$DEPLOY_ROOT/.paperclip/.env" ] || fail "DEPLOY_ROOT missing .paperclip/.env after promote"
+  if [ "$staged_as_worktree" = "1" ]; then
+    git -C "$DEPLOY_ROOT" diff --quiet \
+      || fail "promote-pointer: serving worktree is dirty after staged copy"
+  fi
 
   # Finalize transition metadata on the working receipt FIRST, then write the
   # durable immutable copy so the receipt that lands under receipts/ includes
