@@ -53,6 +53,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-status-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-status-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
+  { name: "--motion-live-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
+  { name: "--motion-live-beam", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
