@@ -624,12 +624,12 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("rejects an unscoped legacy manual LLM wake", async () => {
+  it("rejects an unscoped legacy manual LLM wake even when it has a reason", async () => {
     const res = await requestApp(
       await createApp(),
       (baseUrl) => request(baseUrl)
         .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
-        .send({}),
+        .send({ reason: "bounded scope check" }),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
@@ -637,7 +637,20 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("accepts free-text triggerDetail on the wakeup route", async () => {
+  it("rejects an unscoped wakeup even when it has a reason", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({ reason: "bounded scope check" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ code: "manual_wake_scope_required" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("accepts free-text triggerDetail on a task-bound wakeup route", async () => {
     const res = await requestApp(
       await createApp(),
       (baseUrl) => request(baseUrl)
@@ -645,6 +658,7 @@ describe("agent live run routes", () => {
         .send({
           triggerDetail: "board-authorized TSBC Grok completion",
           reason: "issue_assigned",
+          payload: { issueId: "issue-1" },
         }),
     );
 

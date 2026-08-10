@@ -123,15 +123,14 @@ const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
 /**
- * A board-triggered LLM wake without a task or stated purpose becomes an
- * unscoped token-bearing run. Shell handlers are exempt because they have no
+ * A board-triggered LLM wake must carry an explicit task binding. A free-text
+ * reason describes the requested work but cannot safely select the workspace
+ * or attribute model usage. Shell handlers are exempt because they have no
  * model context to burn and are frequently used for tiny operational probes.
  */
 function hasTraceableManualWakeScope(adapterType: string, body: unknown) {
   if (adapterType === "paperclip_shell_handler") return true;
   const value = readObject(body) ?? {};
-  const reason = typeof value.reason === "string" ? value.reason.trim() : "";
-  if (reason) return true;
   const payload = readObject(value.payload) ?? {};
   return [payload.issueId, payload.taskId, payload.taskKey]
     .some((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
@@ -4034,7 +4033,7 @@ export function agentRoutes(
       && !hasTraceableManualWakeScope(agent.adapterType, req.body)
     ) {
       res.status(422).json({
-        error: "Manual LLM wakes require payload.issueId/taskId/taskKey or a non-empty reason",
+        error: "Manual LLM wakes require payload.issueId, payload.taskId, or payload.taskKey",
         code: "manual_wake_scope_required",
       });
       return;
@@ -4117,7 +4116,7 @@ export function agentRoutes(
     }>;
     if (!hasTraceableManualWakeScope(agent.adapterType, body)) {
       res.status(422).json({
-        error: "Manual LLM wakes require payload.issueId/taskId/taskKey or a non-empty reason",
+        error: "Manual LLM wakes require payload.issueId, payload.taskId, or payload.taskKey",
         code: "manual_wake_scope_required",
       });
       return;
