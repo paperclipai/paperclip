@@ -1395,7 +1395,9 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("Keep it moving");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Keep it moving");
+    }, { timeout: 2_000 });
 
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Task"));
