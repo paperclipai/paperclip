@@ -2844,7 +2844,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
     const { trigger: scheduleTrigger } = await svc.createTrigger(
       routine.id,
-      { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" },
+      { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" },
       {},
     );
     const { trigger: webhookTrigger } = await svc.createTrigger(
@@ -2890,8 +2890,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }, {});
     await db.update(routines).set({ createdAt: new Date("2024-12-31T23:59:59.000Z") }).where(eq(routines.id, oldRoutine.id));
     await db.update(routines).set({ createdAt: new Date("2025-01-01T00:00:01.000Z") }).where(eq(routines.id, newRoutine.id));
-    const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
-    const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" }, {});
+    const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" }, {});
     const pastDue = new Date("2025-01-01T00:00:00.000Z");
     const tickAt = new Date("2025-01-01T23:59:00.000Z");
     await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, oldTrigger.id));
@@ -3017,7 +3017,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {
         kind: "schedule",
         label: "daily",
-        cronExpression: "0 0 * * *",
+        cronExpression: "* * * * *",
         timezone: "UTC",
       },
       {},
