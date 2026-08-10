@@ -27,6 +27,15 @@ test("release workflow delegates stable and canary verification to the reusable 
   assert.doesNotMatch(releaseWorkflow, /verify_(?:canary|stable):[\s\S]*?pnpm test:run(?:\n|$)/);
 });
 
+test("onboard smoke container binds beyond loopback so the mapped port is reachable", () => {
+  const dockerfile = readFileSync(path.join(repoRoot, "docker/Dockerfile.onboard-smoke"), "utf8");
+
+  // `onboard --yes` without an explicit --bind prefers trusted-local
+  // defaults and writes a loopback bind, which Docker port mapping cannot
+  // reach. The smoke container must pin a non-loopback preset.
+  assert.match(dockerfile, /onboard --yes --bind lan/);
+});
+
 test("release smoke workflow extends the container readiness budget for CI", () => {
   const smokeWorkflow = readWorkflow("release-smoke.yml");
   const harness = readFileSync(path.join(repoRoot, "scripts/docker-onboard-smoke.sh"), "utf8");
