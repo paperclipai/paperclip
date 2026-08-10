@@ -61,16 +61,15 @@ enforceable board-exception record (task / cap / reason / expiry).
     exactly what a valid exception must cover.
 - Call site passes `outputTokens` so the warning total is complete.
 
-### 4. Migration `9010_board_token_exceptions.sql`
+### 4. Migration `9011_board_token_exceptions.sql`
 - Creates the table + FKs + index. Idempotent (`IF NOT EXISTS`, `DO $$ ...
   EXCEPTION WHEN duplicate_object`). New empty table → `CREATE INDEX` without
   `CONCURRENTLY` is safe.
-- Uses the active manual `9xxx` series (last real migrations are `9008`/`9009`),
-  not `0201`: the safety/numbering check sorts files and requires the journal
-  array to match sorted order, so a `0201` appended to the journal tail would sort
-  before `9000` and fail. `9010` appends cleanly. Journal entry idx 208 added to
+- Uses the active manual `9xxx` series. It follows the subsequently landed
+  `9010_routine_cadence_budget_guards` migration, so this branch's migration is
+  `9011` after rebasing onto `live`; journal entry idx 209 is registered in
   `packages/db/src/migrations/meta/_journal.json`. Manual `9xxx` migrations carry
-  no drizzle snapshot (matches `9000`–`9009`).
+  no Drizzle snapshot.
 
 ## Verification (worktree)
 - `pnpm --filter @paperclipai/db run check:migrations` → pass (numbering + safety).
