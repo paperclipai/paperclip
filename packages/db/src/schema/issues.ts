@@ -168,5 +168,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // The onboarding first-task origin grants privileged behavior (agent-attributed
+    // greeting, description suppression), so at most one issue per company may ever
+    // carry it — concurrent creates race on the pre-insert count check and this
+    // index is what atomically rejects the loser.
+    onboardingFirstTaskIdx: uniqueIndex("issues_onboarding_first_task_uq")
+      .on(table.companyId)
+      .where(sql`${table.originKind} = 'onboarding_first_task'`),
   }),
 );
