@@ -2834,9 +2834,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
-  // These deliberately use long-overdue schedules. On a loaded CI runner the
-  // minute-by-minute cron calculation can exceed Vitest's 5s default even
-  // though the resulting dispatch behavior is correct.
+  // Keep the tick near the next cron boundary. The tests exercise suppression
+  // of an overdue trigger, not a multi-year cron replay, and a fixed clock
+  // keeps them independent of the wall clock and CI CPU allocation.
   it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
@@ -2850,10 +2850,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       { kind: "webhook", signingMode: "none" },
       {},
     );
-    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    const pastDue = new Date("2025-01-01T00:00:00.000Z");
+    const tickAt = new Date("2025-01-01T23:59:00.000Z");
     await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, scheduleTrigger.id));
 
-    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 0 });
+    expect(await svc.tickScheduledTriggers(tickAt)).toEqual({ triggered: 0 });
     const webhookRun = await svc.firePublicTrigger(webhookTrigger.publicId!, { payload: { event: "created" } });
     expect(webhookRun).toMatchObject({ source: "webhook", status: "skipped", failureReason: "worktree_execution_cutoff" });
 
@@ -2866,7 +2867,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const scheduleAfter = await db.select().from(routineTriggers).where(eq(routineTriggers.id, scheduleTrigger.id)).then((rows) => rows[0]);
     expect(scheduleAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
     expect((await db.select().from(issues).where(eq(issues.companyId, companyId))).filter((issue) => issue.originKind === "routine_execution")).toHaveLength(1);
-  }, 20_000);
+  });
 
   it("dispatches only post-cutoff scheduled routines in an armed worktree", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
@@ -2889,15 +2890,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.update(routines).set({ createdAt: new Date("2025-01-01T00:00:01.000Z") }).where(eq(routines.id, newRoutine.id));
     const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
-    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, oldTrigger.id));
-    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, newTrigger.id));
+    const pastDue = new Date("2025-01-01T00:00:00.000Z");
+    const tickAt = new Date("2025-01-01T23:59:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, oldTrigger.id));
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, newTrigger.id));
 
-    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 1 });
+    expect(await svc.tickScheduledTriggers(tickAt)).toEqual({ triggered: 1 });
     const oldRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, oldRoutine.id));
     expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
     const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
-  }, 20_000);
+  });
 
   it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
     const { routine, svc } = await seedFixture();
@@ -3018,7 +3021,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    const pastDue = new Date("2025-01-01T00:00:00.000Z");
+    const tickAt = new Date("2025-01-01T23:59:00.000Z");
 
     // Pause the project and make the schedule trigger due.
     await db
@@ -3030,7 +3034,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .set({ nextRunAt: pastDue })
       .where(eq(routineTriggers.id, trigger.id));
 
-    const pausedResult = await svc.tickScheduledTriggers(new Date());
+    const pausedResult = await svc.tickScheduledTriggers(tickAt);
     expect(pausedResult.triggered).toBe(0);
 
     // No execution issue should be created while paused.
@@ -3072,7 +3076,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .set({ nextRunAt: pastDue })
       .where(eq(routineTriggers.id, trigger.id));
 
-    const resumedResult = await svc.tickScheduledTriggers(new Date());
+    const resumedResult = await svc.tickScheduledTriggers(tickAt);
     expect(resumedResult.triggered).toBe(1);
 
     const issuesAfterResume = await db
@@ -3087,7 +3091,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routineRuns.routineId, routine.id));
     expect(runsAfterResume).toHaveLength(2);
     expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
-  }, 20_000);
+  });
 
   it("skips a gated scheduled tick when quiet without advancing the activity window", async () => {
     const { companyId, routine, svc } = await seedFixture();
