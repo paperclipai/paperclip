@@ -81,3 +81,43 @@ def test_main_schreibt_alle_sechs_dateien(tmp_path):
     assert signatur_build.main(str(tmp_path)) == 0
     for k in KEYS:
         assert (tmp_path / ("bereich-%s.html" % k)).exists(), k
+
+
+def test_main_schreibt_atomar_ohne_tmp_rueckstaende(tmp_path):
+    """Finding 3: main() darf keine .tmp-Dateien liegen lassen und ein
+    bestehendes Ziel nie durch eine Teilschreibung ersetzen."""
+    signatur_build.main(str(tmp_path))
+    zurueckgebliebene_tmp = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+    assert zurueckgebliebene_tmp == []
+
+
+def test_main_laesst_bestehende_datei_bei_schreibfehler_intakt(tmp_path, monkeypatch):
+    """Bricht das Schreiben mitten in einer Datei ab (z.B. Prozess-Kill),
+    darf die alte, vollstaendige Fassung am Zielpfad nicht durch eine
+    Teilschreibung ersetzt werden — os.replace() passiert erst nach
+    vollstaendigem Schreiben."""
+    ziel = tmp_path / "bereich-ai.html"
+    ziel.write_text("ALTE VOLLSTAENDIGE FASSUNG", encoding="utf-8")
+
+    orig_fdopen = os.fdopen
+
+    def kaputtes_fdopen(fd, *a, **kw):
+        fh = orig_fdopen(fd, *a, **kw)
+        orig_write = fh.write
+
+        def write_und_stuerze_ab(data):
+            orig_write(data)
+            raise OSError("simulierter Absturz waehrend des Schreibens")
+
+        fh.write = write_und_stuerze_ab
+        return fh
+
+    monkeypatch.setattr(signatur_build.os, "fdopen", kaputtes_fdopen)
+
+    with pytest.raises(OSError):
+        signatur_build.main(str(tmp_path))
+
+    # Zieldatei unveraendert — kein Teilschreiben durchgesickert.
+    assert ziel.read_text(encoding="utf-8") == "ALTE VOLLSTAENDIGE FASSUNG"
+    # Keine liegen gebliebene temporaere Datei.
+    assert [p for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []

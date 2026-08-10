@@ -15,6 +15,7 @@ import html as htmllib
 import json
 import os
 import sys
+import tempfile
 
 from PIL import Image
 
@@ -71,11 +72,31 @@ def baue(key: str) -> str:
 
 
 def main(zielverzeichnis: str = None) -> int:
+    """Schreibt die sechs bereich-*.html atomar.
+
+    deploy.sh laesst dies gegen das Live-Verzeichnis laufen, aus dem der
+    Relay zur Laufzeit liest. Ein einfaches open(..., "w") wuerde bei einem
+    Abbruch (z.B. Stromausfall, gekillter Prozess) eine abgeschnittene Datei
+    zurueckstehen lassen, die der Relay dann in eine Kundenmail einbetten
+    wuerde. Darum: in eine temporaere Datei im selben Verzeichnis schreiben
+    und per os.replace() atomar an den Zielnamen haengen — ein Leser sieht
+    entweder die alte oder die neue vollstaendige Fassung, nie eine
+    Teilschreibung.
+    """
     ziel_dir = zielverzeichnis or HIER
     for key in KEYS:
         ziel = os.path.join(ziel_dir, "bereich-%s.html" % key)
-        with open(ziel, "w", encoding="utf-8") as fh:
-            fh.write(baue(key))
+        inhalt = baue(key)
+        fd, tmp_pfad = tempfile.mkstemp(
+            prefix=".bereich-%s." % key, suffix=".tmp", dir=ziel_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(inhalt)
+            os.replace(tmp_pfad, ziel)
+        except BaseException:
+            if os.path.exists(tmp_pfad):
+                os.remove(tmp_pfad)
+            raise
         print("%-8s %6d Bytes" % (key, os.path.getsize(ziel)))
     return 0
 
