@@ -1089,7 +1089,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     includeExecutionContract: true,
   });
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  // The human-readable wake prompt already carries the brief and durable
+  // continuation. Keep the JSON companion compact so the gateway does not
+  // pay to send the same two large fields twice on every run.
+  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+    omitIssueDescription: true,
+    omitContinuationSummary: true,
+  });
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
