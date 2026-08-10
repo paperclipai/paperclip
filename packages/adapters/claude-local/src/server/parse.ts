@@ -18,7 +18,7 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
 function extractPaperclipDisposition(text: string): {
   disposition: {

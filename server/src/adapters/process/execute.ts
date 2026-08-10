@@ -15,7 +15,7 @@ import {
   runChildProcess,
 } from "../utils.js";
 
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
 type ParsedDisposition = {
   status: string;

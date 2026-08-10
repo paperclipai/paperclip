@@ -97,7 +97,7 @@ import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js"
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 const ACPX_FINALIZATION_REMINDER =
   "Before ending this ACP run, record the real issue state through Paperclip. " +
   "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +

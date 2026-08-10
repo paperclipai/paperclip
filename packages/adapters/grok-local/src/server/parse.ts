@@ -16,7 +16,7 @@ export interface ParsedGrokJsonl {
   } | null;
 }
 
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;

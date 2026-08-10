@@ -10,7 +10,7 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
 type ParsedDisposition = {
   status: string;

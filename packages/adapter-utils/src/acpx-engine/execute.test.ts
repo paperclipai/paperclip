@@ -622,7 +622,7 @@ describe("shared ACPX engine runtime behavior", () => {
           events: (async function* () {
             yield {
               type: "text_delta",
-              text: "Rendered both PDFs and verified the hashes.\nPAPERCLIP_DISPOSITION: {\"status\":\"in_review\",\"hasBlocker\":false,\"reviewer\":\"RecruitmentManager-Codex\"}",
+              text: "Rendered both PDFs and verified the hashes.\n`PAPERCLIP_DISPOSITION {\"status\":\"in_review\",\"hasBlocker\":false,\"reviewer\":\"RecruitmentManager-Codex\"}`",
               stream: "output",
               tag: "agent_message_chunk",
             };
