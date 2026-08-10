@@ -2,7 +2,11 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { subscribePushSubscriptionSchema, unsubscribePushSubscriptionSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { logActivity, pushSubscriptionService } from "../services/index.js";
+import {
+  logActivity,
+  PushSubscriptionOwnershipConflictError,
+  pushSubscriptionService,
+} from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function requireBoardUserId(req: Request, res: Response): string | null {
@@ -27,11 +31,19 @@ export function pushSubscriptionRoutes(db: Db) {
       const userId = requireBoardUserId(req, res);
       if (!userId) return;
 
-      const subscription = await svc.subscribe(companyId, userId, {
-        endpoint: req.body.endpoint,
-        p256dh: req.body.keys.p256dh,
-        auth: req.body.keys.auth,
-      });
+      let subscription;
+      try {
+        subscription = await svc.subscribe(companyId, userId, {
+          endpoint: req.body.endpoint,
+          p256dh: req.body.keys.p256dh,
+          auth: req.body.keys.auth,
+        });
+      } catch (error) {
+        if (error instanceof PushSubscriptionOwnershipConflictError) {
+          return res.status(409).json({ error: error.message });
+        }
+        throw error;
+      }
 
       const actor = getActorInfo(req);
       await logActivity(db, {

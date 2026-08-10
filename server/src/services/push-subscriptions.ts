@@ -13,6 +13,13 @@ export interface PushSubscriptionRecord {
   revokedAt: Date | null;
 }
 
+export class PushSubscriptionOwnershipConflictError extends Error {
+  constructor() {
+    super("Push endpoint is already registered to another user");
+    this.name = "PushSubscriptionOwnershipConflictError";
+  }
+}
+
 export function pushSubscriptionService(db: Db) {
   return {
     async subscribe(
@@ -20,7 +27,7 @@ export function pushSubscriptionService(db: Db) {
       userId: string,
       input: { endpoint: string; p256dh: string; auth: string },
     ): Promise<PushSubscriptionRecord> {
-      const [row] = await db
+      const [inserted] = await db
         .insert(companyUserPushSubscriptions)
         .values({
           companyId,
@@ -29,18 +36,24 @@ export function pushSubscriptionService(db: Db) {
           p256dh: input.p256dh,
           auth: input.auth,
         })
-        .onConflictDoUpdate({
-          target: [companyUserPushSubscriptions.endpoint],
-          set: {
-            companyId,
-            userId,
-            p256dh: input.p256dh,
-            auth: input.auth,
-            revokedAt: null,
-          },
-        })
+        .onConflictDoNothing()
         .returning();
-      return row as PushSubscriptionRecord;
+      if (inserted) return inserted as PushSubscriptionRecord;
+
+      const [existing] = await db
+        .select()
+        .from(companyUserPushSubscriptions)
+        .where(eq(companyUserPushSubscriptions.endpoint, input.endpoint));
+      if (!existing || existing.companyId !== companyId || existing.userId !== userId) {
+        throw new PushSubscriptionOwnershipConflictError();
+      }
+
+      const [updated] = await db
+        .update(companyUserPushSubscriptions)
+        .set({ p256dh: input.p256dh, auth: input.auth, revokedAt: null })
+        .where(eq(companyUserPushSubscriptions.id, existing.id))
+        .returning();
+      return updated as PushSubscriptionRecord;
     },
 
     async unsubscribe(companyId: string, userId: string, endpoint: string): Promise<{ revoked: boolean }> {

@@ -85,6 +85,19 @@ describeEmbeddedPostgres("pushSubscriptionService", () => {
     expect(active).toHaveLength(1);
   });
 
+  it("rejects an endpoint already owned by another user without changing its subscription", async () => {
+    const companyId = await seedCompany();
+    const svc = pushSubscriptionService(db);
+    const endpoint = "https://push.example/device-owned";
+    const owner = await svc.subscribe(companyId, "user-1", { endpoint, p256dh: "owner", auth: "owner" });
+
+    await expect(svc.subscribe(companyId, "user-2", { endpoint, p256dh: "attacker", auth: "attacker" }))
+      .rejects.toThrow("already registered to another user");
+
+    const [active] = await svc.listActiveForUser(companyId, "user-1");
+    expect(active).toMatchObject({ id: owner.id, userId: "user-1", p256dh: "owner", auth: "owner" });
+  });
+
   it("unsubscribe sets revokedAt and is scoped to the owning company+user", async () => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();
