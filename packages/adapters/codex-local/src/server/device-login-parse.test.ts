@@ -143,6 +143,35 @@ describe("parseDeviceLoginPrompt", () => {
     expect(result?.code).toBe("ABCD-EFGHJ");
   });
 
+  it("parse_ignores_a_code_that_shares_the_preamble_line", () => {
+    // A code-shaped token shares the preamble line with the "one-time code"
+    // phrase. The parser advances past the whole preamble line, so it ignores the
+    // token on that line and returns the code from the dedicated code line below.
+    const text = [
+      EXACT_URL,
+      "2. Enter this one-time code (ref WXYZ-98765, expires in 15 minutes)",
+      "ABCD-EFGHJ",
+    ].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
+  it("parse_returns_null_when_a_noise_line_follows_the_preamble", () => {
+    // A line that mixes a code-shaped token with other text sits right after the
+    // preamble line. The parser reads the code only from a dedicated code line, so
+    // it never surfaces the embedded token. It rejects the output instead. This
+    // proves the parser binds the code to the prompt-code line and not to any
+    // nearby code-shaped token.
+    const text = [
+      EXACT_URL,
+      "2. Enter this one-time code (expires in 15 minutes)",
+      "your session token is WXYZ-98765 here",
+      "ABCD-EFGHJ",
+    ].join("\n");
+    expect(parseDeviceLoginPrompt(text)).toBeNull();
+  });
+
   it("parse_returns_null_when_the_code_preamble_is_absent", () => {
     // A valid code follows the URL, but the "one-time code" preamble is absent.
     // The parser requires the preamble, so it rejects the output. This binds the
