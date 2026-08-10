@@ -2,9 +2,15 @@
 # Rauchtest gegen die ECHTEN lokalen Dienste. Bewusst nicht Teil der
 # pytest-Suite: die muss ohne Netzzugang durchlaufen.
 set -u
+zmodload zsh/datetime    # $EPOCHREALTIME: Laufzeit unter einer Sekunde messbar
 
 ZIEL="$HOME/.paperclip/scripts/websuche"
 FRAGE="${1:-Foerdermittel Digitalisierung NRW 2026}"
+
+# Erfolgskriterium 2 der Spec: drei Quellen auf drei Domains, jede mit Text,
+# innerhalb der Standard-Deadline.
+MINDEST_QUELLEN=3
+MAX_SEKUNDEN=25.0
 
 echo "== 1. SearXNG erreichbar?"
 curl -sf "http://127.0.0.1:8888/search?q=test&format=json" >/dev/null \
@@ -15,27 +21,57 @@ curl -sf "http://127.0.0.1:7789/" >/dev/null \
   && echo "   ok" || { echo "   FEHLGESCHLAGEN"; exit 1; }
 
 echo "== 3. CLI, drei Quellen, Laufzeit messen"
-START=$(date +%s)
+# Die Prozesslaufzeit ist das Mass, nicht die Funktionslaufzeit: unter
+# shell_exec zaehlt, wann der Prozess endet (gemessen: Funktion 0,21 s,
+# Prozess 3,04 s). Sekundengenau reicht dafuer nicht.
+START=$EPOCHREALTIME
 "$ZIEL/venv/bin/python" "$ZIEL/cli.py" "$FRAGE" --json > /tmp/websuche-rauchtest.json
 CODE=$?
-DAUER=$(( $(date +%s) - START ))
-echo "   Exit-Code $CODE, $DAUER s"
+DAUER=$(( EPOCHREALTIME - START ))
+printf "   Exit-Code %d, %.2f s\n" $CODE $DAUER
 [ $CODE -eq 0 ] || { echo "   FEHLGESCHLAGEN"; exit 1; }
-[ $DAUER -le 25 ] || echo "   WARNUNG: ueber der 25s-Deadline"
+# Harte Grenze, keine Warnung: eine gerissene Deadline heisst unter
+# shell_exec abgeschnittene Ausgabe beim Agenten.
+if (( DAUER > MAX_SEKUNDEN )); then
+  printf "   FEHLGESCHLAGEN: %.2f s ueber der %.0f s-Deadline\n" $DAUER $MAX_SEKUNDEN
+  exit 1
+fi
 
-python3 - <<'PY'
-import json
+# Die Pruefungen laufen ueber den venv-Interpreter: das System-python3 ist
+# 3.9 und hat die Abhaengigkeiten des Dienstes nicht.
+MINDEST_QUELLEN=$MINDEST_QUELLEN "$ZIEL/venv/bin/python" - <<'PY'
+import json, os, sys
+
+mindest = int(os.environ["MINDEST_QUELLEN"])
 d = json.load(open("/tmp/websuche-rauchtest.json"))
-domains = [q["domain"] for q in d["quellen"]]
-mit_text = [q for q in d["quellen"] if "text" in q]
+quellen = d["quellen"]
+domains = [q["domain"] for q in quellen]
+mit_text = [q for q in quellen if q.get("text")]
 print(f"   Domains: {domains}")
-print(f"   Quellen mit Text: {len(mit_text)}")
+print(f"   Quellen: {len(quellen)}, davon mit Text: {len(mit_text)}")
 print(f"   Hinweis: {d['hinweis']}")
-assert len(set(domains)) == len(domains), "Domains nicht eindeutig!"
-assert all(q.get("abgerufen_am") for q in d["quellen"]), "Abrufdatum fehlt!"
+
+fehler = []
+# Ohne diese beiden Zeilen sind alle folgenden Zusicherungen auf einer LEEREN
+# Liste wahr (len(set([])) == len([]), all([])) — ein Lauf mit null Quellen
+# meldete "bestanden".
+if len(quellen) < mindest:
+    fehler.append(f"nur {len(quellen)} Quellen, mindestens {mindest} erwartet")
+if len(mit_text) < mindest:
+    fehler.append(f"nur {len(mit_text)} Quellen mit Text, mindestens {mindest} erwartet")
+if len(set(domains)) != len(domains):
+    fehler.append(f"Domains nicht eindeutig: {domains}")
+if not all(q.get("abgerufen_am") for q in quellen):
+    fehler.append("Abrufdatum fehlt bei mindestens einer Quelle")
+for q in mit_text:
+    if not q.get("url", "").startswith(("http://", "https://")):
+        fehler.append(f"Quelle ohne zitierfaehige URL: {q.get('url')!r}")
+if fehler:
+    print("   FEHLGESCHLAGEN: " + "; ".join(fehler), file=sys.stderr)
+    sys.exit(1)
 PY
 CODE=$?
-[ $CODE -eq 0 ] || { echo "   FEHLGESCHLAGEN: Domain-/Abrufdatum-Pruefung (Exit-Code $CODE)"; exit 1; }
+[ $CODE -eq 0 ] || { echo "   FEHLGESCHLAGEN: Quellen-Pruefung (Exit-Code $CODE)"; exit 1; }
 
 echo "== 4. Backend-Ausfall gibt Exit-Code ungleich null"
 # SIGTERM allein prueft nichts: launchd startet einen KeepAlive=true-Dienst

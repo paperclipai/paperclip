@@ -1,5 +1,14 @@
+import os
+import subprocess
+import sys
+import time
+
+import pytest
+
 from backends import BackendFehler
 from cli import als_markdown, main
+
+HIER = os.path.dirname(os.path.abspath(__file__))
 
 ERGEBNIS = {
     "frage": "foerdermittel nrw",
@@ -104,3 +113,64 @@ def test_beende_leert_puffer_und_beendet_sofort(monkeypatch):
     c.beende(2)
     assert beendet == [2]
     assert set(geleert) == {"out", "err"}
+
+
+TREIBER = '''
+import sys, time
+sys.path.insert(0, {pfad!r})
+import abruf, cli
+from backends import Treffer
+from websuche import recherchiere
+
+
+class Backend:
+    letzte_warnung = None
+
+    def suche(self, frage, limit):
+        return [Treffer(url="https://a.de/1", titel="T", snippet="s")]
+
+
+def haengender_abruf(url, zeichen, timeout):
+    time.sleep(30)          # Seite, die nie antwortet
+    return abruf.AbrufErgebnis(text="nie")
+
+
+def rechercheur(frage, **kwargs):
+    kwargs["deadline"] = 0.3
+    return recherchiere(frage, backend=Backend(), abrufer=haengender_abruf,
+                        **kwargs)
+
+
+cli.beende(cli.main(["frage"], rechercheur=rechercheur))
+'''
+
+
+def test_prozesslaufzeit_bleibt_im_budget(tmp_path):
+    """Misst die PROZESS-, nicht die Funktionslaufzeit.
+
+    Der Deadline-Test in test_websuche.py misst, wann recherchiere()
+    zurueckkehrt — und genau davon ist belegt, dass es die Sache nicht trifft
+    (gemessen: Funktion 0,21 s, Prozess 3,04 s, weil Pythons atexit die
+    ThreadPool-Worker joint). Unter shell_exec zaehlt aber die
+    Prozesslaufzeit gegen den 30-Sekunden-Default des Adapters.
+
+    Hier haengt ein Abruf-Thread 30 s. Ohne os._exit in cli.beende() haengt
+    der Prozess mit.
+    """
+    treiber = tmp_path / "treiber.py"
+    treiber.write_text(TREIBER.format(pfad=HIER))
+
+    start = time.monotonic()
+    try:
+        lauf = subprocess.run([sys.executable, str(treiber)],
+                              capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        pytest.fail("Prozess lief in den 20s-Deckel — er wartet auf den "
+                    "haengenden Abruf-Thread")
+    dauer = time.monotonic() - start
+
+    assert lauf.returncode == 0, lauf.stderr
+    # Die Ausgabe muss VOR dem harten Ende geschrieben sein.
+    assert "Rechercheergebnis" in lauf.stdout
+    assert "Abbruch" in lauf.stdout  # die haengende Quelle als Fehlerquelle
+    assert dauer < 3.0, f"Prozess lief {dauer:.2f}s trotz 0,3s Deadline"
