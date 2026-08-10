@@ -7,6 +7,7 @@
  * This avoids cross-agent profile contention and browser-version drift from
  * ad-hoc global Playwright/MCP launches.
  */
+import { existsSync } from "node:fs";
 import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -63,6 +64,30 @@ function processIsAlive(pid) {
   }
 }
 
+function headlessShellPathFrom(playwrightExecutable) {
+  // macOS 26 aborts while the full Chrome-for-Testing app registers with
+  // LaunchServices. The matching Playwright headless shell uses the same CDP
+  // surface without that desktop-app startup path. Derive the build from the
+  // repository-pinned Playwright executable so a package upgrade cannot drift
+  // the browser choice.
+  const match = playwrightExecutable.match(/^(.*)\/chromium-(\d+)\//);
+  if (!match) {
+    throw new Error(`Unable to derive a managed headless shell from Playwright executable: ${playwrightExecutable}`);
+  }
+  const [, cacheRoot, build] = match;
+  const platformSegment = process.platform === "darwin"
+    ? `chrome-headless-shell-mac-${process.arch === "arm64" ? "arm64" : "x64"}`
+    : process.platform === "win32"
+      ? "chrome-headless-shell-win64"
+      : "chrome-headless-shell-linux64";
+  const binary = process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell";
+  const candidate = join(cacheRoot, `chromium_headless_shell-${build}`, platformSegment, binary);
+  if (!existsSync(candidate)) {
+    throw new Error(`Managed headless shell is missing for Playwright build ${build}: ${candidate}. Install the matching chromium-headless-shell; do not fall back to Google Chrome for Testing.`);
+  }
+  return candidate;
+}
+
 async function acquireLock() {
   try {
     const handle = await open(lockPath, "wx");
@@ -99,11 +124,13 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   await acquireLock();
   const profile = await mkdtemp(join(tmpdir(), "paperclip-browser-profile-"));
+  const executablePath = headlessShellPathFrom(chromium.executablePath());
   let context;
   try {
     const output = await withTimeout(async () => {
       context = await chromium.launchPersistentContext(profile, {
         headless: true,
+        executablePath,
         args: ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check"],
       });
       const page = context.pages()[0] ?? await context.newPage();
