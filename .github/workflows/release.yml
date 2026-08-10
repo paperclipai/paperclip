@@ -506,12 +506,18 @@ jobs:
   # source commit shipped as a beta at least 3 days ago (measured from the
   # npm publish time of that beta version), unless a written justification
   # is provided. Dry runs report soak state without blocking.
+  # Resolves source_ref to an immutable commit exactly once; every downstream
+  # stable job consumes that SHA. Otherwise a branch or movable tag that
+  # advances mid-run could be soak-checked at one commit and verified or
+  # published at another.
   preflight_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      sha: ${{ steps.soak.outputs.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -520,6 +526,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check beta soak
+        id: soak
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
           JUSTIFICATION: ${{ inputs.skip_soak_justification }}
@@ -538,6 +545,13 @@ jobs:
             echo "Error: could not resolve source_ref '$SOURCE_REF' to a commit." >&2
             exit 1
           fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Stable source pinned"
+            echo ""
+            echo "- source_ref: \`${SOURCE_REF}\` -> \`$sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           fail_or_justify() {
             if [ -n "${JUSTIFICATION:-}" ]; then
@@ -600,11 +614,11 @@ jobs:
     needs: preflight_stable
     uses: ./.github/workflows/release-verify.yml
     with:
-      ref: ${{ inputs.source_ref }}
+      ref: ${{ needs.preflight_stable.outputs.sha }}
 
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && inputs.dry_run
-    needs: verify_stable
+    needs: [preflight_stable, verify_stable]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -615,7 +629,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.preflight_stable.outputs.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -646,7 +660,7 @@ jobs:
 
   publish_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run
-    needs: verify_stable
+    needs: [preflight_stable, verify_stable]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: npm-stable
@@ -660,7 +674,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.preflight_stable.outputs.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
