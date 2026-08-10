@@ -12,8 +12,11 @@ stillgelegt.
 3. Fertig — Relay und Luna lesen die Dateien zur Laufzeit.
 
 Wird `relay_signatur.js` geändert, muss `signatur.py` mitgeändert werden und
-umgekehrt. Der Abgleich steht in `test_relay_signatur.mjs` bzw. in Aufgabe 4,
-Schritt 5 des Umsetzungsplans.
+umgekehrt. `test_relay_signatur.mjs` prüft nur die JS-Seite für sich; der
+automatisierte Abgleich BEIDER Implementierungen (byte-genauer Vergleich des
+erzeugten Signatur-HTML über `equiv_probe.mjs`) steht in
+`test_cross_impl_signatur.py` — der lässt sich überspringen (laut, nicht
+still), wenn `node` fehlt, sonst nie ohne diesen Test committen.
 
 ## Rollback
 

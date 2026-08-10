@@ -127,5 +127,9 @@ function signiere(json, leseDatei) {
   }
 }
 
-module.exports = { signiere, absenderblock, zuText, ABSENDER, BEREICHE,
-                   VORGABE_BEREICH, BAUSTEIN_VERZEICHNIS };
+// hinweisFuer zusaetzlich exportiert fuer test_cross_impl_signatur.py: der
+// Python-Abgleichstest braucht den rollenabhaengigen Hinweistext als
+// Ground-Truth-Eingabe fuer signatur.absenderblock(), ohne ihn ein zweites
+// Mal (und damit driftanfaellig) im Python-Testcode nachzubauen.
+module.exports = { signiere, absenderblock, hinweisFuer, zuText, ABSENDER,
+                   BEREICHE, VORGABE_BEREICH, BAUSTEIN_VERZEICHNIS };
