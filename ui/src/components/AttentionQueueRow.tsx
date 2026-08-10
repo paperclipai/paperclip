@@ -556,9 +556,29 @@ function CompactDecisionActions({
       });
     },
     onError: (error, action) => {
+      const message = error instanceof Error ? error.message : "";
+      const status = (error as { status?: number } | null)?.status;
+      // A row goes stale when its decision was resolved out-of-band — approved via
+      // the iMessage bridge, in another tab, or by the fleet. The server answers
+      // "already resolved" (409). That's a sync gap, not a failure: refetch so the
+      // row drops off the queue and show a calm notice, not a red alarm.
+      if (status === 409 || /already (been )?(resolved|handled|decided|answered)/i.test(message)) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+        if (item.sourceKind === "approval") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+        } else if (item.sourceKind === "join_request") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
+        }
+        pushToast({
+          title: "Already handled",
+          body: "This was resolved elsewhere — clearing it from your queue.",
+          tone: "info",
+        });
+        return;
+      }
       pushToast({
         title: `Could not ${decisionLabel(action)}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: message || "Please try again.",
         tone: "error",
       });
     },

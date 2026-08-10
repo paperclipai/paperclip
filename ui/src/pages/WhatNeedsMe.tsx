@@ -170,6 +170,10 @@ export function WhatNeedsMe() {
     }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
+    // Self-clear rows resolved out-of-band (iMessage bridge, another tab, the
+    // fleet) so the desk reflects reality without a click. Only polls while the
+    // window is focused (react-query default), so it stays cheap.
+    refetchInterval: 45_000,
   });
 
   const { data: agents } = useQuery({
