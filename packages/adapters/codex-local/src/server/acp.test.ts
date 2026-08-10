@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -930,7 +931,7 @@ describe("codex_local ACP lane", () => {
     // `disposeStaged`, fired only when the runtime is dropped. So after a CLEAN
     // turn the engine caches the staged runtime warm and its host staged home is
     // still on disk for the next compatible resume to reuse.
-    const runId = "run-keep-staged-home";
+    const runId = `run-keep-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-keep-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
