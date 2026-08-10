@@ -50,7 +50,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { pushSubscriptionRoutes } from "./routes/push-subscriptions.js";
-import { configurePushFanout } from "./services/push-fanout.js";
+import { configurePushFanout, initPushFanout } from "./services/push-fanout.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -425,6 +425,7 @@ export async function createApp(
     vapidPrivateKey: opts.vapidPrivateKey,
     vapidSubject: opts.vapidSubject,
   });
+  initPushFanout(db);
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));

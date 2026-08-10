@@ -4,7 +4,7 @@ import { companies, companyUserPushSubscriptions, createDb, type Db } from "@pap
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logActivity } from "../services/activity-log.js";
 import { pushSubscriptionService } from "../services/push-subscriptions.js";
-import { setPushTransportForTests } from "../services/push-fanout.js";
+import { __resetPushFanoutForTests, initPushFanout, setPushTransportForTests } from "../services/push-fanout.js";
 import type { PushTransport } from "../services/push-transport.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -30,9 +30,11 @@ describeEmbeddedPostgres("subscribe -> issue.thread_interaction_created -> push 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-push-fanout-integration-");
     db = createDb(tempDb.connectionString);
+    initPushFanout(db);
   }, 30_000);
 
   afterAll(async () => {
+    __resetPushFanoutForTests();
     await tempDb?.cleanup();
   });
 

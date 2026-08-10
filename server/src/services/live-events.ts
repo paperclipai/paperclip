@@ -31,6 +31,9 @@ export function publishLiveEvent(input: {
 }) {
   const event = toLiveEvent(input);
   emitter.emit(input.companyId, event);
+  // Global subscribers (for example, the push fanout) must observe every
+  // company-scoped domain event without competing with websocket listeners.
+  if (input.companyId !== "*") emitter.emit("*", event);
   return event;
 }
 

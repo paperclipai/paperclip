@@ -78,6 +78,17 @@ export function pushSubscriptionService(db: Db) {
         ));
       return rows as PushSubscriptionRecord[];
     },
+
+    async listActiveForCompany(companyId: string): Promise<PushSubscriptionRecord[]> {
+      const rows = await db
+        .select()
+        .from(companyUserPushSubscriptions)
+        .where(and(
+          eq(companyUserPushSubscriptions.companyId, companyId),
+          isNull(companyUserPushSubscriptions.revokedAt),
+        ));
+      return rows as PushSubscriptionRecord[];
+    },
   };
 }
 
