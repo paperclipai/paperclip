@@ -4,6 +4,9 @@ export const DEFAULT_ACP_ENGINE_PERMISSION_MODE = "approve-all";
 export const DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS = "deny";
 export const DEFAULT_ACP_ENGINE_TIMEOUT_SEC = 0;
 export const DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS = 0;
+// Keep unattended ACP runs bounded across every bundled provider. Adapters may
+// pass an explicit reviewed exception, but they should not silently opt out.
+export const DEFAULT_ACP_MAX_TOKENS_PER_RUN = 400_000;
 
 export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",

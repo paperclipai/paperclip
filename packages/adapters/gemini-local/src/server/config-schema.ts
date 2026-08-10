@@ -3,6 +3,7 @@ import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
+  DEFAULT_ACP_MAX_TOKENS_PER_RUN,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 
 const acpVisible = { visibleWhen: { key: "engine", values: ["acp"] } };
@@ -66,6 +67,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "number",
         default: DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
         hint: "Defaults to 0, which closes the ACP process after each run while retaining persistent session state.",
+        meta: acpVisible,
+      },
+      {
+        key: "maxTokensPerRun",
+        label: "Maximum tokens per run",
+        type: "number",
+        default: DEFAULT_ACP_MAX_TOKENS_PER_RUN,
+        hint: "Default operating budget is 400K tokens. Raise it only for a reviewed, bounded exception.",
         meta: acpVisible,
       },
     ],

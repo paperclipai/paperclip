@@ -23,6 +23,7 @@ import {
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
+  DEFAULT_ACP_MAX_TOKENS_PER_RUN,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import type {
   AcpxEngineExecutorOptions,
@@ -133,6 +134,10 @@ export function buildClaudeAcpConfig(config: Record<string, unknown>): Record<st
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    maxTokensPerRun: Math.max(
+      1,
+      Math.floor(asNumber(config.maxTokensPerRun, DEFAULT_ACP_MAX_TOKENS_PER_RUN)),
+    ),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };

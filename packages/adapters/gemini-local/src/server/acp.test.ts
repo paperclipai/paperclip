@@ -235,6 +235,11 @@ describe("gemini_local ACP lane", () => {
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
       warmHandleIdleMs: 25,
+      maxTokensPerRun: 400_000,
+    });
+
+    expect(buildGeminiAcpConfig({ maxTokensPerRun: 750_000 })).toMatchObject({
+      maxTokensPerRun: 750_000,
     });
 
     expect(buildGeminiAcpConfig({ engine: "acp", model: "auto" })).not.toHaveProperty("model");
