@@ -247,6 +247,79 @@ pnpm test
 pnpm test:watch
 ```
 
+### Stable Vitest containment and cleanup
+
+`pnpm test` and the `test:run:*` shard commands run every Vitest child inside an
+invocation-owned boundary. On Linux the runner first attempts a delegated cgroup
+v2 child; installations without delegated cgroup access fall back to a new POSIX
+process group plus an inherited, random invocation tag. The tag lets teardown
+find detached grandchildren through `/proc` without matching command lines or
+signalling another concurrent Paperclip test. Windows uses the process-tree
+termination path available through `taskkill`; a native Job Object is not yet
+used. On non-Linux POSIX hosts, descendants that deliberately create a new
+session cannot be rediscovered after their direct parent exits, so process-group
+containment is the documented portable limit.
+
+Cleanup always stops new work, sends TERM to the complete owned boundary, waits
+for the configured grace period, sends KILL to verified survivors, confirms that
+the boundary is empty, checks every visible `/proc/*/cwd` and fd for references
+to the invocation root, and only then removes the root. PID start times are
+revalidated immediately before individual or process-group signalling so PID
+reuse fails closed. A failed post-suite invariant makes the command fail and
+leaves the root intact for safe operator inspection instead of deleting files
+still in use.
+
+On Linux, each invocation also starts a credential-free cleanup guardian outside
+the tagged boundary. If the stable-runner PID disappears through uncatchable
+`SIGKILL` or OOM, the guardian performs the same tag-scoped TERM/KILL, identity,
+root-reference, and deletion checks, then exits. Killing an entire service or
+container cgroup can also kill that guardian; in that case the outer service or
+container manager owns process cleanup, and an uncatchable whole-cgroup kill
+cannot promise filesystem cleanup from code that is no longer running.
+
+Configuration:
+
+- `PAPERCLIP_TEST_TMPDIR`: preferred parent for compact `pcvt-*` roots. Set this
+  to a directory on a dedicated data volume (for example a site-specific path
+  below `/srv`) without baking that host path into Paperclip. An absolute,
+  writable `TMPDIR` is the next choice; `os.tmpdir()` is the explicit fallback.
+- `PAPERCLIP_TEST_HOST_CAP` (default `2`): maximum stable runners across all
+  shards for the current OS user. Atomic host slots prevent independently
+  launched shards from bypassing this limit.
+- `PAPERCLIP_TEST_HOST_WAIT_MS` (default `1800000`): bounded wait for a host slot.
+- `PAPERCLIP_TEST_PROCESS_BUDGET` (default `256`): maximum live processes in one
+  invocation. Exceeding it fails with the invocation id, suite label, count, and
+  redacted process-family summary.
+- `PAPERCLIP_TEST_MAX_POSTGRES` (default `16`), `PAPERCLIP_TEST_MAX_SSH`
+  (default `16`), and `PAPERCLIP_TEST_MAX_MODEL_ADAPTERS` (default `64`):
+  per-invocation family caps within the total process budget.
+- `PAPERCLIP_TEST_GRACE_MS` (default `5000`): TERM grace before KILL.
+- `PAPERCLIP_TEST_TIMEOUT_MS`: optional per-Vitest-child timeout.
+- `PAPERCLIP_TEST_CONTROL_DIR`: optional location for the tiny host-slot records.
+
+Failed roots are deleted by default. Artifact retention is explicit and bounded:
+pass `--retain-failed` (or set `PAPERCLIP_TEST_RETAIN_FAILED=1`) and optionally
+`--retained-limit=N` / `PAPERCLIP_TEST_RETAIN_LIMIT=N` (default `3`). Retention
+only happens after owned processes are dead and root-reference guards pass.
+
+Inspect live invocation records without exposing command arguments, environment
+values, adapter tokens, or MCP headers:
+
+```sh
+pnpm test:diagnose
+```
+
+The report lists invocation ids, suite labels, containment modes, process-family
+counts, root-reference counts, and deleted-CWD indicators. Start, cleanup, and
+stop records use structured JSON and include peak descendants, cleanup duration,
+TERM/KILL counts, and any retained-artifact reason.
+
+After an outer service/container kill that also killed the Linux guardian, an
+operator may safely reclaim only reported stale, empty, unreferenced roots with
+`node scripts/run-vitest-stable.mjs --diagnose --reap-stale`. The command refuses
+roots with a live tagged process, any visible cwd/fd reference, a live original
+runner identity, or a path outside the selected temp parent.
+
 Browser suites stay separate:
 
 ```sh

@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
@@ -63,7 +64,7 @@ type FakeRuntimeTurn = {
   closeStream: () => Promise<void>;
 };
 
-const tempRoots: string[] = [];
+let fixtures: FixtureSupervisor;
 const originalNodeVersion = process.version;
 const originalPaperclipHome = process.env.PAPERCLIP_HOME;
 const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
@@ -111,6 +112,10 @@ function setNodeVersion(version: string): void {
   });
 }
 
+beforeEach(() => {
+  fixtures = new FixtureSupervisor({ owner: "codex ACP tests" });
+});
+
 afterEach(async () => {
   setNodeVersion(originalNodeVersion);
   if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
@@ -121,7 +126,7 @@ afterEach(async () => {
   else process.env.CODEX_HOME = originalCodexHome;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await fixtures.teardown();
 });
 
 class FakeRuntime {
@@ -214,7 +219,7 @@ class FakeRuntime {
 
 async function makeTempRoot(prefix: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempRoots.push(root);
+  fixtures.registerRoot(root);
   process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
   process.env.PAPERCLIP_INSTANCE_ID = "test";
   return root;

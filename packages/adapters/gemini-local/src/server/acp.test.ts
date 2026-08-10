@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 import {
   buildGeminiAcpConfig,
   createGeminiAcpExecutor,
@@ -62,7 +63,7 @@ type FakeRuntimeTurn = {
   closeStream: () => Promise<void>;
 };
 
-const tempRoots: string[] = [];
+let fixtures: FixtureSupervisor;
 const originalNodeVersion = process.version;
 const originalPath = process.env.PATH;
 const originalHome = process.env.HOME;
@@ -76,6 +77,10 @@ function setNodeVersion(version: string): void {
   });
 }
 
+beforeEach(() => {
+  fixtures = new FixtureSupervisor({ owner: "Gemini ACP tests" });
+});
+
 afterEach(async () => {
   setNodeVersion(originalNodeVersion);
   if (originalPath === undefined) delete process.env.PATH;
@@ -84,7 +89,7 @@ afterEach(async () => {
   else process.env.HOME = originalHome;
   if (originalGeminiApiKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = originalGeminiApiKey;
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await fixtures.teardown();
 });
 
 class FakeRuntime {
@@ -177,7 +182,7 @@ class FakeRuntime {
 
 async function makeTempRoot(prefix: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempRoots.push(root);
+  fixtures.registerRoot(root);
   return root;
 }
 

@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
@@ -63,7 +64,7 @@ type FakeRuntimeTurn = {
   closeStream: () => Promise<void>;
 };
 
-const tempRoots: string[] = [];
+let fixtures: FixtureSupervisor;
 const originalNodeVersion = process.version;
 const originalEnv: Record<string, string | undefined> = {
   PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
@@ -79,13 +80,17 @@ function setNodeVersion(version: string): void {
   });
 }
 
+beforeEach(() => {
+  fixtures = new FixtureSupervisor({ owner: "Claude ACP tests" });
+});
+
 afterEach(async () => {
   setNodeVersion(originalNodeVersion);
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await fixtures.teardown();
 });
 
 class FakeRuntime {
@@ -178,7 +183,7 @@ class FakeRuntime {
 
 async function makeTempRoot(prefix: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempRoots.push(root);
+  fixtures.registerRoot(root);
   return root;
 }
 

@@ -1,10 +1,16 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
-import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
+import {
+  VitestInvocationSupervisor,
+  acquireHostSlot,
+  diagnoseStableInvocations,
+  reapStaleStableInvocations,
+  resolveTestTempParent,
+} from "./vitest-supervisor.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -55,7 +61,11 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/redaction.test.ts",
   "server/src/__tests__/routines-e2e.test.ts",
 ]);
-let invocationIndex = 0;
+let executionOptions = null;
+let activeSupervisor = null;
+let requestedExitCode = null;
+let fatalError = null;
+const cancellation = new AbortController();
 const serializedModeName = "serialized";
 const generalModeName = "general";
 const allModeName = "all";
@@ -139,6 +149,13 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let diagnose = false;
+  let reapStale = false;
+  let retainFailed = process.env.PAPERCLIP_TEST_RETAIN_FAILED === "1";
+  let retainedLimit = parsePositiveInteger(
+    process.env.PAPERCLIP_TEST_RETAIN_LIMIT ?? "3",
+    "PAPERCLIP_TEST_RETAIN_LIMIT",
+  );
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -181,6 +198,33 @@ function parseCliOptions(argv) {
 
     if (arg === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+
+    if (arg === "--diagnose") {
+      diagnose = true;
+      continue;
+    }
+
+    if (arg === "--reap-stale") {
+      diagnose = true;
+      reapStale = true;
+      continue;
+    }
+
+    if (arg === "--retain-failed") {
+      retainFailed = true;
+      continue;
+    }
+
+    if (arg === "--retained-limit") {
+      retainedLimit = parsePositiveInteger(readOptionValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--retained-limit=")) {
+      retainedLimit = parsePositiveInteger(arg.slice("--retained-limit=".length), "--retained-limit");
       continue;
     }
 
@@ -236,6 +280,10 @@ function parseCliOptions(argv) {
       shardCount: shardCount ?? 1,
       group: null,
       dryRun,
+      diagnose,
+      reapStale,
+      retainFailed,
+      retainedLimit,
     };
   }
 
@@ -245,6 +293,10 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    diagnose,
+    reapStale,
+    retainFailed,
+    retainedLimit,
   };
 }
 
@@ -252,48 +304,71 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return routeTests.filter((_, index) => index % shardCount === shardIndex);
 }
 
-function runVitest(args, label) {
+async function runVitest(args, label) {
+  if (cancellation.signal.aborted) {
+    throw cancellation.signal.reason ?? new Error("Stable test run cancelled.");
+  }
   console.log(`\n[test:run] ${label}`);
-  invocationIndex += 1;
-  const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
-  // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
-  const env = {
-    ...process.env,
-    NODE_ENV: "test",
-    PAPERCLIP_HOME: path.join(testRoot, "h"),
-    PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
-    TMPDIR: path.join(testRoot, "t"),
-  };
-  mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
-  mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
-    cwd: repoRoot,
-    env,
-    stdio: "inherit",
+  const temp = await resolveTestTempParent();
+  const supervisor = new VitestInvocationSupervisor({
+    invocationId: randomUUID(),
+    label,
+    tempParent: temp.parent,
+    tempSource: temp.source,
   });
+  activeSupervisor = supervisor;
+  let result = null;
+  let runError = null;
+  try {
+    result = await supervisor.run("pnpm", ["exec", "vitest", "run", ...args], { cwd: repoRoot });
+  } catch (error) {
+    runError = error;
+  } finally {
+    const failed = Boolean(runError || requestedExitCode !== null || result?.code !== 0 || result?.signal);
+    const retainReason = executionOptions.retainFailed && failed
+      ? runError
+        ? "runner_error"
+        : result?.signal
+          ? `child_signal_${result.signal}`
+          : `child_exit_${result?.code ?? "unknown"}`
+      : null;
+    try {
+      await supervisor.cleanup({ retainReason, retainedLimit: executionOptions.retainedLimit });
+    } catch (cleanupError) {
+      runError = cleanupError;
+    }
+    activeSupervisor = null;
+  }
+  if (runError) throw runError;
+  if (fatalError) throw fatalError;
+  if (requestedExitCode !== null) {
+    const error = new Error(`Stable test run cancelled (exit ${requestedExitCode}).`);
+    error.exitCode = requestedExitCode;
+    throw error;
+  }
   if (result.error) {
-    console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
-    process.exit(1);
+    throw new Error(`Failed to start Vitest: ${result.error.message}`);
   }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+  if (result.code !== 0) {
+    const error = new Error(`Vitest exited with status ${result.code ?? 1}${result.signal ? ` (${result.signal})` : ""}.`);
+    error.exitCode = result.code ?? 1;
+    throw error;
   }
 }
 
-function runGeneralSuites(routeTests) {
+async function runGeneralSuites(routeTests) {
   for (const groupName of generalGroupNames) {
-    runGeneralGroup(routeTests, groupName);
+    await runGeneralGroup(routeTests, groupName);
   }
 }
 
-function runProjectGroup(projects, groupName) {
+async function runProjectGroup(projects, groupName) {
   for (const project of projects) {
-    runVitest(["--project", project], `${groupName} project ${project}`);
+    await runVitest(["--project", project], `${groupName} project ${project}`);
   }
 }
 
-function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
+async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
   if (groupName === generalServerGroupName) {
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
@@ -309,7 +384,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
         return;
       }
 
-      runVitest(
+      await runVitest(
         [
           "--project",
           "@paperclipai/server",
@@ -322,7 +397,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     }
 
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
-    runVitest(
+    await runVitest(
       [
         "--project",
         "@paperclipai/server",
@@ -335,26 +410,26 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
   }
 
   if (groupName === generalWorkspacesAGroupName) {
-    runProjectGroup(generalWorkspacesAProjects, groupName);
+    await runProjectGroup(generalWorkspacesAProjects, groupName);
     return;
   }
 
   if (groupName === generalWorkspacesBGroupName) {
-    runProjectGroup(generalWorkspacesBProjects, groupName);
+    await runProjectGroup(generalWorkspacesBProjects, groupName);
     return;
   }
 
   fail(`Unknown group "${groupName}".`);
 }
 
-function runSerializedSuites(routeTests, shardIndex, shardCount) {
+async function runSerializedSuites(routeTests, shardIndex, shardCount) {
   const shardTests = selectSerializedSuites(routeTests, shardIndex, shardCount);
   console.log(
     `\n[test:run] serialized shard ${shardIndex + 1}/${shardCount} running ${shardTests.length} of ${routeTests.length} suites`,
   );
 
   for (const routeTest of shardTests) {
-    runVitest(
+    await runVitest(
       [
         "--project",
         "@paperclipai/server",
@@ -388,31 +463,31 @@ const generalServerTestFiles = walk(serverSrcDir)
   .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
   .sort((a, b) => a.localeCompare(b));
 
-const options = parseCliOptions(process.argv.slice(2));
-if (options.dryRun) {
+executionOptions = parseCliOptions(process.argv.slice(2));
+if (executionOptions.dryRun) {
   const serializedSuites =
-    options.mode === serializedModeName
-      ? selectSerializedSuites(routeTests, options.shardIndex, options.shardCount)
+    executionOptions.mode === serializedModeName
+      ? selectSerializedSuites(routeTests, executionOptions.shardIndex, executionOptions.shardCount)
       : routeTests;
   console.log(
     JSON.stringify(
       {
-        mode: options.mode,
-        shardIndex: options.shardIndex,
-        shardCount: options.shardCount,
-        group: options.group,
+        mode: executionOptions.mode,
+        shardIndex: executionOptions.shardIndex,
+        shardCount: executionOptions.shardCount,
+        group: executionOptions.group,
         availableGeneralGroups: generalGroupNames,
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
-          options.mode === generalModeName &&
-          options.group === generalServerGroupName &&
-          options.shardCount !== null
+          executionOptions.mode === generalModeName &&
+          executionOptions.group === generalServerGroupName &&
+          executionOptions.shardCount !== null
             ? selectGeneralServerShard(
                 generalServerTestFiles,
-                options.shardIndex,
-                options.shardCount,
+                executionOptions.shardIndex,
+                executionOptions.shardCount,
                 generalServerShardDurations,
               )
             : null,
@@ -424,14 +499,93 @@ if (options.dryRun) {
   process.exit(0);
 }
 
-if (options.mode === generalModeName || options.mode === allModeName) {
-  if (options.group) {
-    runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
-  } else {
-    runGeneralSuites(routeTests);
-  }
+if (executionOptions.diagnose) {
+  console.log(
+    JSON.stringify(
+      executionOptions.reapStale
+        ? await reapStaleStableInvocations()
+        : await diagnoseStableInvocations(),
+      null,
+      2,
+    ),
+  );
+  process.exit(0);
 }
 
-if (options.mode === serializedModeName || options.mode === allModeName) {
-  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
+function requestCancellation(reason, exitCode, error = null) {
+  requestedExitCode ??= exitCode;
+  fatalError ??= error;
+  if (!cancellation.signal.aborted) cancellation.abort(error ?? new Error(reason));
+  activeSupervisor?.requestStop(reason);
+}
+
+const signalHandlers = new Map([
+  ["SIGINT", () => requestCancellation("parent_SIGINT", 130)],
+  ["SIGTERM", () => requestCancellation("parent_SIGTERM", 143)],
+]);
+for (const [signal, handler] of signalHandlers) process.once(signal, handler);
+const uncaughtHandler = (error) => requestCancellation("uncaught_exception", 1, error);
+const rejectionHandler = (reason) => requestCancellation(
+  "unhandled_rejection",
+  1,
+  reason instanceof Error ? reason : new Error(String(reason)),
+);
+process.once("uncaughtException", uncaughtHandler);
+process.once("unhandledRejection", rejectionHandler);
+
+let hostSlot = null;
+try {
+  const stableRunId = randomUUID();
+  hostSlot = await acquireHostSlot({ invocationId: stableRunId, signal: cancellation.signal });
+  console.log(
+    `[test:run] ${JSON.stringify({
+      event: "vitest_stable_run_start",
+      stableRunId,
+      runnerPid: process.pid,
+      hostSlot: hostSlot.index,
+    })}`,
+  );
+  if (executionOptions.mode === generalModeName || executionOptions.mode === allModeName) {
+    if (executionOptions.group) {
+      await runGeneralGroup(
+        routeTests,
+        executionOptions.group,
+        executionOptions.shardIndex,
+        executionOptions.shardCount,
+      );
+    } else {
+      await runGeneralSuites(routeTests);
+    }
+  }
+
+  if (executionOptions.mode === serializedModeName || executionOptions.mode === allModeName) {
+    await runSerializedSuites(
+      routeTests,
+      executionOptions.shardIndex ?? 0,
+      executionOptions.shardCount ?? 1,
+    );
+  }
+} catch (error) {
+  console.error(`[test:run] ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = error?.exitCode ?? requestedExitCode ?? 1;
+} finally {
+  if (activeSupervisor) {
+    try {
+      await activeSupervisor.cleanup();
+    } catch (error) {
+      console.error(`[test:run] ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  }
+  if (hostSlot) {
+    try {
+      await hostSlot.release();
+    } catch (error) {
+      console.error(`[test:run] Failed to release host slot: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  }
+  for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+  process.removeListener("uncaughtException", uncaughtHandler);
+  process.removeListener("unhandledRejection", rejectionHandler);
 }

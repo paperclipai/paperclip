@@ -8,7 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { FixtureSupervisor } from "@paperclipai/adapter-utils/test-support/fixture-supervisor";
 import {
   activityLog,
   agents,
@@ -108,6 +109,7 @@ function workspaceBranchIncoherenceFingerprintForTest(input: {
 }
 
 const leasedRunIds = new Set<string>();
+let processFixtures: FixtureSupervisor;
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -345,7 +347,12 @@ function createWorkspaceOperationRecorderDouble() {
   return { recorder, operations };
 }
 
+beforeEach(() => {
+  processFixtures = new FixtureSupervisor({ owner: "workspace runtime tests" });
+});
+
 afterEach(async () => {
+  await processFixtures.teardown();
   await Promise.all(
     Array.from(leasedRunIds).map(async (runId) => {
       await releaseRuntimeServicesForRun(runId);
@@ -367,6 +374,7 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
       DATABASE_URL: "postgres://example.test/paperclip",
       PAPERCLIP_HOME: "/tmp/paperclip-home",
       PAPERCLIP_INSTANCE_ID: "runtime-instance",
+      PAPERCLIP_TEST_INVOCATION_ID: "test-invocation",
       npm_config_tailscale_auth: "true",
       npm_config_authenticated_private: "true",
       HOST: "0.0.0.0",
@@ -374,6 +382,7 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
 
     expect(sanitized.PAPERCLIP_HOME).toBeUndefined();
     expect(sanitized.PAPERCLIP_INSTANCE_ID).toBeUndefined();
+    expect(sanitized.PAPERCLIP_TEST_INVOCATION_ID).toBe("test-invocation");
     expect(sanitized.DATABASE_URL).toBeUndefined();
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
@@ -4671,6 +4680,7 @@ describe("readLocalServicePortOwner", () => {
       ],
       { cwd: ownerWorkspace, stdio: ["ignore", "pipe", "inherit"] },
     );
+    processFixtures.registerProcess(child, { label: "cross-workspace listener" });
     const port = await new Promise<number>((resolve, reject) => {
       let output = "";
       child.stdout?.on("data", (chunk) => {
@@ -5805,6 +5815,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       },
       detached: process.platform !== "win32",
       stdio: "ignore",
+    });
+    processFixtures.registerProcess(staleProcess, {
+      label: "stale runtime service",
+      processGroupId: process.platform === "win32" ? null : staleProcess.pid,
     });
     staleProcess.unref();
 
