@@ -97,6 +97,65 @@ import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js"
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*PAPERCLIP_DISPOSITION:\s*(\{[^\n]*\})\s*(?=$|\n)/g;
+const ACPX_FINALIZATION_REMINDER =
+  "Before ending this ACP run, record the real issue state through Paperclip. " +
+  "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
+  "PAPERCLIP_DISPOSITION JSON record (done, cancelled, in_review, or blocked); " +
+  "a prose status line or comment is not a disposition.";
+
+type ParsedDisposition = {
+  status: string;
+  hasBlocker: boolean;
+  blocker?: string;
+  reviewer?: string;
+};
+
+/**
+ * ACPX emits final assistant output as text deltas rather than through the
+ * CLI transcript parsers used by the individual local adapters. Preserve the
+ * same strict final-line disposition contract here so an ACP run cannot lose
+ * an otherwise valid lifecycle decision at the adapter boundary.
+ */
+function extractPaperclipDisposition(text: string): {
+  disposition: ParsedDisposition | null;
+  cleanedText: string;
+} {
+  let match: RegExpExecArray | null = null;
+  let lastValid: { disposition: ParsedDisposition; index: number; fullMatch: string } | null = null;
+
+  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1] ?? "null") as Record<string, unknown> | null;
+      const status = typeof parsed?.status === "string" ? parsed.status.trim() : "";
+      if (!status) continue;
+      lastValid = {
+        disposition: {
+          status,
+          hasBlocker: parsed?.hasBlocker === true,
+          ...(typeof parsed?.blocker === "string" && parsed.blocker.trim()
+            ? { blocker: parsed.blocker.trim() }
+            : {}),
+          ...(typeof parsed?.reviewer === "string" && parsed.reviewer.trim()
+            ? { reviewer: parsed.reviewer.trim() }
+            : {}),
+        },
+        index: match.index,
+        fullMatch: match[0],
+      };
+    } catch {
+      // Ignore malformed prose. Only the exact JSON contract is lifecycle data.
+    }
+  }
+
+  if (!lastValid) return { disposition: null, cleanedText: text.trim() };
+  return {
+    disposition: lastValid.disposition,
+    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  };
+}
 
 interface ChildStderrState {
   logPath: string | null;
@@ -2346,6 +2405,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     paperclipEnvNote,
     apiAccessNote,
     renderedPrompt,
+    ACPX_FINALIZATION_REMINDER,
   ]);
 
   return {
@@ -3529,6 +3589,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         : terminal.status === "failed"
         ? (errorMessage ?? terminal.error.message)
         : terminal.stopReason;
+      const { disposition, cleanedText } = extractPaperclipDisposition(textParts.join("").trim());
       await emitAcpxLog(ctx, {
         type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
         summary: terminal.status,
@@ -3575,8 +3636,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.cumulativeCostUsd != null
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
             : {}),
+          ...(disposition ? { disposition } : {}),
         },
-        summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+        summary: cleanedText || terminalStopReason || terminal.status,
         clearSession,
       };
     } catch (err) {

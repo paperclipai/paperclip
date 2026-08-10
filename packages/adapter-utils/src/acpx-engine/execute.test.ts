@@ -506,6 +506,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
     expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).toContain("a prose status line or comment is not a disposition");
     expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");
     expect(prompt).not.toContain("-d '{...}'");
@@ -577,6 +578,53 @@ describe("shared ACPX engine runtime behavior", () => {
         channel: "output",
         tag: "agent_message_chunk",
       })}\n`,
+    });
+  });
+
+  it("preserves a final Paperclip disposition from ACP text deltas", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Rendered both PDFs and verified the hashes.\nPAPERCLIP_DISPOSITION: {\"status\":\"in_review\",\"hasBlocker\":false,\"reviewer\":\"RecruitmentManager-Codex\"}",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-disposition",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.summary).toBe("Rendered both PDFs and verified the hashes.");
+    expect(result.resultJson).toMatchObject({
+      disposition: {
+        status: "in_review",
+        hasBlocker: false,
+        reviewer: "RecruitmentManager-Codex",
+      },
     });
   });
 
