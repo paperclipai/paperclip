@@ -10,6 +10,7 @@ import type {
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
+import type { ImportTransferManifest } from "../lib/import-transfer";
 import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
@@ -27,6 +28,26 @@ function importPackageForm(file: File, meta: CompanyPortabilityPreviewMeta | Com
   form.append("package", file);
   form.append("meta", JSON.stringify(meta));
   return form;
+}
+
+export type CompanyImportTransferRunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+
+/** Response of declaring (or resuming) a chunked import transfer. */
+export interface CompanyImportTransferCreated {
+  transferId: string;
+  status: CompanyImportTransferRunStatus;
+  /** True when this exact content already finished a prior apply. */
+  alreadyCompleted: boolean;
+  totalParts: number;
+  missingParts: number[];
+}
+
+export interface CompanyImportTransferStatus {
+  transferId: string;
+  status: CompanyImportTransferRunStatus;
+  totalParts: number;
+  completedParts: number;
+  missingParts: number[];
 }
 
 export type CompanyImportJobState = "running" | "succeeded" | "failed";
@@ -126,4 +147,28 @@ export const companiesApi = {
     api.postForm<CompanyImportJobAccepted>("/companies/import?async=1", importPackageForm(file, meta)),
   getImportJob: (jobId: string) =>
     api.get<CompanyImportJobStatus>(`/companies/import/jobs/${encodeURIComponent(jobId)}`),
+  // Chunked resumable transfer for large local .zip packages: declare the
+  // sliced zip (content-addressed, so re-declaring the same file resumes the
+  // prior transfer with its uploaded parts intact), upload the missing parts,
+  // then preview/apply against the server-side assembled spool.
+  importTransferCreate: (manifest: ImportTransferManifest) =>
+    api.post<CompanyImportTransferCreated>("/companies/import/transfers", manifest),
+  importTransferUploadPart: (transferId: string, index: number, bytes: Blob) =>
+    api.putRaw<{ ok: true; index: number; alreadyCompleted: boolean }>(
+      `/companies/import/transfers/${encodeURIComponent(transferId)}/parts/${index}`,
+      bytes,
+    ),
+  importTransferStatus: (transferId: string) =>
+    api.get<CompanyImportTransferStatus>(`/companies/import/transfers/${encodeURIComponent(transferId)}`),
+  importTransferPreview: (transferId: string, meta: CompanyPortabilityPreviewMeta) =>
+    api.post<CompanyPortabilityPreviewResult>(
+      `/companies/import/transfers/${encodeURIComponent(transferId)}/preview`,
+      meta,
+    ),
+  /** Apply a fully uploaded transfer as an async job (same 202/409 contract as importBundlePackageAsync). */
+  importTransferApply: (transferId: string, meta: CompanyPortabilityImportMeta) =>
+    api.post<CompanyImportJobAccepted>(
+      `/companies/import/transfers/${encodeURIComponent(transferId)}/apply?async=1`,
+      meta,
+    ),
 };
