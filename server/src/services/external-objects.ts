@@ -968,6 +968,12 @@ export function externalObjectService(
     input: RefreshObjectInput,
   ) {
     const now = input.now ?? new Date();
+    const refreshKey = `${input.companyId}:${objectId}`;
+    // A refresh may already be resolving while a second caller is still
+    // waiting to read the object. Check the in-memory lease first so manual
+    // and scheduled refreshes in this service coalesce immediately.
+    const inFlightRefresh = objectRefreshesInFlight.get(refreshKey);
+    if (inFlightRefresh) return inFlightRefresh;
     const object = await db
       .select()
       .from(externalObjects)
@@ -978,7 +984,6 @@ export function externalObjectService(
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }
 
-    const refreshKey = `${object.companyId}:${object.id}`;
     const existingRefresh = objectRefreshesInFlight.get(refreshKey);
     if (existingRefresh) return existingRefresh;
 
