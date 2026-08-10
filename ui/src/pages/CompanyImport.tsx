@@ -14,6 +14,7 @@ import { useToastActions } from "../context/ToastContext";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
 import { companiesApi, type CompanyImportJobAccepted } from "../api/companies";
+import { adaptersApi } from "../api/adapters";
 import { agentsApi } from "../api/agents";
 import { routinesApi } from "../api/routines";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
@@ -559,7 +560,15 @@ const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapter
 interface AdapterPickerItem {
   slug: string;
   name: string;
+  /** Adapter type from the package manifest (the source's adapter). */
   adapterType: string;
+  /**
+   * Set when the manifest adapter is not installed on the destination: the
+   * adapter type the agent falls back to unless the user picks another one.
+   * Null when the manifest adapter is usable here (or availability is unknown,
+   * which fails open to the manifest adapter).
+   */
+  fallbackAdapterType: string | null;
 }
 
 function AdapterPickerList({
@@ -592,7 +601,8 @@ function AdapterPickerList({
         </div>
         <div className="divide-y divide-border">
           {agents.map((agent) => {
-            const selectedType = adapterOverrides[agent.slug] ?? agent.adapterType;
+            const selectedType =
+              adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterType;
             const isExpanded = expandedSlugs.has(agent.slug);
             const vals = configValues[agent.slug] ?? { ...defaultCreateValues, adapterType: selectedType };
 
@@ -634,6 +644,14 @@ function AdapterPickerList({
                     configure adapter
                   </button>
                 </div>
+                {agent.fallbackAdapterType && (
+                  <div className="mx-4 mb-2.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <p className="text-xs text-amber-500">
+                      source adapter {agent.adapterType} is not installed here — this agent
+                      will use {adapterLabels[selectedType] ?? getAdapterLabel(selectedType)}
+                    </p>
+                  </div>
+                )}
                 {isExpanded && (
                   <div className="border-t border-border bg-accent/10 px-4 py-3 space-y-3">
                     <AgentConfigForm
@@ -873,6 +891,22 @@ export function CompanyImport() {
     return ceo?.adapterType ?? "claude_local";
   }, [companyAgents]);
 
+  // Fetch the destination's installed adapters so imported agents keep their
+  // manifest adapter whenever it is usable here. Only agents whose manifest
+  // adapter is missing (or disabled) fall back to the CEO's adapter — with a
+  // visible per-agent warning, never silently.
+  const { data: installedAdapters } = useQuery({
+    queryKey: queryKeys.adapters.all,
+    queryFn: () => adaptersApi.list(),
+    staleTime: 5 * 60 * 1000,
+  });
+  // Null while the list is loading or unreadable: availability is unknown, so
+  // fail open and trust the manifest rather than coercing every agent.
+  const availableAdapterTypes = useMemo(() => {
+    if (!installedAdapters) return null;
+    return new Set(installedAdapters.filter((a) => !a.disabled).map((a) => a.type));
+  }, [installedAdapters]);
+
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
 
@@ -952,12 +986,10 @@ export function CompanyImport() {
       setSkippedSlugs(new Set());
       setConfirmedSlugs(new Set());
 
-      // Initialize adapter overrides — default all agents to the CEO's adapter type
-      const defaultAdapters: Record<string, string> = {};
-      for (const agent of result.manifest.agents) {
-        defaultAdapters[agent.slug] = ceoAdapterType;
-      }
-      setAdapterOverrides(defaultAdapters);
+      // Adapter overrides start empty: each agent keeps its manifest adapter
+      // unless the user changes it, or the manifest adapter is not installed
+      // here (handled per-agent via a warned fallback, never seeded silently).
+      setAdapterOverrides({});
       setAdapterExpandedSlugs(new Set());
       setAdapterConfigValues({});
 
@@ -1346,9 +1378,11 @@ export function CompanyImport() {
 
   function handleAdapterConfigChange(slug: string, patch: Partial<CreateConfigValues>) {
     resetMutationState();
+    const agent = adapterAgents.find((a) => a.slug === slug);
+    const currentType = agent ? effectiveAdapterType(agent) : adapterOverrides[slug] ?? "claude_local";
     setAdapterConfigValues((prev) => ({
       ...prev,
-      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: adapterOverrides[slug] ?? "claude_local" }), ...patch },
+      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: currentType }), ...patch },
     }));
   }
 
@@ -1392,23 +1426,42 @@ export function CompanyImport() {
     }
   }
 
-  // Build the list of agents for adapter picking
+  // Build the list of agents for adapter picking. An agent whose manifest
+  // adapter is not installed on the destination gets a warned fallback to the
+  // CEO's adapter; while availability is unknown the manifest adapter stands.
   const adapterAgents = useMemo<AdapterPickerItem[]>(() => {
     if (!importPreview) return [];
     return importPreview.manifest.agents.map((a) => ({
       slug: a.slug,
       name: a.name,
       adapterType: a.adapterType,
+      // The fallback must itself be installed: the CEO's adapter when it is,
+      // else any installed adapter, else null so the manifest adapter stands
+      // and the server's unknown-adapter rejection is the backstop.
+      fallbackAdapterType:
+        availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)
+          ? availableAdapterTypes.has(ceoAdapterType)
+            ? ceoAdapterType
+            : [...availableAdapterTypes][0] ?? null
+          : null,
     }));
-  }, [importPreview]);
+  }, [importPreview, availableAdapterTypes, ceoAdapterType]);
 
-  // Build final adapterOverrides for import request
+  /** The adapter type an imported agent will actually use: an explicit user pick, else the availability fallback, else the manifest adapter. */
+  function effectiveAdapterType(agent: AdapterPickerItem): string {
+    return adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterType;
+  }
+
+  // Build final adapterOverrides for import request. Only agents that diverge
+  // from the manifest adapter (a user pick or an availability fallback) or
+  // carry edited adapter config send an override — untouched agents flow
+  // through with none, so the manifest adapter survives the import.
   function buildFinalAdapterOverrides(): Record<string, CompanyPortabilityAdapterOverride> | undefined {
-    if (adapterAgents.length === 0) return undefined;
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const agent of adapterAgents) {
-      const selectedType = adapterOverrides[agent.slug] ?? agent.adapterType;
+      const selectedType = effectiveAdapterType(agent);
       const configVals = adapterConfigValues[agent.slug];
+      if (selectedType === agent.adapterType && !configVals) continue;
       const override: CompanyPortabilityAdapterOverride = { adapterType: selectedType };
       if (configVals) {
         const uiAdapter = getUIAdapter(selectedType);

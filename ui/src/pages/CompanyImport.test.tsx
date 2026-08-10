@@ -22,6 +22,9 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   resume: vi.fn(),
 }));
+const mockAdaptersApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
 const mockRoutinesApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
@@ -52,6 +55,10 @@ vi.mock("../lib/zip", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/adapters", () => ({
+  adaptersApi: mockAdaptersApi,
 }));
 
 vi.mock("../api/routines", () => ({
@@ -156,6 +163,44 @@ function buildPreviewResult(): CompanyPortabilityPreviewResult {
   } as unknown as CompanyPortabilityPreviewResult;
 }
 
+/** Preview whose manifest mixes adapters: one claude_local agent and one codex_local agent. */
+function buildMixedAdapterPreviewResult(): CompanyPortabilityPreviewResult {
+  return {
+    include: { company: true, agents: true, projects: true, issues: true },
+    targetCompanyId: null,
+    targetCompanyName: null,
+    collisionStrategy: "rename",
+    selectedAgentSlugs: ["coder", "researcher"],
+    plan: {
+      companyAction: "create",
+      agentPlans: [
+        { slug: "coder", action: "create", plannedName: "Coder", existingAgentId: null, reason: null },
+        { slug: "researcher", action: "create", plannedName: "Researcher", existingAgentId: null, reason: null },
+      ],
+      projectPlans: [],
+      issuePlans: [],
+    },
+    manifest: {
+      agents: [
+        { slug: "coder", name: "Coder", path: "agents/coder/AGENTS.md", adapterType: "claude_local" },
+        { slug: "researcher", name: "Researcher", path: "agents/researcher/AGENTS.md", adapterType: "codex_local" },
+      ],
+      projects: [],
+      issues: [],
+      skills: [],
+      company: null,
+    },
+    files: {
+      ".paperclip.yaml": 'schema: "paperclip/v1"\n',
+      "agents/coder/AGENTS.md": "---\nname: Coder\n---\n\nYou write code.\n",
+      "agents/researcher/AGENTS.md": "---\nname: Researcher\n---\n\nYou research.\n",
+    },
+    envInputs: [],
+    warnings: [],
+    errors: [],
+  } as unknown as CompanyPortabilityPreviewResult;
+}
+
 function buildImportResult(): CompanyPortabilityImportResult {
   return {
     company: { id: "company-2", name: "Imported Test", action: "created" },
@@ -186,6 +231,10 @@ describe("CompanyImport", () => {
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+    ]);
     mockAgentsApi.resume.mockResolvedValue({ id: "agent-1", status: "idle" });
     mockRoutinesApi.update.mockResolvedValue({ id: "routine-1", status: "active" });
     mockCompaniesApi.importPreview.mockResolvedValue(buildPreviewResult());
@@ -774,5 +823,112 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import complete");
     // The stored entry is cleared once the job settles.
     expect(sessionStorage.getItem("paperclip:company-import-job:company-1:acme/starter")).toBeNull();
+  });
+
+  /** Adapter selects in the picker list, in manifest order (excludes the target/collision selects). */
+  function findAdapterSelects() {
+    return Array.from(container.querySelectorAll("select"))
+      .filter((select) => select.value !== "new" && select.value !== "existing" && select.value !== "rename");
+  }
+
+  async function previewMixedAdapterPackage() {
+    mockCompaniesApi.importPreview.mockResolvedValue(buildMixedAdapterPreviewResult());
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+  }
+
+  function lastImportMeta() {
+    const call = mockCompaniesApi.importBundleAsync.mock.calls.at(-1);
+    expect(call).toBeTruthy();
+    return call![0] as { adapterOverrides?: Record<string, { adapterType: string }> };
+  }
+
+  it("keeps manifest adapters and sends no overrides when the user touches nothing", async () => {
+    await previewMixedAdapterPackage();
+
+    // The picker shows each agent's source adapter, not a coerced CEO default.
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    // Untouched agents flow through with no override at all, so the server
+    // applies each agent's manifest adapterType.
+    expect(lastImportMeta().adapterOverrides).toBeUndefined();
+  });
+
+  it("sends an override only for the agent whose adapter the user changed", async () => {
+    await previewMixedAdapterPackage();
+
+    const coderSelect = findAdapterSelects()[0];
+    expect(coderSelect?.value).toBe("claude_local");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(coderSelect!, "codex_local");
+      coderSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      coder: { adapterType: "codex_local" },
+    });
+  });
+
+  it("falls back to the CEO adapter with a visible warning when a manifest adapter is not installed", async () => {
+    // The destination has no codex_local adapter; the CEO fallback (an empty
+    // agent list defaults to claude_local) takes over — never silently.
+    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", disabled: false }]);
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).toContain("source adapter codex_local is not installed here");
+    expect(container.textContent).toContain("will use Claude Code");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "claude_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    // Only the unavailable agent is overridden; the claude_local agent still
+    // carries no override and keeps its manifest adapter.
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      researcher: { adapterType: "claude_local" },
+    });
+  });
+
+  it("picks an installed adapter as the fallback when the CEO adapter is itself unavailable", async () => {
+    // Neither codex_local nor the CEO fallback (claude_local) is installed;
+    // the fallback must be an adapter that actually exists on the
+    // destination, never an unavailable type the server would reject.
+    mockAdaptersApi.list.mockResolvedValue([{ type: "gemini_local", disabled: false }]);
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).toContain("source adapter codex_local is not installed here");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["gemini_local", "gemini_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      researcher: { adapterType: "gemini_local" },
+      coder: { adapterType: "gemini_local" },
+    });
+  });
+
+  it("fails open to manifest adapters when the adapter list cannot be read", async () => {
+    // Unknown availability must never coerce: with no adapter list, every
+    // agent keeps its manifest adapter and no fallback warning renders.
+    mockAdaptersApi.list.mockRejectedValue(new ApiError("adapters unavailable", 500, null));
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).not.toContain("is not installed here");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toBeUndefined();
   });
 });
