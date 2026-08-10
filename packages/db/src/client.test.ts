@@ -1973,15 +1973,15 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       // `CREATE TABLE` statements for `agent_ownership_grants` and
       // `agent_ownership_transfers`. Its hash was computed from that
       // pre-consolidation file content, so it no longer matches the hash of
-      // 0212_cooing_zaran.sql on disk today — this is a stale/mismatched
+      // 0212_broken_ares.sql on disk today — this is a stale/mismatched
       // row, not a missing one.
       // The two CREATE TABLE statements below are reproduced from the
       // current migration file (see
-      // packages/db/src/migrations/0212_cooing_zaran.sql) since those
+      // packages/db/src/migrations/0212_broken_ares.sql) since those
       // predate the consolidation and are unchanged; everything from the
       // `agents.is_public` column addition onward is omitted, to simulate
       // the file's content as it existed when this stale row was recorded.
-      const preConsolidationCooingZaranContent = `${[
+      const preConsolidationBrokenAresContent = `${[
         'CREATE TABLE "agent_ownership_grants" (',
         '  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,',
         '  "company_id" uuid NOT NULL,',
@@ -2030,14 +2030,14 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
         ');',
       ].join("\n")}\n`;
       const stalePreRewriteHash = createHash("sha256")
-        .update(preConsolidationCooingZaranContent)
+        .update(preConsolidationBrokenAresContent)
         .digest("hex");
-      const cooingZaranHash = await migrationHash("0212_cooing_zaran.sql");
+      const brokenAresHash = await migrationHash("0212_broken_ares.sql");
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${brokenAresHash}'`,
         );
         await sql.unsafe(
           `
@@ -2052,7 +2052,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0212_cooing_zaran.sql"],
+        pendingMigrations: ["0212_broken_ares.sql"],
         reason: "pending-migrations",
       });
 
@@ -2065,7 +2065,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       // below (single row remaining, total row count matching available
       // migrations) confirm the fix repoints the orphan instead.
       const repair = await reconcilePendingMigrationHistory(connectionString);
-      expect(repair.repairedMigrations).toEqual(["0212_cooing_zaran.sql"]);
+      expect(repair.repairedMigrations).toEqual(["0212_broken_ares.sql"]);
       expect(repair.remainingMigrations).toEqual([]);
 
       const finalState = await inspectMigrations(connectionString);
@@ -2078,10 +2078,10 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const rows = await verifySql.unsafe<{ hash: string }[]>(
-          `SELECT hash FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}' OR hash = '${stalePreRewriteHash}'`,
+          `SELECT hash FROM "drizzle"."__drizzle_migrations" WHERE hash = '${brokenAresHash}' OR hash = '${stalePreRewriteHash}'`,
         );
         expect(rows).toHaveLength(1);
-        expect(rows[0]?.hash).toBe(cooingZaranHash);
+        expect(rows[0]?.hash).toBe(brokenAresHash);
 
         const totalRows = await verifySql.unsafe<{ count: number }[]>(
           `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations"`,
@@ -2110,11 +2110,11 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
 
       await applyPendingMigrations(connectionString);
 
-      const cooingZaranHash = await migrationHash("0212_cooing_zaran.sql");
+      const brokenAresHash = await migrationHash("0212_broken_ares.sql");
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${brokenAresHash}'`,
         );
       } finally {
         await sql.end();
@@ -2123,7 +2123,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0212_cooing_zaran.sql"],
+        pendingMigrations: ["0212_broken_ares.sql"],
         reason: "pending-migrations",
       });
 
@@ -2192,7 +2192,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
           first.repairedMigrations.length + second.repairedMigrations.length;
         expect(totalRepairedCount).toBe(1);
         expect([...first.repairedMigrations, ...second.repairedMigrations]).toEqual([
-          "0212_cooing_zaran.sql",
+          "0212_broken_ares.sql",
         ]);
 
         // The winning replica is whichever call actually performed the
@@ -2212,10 +2212,10 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
         // shape, which is what makes the test deterministic.
         const [winner, loser] =
           first.repairedMigrations.length > 0 ? [first, second] : [second, first];
-        expect(winner.repairedMigrations).toEqual(["0212_cooing_zaran.sql"]);
+        expect(winner.repairedMigrations).toEqual(["0212_broken_ares.sql"]);
         expect(winner.alreadyRecordedByOtherReplica).toEqual([]);
         expect(loser.repairedMigrations).toEqual([]);
-        expect(loser.alreadyRecordedByOtherReplica).toEqual(["0212_cooing_zaran.sql"]);
+        expect(loser.alreadyRecordedByOtherReplica).toEqual(["0212_broken_ares.sql"]);
       } finally {
         await lockSql.end();
       }
@@ -2226,7 +2226,7 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
       const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const rows = await verifySql.unsafe<{ count: number }[]>(
-          `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations" WHERE hash = '${cooingZaranHash}'`,
+          `SELECT count(*)::int AS count FROM "drizzle"."__drizzle_migrations" WHERE hash = '${brokenAresHash}'`,
         );
         expect(rows[0]?.count).toBe(1);
       } finally {

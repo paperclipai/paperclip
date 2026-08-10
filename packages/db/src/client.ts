@@ -836,11 +836,16 @@ export async function reconcilePendingMigrationHistory(
 
     // Hashes for every migration file currently on disk. A history row whose
     // hash matches none of these is "unresolvable" by loadAppliedMigrations()
-    // - either it is stale (its migration's SQL was rewritten after the row
-    // was recorded, e.g. migration 0212 gaining leading `SET` statements) or
-    // it is otherwise corrupt. Either way it is a candidate to be repointed
-    // at the migration we are currently reconciling instead of being left
-    // behind as a permanent orphan while we INSERT a brand-new row for it.
+    // - either it is stale (its migration file was renamed or its content
+    // was changed after some replicas already recorded a row for the old
+    // version - e.g. via a later consolidation of migrations - so the
+    // recorded hash no longer matches anything on disk) or it is otherwise
+    // corrupt. Either way it is a candidate to be repointed at the migration
+    // we are currently reconciling instead of being left behind as a
+    // permanent orphan while we INSERT a brand-new row for it. `__drizzle_
+    // migrations` has no `name` column in this codebase, so there is no way
+    // to confirm which specific migration a stale orphan row "belongs" to -
+    // see the array-length-based handling below.
     const currentHashesToFiles = columnNames.has("hash")
       ? await mapHashesToMigrationFiles(state.availableMigrations)
       : new Map<string, string>();
@@ -912,39 +917,34 @@ export async function reconcilePendingMigrationHistory(
       // the row's hash away from the stale value); the second then matches
       // zero rows and becomes a safe no-op instead of creating a duplicate.
       // Only rows whose hash matches none of the migrations on disk are even
-      // candidates for repair. Among those, when the table has a `name`
-      // column, a candidate is only safe to repoint at `migrationFile` if it
-      // was actually recorded under that migration's name - otherwise we
-      // would be hijacking an orphan that belongs to some other (possibly
-      // deleted) migration file, silently mislabeling it. If no `name`
-      // column exists we cannot make that distinction, so fall back to the
-      // previous behavior of taking the first hash-mismatched row.
+      // candidates for repair. `__drizzle_migrations` has no `name` column
+      // here, so there is no way to confirm which specific migration a given
+      // orphan row "belongs" to - we can only reason about how many
+      // candidates exist:
+      //   - Exactly one candidate: the common, safe case. There is nothing
+      //     else it could be, so repoint it at the migration we are
+      //     currently reconciling.
+      //   - Zero candidates: there is no orphan for this migration at all -
+      //     leave `staleOrphanIndex` at its "no candidate" sentinel (-1) and
+      //     fall through to the advisory-lock-guarded INSERT path below.
+      //     (A prior version of this code threw here, which would have
+      //     blocked all subsequent migrations on any database carrying
+      //     orphan rows left behind by other, unrelated, previously
+      //     consolidated migrations - that must not happen.)
+      //   - More than one candidate: genuinely ambiguous - there is no way
+      //     to tell which one (if any) belongs to `migrationFile` without a
+      //     `name` column, so refuse to guess and throw instead.
       const invalidHashIndexes = staleOrphanRows.reduce<number[]>((acc, row, index) => {
         if (!validHashes.has(row.hash)) acc.push(index);
         return acc;
       }, []);
 
-      let staleOrphanIndex = -1;
-      if (invalidHashIndexes.length > 0) {
-        if (columnNames.has("name")) {
-          const matchingIndexes = invalidHashIndexes.filter(
-            (index) => staleOrphanRows[index].name === migrationFile,
-          );
-          if (matchingIndexes.length > 1) {
-            throw new Error(
-              `Cannot reconcile migration history for "${migrationFile}": found ${matchingIndexes.length} stale orphan rows in ${qualifiedTable} recorded under this migration's name with mismatched hashes. Refusing to guess which one to repair - resolve the ambiguity manually.`,
-            );
-          }
-          if (matchingIndexes.length === 0) {
-            throw new Error(
-              `Cannot reconcile migration history for "${migrationFile}": ${invalidHashIndexes.length} stale orphan row(s) exist in ${qualifiedTable} with hashes that match no migration on disk, but none of them is recorded under this migration's name. Refusing to repoint an unrelated row - resolve the ambiguity manually.`,
-            );
-          }
-          staleOrphanIndex = matchingIndexes[0];
-        } else {
-          staleOrphanIndex = invalidHashIndexes[0];
-        }
+      if (invalidHashIndexes.length > 1) {
+        throw new Error(
+          `Cannot reconcile migration history for "${migrationFile}": found ${invalidHashIndexes.length} stale orphan rows in ${qualifiedTable} with hashes that match no migration on disk. There is no \`name\` column to determine which (if any) belongs to this migration - refusing to guess which one to repair. Resolve the ambiguity manually.`,
+        );
       }
+      const staleOrphanIndex = invalidHashIndexes.length === 1 ? invalidHashIndexes[0] : -1;
       const staleOrphan = staleOrphanIndex >= 0 ? staleOrphanRows[staleOrphanIndex] : undefined;
 
       if (staleOrphan) {
@@ -962,18 +962,33 @@ export async function reconcilePendingMigrationHistory(
         // either way it is no longer a stale orphan candidate for a later
         // iteration of this loop.
         staleOrphanRows.splice(staleOrphanIndex, 1);
-        if (updatedRows.length === 0) {
-          // Another replica concurrently repointed this same orphan row
-          // first (it matched on the pre-update `hash = <stale hash>` WHERE
-          // clause, which only one racer can satisfy). This replica did not
-          // actually perform the repair, so - mirroring the INSERT path's
-          // `alreadyRecordedByOtherReplica` handling below - it must not be
-          // counted in `repairedMigrations`.
-          alreadyRecordedByOtherReplica.push(migrationFile);
-        } else {
+        if (updatedRows.length > 0) {
           repairedMigrations.push(migrationFile);
+          continue;
         }
-        continue;
+
+        // The UPDATE matched zero rows: some other racer got to this exact
+        // orphan row first (it matched on the pre-update
+        // `hash = <stale hash>` WHERE clause, which only one racer can
+        // satisfy). Since there is no `name` column, we cannot assume that
+        // winning racer was reconciling THIS migration - it could have been
+        // a different replica reconciling a different pending migration
+        // that happened to see the same single orphan candidate. So we
+        // cannot conclude `migrationFile` is now recorded just because we
+        // lost this race; check explicitly.
+        const nowRecorded = await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, migrationFile, hash);
+        if (nowRecorded) {
+          // Our migration really was the one the winning racer recorded -
+          // mirroring the INSERT path's `alreadyRecordedByOtherReplica`
+          // handling below, it must not be counted in `repairedMigrations`.
+          alreadyRecordedByOtherReplica.push(migrationFile);
+          continue;
+        }
+
+        // The orphan we tried to claim was taken by someone reconciling a
+        // different migration, and `migrationFile` itself is still
+        // unrecorded. Fall through to the advisory-lock-guarded INSERT path
+        // below rather than incorrectly reporting this as already handled.
       }
 
       if (!columnNames.has("hash") && !columnNames.has("name") && !columnNames.has("created_at")) {

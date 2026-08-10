@@ -17,7 +17,7 @@ import { companies } from "./companies.js";
  * Renders a CHECK constraint's `in (...)` value list from a TS constant, so
  * the constraint text is derived rather than hand-typed a second time.
  * `multiline` reproduces the exact indentation already committed in
- * 0212_cooing_zaran.sql / meta/0212_snapshot.json for the source
+ * 0212_broken_ares.sql / meta/0212_snapshot.json for the source
  * check -- this must stay byte-identical to what's already shipped, since
  * drizzle-kit diffs the rendered constraint text against the snapshot to
  * decide whether a new migration is needed.
@@ -191,6 +191,22 @@ export const agentOwnershipGrants = pgTable(
     // in either role is rejected, not just a duplicate of the same role.
     // `role != 'owner'` excludes owner rows, which are governed separately
     // by `oneActiveOwnerPerAgentIdx` above.
+    //
+    // Deliberately does NOT prevent a principal from simultaneously holding
+    // the active owner grant (a separate row under oneActiveOwnerPerAgentIdx)
+    // AND an active admin/user grant (a second row here). That is not an
+    // oversight: role tiers are not mutually exclusive in this model --
+    // owner is a strict superset of admin/user permissions everywhere these
+    // roles are consulted. `agentOwnershipService.hasActiveGrant()`, the
+    // sole predicate `authorization.ts#applyAgentOwnershipEnforcement`
+    // checks, treats "owner, admin, or user" as an undifferentiated
+    // "has *any* active grant" boolean -- it never compares roles against
+    // each other or assumes a principal holds at most one grant total. An
+    // extra admin/user row alongside an owner row is therefore redundant,
+    // not unsafe or double-counted. Do not "fix" this by widening the
+    // predicate to include owner rows -- doing so would let a stray
+    // admin/user grant block granting/transferring ownership itself via a
+    // spurious unique-violation.
     activeRolePerPrincipalIdx: uniqueIndex("agent_ownership_grants_active_role_idx")
       .on(table.agentId, table.principalType, table.principalId)
       .where(sql`${table.revokedAt} is null and ${table.role} != 'owner'`),

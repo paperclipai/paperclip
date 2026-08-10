@@ -14,7 +14,7 @@ import {
  * exist to give bad values a compile-time error instead of an opaque CHECK
  * failure at write time. That guarantee only holds if those TS unions stay
  * byte-for-byte in sync with the CHECK constraints actually enforced in
- * Postgres (0212_cooing_zaran.sql). Nothing else keeps them in
+ * Postgres (0212_broken_ares.sql). Nothing else keeps them in
  * sync -- a comment would only catch drift someone remembers to read. This
  * test introspects `pg_constraint` on a real embedded Postgres instance
  * after running the migrations, and fails loudly the moment the two sides

@@ -50,6 +50,20 @@ CREATE TABLE "agent_ownership_transfers" (
 -- adds a constant-default column as a metadata-only change, but the lock must
 -- still wait for any open transaction on the table to finish. Fail fast under
 -- contention instead of stalling the deploy indefinitely.
+--
+-- SCOPE NOTE: `SET LOCAL` applies for the rest of THIS transaction, not just
+-- the two ADD COLUMN statements immediately below. This migration runs as a
+-- single transaction, so the 2s lock_timeout also covers the six
+-- `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY` statements further down
+-- that reference the pre-existing `agents`/`companies` tables (the FKs on
+-- agent_ownership_grants.agent_id and agent_ownership_transfers.agent_id) --
+-- those ADD CONSTRAINT FOREIGN KEY statements take a SHARE ROW EXCLUSIVE lock
+-- on `agents`/`companies` while validating the constraint. Under write load,
+-- any one of those FK additions -- not just the two ADD COLUMN statements --
+-- can hit this same 2s timeout and roll back the whole transaction, including
+-- the CREATE TABLE statements above. If this migration starts failing
+-- intermittently in a busy environment, check contention on `agents`/
+-- `companies` broadly, not just at the ADD COLUMN lines.
 SET LOCAL lock_timeout = '2s';--> statement-breakpoint
 SET LOCAL statement_timeout = '30s';--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "is_public" boolean DEFAULT false NOT NULL;--> statement-breakpoint
