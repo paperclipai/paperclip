@@ -12525,7 +12525,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        await cancelQueuedRunForStaleIssue(run, staleness);
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -12827,7 +12827,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function cancelQueuedRunForStaleIssue(
     run: typeof heartbeatRuns.$inferSelect,
-    issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
     const now = new Date();
@@ -12851,22 +12850,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: staleness.reason,
     });
 
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, run.companyId),
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, run.id),
-        ),
-      );
-
     await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -12874,6 +12857,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    // A stage handoff can defer the new participant's wake behind this queued
+    // holder. Use the normal finalization path so cancelling the stale holder
+    // also promotes that deferred wake instead of parking it forever.
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
 
     return cancelled;
   }
