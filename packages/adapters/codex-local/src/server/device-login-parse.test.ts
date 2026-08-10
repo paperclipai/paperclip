@@ -84,10 +84,13 @@ describe("parseDeviceLoginPrompt", () => {
   });
 
   it("parse_returns_null_for_malformed_short_code", () => {
-    const shortCode = [EXACT_URL, "ABC-EFGHJ"].join("\n"); // 3 then 5
-    const longCode = [EXACT_URL, "ABCDE-EFGHJ"].join("\n"); // 5 then 5
-    const noHyphen = [EXACT_URL, "ABCDEFGHJ"].join("\n");
-    const noCode = [EXACT_URL, "no code on this line"].join("\n");
+    // Each input carries the code preamble after the URL, so the test exercises
+    // the code-structure check and not the preamble check.
+    const preamble = "2. Enter this one-time code (expires in 15 minutes)";
+    const shortCode = [EXACT_URL, preamble, "ABC-EFGHJ"].join("\n"); // 3 then 5
+    const longCode = [EXACT_URL, preamble, "ABCDE-EFGHJ"].join("\n"); // 5 then 5
+    const noHyphen = [EXACT_URL, preamble, "ABCDEFGHJ"].join("\n");
+    const noCode = [EXACT_URL, preamble, "no code on this line"].join("\n");
     expect(parseDeviceLoginPrompt(shortCode)).toBeNull();
     expect(parseDeviceLoginPrompt(longCode)).toBeNull();
     expect(parseDeviceLoginPrompt(noHyphen)).toBeNull();
@@ -121,6 +124,34 @@ describe("parseDeviceLoginPrompt", () => {
     // parser does not bind a distant token to the URL.
     const filler = "unrelated log line\n".repeat(40);
     const text = [EXACT_URL, filler, "ABCD-EFGHJ"].join("\n");
+    expect(parseDeviceLoginPrompt(text)).toBeNull();
+  });
+
+  it("parse_ignores_a_code_between_the_url_and_the_code_preamble", () => {
+    // A code-shaped token sits after the URL but before the "one-time code"
+    // preamble line. The parser anchors the code on the preamble, so it ignores
+    // the earlier token and returns the real code after the preamble.
+    const text = [
+      "1. Open this link in your browser and sign in to your account",
+      EXACT_URL,
+      "session id WXYZ-98765 for this attempt",
+      "2. Enter this one-time code (expires in 15 minutes)",
+      "ABCD-EFGHJ",
+    ].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
+  it("parse_returns_null_when_the_code_preamble_is_absent", () => {
+    // A valid code follows the URL, but the "one-time code" preamble is absent.
+    // The parser requires the preamble, so it rejects the output. This binds the
+    // code to the prompt structure and not to a bare code-shaped token.
+    const text = [
+      "1. Open this link in your browser and sign in to your account",
+      EXACT_URL,
+      "ABCD-EFGHJ",
+    ].join("\n");
     expect(parseDeviceLoginPrompt(text)).toBeNull();
   });
 

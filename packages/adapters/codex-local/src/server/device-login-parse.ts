@@ -45,13 +45,25 @@ const TRAILING_PUNCTUATION_RE = /[)\].,;:!]+$/;
 // on a word boundary at the start and requires a space or the end after it.
 const SHORT_CODE_RE = /(?:^|\s)([A-Za-z0-9?]{4}-[A-Za-z0-9?]{5})(?=\s|$)/m;
 
+// The prompt line that introduces the one-time code. The Codex prompt prints
+// the phrase "one-time code" on the line right before the code. The parser
+// anchors the code search on this phrase. So the code binds to the prompt line
+// that introduces it. A code-shaped token that sits between the URL and this
+// phrase cannot bind, because the parser reads the code only after the phrase.
+const CODE_PREAMBLE_RE = /one-time code/i;
+
 // The maximum number of characters between the end of the URL and the start of
-// the code. The Codex prompt puts the code about two lines after the URL. The
-// parser looks for the code only inside this window after the URL. So an
-// unrelated code-shaped token that sits far away in the output cannot bind to
-// the URL. The window is large enough for the real gap, which is about 52
+// the code preamble. The Codex prompt prints the preamble about one line after
+// the URL. The parser looks for the preamble only inside this window after the
+// URL. So a preamble far away in the output cannot bind to the URL.
+const MAX_URL_TO_PREAMBLE_GAP = 256;
+
+// The maximum number of characters between the end of the code preamble and the
+// start of the code. The Codex prompt prints the code about one line after the
+// preamble. The parser looks for the code only inside this window after the
+// preamble. The window is large enough for the real gap, which is about 25
 // characters, and small enough to reject distant noise.
-const MAX_URL_TO_CODE_GAP = 256;
+const MAX_PREAMBLE_TO_CODE_GAP = 128;
 
 // The result of a URL search: the canonical URL and the index of the first
 // character after the matched URL token. The code search starts at this index.
@@ -94,23 +106,31 @@ function findExactDeviceUrl(text: string): DeviceUrlMatch | null {
 }
 
 /**
- * Returns the one-time code when `text` holds a token with the structure
- * `XXXX-XXXXX` inside the window that starts at `fromIndex`. The parser reads
- * the code only after the URL, so the code binds to its URL. Returns null
- * otherwise.
+ * Returns the one-time code when `text` holds the code preamble after
+ * `fromIndex` and a token with the structure `XXXX-XXXXX` after that preamble.
+ * The parser first finds the "one-time code" preamble in a window after the URL.
+ * It then reads the first code inside a window after the preamble. So the code
+ * binds to the prompt line that introduces it, and a code-shaped token between
+ * the URL and the preamble cannot bind. Returns null when the preamble is
+ * absent, or when no code follows the preamble inside the window.
  */
 function findShortCode(text: string, fromIndex: number): string | null {
-  const window = text.slice(fromIndex, fromIndex + MAX_URL_TO_CODE_GAP);
-  const match = SHORT_CODE_RE.exec(window);
+  const preambleWindow = text.slice(fromIndex, fromIndex + MAX_URL_TO_PREAMBLE_GAP);
+  const preambleMatch = CODE_PREAMBLE_RE.exec(preambleWindow);
+  if (!preambleMatch) return null;
+  const codeStart = fromIndex + preambleMatch.index + preambleMatch[0].length;
+  const codeWindow = text.slice(codeStart, codeStart + MAX_PREAMBLE_TO_CODE_GAP);
+  const match = SHORT_CODE_RE.exec(codeWindow);
   return match ? match[1] : null;
 }
 
 /**
  * Parses Codex device-login output. Removes ANSI color sequences first, so
  * colored output from Codex CLI 0.128.0 and later reads the same as plain
- * output. The parser reads the URL first, then reads the first code that follows
- * the URL inside a fixed window. So the code binds to its URL, and an unrelated
- * code elsewhere in the output cannot form a prompt. Returns the login URL and
+ * output. The parser reads the URL first, then finds the "one-time code"
+ * preamble after the URL, then reads the first code after that preamble. So the
+ * code binds to the prompt line that introduces it, and a code-shaped token
+ * between the URL and the preamble cannot form a prompt. Returns the login URL and
  * the one-time code when both are present and valid. Returns null for any other
  * input, including a non-string input, an absent prompt, a URL with a query or a
  * fragment, a wrong origin or path, and a malformed short code. Never throws on

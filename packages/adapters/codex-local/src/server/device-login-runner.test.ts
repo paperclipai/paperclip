@@ -50,7 +50,11 @@ describe("runDeviceLogin", () => {
   it("runner_reports_prompt_then_success", async () => {
     const { driver, disposeCalls } = createFakeDriver({
       // The prompt spans two chunks; the runner must join them and fire once.
-      chunks: [`1. Open this link\n${REAL_SHAPED_URL}\n`, `${REAL_SHAPED_CODE}\nDone.\n`],
+      // The chunk boundary falls inside the prompt, after the code preamble.
+      chunks: [
+        `1. Open this link\n${REAL_SHAPED_URL}\n2. Enter this one-time code (expires in 15 minutes)\n`,
+        `${REAL_SHAPED_CODE}\nDone.\n`,
+      ],
       exitCode: 0,
     });
     const onPrompt = vi.fn();
@@ -78,7 +82,10 @@ describe("runDeviceLogin", () => {
     // surfaces it.
     const noise = "unrelated sandbox log line\n".repeat(20000);
     const { driver } = createFakeDriver({
-      chunks: [noise, `1. Open this link\n${REAL_SHAPED_URL}\n${REAL_SHAPED_CODE}\nDone.\n`],
+      chunks: [
+        noise,
+        `1. Open this link\n${REAL_SHAPED_URL}\n2. Enter this one-time code (expires in 15 minutes)\n${REAL_SHAPED_CODE}\nDone.\n`,
+      ],
       exitCode: 0,
     });
     const onPrompt = vi.fn();
