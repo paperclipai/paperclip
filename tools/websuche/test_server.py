@@ -67,3 +67,31 @@ def test_unerwarteter_fehler_gibt_500():
     code, rumpf = behandle_suche({"frage": "f"}, rechercheur=rechercheur)
     assert code == 500
     assert "kaputt" in rumpf["fehler"]
+
+
+def test_nicht_objekt_gibt_400():
+    """Nicht-objekthafte Bodies (Array, String, Zahl) ergeben HTTP 400."""
+    for body in [[1, 2, 3], "string", 42, True, None]:
+        code, rumpf = behandle_suche(body, rechercheur=lambda *a, **k: ERGEBNIS)
+        assert code == 400
+        assert "Objekt" in rumpf["fehler"]
+
+
+def test_string_false_wird_falsch():
+    """Der String 'false' soll zu False konvertiert werden, nicht True."""
+    gesehen = {}
+
+    def rechercheur(frage, **kwargs):
+        gesehen.update(kwargs)
+        return ERGEBNIS
+
+    behandle_suche({"frage": "f", "gleiche_domain_erlauben": "false"},
+                   rechercheur=rechercheur)
+    assert gesehen["gleiche_domain_erlauben"] is False
+
+    # Auch "0", "", "nein" sollen False sein
+    for wert in ["0", "", "nein"]:
+        gesehen.clear()
+        behandle_suche({"frage": "f", "gleiche_domain_erlauben": wert},
+                       rechercheur=rechercheur)
+        assert gesehen["gleiche_domain_erlauben"] is False, f"'{wert}' sollte False sein"

@@ -17,8 +17,25 @@ from websuche import recherchiere
 PORT = 7789
 
 
+def _zu_bool(wert, standard=False):
+    """String-sichere Bool-Konversion.
+
+    - True/False: direkt durchlässig
+    - "false", "0", "", "nein": False
+    - Alle anderen Strings: True (nicht leer)
+    - Andere Typen: bool()
+    """
+    if isinstance(wert, bool):
+        return wert
+    if isinstance(wert, str):
+        return wert.lower() not in ("false", "0", "", "nein")
+    return bool(wert) if wert is not None else standard
+
+
 def behandle_suche(rumpf: dict, rechercheur=None) -> tuple[int, dict]:
     rechercheur = rechercheur or recherchiere
+    if not isinstance(rumpf, dict):
+        return 400, {"fehler": "Body muss ein JSON-Objekt sein"}
     frage = (rumpf.get("frage") or "").strip()
     if not frage:
         return 400, {"fehler": "Feld 'frage' fehlt oder ist leer"}
@@ -28,7 +45,7 @@ def behandle_suche(rumpf: dict, rechercheur=None) -> tuple[int, dict]:
             quellen=int(rumpf.get("quellen", 3)),
             zeichen=int(rumpf.get("zeichen", 12000)),
             deadline=float(rumpf.get("deadline", 25.0)),
-            gleiche_domain_erlauben=bool(rumpf.get("gleiche_domain_erlauben", False)),
+            gleiche_domain_erlauben=_zu_bool(rumpf.get("gleiche_domain_erlauben", False)),
         )
     except BackendFehler as e:
         # 503 statt 200 mit leerer Liste: ein leeres Ergebnis laese sich beim
