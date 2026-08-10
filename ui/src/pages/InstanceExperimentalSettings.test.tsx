@@ -49,6 +49,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle classic task interface experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const DECISIONS_TOGGLE_SELECTOR =
@@ -76,6 +78,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
+    enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -291,13 +294,52 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
   });
 
-  it("no longer lists a Chat-Style Tasks card (the redesign is the default)", async () => {
+  it("renders and patches the Classic Task Interface experimental toggle on and off", async () => {
     await renderPage();
 
-    expect(container.textContent).not.toContain("Chat-Style Tasks");
-    expect(
-      container.querySelector('button[aria-label="Toggle chat-style tasks experimental setting"]'),
-    ).toBeNull();
+    expect(container.textContent).toContain("Classic Task Interface");
+    expect(container.textContent).toContain(
+      "Restores the previous task detail page",
+    );
+    expect(container.textContent).toContain(
+      "Switching takes effect immediately. No task data is affected.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableClassicTaskInterface: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.textContent = "";
+    await renderPage();
+
+    const enabledToggle = container.querySelector<HTMLButtonElement>(
+      CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR,
+    );
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enabledToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableClassicTaskInterface: false,
+    });
   });
 
   it("renders and patches the Decisions experimental toggle", async () => {

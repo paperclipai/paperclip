@@ -439,9 +439,10 @@ interface IssueChatThreadProps {
   linkedRuns?: IssueChatLinkedRun[];
   timelineEvents?: IssueTimelineEvent[];
   /**
-   * Work-mode switch history from the activity feed. Only TaskChatThread
-   * consumes this to tag each agent reply with the mode its request ran
-   * under; this thread ignores it.
+   * Work-mode switch history from the activity feed. Only the chat-style
+   * TaskChatThread consumes this to tag each agent reply with the mode its
+   * request ran under; this thread — the classic task view behind
+   * enableClassicTaskInterface — ignores it.
    */
   workModeChanges?: IssueWorkModeChange[];
   liveRuns?: LiveRunForIssue[];
@@ -513,14 +514,14 @@ interface IssueChatThreadProps {
   /**
    * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
    * the thread's scroll viewport so it scrolls away with the messages. Only
-   * TaskChatThread consumes this; this thread ignores it — its header stays
-   * in the page flow.
+   * the chat-style TaskChatThread consumes this; this thread ignores it — its
+   * header stays in the page flow.
    */
   threadHeader?: ReactNode;
   /**
    * The task description rendered as the requester's first chat bubble
-   * (PAP-375). Only TaskChatThread consumes it; this thread ignores it — its
-   * description stays in the page header via InlineEditor.
+   * (PAP-375). Only the chat-style TaskChatThread consumes it; this thread
+   * ignores it — its description stays in the page header via InlineEditor.
    */
   issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";

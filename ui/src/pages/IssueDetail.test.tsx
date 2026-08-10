@@ -2257,6 +2257,30 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender).toHaveBeenCalled();
   });
 
+  it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableClassicTaskInterface: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
+    expect(mockIssueChatThreadRender).toHaveBeenCalled();
+  });
+
   it("passes @task mention options to the thread by default", async () => {
     const mentionPoolIssue = {
       ...createIssue(),

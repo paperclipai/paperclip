@@ -171,30 +171,40 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
-  // When hosted by the PropertiesPanel, the tab strip portals into the pane's
-  // header bar (left of the window controls). The slot only exists once the
-  // panel has committed, hence the effect; inline hosts (mobile sheet) keep
-  // the tab strip in place.
+  // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
+  // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
+  // flag OFF — including while settings load — renders the chat-style tab
+  // shell. This pane is always task-scoped, so the flag alone is a sufficient
+  // gate.
+  const taskChatShellEnabled = experimentalSettings?.enableClassicTaskInterface !== true;
+  // When hosted by the resizable PropertiesPanel, the tab strip portals into
+  // the pane's header bar (left of the window controls). The slot only exists
+  // once the panel has committed, hence the effect; inline hosts (mobile sheet)
+  // keep the tab strip in place.
   const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (inline) {
+    if (!taskChatShellEnabled || inline) {
       setPaneHeaderSlot(null);
       return;
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
-  }, [inline]);
+  }, [taskChatShellEnabled, inline]);
   // Plan earns a tab as soon as an issue is in planning mode, even before the
   // plan document arrives. This keeps an expected plan surface visible and
   // lets its diagnostic empty state explain what is missing.
   // Same query keys as the tab bodies, so these share their cached fetches.
-  const { data: paneTabPlanDocument } = useIssuePlanDocument(issue.id);
+  const { data: paneTabPlanDocument } = useIssuePlanDocument(
+    taskChatShellEnabled ? issue.id : null,
+  );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
     queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+    enabled: taskChatShellEnabled,
   });
   const { data: paneTabAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
+    enabled: taskChatShellEnabled,
   });
   const hasPlanTab =
     Boolean(paneTabPlanDocument)
@@ -2502,8 +2512,11 @@ export function IssueProperties({
     </div>
   );
 
-  // Nothing to switch between: no tab strip — the header bar shows a plain
-  // title and the pane body is just the properties stack.
+  // Classic Task Interface ON: the legacy stacked pane, byte-for-byte.
+  if (!taskChatShellEnabled) return propertiesBody;
+
+  // Chat-style with nothing to switch between: no tab strip — the header bar
+  // shows a plain title and the pane body is just the properties stack.
   if (!hasPlanTab && !hasArtifactsTab) {
     return (
       <>
@@ -2515,7 +2528,7 @@ export function IssueProperties({
     );
   }
 
-  // Wrap the same body in a Properties | Plan | Artifacts tab shell
+  // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
   // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
   // tab is unchanged. Panel hosts portal the strip into the pane header bar;
   // portals keep React context, so the Tabs root still drives it.

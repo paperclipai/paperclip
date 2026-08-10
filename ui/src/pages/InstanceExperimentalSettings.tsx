@@ -360,6 +360,7 @@ export function InstanceExperimentalSettings() {
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
+  const enableClassicTaskInterface = experimentalQuery.data?.enableClassicTaskInterface === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
@@ -597,6 +598,17 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableCases}
         ariaLabel="Toggle cases experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Classic Task Interface"
+        description="Restores the previous task detail page: the page-level header with inline description editing, the plain comment thread, and the fixed Properties sidebar. Chat-only features — streaming activity folding, inline plan and question cards, the three-mode composer — are unavailable in the classic view."
+        footnote="Switching takes effect immediately. No task data is affected."
+        checked={enableClassicTaskInterface}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableClassicTaskInterface: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableClassicTaskInterface}
+        ariaLabel="Toggle classic task interface experimental setting"
       />
 
       {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (

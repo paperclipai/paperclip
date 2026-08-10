@@ -6,6 +6,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PropertiesPanel } from "./PropertiesPanel";
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 const mockPanelState = vi.hoisted(() => ({
   panelContent: null as unknown,
   panelVisible: true,
@@ -64,7 +72,39 @@ describe("PropertiesPanel", () => {
     vi.clearAllMocks();
   });
 
-  describe("resizable panel (default)", () => {
+  describe("classic task interface on (legacy panel)", () => {
+    beforeEach(() => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableClassicTaskInterface: true,
+      });
+    });
+
+    it("renders the fixed-width panel with no grip and no maximize button", async () => {
+      await renderPanel();
+      const aside = container.querySelector("aside");
+      expect(aside).not.toBeNull();
+      expect(aside!.style.width).toBe("320px");
+      expect(aside!.querySelector('[role="separator"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Maximize panel"]')).toBeNull();
+      // Inner wrapper keeps the hardcoded width classes exactly as today.
+      expect(aside!.querySelector(".w-80")).not.toBeNull();
+    });
+
+    it("collapses to width 0 when the panel is hidden", async () => {
+      await renderPanel({ panelVisible: false });
+      const aside = container.querySelector("aside");
+      expect(aside!.style.width).toBe("0px");
+      expect(aside!.style.opacity).toBe("0");
+    });
+  });
+
+  describe("classic task interface off (default resizable pane)", () => {
+    beforeEach(() => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableClassicTaskInterface: false,
+      });
+    });
+
     it("renders the default 322px width with a drag grip and a maximize button", async () => {
       await renderPanel();
       const aside = container.querySelector("aside");

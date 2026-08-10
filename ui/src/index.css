@@ -196,7 +196,8 @@
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 
   /* ────────────────────────────────────────────────────────────────────────
-     Motion tokens — chat-style task thread.
+     Motion tokens — chat-style task thread (default; classic legacy view sits
+     behind enableClassicTaskInterface).
 
      These are the single source of truth for the redesigned thread's motion.
      Kept in :root (NOT @theme inline) on purpose: @theme inline bakes literals
@@ -548,7 +549,8 @@
 }
 
 /* ────────────────────────────────────────────────────────────────────────
-   Chat-style task thread animation utilities.
+   Chat-style task thread animation utilities (default view; classic legacy
+   view sits behind enableClassicTaskInterface).
 
    These classes are the ONLY place the redesigned thread's motion is applied;
    every duration/easing is a var(--motion-*) reference (never a literal), so
