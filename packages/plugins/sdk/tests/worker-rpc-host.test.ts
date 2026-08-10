@@ -755,3 +755,108 @@ describe("worker execute.log emitter", () => {
     ]);
   });
 });
+
+describe("worker http.fetch body encoding", () => {
+  // Drive a data handler that fetches through ctx.http and echoes the bytes it
+  // received, with the test standing in for the host end of the RPC pipe.
+  async function runFetchProbe(hostReply: Record<string, unknown>) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const fetchRequests: unknown[] = [];
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => {
+          const res = await ctx.http.fetch("https://files.example/report.docx");
+          return { bytes: Array.from(new Uint8Array(await res.arrayBuffer())) };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method === "http.fetch") {
+        fetchRequests.push(message.params);
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, hostReply)));
+      }
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.fetch-encoding-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Fetch encoding test",
+          description: "Fetch encoding test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["http.outbound"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+      const result = await callWorker("getData", { key: "probe", companyId: "company-a", params: {} });
+      return { fetchRequests, result: result as { bytes: number[] } };
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  }
+
+  it("requests base64 and decodes a marked body back to the original bytes", async () => {
+    // ZIP magic plus bytes that are NOT valid utf8 — the exact shape a .docx
+    // body has, and exactly what a utf8 round-trip destroys (U+FFFD).
+    const bytes = [0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x9c, 0x01];
+    const { fetchRequests, result } = await runFetchProbe({
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      body: Buffer.from(bytes).toString("base64"),
+      bodyEncoding: "base64",
+    });
+    expect(fetchRequests).toHaveLength(1);
+    expect(fetchRequests[0]).toMatchObject({ responseEncoding: "base64" });
+    expect(result.bytes).toEqual(bytes);
+  });
+
+  it("still treats an unmarked body as utf8 text (host predates the option)", async () => {
+    const { result } = await runFetchProbe({
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "text/plain" },
+      body: "plain text body",
+    });
+    expect(Buffer.from(Uint8Array.from(result.bytes)).toString("utf8")).toBe("plain text body");
+  });
+});

@@ -269,7 +269,14 @@ async function executePinnedHttpRequest(
   target: ValidatedFetchTarget,
   init: RequestInit | undefined,
   signal: AbortSignal,
-): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
+  responseEncoding: "utf8" | "base64",
+): Promise<{
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+  bodyEncoding?: "base64";
+}> {
   const { options, body } = buildPinnedRequestOptions(target, init);
 
   const response = await new Promise<IncomingMessage>((resolve, reject) => {
@@ -311,11 +318,16 @@ async function executePinnedHttpRequest(
     }
   }
 
+  // utf8 is the legacy default and is LOSSY for binary bodies (invalid byte
+  // sequences become U+FFFD). Workers that need fidelity ask for base64; the
+  // marker in the result tells them the request was honored.
+  const raw = Buffer.concat(chunks);
   return {
     status: response.statusCode ?? 500,
     statusText: response.statusMessage ?? "",
     headers,
-    body: Buffer.concat(chunks).toString("utf8"),
+    body: raw.toString(responseEncoding),
+    ...(responseEncoding === "base64" ? { bodyEncoding: "base64" as const } : {}),
   };
 }
 
@@ -1574,7 +1586,8 @@ export function buildHostServices(
 
         try {
           const init = params.init as RequestInit | undefined;
-          return await executePinnedHttpRequest(target, init, controller.signal);
+          const responseEncoding = params.responseEncoding === "base64" ? "base64" : "utf8";
+          return await executePinnedHttpRequest(target, init, controller.signal, responseEncoding);
         } finally {
           clearTimeout(timeout);
         }
