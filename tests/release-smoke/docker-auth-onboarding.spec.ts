@@ -12,6 +12,9 @@ const ADMIN_PASSWORD =
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const MISSION = "Ship a reliable release smoke suite for Paperclip.";
 const AGENT_NAME = "CEO";
+// Seeded by the wizard's launch step (DEFAULT_TASK_TITLE in
+// ui/src/components/OnboardingWizard.tsx).
+const FIRST_TASK_TITLE = "Hire your first engineer and create a hiring plan";
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -110,7 +113,63 @@ test.describe("Docker authenticated onboarding smoke", () => {
       `${baseUrl}/api/companies/${company!.id}/goals`
     );
     expect(goalsRes.ok()).toBe(true);
-    const goals = (await goalsRes.json()) as Array<{ id: string; title: string }>;
-    expect(goals.length).toBeGreaterThan(0);
+    const goals = (await goalsRes.json()) as Array<{
+      id: string;
+      title: string;
+      level: string;
+      status: string;
+    }>;
+    expect(goals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: MISSION,
+          level: "company",
+          status: "active",
+        }),
+      ])
+    );
+
+    const issuesRes = await page.request.get(
+      `${baseUrl}/api/companies/${company!.id}/issues`
+    );
+    expect(issuesRes.ok()).toBe(true);
+    const issues = (await issuesRes.json()) as Array<{
+      id: string;
+      title: string;
+      assigneeAgentId: string | null;
+    }>;
+    const seededIssue = issues.find((entry) => entry.title === FIRST_TASK_TITLE);
+    expect(seededIssue).toBeTruthy();
+    expect(seededIssue!.assigneeAgentId).toBe(ceoAgent!.id);
+
+    await expect.poll(
+      async () => {
+        const runsRes = await page.request.get(
+          `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${ceoAgent!.id}`
+        );
+        expect(runsRes.ok()).toBe(true);
+        const runs = (await runsRes.json()) as Array<{
+          agentId: string;
+          invocationSource: string;
+          status: string;
+        }>;
+        const latestRun = runs.find((entry) => entry.agentId === ceoAgent!.id);
+        return latestRun
+          ? {
+              invocationSource: latestRun.invocationSource,
+              status: latestRun.status,
+            }
+          : null;
+      },
+      {
+        timeout: 30_000,
+        intervals: [1_000, 2_000, 5_000],
+      }
+    ).toEqual(
+      expect.objectContaining({
+        invocationSource: "assignment",
+        status: expect.stringMatching(/^(queued|running|succeeded|failed)$/),
+      })
+    );
   });
 });
