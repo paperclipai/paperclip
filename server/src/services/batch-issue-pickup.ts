@@ -213,6 +213,12 @@ export function isManualOrOperatorTrigger(input: {
   const source = (input.invocationSource ?? "").toLowerCase();
   if (trigger === "manual" || source === "on_demand") return true;
   const context = parseObject(input.contextSnapshot);
+  // A scoped operator wake may coalesce into an existing assignment-created
+  // row. The immutable DB columns still say `assignment`/`system`, while the
+  // merged context preserves the authoritative later wake source. Do not make
+  // that one-shot operator work wait for a lane batch window.
+  const contextWakeSource = readNonEmptyString(context.wakeSource)?.toLowerCase();
+  if (contextWakeSource === "on_demand" || contextWakeSource === "manual") return true;
   if (context.forceFreshSession === true) return true;
   if (readNonEmptyString(context.requestedByActorType) === "user") return true;
   return false;

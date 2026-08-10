@@ -73,6 +73,17 @@ describe("batch-issue-pickup policy", () => {
         contextSnapshot: { issueId: "i1", wakeReason: "issue_assigned" },
       }),
     ).toBe(false);
+    // Manual wakeups can coalesce into an assignment-created run. The row's
+    // immutable source remains `assignment`, so the later context wake source
+    // is the authority for batch exemption.
+    expect(
+      isBatchableAssignmentWake({
+        wakeReason: "issue_assigned",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        contextSnapshot: { issueId: "i1", wakeReason: "issue_assigned", wakeSource: "on_demand" },
+      }),
+    ).toBe(false);
   });
 
   it("holds a lone young batchable assignment for the lane window", () => {
