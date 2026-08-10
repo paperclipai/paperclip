@@ -44,7 +44,6 @@ export const BATCH_PICKUP_EXEMPT_WAKE_REASONS: ReadonlySet<string> = new Set([
 /** Assignment-shaped reasons eligible for multi-issue claim batching. */
 export const BATCHABLE_ASSIGNMENT_WAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_assigned",
-  "issue_assignment_recovery",
 ]);
 
 export type BatchLaneClass = "csuite" | "engineering" | "drafter" | "system" | "default";

@@ -44,6 +44,16 @@ describe("batch-issue-pickup policy", () => {
       ).toBe(false);
     }
     expect(BATCHABLE_ASSIGNMENT_WAKE_REASONS.has("issue_assigned")).toBe(true);
+    // A recovery is an explicit continuation of work that was already admitted.
+    // Holding it for a writer's batching window looks like a stuck agent and
+    // makes a transient failure cost another full context rebuild.
+    expect(BATCHABLE_ASSIGNMENT_WAKE_REASONS.has("issue_assignment_recovery")).toBe(false);
+    expect(
+      isBatchableAssignmentWake({
+        wakeReason: "issue_assignment_recovery",
+        contextSnapshot: { issueId: "i1", wakeReason: "issue_assignment_recovery" },
+      }),
+    ).toBe(false);
     expect(
       isBatchableAssignmentWake({
         wakeReason: "issue_assigned",
