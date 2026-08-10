@@ -213,3 +213,35 @@ def test_prozesslaufzeit_bleibt_im_budget(tmp_path):
     assert "Rechercheergebnis" in lauf.stdout
     assert "Abbruch" in lauf.stdout  # die haengende Quelle als Fehlerquelle
     assert dauer < 3.0, f"Prozess lief {dauer:.2f}s trotz 0,3s Deadline"
+
+
+def test_shebang_zeigt_auf_einen_venv_interpreter():
+    """`python3` ist auf dieser Maschine 3.9 ohne bs4 — live nachgewiesen:
+    der Agent bekaeme einen Traceback statt eines Rechercheergebnisses."""
+    with open(os.path.join(HIER, "cli.py")) as datei:
+        erste = datei.readline().strip()
+    assert erste.startswith("#!")
+    assert erste != "#!/usr/bin/env python3"
+    assert "venv" in erste, f"Shebang ohne venv-Interpreter: {erste}"
+
+
+def test_shebang_interpreter_hat_die_abhaengigkeiten():
+    with open(os.path.join(HIER, "cli.py")) as datei:
+        pfad = datei.readline().strip()[2:]
+    if not os.path.exists(pfad):
+        pytest.skip(f"Interpreter {pfad} auf dieser Maschine nicht vorhanden")
+    lauf = subprocess.run([pfad, "-c", "import bs4, requests"],
+                          capture_output=True, text=True)
+    assert lauf.returncode == 0, lauf.stderr
+
+
+def test_markdown_gibt_fehlerquellen_kein_abrufdatum():
+    """Ein "Abgerufen am" direkt ueber "Nicht abrufbar" laedt das Modell ein,
+    die URL trotzdem zu zitieren — obwohl nie jemand die Seite gelesen hat."""
+    text = als_markdown(ERGEBNIS)
+    fehlerteil = text.split("## Quelle 2")[1]
+    assert "Nicht abrufbar" in fehlerteil
+    assert "Abgerufen am" not in fehlerteil
+    # Die gelesene Quelle behaelt ihr Abrufdatum.
+    gelesen = text.split("## Quelle 1")[1].split("## Quelle 2")[0]
+    assert "Abgerufen am: 2026-08-10" in gelesen

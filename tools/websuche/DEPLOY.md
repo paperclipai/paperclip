@@ -96,6 +96,48 @@ Erwartet: beide `state = running`.
 Quellverzeichnis) und kopiert die beiden Plists nach
 `~/Library/LaunchAgents/`.
 
+## Aufruf durch die Agenten
+
+Dies ist die **verbindliche Aufrufzeile** für Paperclip-Agenten über
+`shell_exec`. Sie wird bei der Migration wörtlich in die Instruktionen
+übernommen:
+
+```bash
+~/.paperclip/scripts/websuche/venv/bin/python ~/.paperclip/scripts/websuche/cli.py "<frage>"
+```
+
+Mit Optionen:
+
+```bash
+~/.paperclip/scripts/websuche/venv/bin/python ~/.paperclip/scripts/websuche/cli.py \
+  "<frage>" --quellen 3 --zeichen 12000 --deadline 25 [--gleiche-domain-erlauben] [--json]
+```
+
+**Der Interpreter muss mitgegeben werden.** `python3` ist auf dieser
+Maschine die Version 3.9 ohne `bs4` — live nachgewiesen, der Agent bekäme
+einen Traceback statt eines Rechercheergebnisses. Falsch ist deshalb:
+
+```bash
+python3 ~/.paperclip/scripts/websuche/cli.py "<frage>"     # FALSCH: 3.9 ohne bs4
+```
+
+Der Shebang von `cli.py` zeigt auf denselben venv-Interpreter, ein
+direkter Aufruf von `~/.paperclip/scripts/websuche/cli.py` funktioniert
+also ebenfalls, sofern das Ausführbar-Bit gesetzt ist — worauf sich
+wegen SynologyDrive nichts stützen sollte. Im **Quellbaum**
+(`tools/websuche/`) gilt entsprechend `./venv/bin/python cli.py "<frage>"`.
+
+**Exit-Codes:** `0` = Ergebnis auf stdout (Markdown, mit `--json` JSON),
+`2` = Suche nicht möglich (Fehlermeldung auf stderr, stdout leer).
+Exit-Code 2 heißt **nicht** „nichts gefunden": entweder ist SearXNG tot,
+oder seine Engines laufen in CAPTCHA/Rate-Limit. Die Meldung nennt die
+ausgefallenen Engines.
+
+**Zeitbudget:** Der lmstudio-Adapter gibt `shell_exec` ohne eigenes
+`timeout` nur 30 Sekunden. Die Standard-Deadline von 25 s passt genau
+dorthinein. Wer `--deadline` anhebt, muss dem `shell_exec`-Aufruf ein
+passendes `timeout` mitgeben.
+
 ## Rauchtest
 
 ```bash
@@ -103,9 +145,15 @@ cd tools/websuche && zsh rauchtest.sh
 ```
 
 Prüft der Reihe nach: SearXNG erreichbar, Dienst erreichbar, CLI mit
-drei Quellen inklusive Laufzeitmessung gegen die 25-Sekunden-Deadline,
-und dass ein totes SearXNG-Backend das CLI mit Exit-Code ungleich null
-statt einer leeren Trefferliste abbrechen lässt.
+drei Quellen, und dass ein totes SearXNG-Backend das CLI mit Exit-Code
+ungleich null statt einer leeren Trefferliste abbrechen lässt.
+
+Abschnitt 3 fällt durch, wenn **weniger als drei Quellen** oder **weniger
+als drei Quellen mit Text** zurückkommen, wenn Domains doppelt vorkommen,
+ein Abrufdatum fehlt oder die **Prozesslaufzeit** über 25 Sekunden liegt
+(gemessen auf Hundertstel per `$EPOCHREALTIME`, nicht sekundengenau). Die
+Laufzeitüberschreitung ist ein Fehlschlag, keine Warnung: unter
+`shell_exec` bedeutet sie abgeschnittene Ausgabe beim Agenten.
 
 ## Betrieb
 

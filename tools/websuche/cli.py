@@ -1,5 +1,11 @@
-#!/usr/bin/env python3
+#!/Users/walterschoenenbroecher.de/.paperclip/scripts/websuche/venv/bin/python3
 """CLI-Huelle um `websuche.recherchiere` — der Weg fuer Paperclip-Agenten.
+
+Der Shebang zeigt bewusst auf den Interpreter des ausgelieferten venvs und
+nicht auf `/usr/bin/env python3`: `python3` ist auf dieser Maschine die
+Version 3.9 OHNE bs4 — der Agent bekaeme einen Traceback statt eines
+Rechercheergebnisses. Im Quellbaum wird stattdessen `./venv/bin/python cli.py`
+aufgerufen (siehe DEPLOY.md, Abschnitt "Aufruf durch die Agenten").
 
 Aufruf ueber shell_exec. Standard-Ausgabe ist Markdown, weil lokale Modelle
 Fliesstext mit Ueberschriften spuerbar besser verwerten als verschachteltes
@@ -25,12 +31,16 @@ def als_markdown(ergebnis: dict) -> str:
     for nr, quelle in enumerate(ergebnis["quellen"], start=1):
         zeilen.append(f"## Quelle {nr}: {quelle['titel'] or quelle['domain']}")
         zeilen.append(f"URL: {quelle['url']}")
-        zeilen.append(f"Abgerufen am: {quelle['abgerufen_am']}")
-        zeilen.append("")
         if "text" in quelle:
-            zeilen += [quelle["text"], ""]
+            # Das Abrufdatum gehoert nur an eine Quelle, die auch gelesen
+            # wurde. Ueber "Nicht abrufbar" gestellt, lud es das Modell ein,
+            # die URL trotzdem mit Abrufdatum zu zitieren.
+            zeilen.append(f"Abgerufen am: {quelle['abgerufen_am']}")
+            zeilen += ["", quelle["text"], ""]
         else:
-            zeilen += [f"**Nicht abrufbar:** {quelle['fehler']}", ""]
+            zeilen += ["", f"**Nicht abrufbar:** {quelle['fehler']}",
+                       "Diese Quelle wurde NICHT gelesen und darf nicht "
+                       "zitiert werden.", ""]
     if not ergebnis["quellen"]:
         zeilen.append("_Keine Quellen._")
     return "\n".join(zeilen).rstrip() + "\n"
