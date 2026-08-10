@@ -20,6 +20,7 @@ export interface Company {
   activityWindow: CompanyActivityWindow | null;
   activityWindowState: CompanyActivityWindowState | null;
   runPause: CompanyRunPauseState;
+  routineGuardConfig: { minimumScheduleIntervalMinutes?: number };
   /** True when the company may start runs right now (window open or no window, and not paused). */
   activeNow: boolean;
   /** True when company runs are explicitly paused (run pause control). */

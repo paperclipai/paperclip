@@ -145,6 +145,7 @@ export function companyService(db: Db) {
     strandedRecoveryOwnerAgentId: companies.strandedRecoveryOwnerAgentId,
     activityWindow: companies.activityWindow,
     runPauseState: companies.runPauseState,
+    routineGuardConfig: companies.routineGuardConfig,
     attachmentMaxBytes: companies.attachmentMaxBytes,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,

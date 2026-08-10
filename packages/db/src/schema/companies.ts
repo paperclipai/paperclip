@@ -19,6 +19,7 @@ export const companies = pgTable(
     activityWindow: jsonb("activity_window").$type<Record<string, unknown>>(),
     activityWindowState: jsonb("activity_window_state").$type<Record<string, unknown>>().notNull().default({}),
     runPauseState: jsonb("run_pause_state").$type<Record<string, unknown>>().notNull().default({}),
+    routineGuardConfig: jsonb("routine_guard_config").$type<Record<string, unknown>>().notNull().default({}),
     attachmentMaxBytes: integer("attachment_max_bytes")
       .notNull()
       .default(10 * 1024 * 1024),

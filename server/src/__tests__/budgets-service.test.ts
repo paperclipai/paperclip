@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -8,7 +9,10 @@ import {
   companies,
   costEvents,
   createDb,
+  issues,
   projects,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
 import {
@@ -47,10 +51,13 @@ function createDbStub(selectResults: SelectResult[]) {
   }));
 
   const updateSet = vi.fn();
-  const updateWhere = vi.fn(async () => pendingUpdates.shift() ?? []);
+  const updateWhere = vi.fn(() => ({
+    returning: updateReturning,
+  }));
+  const updateReturning = vi.fn(async () => pendingUpdates.shift() ?? []);
   const update = vi.fn(() => ({
     set: updateSet.mockImplementation(() => ({
-      where: updateWhere,
+      where: Object.assign(updateWhere, { returning: updateReturning }),
     })),
   }));
 
@@ -558,6 +565,9 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await db.delete(approvals);
     await db.delete(budgetPolicies);
     await db.delete(costEvents);
+    await db.delete(routineRuns);
+    await db.delete(routines);
+    await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -604,6 +614,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     companyId: string;
     agentId: string;
     projectId?: string | null;
+    issueId?: string | null;
     costCents: number;
     occurredAt?: Date;
   }) {
@@ -613,6 +624,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
         companyId: input.companyId,
         agentId: input.agentId,
         projectId: input.projectId ?? null,
+        issueId: input.issueId ?? null,
         provider: "openai",
         biller: "openai",
         billingType: "metered_api",
@@ -852,5 +864,68 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("hard-stops and resumes a routine without stacking a second incident", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const routineId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Budgeted routine",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Routine execution" });
+    const [policy] = await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "routine",
+      scopeId: routineId,
+      metric: "runs",
+      windowKind: "rolling_24h",
+      amount: 1,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+    }).returning();
+    await db.insert(routineRuns).values({ companyId, routineId, source: "schedule", linkedIssueId: issueId });
+
+    const service = budgetService(db);
+    await service.evaluateRoutineRun({ companyId, routineId });
+    await service.evaluateRoutineRun({ companyId, routineId });
+
+    const [pausedRoutine] = await db.select({ status: routines.status, pauseReason: routines.pauseReason })
+      .from(routines).where(eq(routines.id, routineId));
+    expect(pausedRoutine).toEqual({ status: "paused", pauseReason: "budget" });
+    const incidents = await db.select().from(budgetIncidents).where(eq(budgetIncidents.policyId, policy!.id));
+    expect(incidents).toHaveLength(1);
+
+    await service.resolveIncident(
+      companyId,
+      incidents[0]!.id,
+      { action: "raise_budget_and_resume", amount: 2 },
+      "board-user",
+    );
+    const [resumedRoutine] = await db.select({ status: routines.status, pauseReason: routines.pauseReason })
+      .from(routines).where(eq(routines.id, routineId));
+    expect(resumedRoutine).toEqual({ status: "active", pauseReason: null });
+
+    const [tokenPolicy] = await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "routine",
+      scopeId: routineId,
+      metric: "total_tokens",
+      windowKind: "rolling_24h",
+      amount: 100,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+    }).returning();
+    const tokenEvent = await insertCostEvent({ companyId, agentId, issueId, costCents: 1 });
+    await service.evaluateCostEvent(tokenEvent);
+    await service.evaluateCostEvent(tokenEvent);
+    const tokenIncidents = await db.select().from(budgetIncidents).where(eq(budgetIncidents.policyId, tokenPolicy!.id));
+    expect(tokenIncidents).toHaveLength(1);
+    const [tokenPausedRoutine] = await db.select({ status: routines.status, pauseReason: routines.pauseReason })
+      .from(routines).where(eq(routines.id, routineId));
+    expect(tokenPausedRoutine).toEqual({ status: "paused", pauseReason: "budget" });
   });
 });

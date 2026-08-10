@@ -1464,6 +1464,13 @@
       "when": 1785804000000,
       "tag": "9009_transactional_courier_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1785804060000,
+      "tag": "9010_routine_cadence_budget_guards",
+      "breakpoints": true
     }
   ]
 }

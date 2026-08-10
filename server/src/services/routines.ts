@@ -72,6 +72,7 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { budgetService } from "./budgets.js";
 import {
   instanceSettingsService,
   isTruthyRuntimeEnvValue,
@@ -90,6 +91,7 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_HEARTBEAT_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+const DEFAULT_MINIMUM_SCHEDULE_INTERVAL_MINUTES = 5;
 const MAX_ROUTINE_REVISIONS = 100;
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
@@ -433,6 +435,14 @@ function isSubHourlyCronExpression(expression: string, timeZone: string, after: 
     cursor = nextTick;
   }
   return true;
+}
+
+function readMinimumScheduleIntervalMinutes(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const minutes = (value as { minimumScheduleIntervalMinutes?: unknown }).minimumScheduleIntervalMinutes;
+  return typeof minutes === "number" && Number.isInteger(minutes) && minutes >= 1 && minutes <= 24 * 60
+    ? minutes
+    : null;
 }
 
 function nextResultText(status: string, issueId?: string | null) {
@@ -1016,6 +1026,36 @@ export function routineService(
       .from(routines)
       .where(eq(routines.id, id))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertScheduleMeetsCadenceFloor(
+    routine: typeof routines.$inferSelect,
+    expression: string,
+    timeZone: string,
+  ) {
+    const [company, assignee] = await Promise.all([
+      db.select({ routineGuardConfig: companies.routineGuardConfig })
+        .from(companies)
+        .where(eq(companies.id, routine.companyId))
+        .then((rows) => rows[0] ?? null),
+      routine.assigneeAgentId
+        ? db.select({ runtimeConfig: agents.runtimeConfig })
+          .from(agents)
+          .where(eq(agents.id, routine.assigneeAgentId))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    const agentConfig = assignee && typeof assignee.runtimeConfig === "object" && assignee.runtimeConfig
+      ? (assignee.runtimeConfig as Record<string, unknown>).routineGuard
+      : null;
+    const minimumMinutes = readMinimumScheduleIntervalMinutes(agentConfig)
+      ?? readMinimumScheduleIntervalMinutes(company?.routineGuardConfig)
+      ?? DEFAULT_MINIMUM_SCHEDULE_INTERVAL_MINUTES;
+    const first = nextCronTickInTimeZone(expression, timeZone, new Date());
+    const second = first ? nextCronTickInTimeZone(expression, timeZone, first) : null;
+    if (first && second && second.getTime() - first.getTime() < minimumMinutes * 60_000) {
+      throw unprocessable(`Scheduled routines must run no more often than every ${minimumMinutes} minutes`);
+    }
   }
 
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
@@ -3186,6 +3226,10 @@ export function routineService(
       run,
     });
 
+    // Evaluate the run ceiling after the dispatch transaction commits so a hard
+    // stop pauses future fires without creating another recovery or courier path.
+    await budgetService(db).evaluateRoutineRun(run);
+
     return withLegacyRoutineRunIssueId(run);
   }
 
@@ -3617,6 +3661,7 @@ export function routineService(
         assertTimeZone(timeZone);
         const error = validateCron(input.cronExpression);
         if (error) throw unprocessable(error);
+        await assertScheduleMeetsCadenceFloor(routine, input.cronExpression, timeZone);
         nextRunAt = nextCronTickInTimeZone(input.cronExpression, timeZone, new Date());
       }
 
@@ -3696,6 +3741,7 @@ export function routineService(
           timezone = patch.timezone;
         }
         if (cronExpression && timezone) {
+          await assertScheduleMeetsCadenceFloor(routine, cronExpression, timezone);
           nextRunAt = nextCronTickInTimeZone(cronExpression, timezone, new Date());
         }
         if ((patch.enabled ?? existing.enabled) === true) {

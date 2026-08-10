@@ -14,6 +14,9 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+const routineGuardConfigSchema = z.object({
+  minimumScheduleIntervalMinutes: z.number().int().min(1).max(24 * 60).optional(),
+}).strict();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -40,6 +43,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    routineGuardConfig: routineGuardConfigSchema.optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

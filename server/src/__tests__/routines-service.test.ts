@@ -265,6 +265,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(row?.status).toBe("blocked");
   });
 
+  it("rejects a scheduled trigger below the company cadence floor", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db
+      .update(companies)
+      .set({ routineGuardConfig: { minimumScheduleIntervalMinutes: 10 } })
+      .where(eq(companies.id, companyId));
+
+    await expect(svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/5 * * * *",
+      timezone: "UTC",
+    }, {})).rejects.toThrow("no more often than every 10 minutes");
+  });
+
   it("does not treat a newer blocked fire as a superseding live execution", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const failedFire = await insertRoutineFire({
@@ -4198,6 +4212,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("skips a gated scheduled tick when quiet without advancing the activity window", async () => {
     const { companyId, routine, svc } = await seedFixture();
+    await db
+      .update(companies)
+      .set({ routineGuardConfig: { minimumScheduleIntervalMinutes: 1 } })
+      .where(eq(companies.id, companyId));
     await db.update(routines).set({
       activityGatePolicy: "require_external_activity",
     }).where(eq(routines.id, routine.id));
