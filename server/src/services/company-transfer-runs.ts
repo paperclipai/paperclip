@@ -350,7 +350,7 @@ export const companyTransferRunService = {
       .update(companyTransferRuns)
       .set({
         status: "failed",
-        error: "apply interrupted by restart",
+        error: "apply interrupted by a restart — verify whether the import completed before retrying",
         finishedAt: new Date(),
         updatedAt: new Date(),
       })

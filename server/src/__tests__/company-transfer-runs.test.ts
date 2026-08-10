@@ -304,7 +304,7 @@ describeEmbeddedPostgres("companyTransferRunService", () => {
     expect(recovered).not.toContain(open.id);
     const failed = (await companyTransferRunService.getRun(db, stranded.id))!;
     expect(failed.status).toBe("failed");
-    expect(failed.error).toBe("apply interrupted by restart");
+    expect(failed.error).toBe("apply interrupted by a restart — verify whether the import completed before retrying");
     expect(await companyTransferRunService.claimApply(db, stranded.id)).toBe(true);
 
     // Runs that were merely uploading are untouched.
