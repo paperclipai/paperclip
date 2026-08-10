@@ -494,4 +494,110 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
       .where(eq(heartbeatRuns.wakeupRequestId, staleWakeId));
     expect(staleRuns).toHaveLength(0);
   }, 30_000);
+
+  it("promotes a deferred unblock-owner wake even though the owner is not the assignee", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet that will block mid-run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+    });
+
+    // Mid-run the executor blocks the issue and names the reviewer as unblock
+    // owner. The owner wake is requested while the producer run is active, so
+    // it parks as deferred behind that run.
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      const unblockDescriptor = {
+        owner: { agentId: reviewerId },
+        action: "Decide the unblock path",
+      };
+      await db
+        .update(issues)
+        .set({
+          status: "blocked",
+          blockedTransitionAt: new Date(),
+          unblockDescriptor,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      const ownerWake = await heartbeat.wakeup(reviewerId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_unblock_requested",
+        payload: {
+          issueId,
+          action: unblockDescriptor.action,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_unblock_requested",
+          wakeSource: "automation",
+        },
+      });
+      expect(ownerWake).toBeNull();
+
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Producer blocked the issue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await heartbeat.wakeup(producerId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    // The finalization promotion loop must not cancel the parked owner wake on
+    // an assignee mismatch: the unblock owner is deliberately not the assignee.
+    // Promotion links the wake to a run (runId set). Whether that run then
+    // survives the claim-time gates is the claim path's own judgment.
+    const promoted = await waitForCondition(async () => {
+      const wake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, reviewerId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .then((rows) => rows[0]);
+      return wake?.runId != null || wake?.status === "completed";
+    });
+    expect(promoted).toBe(true);
+
+    const unblockWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, reviewerId),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .then((rows) => rows[0]);
+    expect(unblockWake.runId).not.toBeNull();
+  }, 30_000);
 });

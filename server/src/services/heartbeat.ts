@@ -16751,12 +16751,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const deferredIsCurrentReviewParticipant =
           deferredReviewParticipant?.type === "agent" &&
           deferredReviewParticipant.agentId === deferred.agentId;
+        // An unblock-owner wake targets the unblockDescriptor owner, who is
+        // deliberately not the assignee. Never cancel such a wake on assignee
+        // mismatch while the issue is still blocked under that same owner;
+        // its staleness is judged at claim time, like any other promoted wake.
+        const deferredOwner = issue.unblockDescriptor?.owner;
+        const deferredIsUnblockOwnerWake =
+          deferredWakeReason === "issue_unblock_requested" &&
+          issue.status === "blocked" &&
+          deferredOwner != null &&
+          deferredOwner !== "board" &&
+          typeof deferredOwner === "object" &&
+          "agentId" in deferredOwner &&
+          deferredOwner.agentId === deferred.agentId;
 
         const deferredStaleError =
           issue.assigneeAgentId !== deferred.agentId &&
           !deferredIsInteractionWake &&
           !deferredIsCurrentReviewParticipant &&
-          !deferredIsCommentDrivenWake
+          !deferredIsCommentDrivenWake &&
+          !deferredIsUnblockOwnerWake
             ? "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead"
             : (issue.status === "done" || issue.status === "cancelled") &&
                 !deferredResumeIntent &&
