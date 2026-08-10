@@ -69,6 +69,14 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+const serializedRouteVitestArgs = [
+  "--pool=forks",
+  "--isolate",
+  // Route/authz suites boot an isolated Express app for every file. A short
+  // CI scheduling pause should not turn that deliberate isolation into a
+  // false failure, while genuine hangs still fail within the CI job budget.
+  "--testTimeout=20000",
+];
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -359,8 +367,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
         "--project",
         "@paperclipai/server",
         routeTest.repoPath,
-        "--pool=forks",
-        "--isolate",
+        ...serializedRouteVitestArgs,
       ],
       routeTest.repoPath,
     );
