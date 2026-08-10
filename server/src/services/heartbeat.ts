@@ -44,6 +44,7 @@ import {
   companySkills as companySkillsTable,
   companies,
   costEvents,
+  boardTokenExceptions,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
@@ -385,6 +386,62 @@ export function totalInputTokensIncludingCache(input: {
   cachedInputTokens: number;
 }) {
   return Math.max(0, input.inputTokens) + Math.max(0, input.cachedInputTokens);
+}
+
+/**
+ * A soft FinOps ceiling. A single run whose recorded total (input + cache +
+ * output) reaches this warns once, non-blockingly, so an operator can see a
+ * lane trending expensive well before it approaches the hard >=1M input guard.
+ */
+export const TOKEN_LEDGER_WARN_THRESHOLD = 250_000;
+
+export type TokenLedgerWarningDecision = "none" | "warn";
+
+/**
+ * The warning is purely observational: it never pauses, blocks, or reroutes a
+ * run. Anything at or above the >=1M input guard is owned by
+ * {@link decideHighInputTokenRunGuard}, so the soft warning only fires in the
+ * band below that hard stop.
+ */
+export function decideTokenLedgerWarning(input: {
+  totalTokens: number;
+  totalInputTokens: number;
+}): TokenLedgerWarningDecision {
+  if (input.totalInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD) return "none";
+  return input.totalTokens >= TOKEN_LEDGER_WARN_THRESHOLD ? "warn" : "none";
+}
+
+export type BoardTokenExceptionDecision =
+  | "none"
+  | "allow"
+  | "expired"
+  | "revoked"
+  | "cap_exceeded";
+
+/**
+ * A board exception is the only sanctioned way for a run to cross the >=1M input
+ * guard. It is honoured only when it is unrevoked, unexpired, and its cap covers
+ * the run's total input (including cache reads). Any other state — no exception,
+ * revoked, expired, or a cap the run has already blown past — falls through to
+ * the normal review/block guard. `now` and the parsed record are passed in so
+ * the decision is pure and unit-testable.
+ */
+export function decideBoardTokenException(input: {
+  exception: {
+    capTokens: number;
+    expiresAt: Date | string;
+    revokedAt?: Date | string | null;
+  } | null;
+  totalInputTokens: number;
+  now: Date;
+}): BoardTokenExceptionDecision {
+  const ex = input.exception;
+  if (!ex) return "none";
+  if (ex.revokedAt) return "revoked";
+  const expiresAt = ex.expiresAt instanceof Date ? ex.expiresAt : new Date(ex.expiresAt);
+  if (!(expiresAt.getTime() > input.now.getTime())) return "expired";
+  if (input.totalInputTokens > Math.max(0, ex.capTokens)) return "cap_exceeded";
+  return "allow";
 }
 
 /**
@@ -9678,10 +9735,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect;
     inputTokens: number;
     cachedInputTokens: number;
+    outputTokens?: number;
   }) {
     const context = parseObject(input.run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const totalInputTokens = totalInputTokensIncludingCache(input);
+    const totalTokens = totalInputTokens + Math.max(0, input.outputTokens ?? 0);
+
+    // Soft ceiling: warn once, non-blockingly, when a run's total ledgered
+    // tokens cross the warn threshold but stay below the hard >=1M input guard.
+    // This is observation only — it never changes issue status or continuation.
+    if (
+      decideTokenLedgerWarning({ totalTokens, totalInputTokens }) === "warn"
+    ) {
+      await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Run crossed the soft token-ledger warning threshold",
+        payload: {
+          totalTokens,
+          totalInputTokens,
+          freshInputTokens: input.inputTokens,
+          cachedInputTokens: input.cachedInputTokens,
+          outputTokens: Math.max(0, input.outputTokens ?? 0),
+          warnThreshold: TOKEN_LEDGER_WARN_THRESHOLD,
+          hardThreshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+          issueId: issueId ?? null,
+        },
+      });
+    }
+
     if (!issueId || totalInputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
       return { decision: "none" as const, highRunCount: 0 };
     }
@@ -9721,6 +9805,86 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!issue) return { decision: "none" as const, highRunCount };
+
+    // Board exception gate: a run may cross the >=1M input guard only while an
+    // unrevoked, unexpired exception whose cap covers it exists for this task.
+    // Prefer an agent-scoped exception, then a task-wide (agentId null) one.
+    const [exceptionRow] = await db
+      .select({
+        id: boardTokenExceptions.id,
+        capTokens: boardTokenExceptions.capTokens,
+        reason: boardTokenExceptions.reason,
+        expiresAt: boardTokenExceptions.expiresAt,
+        revokedAt: boardTokenExceptions.revokedAt,
+      })
+      .from(boardTokenExceptions)
+      .where(
+        and(
+          eq(boardTokenExceptions.companyId, input.run.companyId),
+          eq(boardTokenExceptions.issueId, issue.id),
+          isNull(boardTokenExceptions.revokedAt),
+          or(
+            isNull(boardTokenExceptions.agentId),
+            eq(boardTokenExceptions.agentId, input.agent.id),
+          ),
+        ),
+      )
+      .orderBy(
+        sql`(${boardTokenExceptions.agentId} is not null) desc`,
+        desc(boardTokenExceptions.createdAt),
+      )
+      .limit(1);
+    const exceptionDecision = decideBoardTokenException({
+      exception: exceptionRow
+        ? {
+          capTokens: Number(exceptionRow.capTokens),
+          expiresAt: exceptionRow.expiresAt,
+          revokedAt: exceptionRow.revokedAt,
+        }
+        : null,
+      totalInputTokens,
+      now: new Date(),
+    });
+    if (exceptionDecision === "allow" && exceptionRow) {
+      await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Oversized run permitted by an active board token exception",
+        payload: {
+          totalInputTokens,
+          freshInputTokens: input.inputTokens,
+          cachedInputTokens: input.cachedInputTokens,
+          threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+          highRunCount,
+          exceptionId: exceptionRow.id,
+          capTokens: Number(exceptionRow.capTokens),
+          expiresAt: exceptionRow.expiresAt,
+          issueId: issue.id,
+        },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: input.agent.id,
+        runId: input.run.id,
+        action: "issue.high_input_run_exception_allowed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          label: "Oversized run allowed by board token exception",
+          totalInputTokens,
+          threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+          exceptionId: exceptionRow.id,
+          capTokens: Number(exceptionRow.capTokens),
+          reason: exceptionRow.reason,
+          expiresAt: exceptionRow.expiresAt,
+          issue: issueUiLink(issue),
+        },
+      });
+      return { decision: "exception_allowed" as const, highRunCount, exceptionId: exceptionRow.id };
+    }
 
     const millionTokens = (totalInputTokens / 1_000_000).toFixed(2);
     const interactionsSvc = issueThreadInteractionService(db);
@@ -9775,6 +9939,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         + `- Total input tokens (including cache reads): **${millionTokens}M**\n`
         + `- Fresh input: ${input.inputTokens.toLocaleString("en-US")}; cache reads: ${input.cachedInputTokens.toLocaleString("en-US")}\n`
         + `- Task threshold: **${(HIGH_INPUT_TOKEN_RUN_THRESHOLD / 1_000_000).toFixed(0)}M** input tokens\n`
+        + (exceptionDecision === "none"
+          ? "- Board exception: none on record\n"
+          : `- Board exception on record but **not honoured (${exceptionDecision})**; record a task/cap/reason/expiry exception that covers this run to permit it\n`)
         + `- Action: ${action}\n`
         + `- Review card: \`${interaction.id}\``,
       { runId: input.run.id },
@@ -18171,6 +18338,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agent,
             inputTokens: normalizedUsage?.inputTokens ?? 0,
             cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+            outputTokens: normalizedUsage?.outputTokens ?? 0,
           });
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
