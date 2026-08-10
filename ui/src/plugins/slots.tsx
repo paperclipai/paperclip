@@ -30,6 +30,7 @@ import {
   type ComponentType,
 } from "react";
 import { Link } from "react-router-dom";
+import * as ReactModule from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
   PluginLauncherDeclaration,
@@ -125,9 +126,28 @@ type UsePluginSlotsResult = {
  * Keys are `${pluginKey}:${exportName}` to match manifest slot declarations.
  */
 const registry = new Map<string, RegisteredPluginComponent>();
+const registryListeners = new Set<() => void>();
 
 function buildRegistryKey(pluginKey: string, exportName: string): string {
   return `${pluginKey}:${exportName}`;
+}
+
+function notifyRegistryListeners(): void {
+  for (const listener of registryListeners) {
+    listener();
+  }
+}
+
+function usePluginRegistrySubscription(): void {
+  const [, forceRerender] = useState(0);
+
+  useEffect(() => {
+    const listener = () => forceRerender((tick) => tick + 1);
+    registryListeners.add(listener);
+    return () => {
+      registryListeners.delete(listener);
+    };
+  }, []);
 }
 
 function requiresEntityType(slotType: PluginUiSlotType): boolean {
@@ -151,6 +171,7 @@ export function registerPluginReactComponent(
     kind: "react",
     component,
   });
+  notifyRegistryListeners();
 }
 
 /**
@@ -165,6 +186,7 @@ export function registerPluginWebComponent(
     kind: "web-component",
     tagName,
   });
+  notifyRegistryListeners();
 }
 
 function resolveRegisteredComponent(slot: ResolvedPluginSlot): RegisteredPluginComponent | null {
@@ -176,6 +198,24 @@ export function resolveRegisteredPluginComponent(
   exportName: string,
 ): RegisteredPluginComponent | null {
   return registry.get(buildRegistryKey(pluginKey, exportName)) ?? null;
+}
+
+function isRegisterablePluginExport(exported: unknown): boolean {
+  return typeof exported === "function" || typeof exported === "string";
+}
+
+function collectRegisterableExportNames(
+  mod: Record<string, unknown>,
+  declaredExports: Set<string>,
+): Set<string> {
+  const exportNames = new Set(declaredExports);
+  for (const [exportName, exported] of Object.entries(mod)) {
+    if (exportName === "default") continue;
+    if (isRegisterablePluginExport(exported)) {
+      exportNames.add(exportName);
+    }
+  }
+  return exportNames;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,13 +335,31 @@ function applyJsxRuntimeKey(
   return { ...(props ?? {}), key };
 }
 
+function createReactShimSource(reactModule: object): string {
+  const exportNames = Object.keys(reactModule)
+    .filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name))
+    .sort();
+  const namedExports = exportNames
+    .map((name) => `        export const ${name} = R.${name};`)
+    .join("\n");
+
+  return `
+        const R = globalThis.__paperclipPluginBridge__?.react;
+        if (!R) {
+          throw new Error("Paperclip plugin React runtime is not initialized.");
+        }
+        export default R;
+${namedExports}
+      `;
+}
+
 function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui"): string {
   if (shimBlobUrls[specifier]) return shimBlobUrls[specifier];
 
   let source: string;
   switch (specifier) {
     case "react":
-      source = buildReactShimSource();
+      source = createReactShimSource(ReactModule);
       break;
     case "react/jsx-runtime":
       source = `
@@ -329,7 +387,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
             throw new Error('Paperclip plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
           };
         }
-        const { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast } = SDK;
+        const { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, copyTextToClipboard } = SDK;
         const MetricCard = SDK.MetricCard ?? missing("MetricCard");
         const StatusBadge = SDK.StatusBadge ?? missing("StatusBadge");
         const DataTable = SDK.DataTable ?? missing("DataTable");
@@ -347,7 +405,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         const AssigneePicker = SDK.AssigneePicker ?? missing("AssigneePicker");
         const ProjectPicker = SDK.ProjectPicker ?? missing("ProjectPicker");
         const ManagedRoutinesList = SDK.ManagedRoutinesList ?? missing("ManagedRoutinesList");
-        export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList };
+        export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, copyTextToClipboard, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList };
       `;
       break;
   }
@@ -503,7 +561,8 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
         }
       }
 
-      for (const exportName of declaredExports) {
+      const exportNames = collectRegisterableExportNames(mod, declaredExports);
+      for (const exportName of exportNames) {
         const exported = mod[exportName];
         if (exported === undefined) {
           console.warn(
@@ -818,6 +877,7 @@ export function PluginSlotMount({
   className,
   missingBehavior = "hidden",
 }: PluginSlotMountProps) {
+  usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
   const component = resolveRegisteredComponent(slot);
 
@@ -966,4 +1026,6 @@ export function _getReactShimSourceForTests(): string {
 
 export const _shouldSubscribeToPluginModuleLoadForTests = shouldSubscribeToPluginModuleLoad;
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
+export const _createReactShimSourceForTests = createReactShimSource;
 export const _rewriteBareSpecifiersForTests = rewriteBareSpecifiers;
+export const _collectRegisterableExportNamesForTests = collectRegisterableExportNames;

@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   CheckCircle2,
   Copy,
@@ -51,7 +52,7 @@ export function CodexDeviceAuthDialog({
     const code = state?.userCode;
     if (!code) return;
     try {
-      await navigator.clipboard.writeText(code);
+      await copyTextToClipboard(code);
     } catch {
       // best-effort; clipboard may be blocked in non-secure contexts
     }

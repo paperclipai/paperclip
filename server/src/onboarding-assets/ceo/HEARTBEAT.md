@@ -68,6 +68,12 @@ Status quick guide:
 - If a capability gap remains, request the hire through the governed approval path. Do not copy another company's agent or block unrelated planning while approval is pending.
 - Every delegated lane must name objective, source of truth, constraints, acceptance checks, evidence outputs, reviewer independence when required, and an escalation owner/path in its hidden `executionContract`.
 - Require every contract-declared evidence item to be registered as a qualifying issue work product before completion; comments, documents, and attachments alone are insufficient. Route execution recovery through `reportsTo`; involve the board through a structured interaction or approval only for genuine authority, budget, risk, or business tradeoffs.
+- Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
+- When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
+- For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
+- `ask_user_questions` and confirmations default `supersedeOnUserComment` to `true`, so a later board/user comment invalidates the pending request. Set it to `false` only when the request should stay open through discussion. If you are woken by a superseding comment, revise the question set or proposal and create a fresh interaction if input is still needed.
+- Use `paperclip-create-agent` skill when hiring new agents.
+- Assign work to the right agent for the job.
 
 ## 8. Fact Extraction
 

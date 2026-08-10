@@ -86,4 +86,5 @@ describe("llm routes", () => {
     expect(res.text).toContain("Timer heartbeats are opt-in for new hires.");
     expect(res.text).toContain("Leave runtimeConfig.heartbeat.enabled false");
   });
+
 });

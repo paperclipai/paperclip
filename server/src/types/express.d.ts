@@ -1,5 +1,7 @@
 export {};
 
+import type { AgentApiKeyScope } from "@paperclipai/shared";
+
 declare global {
   namespace Express {
     interface Request {
@@ -11,16 +13,24 @@ declare global {
         agentId?: string;
         companyId?: string;
         companyIds?: string[];
+        sessionId?: string | null;
         memberships?: Array<{
           companyId: string;
           membershipRole?: string | null;
           status?: string;
         }>;
-        isInstanceAdmin?: boolean;
-        keyId?: string;
-        runId?: string;
+        onBehalfOfMemberships?: Array<{
+          companyId: string;
+          membershipRole?: string | null;
+          status?: string;
+        }>;
+         isInstanceAdmin?: boolean;
+         keyId?: string;
+         keyScope?: AgentApiKeyScope;
+         runId?: string;
         readOnly?: boolean;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
+         onBehalfOfUserId?: string | null;
+         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
       };
     }
   }

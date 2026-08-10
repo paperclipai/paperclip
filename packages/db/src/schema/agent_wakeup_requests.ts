@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -51,5 +51,12 @@ export const agentWakeupRequests = pgTable(
         table.id,
       )
       .where(sql`${table.payload} -> '_paperclipWakeContext' ->> 'recoveryActionId' is not null`),
+    reviewPathRecoveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_review_path_recovery_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'issue_review_path_lost:%' AND ${table.status} <> 'skipped'`),
+    companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
+      table.companyId,
+      sql`(${table.payload} ->> 'issueId')`,
+    ),
   }),
 );

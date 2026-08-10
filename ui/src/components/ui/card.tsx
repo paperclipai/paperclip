@@ -2,20 +2,25 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-function Card({ className, ...props }: React.ComponentProps<"div">) {
+function Card({
+  className,
+  interactive = false,
+  ...props
+}: React.ComponentProps<"div"> & {
+  /**
+   * The whole card is a click target: quiet hover affordance (border darkens,
+   * slight lift), pointer cursor, keyboard focus ring. Static containers omit
+   * it — one Card, two modes.
+   */
+  interactive?: boolean
+}) {
   return (
     <div
       data-slot="card"
       className={cn(
-        // Base layout
-        "bg-card text-card-foreground flex flex-col gap-6 border py-6",
-        // Liquid-glass: larger radius, layered soft shadow
-        "rounded-2xl",
-        "shadow-[0_4px_16px_rgb(0_0_0/0.22),0_1px_4px_rgb(0_0_0/0.12),0_0_0_1px_rgb(0_0_0/0.08)]",
-        // Inner-top highlight via inset box-shadow (white shimmer at card top edge)
-        "[box-shadow:0_4px_16px_rgb(0_0_0/0.22),0_1px_4px_rgb(0_0_0/0.12),inset_0_1px_0_0_rgb(255_255_255/0.08)]",
-        // Dark-mode lifts the inner highlight slightly
-        "dark:[box-shadow:0_4px_16px_rgb(0_0_0/0.32),0_1px_4px_rgb(0_0_0/0.18),inset_0_1px_0_0_rgb(255_255_255/0.08)]",
+        "bg-card text-card-foreground flex flex-col gap-6 rounded-lg border py-6",
+        interactive &&
+          "cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className
       )}
       {...props}
@@ -28,7 +33,7 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-header"
       className={cn(
-        "@container/card-header grid auto-rows-min grid-rows-[auto_auto] items-start gap-2 px-6 has-data-[slot=card-action]:grid-cols-[1fr_auto] [.border-b]:pb-6",
+        "@container/card-header grid auto-rows-min grid-rows-(--gtr-1) items-start gap-2 px-6 has-data-[slot=card-action]:grid-cols-(--gtc-17) [.border-b]:pb-6",
         className
       )}
       {...props}

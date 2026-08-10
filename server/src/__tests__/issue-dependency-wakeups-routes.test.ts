@@ -4,14 +4,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHeartbeatGetRun = vi.hoisted(() => vi.fn(async () => null));
+const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
 }));
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
+const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
@@ -20,18 +23,21 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
-  getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   list: vi.fn(),
   listComments: vi.fn(),
   update: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   cancelPendingForTerminalIssue: vi.fn(async () => []),
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
 }));
 
 vi.mock("../services/image-reference-guardrails.js", () => ({
@@ -45,6 +51,16 @@ vi.mock("../services/image-reference-guardrails.js", () => ({
   hasReferenceBackedImageGenerationEvidence: vi.fn(async () => false),
 }));
 
+vi.mock("../services/cross-issue-influence-limit.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+    "../services/cross-issue-influence-limit.js",
+  );
+  return {
+    ...actual,
+    observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+  };
+});
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -54,6 +70,10 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
@@ -129,6 +149,23 @@ async function createApp(actor: Record<string, unknown> = {
   source: "local_implicit",
   isInstanceAdmin: false,
 }) {
+  const requestActor = actor.type === "agent" && !actor.runId
+    ? { ...actor, runId: "00000000-0000-4000-8000-000000000001" }
+    : actor;
+  const emptyRows: unknown[] = [];
+  const whereResult = {
+    limit: vi.fn(async () => emptyRows),
+    orderBy: vi.fn(async () => emptyRows),
+    then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
+  };
+  const query: Record<string, unknown> = {};
+  query.innerJoin = vi.fn(() => query);
+  query.where = vi.fn(() => whereResult);
+  const routeDb = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => query),
+    })),
+  };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -136,13 +173,23 @@ async function createApp(actor: Record<string, unknown> = {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    (req as any).actor = requestActor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(routeDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
+
+vi.mock("../services/issue-dependency-wakeups.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issue-dependency-wakeups.js")>(
+    "../services/issue-dependency-wakeups.js",
+  );
+  return {
+    ...actual,
+    findExistingIssueBlockersResolvedWake: mockFindExistingIssueBlockersResolvedWake,
+  };
+});
 
 describe("issue dependency wakeups in issue routes", () => {
   beforeEach(() => {
@@ -151,6 +198,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
+    mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -166,6 +214,15 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "issue-1",
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -174,8 +231,14 @@ describe("issue dependency wakeups in issue routes", () => {
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockHeartbeatGetRun.mockResolvedValue(null);
+    mockObserveCrossIssueInfluence.mockResolvedValue(null);
   });
 
   it("blocks worker agents from commenting on parent coordination lanes", async () => {
@@ -399,6 +462,80 @@ describe("issue dependency wakeups in issue routes", () => {
           payload: expect.objectContaining({
             issueId: "issue-2",
             resolvedBlockerIssueId: "issue-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
+    const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue({
+      id: parentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-200",
+      title: "Blocked after completion",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: parentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-200",
+      title: "Blocked after completion",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: parentIssueId,
+      blockerIssueIds: [childIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: parentIssueId,
+            resolvedBlockerIssueId: childIssueId,
+            mutation: "blocked_dependency_restored",
+          }),
+          contextSnapshot: expect.objectContaining({
+            source: "issue.blockers_restored",
           }),
         }),
       );
@@ -1132,6 +1269,7 @@ describe("issue dependency wakeups in issue routes", () => {
       "child-1",
       "Waiting for CEO to choose the correct HubSpot list id.",
       expect.any(Object),
+      expect.objectContaining({ authorizationReason: "allow_test" }),
     );
     expect(mockWakeup).toHaveBeenCalledWith(
       "ceo-agent",

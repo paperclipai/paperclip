@@ -101,7 +101,9 @@ jobs:
   deploy-prod:
     needs: verify
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    # Production is operator-only after paper-dev verification and Henk's
+    # explicit written sign-off for the exact staged commit.
+    if: ${{ false }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository

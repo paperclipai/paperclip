@@ -28,9 +28,13 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` for local coding agents
-- `openclaw_gateway` / `http` for webhook-based external agents
+- `claude_local` / `codex_local` / `opencode_local` for built-in local coding agents
+- `openclaw_gateway` / `http` for gateway or webhook-based external agents
 - `process` for generic local command execution
+
+Hermes is installed as an external adapter plugin through Adapter Manager (or a
+local `file:` package for development). Its type remains `hermes_local` after
+the plugin is loaded.
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.

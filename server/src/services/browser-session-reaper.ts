@@ -118,6 +118,6 @@ export function startBrowserSessionReaper(options: BrowserSessionReaperOptions =
   };
   void run();
   const timer = setInterval(() => void run(), DEFAULT_SCAN_INTERVAL_MS);
-  timer.unref();
+  timer.unref?.();
   return () => clearInterval(timer);
 }

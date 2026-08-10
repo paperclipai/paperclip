@@ -5,6 +5,7 @@ import {
   getUIAdapter,
   listUIAdapters,
   registerUIAdapter,
+  syncExternalAdapters,
   unregisterUIAdapter,
 } from "./registry";
 import { processUIAdapter } from "./process";
@@ -21,10 +22,12 @@ const externalUIAdapter: UIAdapterModule = {
 describe("ui adapter registry", () => {
   beforeEach(() => {
     unregisterUIAdapter("external_test");
+    syncExternalAdapters([]);
   });
 
   afterEach(() => {
     unregisterUIAdapter("external_test");
+    syncExternalAdapters([]);
   });
 
   it("registers adapters for lookup and listing", () => {
@@ -47,5 +50,20 @@ describe("ui adapter registry", () => {
     expect(fallback.type).toBe("external_test");
     // But it uses the schema-based config fields for external adapter forms.
     expect(fallback.ConfigFields).toBe(SchemaConfigFields);
+  });
+
+  it("loads Hermes only when an external plugin provides it", () => {
+    expect(findUIAdapter("hermes_local")).toBeNull();
+
+    syncExternalAdapters([{ type: "hermes_local", label: "External Hermes" }]);
+
+    expect(findUIAdapter("hermes_local")).toMatchObject({
+      type: "hermes_local",
+      label: "External Hermes",
+    });
+
+    syncExternalAdapters([]);
+
+    expect(findUIAdapter("hermes_local")).toBeNull();
   });
 });

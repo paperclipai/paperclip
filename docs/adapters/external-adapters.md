@@ -15,6 +15,13 @@ Paperclip supports external adapter plugins that can be installed from npm packa
 | Distribution | Ships with Paperclip | Published to npm or linked via `file:` |
 | Updates | Requires Paperclip release | Independent versioning |
 
+### Hermes plugin
+
+Hermes is an external adapter plugin, not a built-in Paperclip adapter. Install
+`@henkey/hermes-paperclip-adapter` through Adapter Manager, or use a local
+`file:` package while developing it. The plugin owns its config schema and UI
+parser; the installed adapter continues to use the `hermes_local` type key.
+
 ## Quick Start
 
 ### Minimal Package Structure
@@ -100,7 +107,7 @@ The plugin loader calls `createServerAdapter()` from your package root. This fun
 
 ```ts
 export const type = "my_adapter";     // snake_case, globally unique
-export const label = "My Agent (local)";
+export const label = "My Agent";
 
 export const models = [
   { id: "model-a", label: "Model A" },

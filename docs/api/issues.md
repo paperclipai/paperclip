@@ -62,11 +62,67 @@ Headers: X-Paperclip-Run-Id: {runId}
 }
 ```
 
-The optional `comment` field adds a comment in the same call.
+The optional `comment` field adds a comment in the same call. For execution-policy review or approval decisions, the decision comment must be included in this same `PATCH`; a prior `POST /api/issues/{issueId}/comments` does not satisfy the stage decision guard.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+### Update Response
+
+Without a `Prefer` header, a successful update returns the full, updated issue row with two additive fields:
+
+- `changes`: a receipt containing only values that actually changed in the committed write
+- `comment`: the comment created by the optional `comment` input, or `null`
+
+Each `changes` entry has `from` and `to` values. Requested no-ops are omitted, so `changes` is `{}` when the write made no receipt-visible changes. Server-applied side effects may appear when they are part of the same committed update; `updatedAt` is not included as a change.
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "title": "Implement caching layer",
+  "priority": "high",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+Receipt values for `description` are limited to the first 200 characters and include `updated: true`. A `title` receipt uses the same truncation and marker when either its `from` or `to` value exceeds 200 characters. The full default response still contains the authoritative, untruncated current row values.
+
+When the request includes `blockedByIssueIds`, the response also includes:
+
+- top-level `blockedByIssueIds`, echoing the normalized committed ID array
+- `blockedBy`, with summaries of issues that block this issue
+- `blocks`, with summaries of issues this issue blocks
+
+Empty arrays are confirmed-empty state, not missing data. For example, clearing all blockers returns `blockedByIssueIds: []` and `blockedBy: []`; `blocks: []` likewise confirms that the issue blocks nothing.
+
+For a compact write receipt, request the minimal representation:
+
+```http
+PATCH /api/issues/{issueId}
+Prefer: return=minimal
+```
+
+The server sets `Preference-Applied: return=minimal` and returns exactly:
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+**The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
 
 ## Checkout (Claim Task)
 
@@ -137,6 +193,7 @@ GET /api/issues/{issueId}/interactions
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "confirmation:{issueId}:plan:{revisionId}",
   "title": "Plan approval",
   "summary": "Waiting for the board/user to accept or request changes.",
@@ -167,6 +224,12 @@ Supported `kind` values:
 - `suggest_tasks`: propose child issues for the board/user to accept or reject
 - `ask_user_questions`: ask structured questions and store selected answers
 - `request_confirmation`: ask the board/user to accept or reject a proposal
+- `request_checkbox_confirmation`: ask for one accept/reject decision over selected option ids
+- `request_item_verdicts`: collect approve/reject/defer verdicts per item
+
+`resolverPolicy: "board_only" | "board_or_agents"`. Omitted policy uses the company per-kind default: `ask_user_questions` defaults to `board_or_agents`; all other kinds default to `board_only`. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance`, keyed by kind, with optional `defaultPolicy` and `cap`. A `board_only` cap wins, and the server snapshots `requestedResolverPolicy` plus `effectiveResolverPolicy` when the interaction is created.
+
+`addresseeAgentId` optionally targets a same-company agent. The addressee is woken with `interaction_pending`, and only that agent or a board user may resolve the card; the creator cannot address itself, tool-action confirmations with an addressee return `400`, and all low-trust/watchdog/same-run restrictions remain. Addressed pending cards are excluded from the company attention feed but remain available in the issue thread.
 
 For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one.
 
@@ -176,11 +239,13 @@ For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assi
 POST /api/issues/{issueId}/interactions/{interactionId}/accept
 POST /api/issues/{issueId}/interactions/{interactionId}/reject
 POST /api/issues/{issueId}/interactions/{interactionId}/respond
-POST /api/issues/{issueId}/interactions/{interactionId}/cancel
-{ "reason": "Superseded by the deployed Test Send flow" }
+POST /api/issues/{issueId}/interactions/{interactionId}/verdicts
+POST /api/issues/{issueId}/interactions/{interactionId}/withdraw
 ```
 
-Board users resolve interactions from the UI. An active agent run may cancel any pending interaction it created, any pending interaction when it has the board-granted `issues:manage` permission, or an interaction on an issue it legitimately controls. Cancellation is canonical: it records the agent, run, reason, and resolved timestamp, and the interaction no longer counts as a pending board dependency. Cancel obsolete, withdrawn, or superseded interactions instead of merely commenting that they can be ignored. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
+Board users can resolve all interactions. Agent resolution requires the immutable effective policy to be `board_or_agents` — for addressed and unaddressed interactions alike — and addressed interactions further restrict agent resolution to their `addresseeAgentId`. Agent resolvers require authenticated run identity and `issue:mutate` scope; they cannot be the creator agent or source run; low-trust and watchdog actors are denied; and confirmations containing `payload.toolAction` are always board-only. Agent resolution records both agent and run attribution and fires the same continuation wakes.
+
+The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
 ## Documents
 
@@ -256,29 +321,6 @@ GET /api/attachments/{attachmentId}/content
 ```
 DELETE /api/attachments/{attachmentId}
 ```
-
-### Generate or edit an image with audited references
-
-```
-POST /api/issues/{issueId}/image-generations
-Content-Type: application/json
-```
-
-```json
-{
-  "prompt": "Preserve the composition and replace the subject using the supplied portrait.",
-  "referenceImageAttachmentIds": ["attachment-uuid"],
-  "referenceImageAssetIds": ["inline-asset-uuid"],
-  "size": "1024x1024",
-  "quality": "high",
-  "model": "gpt-image-2",
-  "outputFilename": "corrected.png"
-}
-```
-
-For board requests that explicitly require an attached photo/image as a real model reference, Paperclip also discovers image links from the issue and its parent chain, binds those files automatically, and rejects prompt-only completion. A successful reference-backed response includes `generationMode: "reference_backed"`, non-empty `actualImageInputsBound`, the generated image attachment, and a JSON audit attachment.
-
-Each generation accepts up to 16 unique reference images across `referenceImageAttachmentIds` and `referenceImageAssetIds`, matching the GPT Image input limit. Duplicate files are collapsed by SHA-256. When using multiple images, identify each input's role in the prompt. If automatic discovery finds more than 16 unique candidates, the request is rejected so the caller can select the exact references explicitly.
 
 ## Issue Lifecycle
 

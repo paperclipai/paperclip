@@ -9,9 +9,18 @@ import type {
   CompanyMembership,
   PrincipalPermissionGrant,
 } from "./access.js";
+import type {
+  TrustAuthorizationPolicy,
+  TrustPreset,
+} from "../trust-policy.js";
+import type { AgentOrgChainHealth } from "../agent-eligibility.js";
+import type { AgentApiKeyScope } from "../validators/agent.js";
 
-export interface AgentPermissions {
+export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
+  canCreateSkills?: boolean;
+  trustPreset?: TrustPreset;
+  authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
 export interface AgentModelProfileConfig {
@@ -67,7 +76,7 @@ export interface AgentInstructionsBundle {
 
 export interface AgentAccessState {
   canAssignTasks: boolean;
-  taskAssignSource: "explicit_grant" | "agent_creator" | "ceo_role" | "none";
+  taskAssignSource: "simple_default" | "explicit_grant" | "agent_creator" | "ceo_role" | "none";
   membership: CompanyMembership | null;
   grants: PrincipalPermissionGrant[];
 }
@@ -98,11 +107,13 @@ export interface Agent {
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
+  errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
   credentialId: string | null;
   credentials?: AgentCredentialSummary[];
+  orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -122,9 +133,12 @@ export interface AgentDetail extends Agent {
   access: AgentAccessState;
 }
 
+export type ClearAgentErrorResponse = Agent;
+
 export interface AgentKeyCreated {
   id: string;
   name: string;
+  scope: AgentApiKeyScope;
   token: string;
   createdAt: Date;
 }

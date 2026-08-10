@@ -1,13 +1,15 @@
-export type HeartbeatRunOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+export type HeartbeatRunOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
 export type HeartbeatRunStopReason =
   | "completed"
+  | "interrupted"
   | "timeout"
   | "cancelled"
   | "budget_paused"
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "unmanaged_background_task_stopped"
   | "process_detached_stalled"
   | "adapter_failed";
 
@@ -84,9 +86,11 @@ export function inferHeartbeatRunStopReason(input: {
   errorMessage?: string | null;
 }): HeartbeatRunStopReason {
   if (input.outcome === "succeeded") return "completed";
+  if (input.outcome === "interrupted") return "interrupted";
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
+  if (input.outcome === "failed" && input.errorCode === "unmanaged_background_task_stopped") return "unmanaged_background_task_stopped";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
   if (input.outcome === "failed" && input.errorCode === "process_detached_stalled") return "process_detached_stalled";
   if (input.outcome === "cancelled") {

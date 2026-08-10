@@ -30,6 +30,7 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  taskKey?: string | null;
   rethrowOnError?: boolean;
 }) {
   // Master fork: wake agents even for backlog assignments. If an agent is assigned,
@@ -42,13 +43,19 @@ export function queueIssueAssignmentWakeup(input: {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,
-      payload: { issueId: input.issue.id, mutation: input.mutation, assignmentHandoff: true },
+      payload: {
+        issueId: input.issue.id,
+        mutation: input.mutation,
+        assignmentHandoff: true,
+        ...(input.taskKey ? { taskKey: input.taskKey } : {}),
+      },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: {
         issueId: input.issue.id,
         source: input.contextSource,
         assignmentHandoff: true,
+        ...(input.taskKey ? { taskKey: input.taskKey } : {}),
       },
     })
     .catch((err) => {

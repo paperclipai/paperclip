@@ -5,6 +5,7 @@ import {
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
 type AuthErrorBody =
   | {
@@ -13,6 +14,11 @@ type AuthErrorBody =
     error?: string | { code?: string; message?: string };
   }
   | null;
+
+export interface SignOutResult {
+  success?: boolean;
+  redirectTo?: string;
+}
 
 export class AuthApiError extends Error {
   status: number;
@@ -85,11 +91,55 @@ function shouldRetrySignInError(error: AuthApiError) {
   return false;
 }
 
+// Rich diagnostics for auth requests. Network-layer failures (Safari
+// "Load failed" / Chrome "Failed to fetch") throw a TypeError *before* any
+// HTTP response, so they are indistinguishable from a bad password in the UI
+// unless we log the resolved request URL + origin here. See PAP-13466.
+function resolveAuthUrl(path: string) {
+  const relative = `/api/auth${path}`;
+  try {
+    return new URL(relative, window.location.origin).href;
+  } catch {
+    return relative;
+  }
+}
+
+function logAuthNetworkFailure(method: string, path: string, error: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request failed at the network layer (no HTTP response)", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    pageOrigin: typeof window !== "undefined" ? window.location.origin : "(no window)",
+    pageHref: typeof window !== "undefined" ? redactUrlSecrets(window.location.href) : "(no window)",
+    credentials: "include",
+    online: typeof navigator !== "undefined" ? navigator.onLine : "(no navigator)",
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    error,
+    hint:
+      "This means the browser never got a response from the server. Common causes: " +
+      "the page origin differs from the API host (mixed http/https, wrong hostname/port, " +
+      "or a proxy/tunnel that only forwards the page but not /api), an SSL error, or the " +
+      "connection was reset. A wrong password would instead return HTTP 401, not this.",
+  });
+}
+
+function logAuthHttpError(method: string, path: string, status: number, statusText: string, body: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request returned an error status", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    status,
+    statusText,
+    body,
+  });
+}
+
 async function authPost(
   path: string,
   body: Record<string, unknown>,
   retryPolicy: AuthRetryPolicy = {},
-) {
+): Promise<unknown> {
   const {
     maxRetries = 0,
     retryDelayMs = (attempt) => Math.min(600, 120 * attempt),
@@ -107,24 +157,26 @@ async function authPost(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-    } catch (error) {
-      if (attempt <= maxRetries && isRetryableNetworkError(error)) {
+    } catch (networkError) {
+      logAuthNetworkFailure("POST", path, networkError);
+      if (attempt <= maxRetries && isRetryableNetworkError(networkError)) {
         await sleep(retryDelayMs(attempt));
         continue;
       }
-      throw error instanceof Error
-        ? error
-        : new Error(`Authentication request failed: ${error}`);
+      throw networkError instanceof Error
+        ? networkError
+        : new Error(`Authentication request failed: ${networkError}`);
     }
 
     const payload = await res.json().catch(() => null);
     if (!res.ok) {
-      const err = extractAuthError(payload as AuthErrorBody, res.status);
-      if (attempt <= maxRetries && isRetryable(err)) {
+      logAuthHttpError("POST", path, res.status, res.statusText, payload);
+      const error = extractAuthError(payload as AuthErrorBody, res.status);
+      if (attempt <= maxRetries && isRetryable(error)) {
         await sleep(retryDelayMs(attempt));
         continue;
       }
-      throw err;
+      throw error;
     }
     return payload;
   }
@@ -210,7 +262,14 @@ export const authApi = {
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
-  signOut: async () => {
-    await authPost("/sign-out", {});
+  signOut: async (): Promise<SignOutResult | null> => {
+    const payload = await authPost("/sign-out", {});
+    if (!payload || typeof payload !== "object") return null;
+
+    const result = payload as Record<string, unknown>;
+    return {
+      ...(typeof result.success === "boolean" ? { success: result.success } : {}),
+      ...(typeof result.redirectTo === "string" ? { redirectTo: result.redirectTo } : {}),
+    };
   },
 };

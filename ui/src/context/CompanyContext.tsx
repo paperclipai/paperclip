@@ -10,13 +10,11 @@ import {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
 import { companiesApi } from "../api/companies";
-import { ApiError } from "../api/client";
-
+import { companiesListQueryOptions, type CompanyListResult } from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
 import { useOrg } from "./OrgContext";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
-type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
 interface CompanyContextValue {
   companies: Company[];
@@ -98,20 +96,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
-  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } = useQuery<CompanyListResult>({
-    queryKey: queryKeys.companies.all,
-    queryFn: async () => {
-      try {
-        return { companies: await companiesApi.list(), unauthorized: false };
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          return { companies: [], unauthorized: true };
-        }
-        throw err;
-      }
-    },
-    retry: false,
-  });
+  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } =
+    useQuery<CompanyListResult>(companiesListQueryOptions);
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
   const companiesInOrg = useMemo(
@@ -266,4 +252,14 @@ export function useCompany() {
     throw new Error("useCompany must be used within CompanyProvider");
   }
   return ctx;
+}
+
+/**
+ * Non-throwing variant of {@link useCompany}. Returns null when called outside a
+ * CompanyProvider instead of throwing, so components that may render in
+ * provider-less surfaces (e.g. exported/standalone markdown) can read company
+ * state without crashing.
+ */
+export function useOptionalCompany(): CompanyContextValue | null {
+  return useContext(CompanyContext);
 }

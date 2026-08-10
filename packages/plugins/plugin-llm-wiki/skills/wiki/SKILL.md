@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Use when you need shared company context — prior decisions, meeting notes, project knowledge — or when you learn something durable that other agents and humans should find later (a decision made in chat, a meeting transcript, a context dump). Every project has a wiki space; read before you assume, write when context would otherwise be lost.
+description: Use for shared company knowledge: prior decisions, meeting notes, project context, and durable findings. Read before assuming; write when context would otherwise be lost. Each project has a wiki space plus a company-wide library.
 ---
 
 # Company Wiki

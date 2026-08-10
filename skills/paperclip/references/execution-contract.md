@@ -121,6 +121,13 @@ An issue with declared completion evidence also cannot be created directly in
 `issue_completion_evidence_missing` plus declared and missing requirement types
 so the executor can register the missing output and retry completion.
 
+An issue document or attachment can support the evidence, but it does not
+satisfy the completion gate until it is registered as the corresponding
+qualifying issue work product. For a document declaration, register a `document`
+work product that points to the document; for a deliverable attachment, register
+the qualifying `artifact` work product. A comment that merely links either item
+is not a substitute for that registration.
+
 The `extensions` object is intentionally open-ended. QA, deployment, reference-fidelity, finance, or company-specific skills may add namespaced extension objects. A skill may validate its own extension, but it must not delete or reinterpret the core contract.
 
 ## Manager duties (before delegating)

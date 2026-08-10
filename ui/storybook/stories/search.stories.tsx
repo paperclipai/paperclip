@@ -1,11 +1,21 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { CompanySearchResult, CompanySearchResponse } from "@paperclipai/shared";
+import type {
+  CompanySearchFilterOptionCounts,
+  CompanySearchResult,
+  CompanySearchResponse,
+  CompanySearchZeroResults,
+} from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { IssueGroupHeader } from "@/components/IssueGroupHeader";
 import { Input } from "@/components/ui/input";
 import { PageTabBar, type PageTabItem } from "@/components/PageTabBar";
 import { MatchSourceChip } from "@/components/search/MatchSourceChip";
 import { SearchResultRow } from "@/components/search/SearchResultRow";
+import { SearchFilterBar, type SearchFilterDataProps } from "@/components/search/SearchFilterBar";
+import { SearchFilterChips } from "@/components/search/SearchFilterChips";
+import { ZeroResultsRecovery } from "@/components/search/ZeroResultsRecovery";
+import type { FilterChipLookups, SearchFilters } from "@/lib/search-filters";
+import { SEARCH_OPERATOR_QUICK_FILTERS, searchOperatorSuggestions } from "@/lib/search-query-parser";
 import { Tabs } from "@/components/ui/tabs";
 import {
   Bot,
@@ -189,12 +199,26 @@ const fixtureResponse: CompanySearchResponse = {
   scope: "all",
   limit: 20,
   offset: 0,
+  sort: "relevance",
   results: [...fixtureResults, ...fixtureAgents, ...fixtureProjects],
   countsByType: {
     issue: fixtureResults.length,
+    comment: 0,
+    document: 0,
+    artifact: 0,
     agent: fixtureAgents.length,
     project: fixtureProjects.length,
   },
+  filterOptionCounts: {
+    status: {},
+    priority: {},
+    assigneeAgentId: {},
+    assigneeUserId: {},
+    projectId: {},
+    labelId: {},
+    updatedWithin: {},
+  },
+  zeroResults: null,
   hasMore: false,
 };
 
@@ -202,11 +226,12 @@ function ScopeTabsPreview({
   active,
   response,
 }: {
-  active: "all" | "issues" | "comments" | "documents" | "agents" | "projects";
+  active: "all" | "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
   response: CompanySearchResponse;
 }) {
   const total =
     (response.countsByType.issue ?? 0) +
+    (response.countsByType.artifact ?? 0) +
     (response.countsByType.agent ?? 0) +
     (response.countsByType.project ?? 0);
   const items: PageTabItem[] = [
@@ -214,6 +239,7 @@ function ScopeTabsPreview({
     { value: "issues", label: <ScopeTabLabel label="Issues" count={response.countsByType.issue} /> },
     { value: "comments", label: <ScopeTabLabel label="Comments" count={response.results.filter((result) => result.matchedFields.includes("comment")).length} /> },
     { value: "documents", label: <ScopeTabLabel label="Documents" count={response.results.filter((result) => result.matchedFields.includes("document")).length} /> },
+    { value: "artifacts", label: <ScopeTabLabel label="Artifacts" count={response.countsByType.artifact} /> },
     { value: "agents", label: <ScopeTabLabel label="Agents" count={response.countsByType.agent} /> },
     { value: "projects", label: <ScopeTabLabel label="Projects" count={response.countsByType.project} /> },
   ];
@@ -385,6 +411,39 @@ function SearchPagePreview({
   );
 }
 
+function SearchOperatorInputPreview() {
+  const suggestions = searchOperatorSuggestions("auth sta", 4);
+  return (
+    <div className="border-t border-border bg-background p-4">
+      <div className="relative">
+        <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input value="auth status:blocked updated:>7d" readOnly className="h-10 pl-9 pr-4 text-sm" />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className="px-1.5 py-0 text-(length:--text-micro) font-normal normal-case">
+            status:blocked
+          </Badge>
+          <Badge variant="outline" className="px-1.5 py-0 text-(length:--text-micro) font-normal normal-case">
+            updated:&gt;7d
+          </Badge>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {suggestions.map((suggestion) => (
+            <span
+              key={suggestion.token}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5"
+            >
+              <span className="font-mono text-(length:--text-micro)">{suggestion.token}</span>
+              <span className="hidden text-(length:--text-micro) sm:inline">{suggestion.description}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CommandPaletteWithSearchAll({
   query,
   emptyResults = false,
@@ -419,6 +478,15 @@ function CommandPaletteWithSearchAll({
               <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
             </span>
           </CommandItem>
+        </CommandGroup>
+        <CommandSeparator />
+        <CommandGroup heading="Quick filters">
+          {SEARCH_OPERATOR_QUICK_FILTERS.map((chip) => (
+            <CommandItem key={chip} value={`quick-filter ${chip}`}>
+              <SearchIcon className="mr-2 h-4 w-4" />
+              <span className="font-mono text-xs">{chip}</span>
+            </CommandItem>
+          ))}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
@@ -492,6 +560,53 @@ function CommandPaletteWithSearchAll({
   );
 }
 
+const noop = () => {};
+
+const searchFilterCounts: CompanySearchFilterOptionCounts = {
+  status: { in_progress: 4, todo: 3, backlog: 2, in_review: 1, blocked: 1, done: 8 },
+  priority: { critical: 1, high: 3, medium: 5, low: 2 },
+  assigneeAgentId: storybookAgents[0]?.id ? { [storybookAgents[0].id]: 4 } : {},
+  assigneeUserId: {},
+  projectId: storybookProjects[0]?.id ? { [storybookProjects[0].id]: 6 } : {},
+  labelId: { "label-infra": 3 },
+  updatedWithin: { "24h": 2, "7d": 5, "30d": 9, "90d": 11 },
+};
+
+const searchFilterData: SearchFilterDataProps = {
+  counts: searchFilterCounts,
+  agents: storybookAgents.map((agent) => ({ id: agent.id, name: agent.name })),
+  projects: storybookProjects.map((project) => ({ id: project.id, name: project.name })),
+  labels: [
+    { id: "label-infra", name: "infra", color: "#a78bfa" },
+    { id: "label-auth", name: "auth", color: "#34d399" },
+  ],
+  currentUserId: "user-1",
+};
+
+const activeSearchFilters: SearchFilters = {
+  status: ["in_progress", "todo"],
+  priority: ["high"],
+  projectId: storybookProjects[0]?.id,
+  updatedWithin: "7d",
+};
+
+const searchFilterLookups: FilterChipLookups = {
+  agentName: (id) => storybookAgents.find((agent) => agent.id === id)?.name,
+  userName: () => "Me",
+  projectName: (id) => storybookProjects.find((project) => project.id === id)?.name,
+  labelName: (id) => searchFilterData.labels.find((label) => label.id === id)?.name,
+  currentUserId: "user-1",
+};
+
+const zeroResultsFixture: CompanySearchZeroResults = {
+  unfilteredTotal: 42,
+  loosenSuggestions: [
+    { filter: "status", values: ["in_progress", "todo"], resultCount: 30, additionalCount: 30 },
+    { filter: "priority", values: ["high"], resultCount: 12, additionalCount: 12 },
+    { filter: "updatedWithin", values: ["7d"], resultCount: 6, additionalCount: 6 },
+  ],
+};
+
 function SearchStories() {
   return (
     <div className="paperclip-story">
@@ -515,6 +630,14 @@ function SearchStories() {
 
         <section className="paperclip-story__frame overflow-hidden">
           <div className="paperclip-story__title-block">
+            <div className="paperclip-story__label">/search · screen 3</div>
+            <h2 className="mt-1 text-lg font-semibold">Typed operators, pills &amp; autocomplete</h2>
+          </div>
+          <SearchOperatorInputPreview />
+        </section>
+
+        <section className="paperclip-story__frame overflow-hidden">
+          <div className="paperclip-story__title-block">
             <div className="paperclip-story__label">/search</div>
             <h2 className="mt-1 text-lg font-semibold">Initial state — no query</h2>
           </div>
@@ -534,7 +657,49 @@ function SearchStories() {
             <div className="paperclip-story__label">/search</div>
             <h2 className="mt-1 text-lg font-semibold">No results state</h2>
           </div>
-          <SearchPagePreview response={{ ...fixtureResponse, results: [], countsByType: { issue: 0, agent: 0, project: 0 } }} state="empty" query="ghostbuster" />
+          <SearchPagePreview response={{ ...fixtureResponse, results: [], countsByType: { issue: 0, comment: 0, document: 0, artifact: 0, agent: 0, project: 0 } }} state="empty" query="ghostbuster" />
+        </section>
+
+        <section className="paperclip-story__frame overflow-hidden">
+          <div className="paperclip-story__title-block">
+            <div className="paperclip-story__label">/search · screen 1</div>
+            <h2 className="mt-1 text-lg font-semibold">Filter bar, active chips &amp; honest meta</h2>
+          </div>
+          <div className="flex flex-col gap-2 border-t border-border bg-background p-4">
+            <SearchFilterBar
+              filters={activeSearchFilters}
+              onChange={noop}
+              sort="relevance"
+              onSortChange={noop}
+              data={searchFilterData}
+            />
+            <SearchFilterChips
+              filters={activeSearchFilters}
+              lookups={searchFilterLookups}
+              onChange={noop}
+              onClearAll={noop}
+            />
+            <div className="py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+              8 of 42 results · sorted by Relevance · 4 filters active
+            </div>
+          </div>
+        </section>
+
+        <section className="paperclip-story__frame overflow-hidden">
+          <div className="paperclip-story__title-block">
+            <div className="paperclip-story__label">/search · screen 4</div>
+            <h2 className="mt-1 text-lg font-semibold">Zero-results recovery</h2>
+          </div>
+          <div className="border-t border-border bg-background">
+            <ZeroResultsRecovery
+              query="auth flake"
+              filters={activeSearchFilters}
+              zeroResults={zeroResultsFixture}
+              lookups={searchFilterLookups}
+              onChange={noop}
+              onClearAll={noop}
+            />
+          </div>
         </section>
 
         <section className="paperclip-story__frame overflow-hidden p-4">

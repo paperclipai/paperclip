@@ -30,19 +30,16 @@ describe("buildRunSkillTelemetry", () => {
         "company/acme/qa",
         "company/acme/research",
         "missing/skill",
-        "paperclipai/paperclip/paperclip",
       ],
       requiredKeys: ["paperclipai/paperclip/paperclip"],
       preparedKeys: [
         "company/acme/qa",
         "company/acme/research",
-        "paperclipai/paperclip/paperclip",
       ],
       unavailableDesiredKeys: ["missing/skill"],
       preparationSignals: [
         { key: "company/acme/qa", sources: ["agent_selection"] },
         { key: "company/acme/research", sources: ["issue_mention"] },
-        { key: "paperclipai/paperclip/paperclip", sources: ["runtime_required"] },
       ],
     });
   });

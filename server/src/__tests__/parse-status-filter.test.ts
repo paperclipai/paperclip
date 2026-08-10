@@ -26,10 +26,15 @@ describe("parseStatusFilter", () => {
     ]);
   });
 
-  it("trims whitespace and does not mutate arrays", () => {
-    const input: readonly string[] = [" todo ", "in_progress"];
+  it("trims entries, filters empty values, and does not mutate arrays", () => {
+    const input: readonly string[] = [" todo ,", "in_progress", ",done,,"];
 
-    expect(parseStatusFilter(input)).toEqual(["todo", "in_progress"]);
-    expect(input).toEqual([" todo ", "in_progress"]);
+    expect(parseStatusFilter(input)).toEqual(["todo", "in_progress", "done"]);
+    expect(input).toEqual([" todo ,", "in_progress", ",done,,"]);
+  });
+
+  it("ignores hostile non-string values at runtime", () => {
+    const input = ["todo", 42, "done"] as unknown as readonly string[];
+    expect(parseStatusFilter(input)).toEqual(["todo", "done"]);
   });
 });

@@ -1,41 +1,127 @@
 # Company Skills Workflow
 
-Use this reference when a board user, CEO, or manager asks you to find, install, update, repair, propagate, or prove a company skill or SOP, or assign it to an agent.
+Use this reference when a board user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
 
 ## What Exists
 
-- Company skill library: install, inspect, update, and read imported skills for the whole company.
+- App-shipped catalog: a curated set of company skills in `@paperclipai/skills-catalog`, browseable and installable without leaving Paperclip.
+- Company skill library: install, inspect, update, audit, reset, and read company skills for the whole company.
 - Agent skill assignment: add or remove company skills on an existing agent.
 - Hire/create composition: pass `desiredSkills` when creating or hiring an agent so the same assignment model applies immediately.
 
 The canonical model is:
 
-1. install the skill into the company
-2. assign the company skill to the agent
+1. add the skill to the company library — either from the app catalog (`skills install`), an external source (`skills import`), or a managed local skill (`skills create`/`skills scan-projects`)
+2. attach the company skill to the agent (`skills agent sync`)
 3. optionally do step 2 during hire/create with `desiredSkills`
+
+Catalog install ≠ agent attach. Installing a catalog skill only adds the row to
+`company_skills`. The agent will not use it until you sync the agent's desired
+set.
 
 ## Permission Model
 
 - Company skill reads: any same-company actor
-- Company skill mutations: board, CEO, or an agent with the effective `agents:create` capability
+- Company skill mutations: open to same-company actors by default. Missing `skills:create` grants and `canCreateSkills` settings do not deny ordinary skill work; only an explicit company skill policy restriction does. Core safety and company-boundary checks always remain enforced.
 - Agent skill assignment: same permission model as updating that agent
+- Team installs continue to require `agents:create` because they import or create agents in addition to attaching skills.
 
 ## Core Endpoints
 
+App-shipped catalog (read-only browse + company install):
+
+- `GET /api/skills/catalog`
+- `GET /api/skills/catalog/:catalogId`
+- `GET /api/skills/catalog/ref?ref=<id|key|slug>`
+- `GET /api/skills/catalog/:catalogId/files?path=SKILL.md`
+- `POST /api/companies/:companyId/skills/install-catalog`
+
+Company library:
+
 - `GET /api/companies/:companyId/skills`
-- `POST /api/companies/:companyId/skills/refresh`
 - `GET /api/companies/:companyId/skills/:skillId`
 - `GET /api/companies/:companyId/skills/:skillId/files?path=SKILL.md`
-- `PATCH /api/companies/:companyId/skills/:skillId/files`
+- `POST /api/companies/:companyId/skills` (managed local create)
+- `PATCH /api/companies/:companyId/skills/:skillId/files` (edit a canonical skill file)
 - `POST /api/companies/:companyId/skills/import`
 - `POST /api/companies/:companyId/skills/scan-projects`
+- `GET /api/companies/:companyId/skills/:skillId/update-status`
 - `POST /api/companies/:companyId/skills/:skillId/install-update`
+- `POST /api/companies/:companyId/skills/:skillId/audit`
+- `POST /api/companies/:companyId/skills/:skillId/reset`
+- `DELETE /api/companies/:companyId/skills/:skillId`
+
+Agent attach and hire/create composition:
+
 - `GET /api/agents/:agentId/skills`
 - `POST /api/agents/:agentId/skills/sync`
 - `POST /api/companies/:companyId/agent-hires`
 - `POST /api/companies/:companyId/agents`
 
+If a board user, CEO, or manager is driving locally, prefer the
+`paperclipai skills` CLI documented in `doc/CLI.md` — it wraps every endpoint
+above, accepts company skill or catalog refs by `id`/`key`/`slug`, and prints
+the same JSON these endpoints return when called with `--json`.
+
+## Edit A Canonical Company Skill File
+
+For an explicit SOP correction, read the current file first, then update the
+canonical company-skill file with `PATCH /api/companies/:companyId/skills/:skillId/files`:
+
+```sh
+curl -sS -X PATCH \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "SKILL.md",
+    "content": "---\\nname: example\\ndescription: Example\\n---\\n\\n# Example\\n"
+  }'
+```
+
+Read the same file back through `GET .../files?path=SKILL.md`, validate the
+frontmatter/package, and refresh the affected agents' skill inventory. Do not edit an agent's `$CODEX_HOME/skills` entry, an adapter staging directory, or an `__runtime__` copy: those are materialized runtime views and will not preserve the board-directed change. On the next affected run, use
+`paperclipSkillTelemetry` (when present in run context/telemetry) as evidence
+that the canonical skill assignment was propagated; report the concrete read-back
+and propagation evidence before claiming the SOP is updated.
+
 ## Install A Skill Into The Company
+
+Two paths cover the common cases:
+
+1. **App-shipped catalog** (preferred when the right skill exists in the
+   bundled/optional catalog) — browse it first, then install with the catalog
+   install endpoint. No external network fetch happens.
+2. **External source** (skills.sh, GitHub, local path, or URL) — use the
+   import endpoint below.
+
+### App-shipped catalog
+
+Browse, inspect, and install catalog skills before reaching for an external
+source. Bundled skills are the curated defaults for any company; optional
+skills are role- or domain-specific.
+
+```sh
+curl -sS "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+curl -sS "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow"
+  }'
+```
+
+The install response records provenance (`catalogId`, `catalogKey`,
+`packageVersion`, `originHash`) on the company skill so update/audit/reset
+flows know the pinned origin. `force: true` may replace a same-key
+catalog-managed skill but never bypasses hard-stop audit findings.
+
+### External source import
 
 Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a local path.
 
@@ -115,46 +201,6 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-Before editing, inspect the detail response for `key`, `sourceType`, `editable`, `editableReason`, `sourcePath`, `fileInventory`, and `usedByAgents`. Resolve the existing skill by its responsibility and contents; do not create a duplicate merely because the newest request uses different wording.
-
-## Update An Existing Company SOP Or Skill
-
-An explicit instruction from the board or an authorized manager to update/fix/add a company SOP is an implementation directive unless they asked for discussion or planning only.
-
-1. List and inspect the installed skills as shown above.
-2. Read every affected `SKILL.md` and any referenced file needed for the procedure.
-3. Confirm `editable: true`. Only `local_path` company skills can be edited in place. Bundled Paperclip, skills.sh, GitHub, and URL sources are read-only in the company library; update their real source or use an explicitly approved local replacement.
-4. Patch the canonical file through the API. Do not edit an agent's `$CODEX_HOME/skills` entry, adapter staging directory, or the managed `__runtime__` copy.
-
-Encode multiline content from a file so markdown is preserved:
-
-```sh
-jq -n \
-  --arg path "SKILL.md" \
-  --rawfile content /tmp/edited-SKILL.md \
-  '{path: $path, content: $content}' \
-| curl -sS -X PATCH \
-    "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files" \
-    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-    -H "Content-Type: application/json" \
-    --data-binary @-
-```
-
-5. Read the file back through `GET .../files?path=SKILL.md` and verify the returned content, parsed name/description, and `updatedAt` rather than trusting the write response alone.
-6. Refresh the content-aware inventory after filesystem/source edits or when immediate propagation proof is required:
-
-```sh
-curl -sS -X POST \
-  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/refresh" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-7. Verify propagation. Use `usedByAgents` from skill detail plus `GET /api/agents/:agentId/skills`; sync only when an intended agent is missing the canonical key. On a subsequent heartbeat, use `paperclipSkillTelemetry` as preparation evidence. Do not claim a skill was invoked solely because it was available or prepared.
-
-Completion evidence must name the exact skill key/id and edited file, show the binding diff or revision, record validation/read-back results, and inventory every affected agent assignment. A plan, TRD, wiki entry, issue comment, repository adapter, or runtime-copy edit is not proof that the SOP changed.
-
 ## Assign Skills To An Existing Agent
 
 `desiredSkills` accepts:
@@ -165,11 +211,18 @@ Completion evidence must name the exact skill key/id and edited file, show the b
 
 The server persists canonical company skill keys.
 
+The request must include a merge mode:
+
+- `add` adds the named skills and keeps every other assignment.
+- `remove` removes only the named skills.
+- `replace` overwrites the complete desired skill set. Use it only after explicit confirmation.
+
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "mode": "add",
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]
@@ -226,8 +279,6 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents"
 ## Notes
 
 - Built-in Paperclip runtime skills are still added automatically when required by the adapter.
-- Normal inventory reads use a short bounded cache and content fingerprint so repeated heartbeats do not rescan and rewrite every bundled skill. After changing skill files on disk, an authorized operator can call `POST /api/companies/:companyId/skills/refresh` for an immediate content-aware refresh.
-- Heartbeat run context records `paperclipSkillTelemetry` with distinct `requestedKeys`, effective `desiredKeys`, inventory `availableKeys`, and the available `preparedKeys` intersection. `unavailableDesiredKeys` stays visible. This pre-adapter telemetry does not claim a skill was activated or invoked.
 - If a reference is missing or ambiguous, the API returns `422`.
 - Prefer linking back to the relevant issue, approval, and agent when you comment about skill changes.
 - Use company portability routes when you need whole-package import/export, not just a skill:

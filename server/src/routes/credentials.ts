@@ -15,7 +15,7 @@ import { fetchClaudeCliQuotaForOAuth, fetchClaudeQuota } from "@paperclipai/adap
 import { fetchCodexQuota, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { accessService, credentialService, logActivity } from "../services/index.js";
 import {
@@ -323,12 +323,8 @@ export function credentialRoutes(db: Db) {
     validate(updateProviderCredentialSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await svc.getById(id);
-      if (!existing) {
-        res.status(404).json({ error: "Credential not found" });
-        return;
-      }
-      assertCompanyAccess(req, existing.companyId);
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Credential not found");
+      if (!existing) return;
       await requireCredentialManage(req, existing.companyId);
 
       if (req.body.credential !== undefined && req.query.skipTest !== "true") {
@@ -373,12 +369,8 @@ export function credentialRoutes(db: Db) {
   // Delete a credential
   router.delete("/credentials/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Credential not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Credential not found");
+    if (!existing) return;
     await requireCredentialManage(req, existing.companyId);
 
     const force = req.query.force === "true";
@@ -433,12 +425,8 @@ export function credentialRoutes(db: Db) {
       res.status(400).json({ error: "Invalid credential id" });
       return;
     }
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Credential not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Credential not found");
+    if (!existing) return;
     await requireCredentialManage(req, existing.companyId);
     const payload = await svc.getDecryptedPayload(id);
     if (!payload) {
@@ -457,12 +445,8 @@ export function credentialRoutes(db: Db) {
       res.status(400).json({ error: "Invalid credential id" });
       return;
     }
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Credential not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Credential not found");
+    if (!existing) return;
     await requireCredentialManage(req, existing.companyId);
     const updated = await svc.reenable(id);
     res.json(updated);
@@ -475,12 +459,8 @@ export function credentialRoutes(db: Db) {
 
   router.get("/credentials/:id/reveal", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Credential not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Credential not found");
+    if (!existing) return;
     await requireCredentialManage(req, existing.companyId);
 
     const rateLimitKey =

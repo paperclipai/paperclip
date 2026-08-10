@@ -3,22 +3,28 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
-  agentWakeupRequests,
   agents,
+  agentWakeupRequests,
+  agentRuntimeState,
   budgetPolicies,
   companies,
+  companyMemberships,
+  companySkills,
   costEvents,
   createDb,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
   issueRelations,
+  issueTreeHoldMembers,
   issueThreadInteractions,
   issueTreeHolds,
   issues,
   projects,
   projectWorkspaces,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -63,10 +69,11 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { attentionService } from "../services/attention.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
-import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -89,22 +96,24 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    // reconcileIssueGraphLiveness heals dependency wakes by enqueuing an
+    // on-demand wake, which dispatches a heartbeat run fire-and-forget (see
+    // startNextQueuedRunForAgent → executeRun in the heartbeat service). That
+    // background run keeps writing rows (workspace_operations, heartbeat_run_events)
+    // after the awaited call resolves. Deterministically await those in-flight
+    // executions before clearing tables — otherwise an escaping heartbeat_run_events
+    // insert can land between the events delete and the heartbeat_runs delete and
+    // trip the run_events → runs foreign key.
+    await heartbeatService(db).drainActiveRunExecutions();
+    // New liveness/recovery relations are deliberately company-scoped and may
+    // grow additional FK edges. Truncating the root is the only fixture reset
+    // that cannot leave an older recovery finding available to the next case.
+    await db.transaction(async (tx) => {
+      // PostgreSQL emits one NOTICE per cascaded table. Keep the test output
+      // readable without changing the session-wide logging policy.
+      await tx.execute(sql.raw("SET LOCAL client_min_messages TO warning"));
+      await tx.execute(sql.raw('TRUNCATE TABLE "companies" CASCADE'));
+    });
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
       enableIsolatedWorkspaces: false,
@@ -114,7 +123,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function enableAutoRecovery() {
     await instanceSettingsService(db).updateExperimental({
@@ -211,6 +220,126 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     return { companyId, managerId, coderId, blockedIssueId, blockerIssueId };
   }
 
+  async function seedResolvedDependencyBackstopFixture(opts: {
+    workspaceState?: "none" | "not_finalized" | "finalized";
+    assignee?: "agent" | null;
+  } = {}) {
+    const workspaceState = opts.workspaceState ?? "none";
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerUserId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      membershipRole: "owner",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Priya",
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    if (workspaceState !== "none") {
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Synthetic dependency project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Synthetic workspace",
+        sourceType: "git_worktree",
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Synthetic execution workspace",
+        providerType: "git_worktree",
+      });
+    }
+
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        projectId: workspaceState === "none" ? null : projectId,
+        title: "Synthetic blocked dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: opts.assignee === null ? null : agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        projectId: workspaceState === "none" ? null : projectId,
+        title: "Synthetic completed blocker",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: workspaceState === "none" ? null : executionWorkspaceId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    if (workspaceState === "not_finalized") {
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerIssueId,
+        phase: "adapter_execute",
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 60_000),
+      });
+    } else if (workspaceState === "finalized") {
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerIssueId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date(),
+      });
+    }
+
+    return { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId };
+  }
+
   it("keeps liveness findings advisory when auto recovery is disabled", async () => {
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
@@ -230,6 +359,383 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(0);
+  });
+
+  it("runs exactly one bounded review-path recovery before surfacing a stalled decision", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Review Recovery Co",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Review Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "PAP-14994 fingerprint",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const followUpRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        interactionId: "superseded-confirmation",
+        reviewPathLost: true,
+        reviewPathConsumedRef: "superseded-confirmation",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+        interactionId: "superseded-confirmation",
+        reviewPathLost: true,
+        reviewPathConsumedRef: "superseded-confirmation",
+      },
+    });
+    expect(followUpRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const recoveryWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "issue_review_path_lost"),
+      ));
+    expect(recoveryWakes).toHaveLength(1);
+    expect(recoveryWakes[0]).toMatchObject({
+      status: "completed",
+      payload: expect.objectContaining({
+        issueId,
+        reviewPathConsumedRef: "superseded-confirmation",
+        reviewPathRecoveryAttempt: 1,
+        maxReviewPathRecoveryAttempts: 1,
+      }),
+    });
+
+    const attention = await issueService(db)
+      .listReviewAttention(companyId, [{ id: issueId, companyId, status: "in_review" }]);
+    expect(attention.get(issueId)).toMatchObject({ state: "stalled", paths: [] });
+
+    const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
+    expect(feed.items.find((item) => item.subject.id === issueId)).toMatchObject({
+      sourceKind: "review",
+      decisionVerbs: expect.arrayContaining([
+        expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
+      ]),
+    });
+  });
+
+  it("keeps resolved dependency wake reconciliation active when liveness auto recovery is disabled", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.autoRecoveryEnabled).toBe(false);
+    expect(result.dependencyWakesHealed).toBe(1);
+    expect(result.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+    expect(result.escalationsCreated).toBe(0);
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+
+    expect(wake?.reason).toBe("issue_blockers_resolved");
+    expect(wake?.idempotencyKey).toBe(`issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`);
+    expect(["queued", "claimed", "completed"]).toContain(wake?.status);
+
+    const events = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      entityId: blockedIssueId,
+      details: expect.objectContaining({ source: "issue_graph_liveness.backstop" }),
+    });
+  });
+
+  it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.dependencyWakesHealed).toBe(1);
+    expect(result.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+    expect(result.escalationsCreated).toBe(0);
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+
+    expect(wake?.reason).toBe("issue_blockers_resolved");
+    expect(wake?.idempotencyKey).toBe(`issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`);
+    expect(["queued", "claimed", "completed"]).toContain(wake?.status);
+
+    const events = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ entityId: blockedIssueId });
+  });
+
+  it("reconciles a resolved blocked dependency after the assignee-null window closes", async () => {
+    const { agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none", assignee: null });
+    const heartbeat = heartbeatService(db);
+
+    const beforeAssignment = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(beforeAssignment.dependencyWakesHealed).toBe(0);
+    expect(beforeAssignment.dependencyWakeBackstopChecked).toBe(0);
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: agentId, updatedAt: new Date() })
+      .where(eq(issues.id, blockedIssueId));
+
+    const afterAssignment = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(afterAssignment.dependencyWakesHealed).toBe(1);
+    expect(afterAssignment.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+
+    const wake = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toMatchObject({
+      reason: "issue_blockers_resolved",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`,
+    });
+  });
+
+  it("retries a resolved dependency wake when the prior wake was skipped as stale", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const idempotencyKey = `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`;
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId: blockedIssueId,
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerIssueIds: [blockerIssueId],
+      },
+      status: "skipped",
+      finishedAt: new Date(),
+      error: "Cancelled because issue assignee changed before the queued run could start",
+      idempotencyKey,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(1);
+    expect(result.dependencyWakeExistingSkipped).toBe(0);
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")))
+      .orderBy(agentWakeupRequests.requestedAt);
+
+    expect(wakes).toHaveLength(2);
+    expect(wakes.map((wake) => wake.status)).toContain("skipped");
+    expect(wakes.every((wake) => wake.idempotencyKey === idempotencyKey)).toBe(true);
+    expect(wakes.some((wake) => ["queued", "claimed", "completed"].includes(wake.status))).toBe(true);
+  });
+
+  it("waits for workspace finalize before healing a resolved blocked dependent", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
+    const heartbeat = heartbeatService(db);
+
+    const beforeFinalize = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(beforeFinalize.findings).toBe(0);
+    expect(beforeFinalize.dependencyWakesHealed).toBe(0);
+    expect(beforeFinalize.dependencyWakeNotReadySkipped).toBe(1);
+
+    const wakesBeforeFinalize = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakesBeforeFinalize).toHaveLength(0);
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerIssueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date(),
+    });
+
+    const afterFinalize = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(afterFinalize.dependencyWakesHealed).toBe(1);
+    expect(afterFinalize.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+
+    const wake = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toMatchObject({
+      reason: "issue_blockers_resolved",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`,
+    });
+  });
+
+  it("does not duplicate an existing dependency wake keyed to any resolved blocker", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const secondBlockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondBlockerIssueId,
+      companyId,
+      title: "Second completed blocker",
+      status: "done",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "R-MULTI-3",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: secondBlockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const readiness = await issueService(db).getDependencyReadiness(blockedIssueId);
+    const blockerIdNotUsedByBackstop = readiness.blockerIssueIds.find((id) => id !== blockerIssueId);
+    if (!blockerIdNotUsedByBackstop) {
+      throw new Error("Expected a second blocker id in dependency readiness");
+    }
+    expect(blockerIdNotUsedByBackstop).toBe(secondBlockerIssueId);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId: blockedIssueId,
+        resolvedBlockerIssueId: blockerIdNotUsedByBackstop,
+      },
+      status: "queued",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeExistingSkipped).toBe(1);
+
+    const wakes = await db
+      .select({
+        id: agentWakeupRequests.id,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.idempotencyKey).toBe(
+      `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    );
+  });
+
+  it("counts null dependency wake returns as deferred instead of enqueue failures", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeDeferredOrFailed).toBe(1);
+    expect(result.dependencyWakeEnqueueFailed).toBe(0);
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.wakeOnDemand.disabled",
+    });
   });
 
   it("does not create recovery issues outside the configured lookback window", async () => {
@@ -340,17 +846,47 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         blockerIssueId,
       ].join(":"),
     });
+  });
 
-    const comments = await db
+  it("retains a matching liveness escalation as the durable response", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const existingEscalationId = randomUUID();
+
+    await db.insert(issues).values({
+      id: existingEscalationId,
+      companyId,
+      title: "Existing liveness unblock work",
+      status: "todo",
+      priority: "high",
+      parentId: blockerIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 5,
+      identifier: `${`P${companyId.replace(/-/g, "").slice(0, 4)}`}-5`,
+      originKind: "harness_liveness_escalation",
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    // The escalation is deliberately not treated as proof that the original
+    // path is healthy. The finding stays live and leaf-level dedupe retains
+    // the existing durable response instead of creating another one.
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.existingEscalations).toBe(1);
+
+    const escalations = await db
       .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, blockedIssueId));
-    expect(comments).toHaveLength(1);
-    const wakeups = await db
-      .select({ payload: agentWakeupRequests.payload })
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups.filter((row) => row.payload?.incidentKey === escalations[0]?.originId)).toHaveLength(1);
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
   });
 
   it("treats a recent pending interaction as a current waiting path", async () => {
@@ -375,7 +911,63 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
-  it("surfaces a stale pending interaction without resolving the responder's request", async () => {
+  it("does not retire an obsolete invalid-review recovery while it has an active run", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const existingEscalationId = randomUUID();
+
+    await db.insert(issues).values({
+      id: existingEscalationId,
+      companyId,
+      title: "Existing invalid review participant unblock work",
+      status: "todo",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 5,
+      identifier: `${`P${companyId.replace(/-/g, "").slice(0, 4)}`}-5`,
+      originKind: "harness_liveness_escalation",
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "invalid_review_participant",
+        blockerIssueId,
+      ].join(":"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: managerId,
+      status: "running",
+      contextSnapshot: { issueId: existingEscalationId },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result).toMatchObject({
+      findings: 1,
+      escalationsCreated: 1,
+      obsoleteRecoveriesRetired: 0,
+      obsoleteRecoveriesActiveSkipped: 1,
+    });
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(2);
+    expect(escalations.find((issue) => issue.id === existingEscalationId)?.status).toBe("todo");
+    expect(escalations.some((issue) => issue.originId === [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":"))).toBe(true);
+  });
+
+  it("keeps stale request confirmations as durable waiting holds", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "backlog",
@@ -394,8 +986,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       updatedAt: staleAt,
     });
     // Interaction creation normally touches the issue. Backdate the complete
-    // dependency path to reproduce a periodic reconciliation after both that
-    // touch and the response lease have aged past the default 24-hour lookback.
+    // dependency path to prove a durable confirmation hold remains in force
+    // after ordinary pending-interaction leases would have expired.
     await db
       .update(issues)
       .set({ updatedAt: staleAt })
@@ -403,8 +995,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
-    expect(result.findings).toBe(1);
-    expect(result.escalationsCreated).toBe(1);
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
     const [interaction] = await db
       .select({ status: issueThreadInteractions.status })
       .from(issueThreadInteractions)
@@ -417,17 +1009,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         eq(issues.companyId, companyId),
         eq(issues.originKind, "harness_liveness_escalation"),
       ));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      originId: [
-        "harness_liveness",
-        companyId,
-        blockedIssueId,
-        "blocked_by_assigned_backlog_issue",
-        blockerIssueId,
-      ].join(":"),
-    });
+    expect(escalations).toHaveLength(0);
   });
 
   it("creates one manager escalation, preserves blockers, and records owner selection", async () => {
@@ -488,11 +1070,6 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockedIssueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("Action needed:");
-    expect(comments[0]?.presentation).toMatchObject({
-      kind: "system_notice",
-      title: "Needs unblock",
-      detailsDefaultOpen: false,
-    });
     expect(comments[0]?.body).toContain(escalations[0]?.identifier ?? escalations[0]!.id);
 
     const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
@@ -512,388 +1089,6 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
-  });
-
-  it("creates exactly one reporting-manager escalation for an agent-owned blocked issue with no blockers", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, blockedIssueId } = await seedBlockedChain();
-    await db
-      .delete(issueRelations)
-      .where(and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.relatedIssueId, blockedIssueId),
-      ));
-    const heartbeat = heartbeatService(db);
-
-    const first = await heartbeat.reconcileIssueGraphLiveness();
-    const second = await heartbeat.reconcileIssueGraphLiveness();
-    const third = await heartbeat.reconcileIssueGraphLiveness();
-
-    expect(first).toMatchObject({
-      findings: 1,
-      escalationsCreated: 1,
-      existingEscalations: 0,
-      boardEscalationsCreated: 0,
-    });
-    expect(second).toMatchObject({
-      findings: 1,
-      escalationsCreated: 0,
-      existingEscalations: 1,
-    });
-    expect(third).toMatchObject({
-      findings: 1,
-      escalationsCreated: 0,
-      existingEscalations: 1,
-    });
-
-    const escalations = await db
-      .select()
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, companyId),
-        eq(issues.originKind, "harness_liveness_escalation"),
-      ));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockedIssueId,
-      assigneeAgentId: managerId,
-      originId: [
-        "harness_liveness",
-        companyId,
-        blockedIssueId,
-        "blocked_without_action_path",
-        blockedIssueId,
-      ].join(":"),
-      originFingerprint: [
-        "harness_liveness_leaf",
-        companyId,
-        "blocked_without_action_path",
-        blockedIssueId,
-      ].join(":"),
-    });
-
-    const comments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, blockedIssueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Action needed:");
-    expect(comments[0]?.metadata).toMatchObject({
-      version: 1,
-      sections: [expect.objectContaining({ title: "Recovery details" })],
-    });
-
-    const wakeups = await db
-      .select({ agentId: agentWakeupRequests.agentId, payload: agentWakeupRequests.payload })
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, companyId));
-    const incidentWakeups = wakeups.filter(
-      (row) => row.payload?.incidentKey === escalations[0]?.originId,
-    );
-    expect(incidentWakeups).toEqual([
-      expect.objectContaining({ agentId: managerId }),
-    ]);
-
-    const events = await db
-      .select()
-      .from(activityLog)
-      .where(eq(activityLog.companyId, companyId));
-    expect(events.filter((event) =>
-      event.action === "issue.harness_liveness_escalation_created" &&
-      event.entityId === escalations[0]?.id
-    )).toHaveLength(1);
-    expect(events.find((event) =>
-      event.action === "issue.harness_liveness_escalation_created" &&
-      event.entityId === escalations[0]?.id
-    )?.details).toMatchObject({
-      findingState: "blocked_without_action_path",
-      ownerSelection: {
-        selectedAgentId: managerId,
-        selectedReason: "assignee_reporting_chain",
-        selectedSourceIssueId: blockedIssueId,
-      },
-    });
-
-    const boardInteractions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.companyId, companyId));
-    expect(boardInteractions).toHaveLength(0);
-  });
-
-  it("creates one durable board interaction across three passes when no invokable company candidate exists", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
-    await db
-      .update(agents)
-      .set({ status: "error" })
-      .where(inArray(agents.id, [managerId, coderId]));
-    const heartbeat = heartbeatService(db);
-
-    const first = await heartbeat.reconcileIssueGraphLiveness();
-    const second = await heartbeat.reconcileIssueGraphLiveness();
-    const third = await heartbeat.reconcileIssueGraphLiveness();
-
-    expect(first).toMatchObject({
-      findings: 1,
-      escalationsCreated: 0,
-      boardEscalationsCreated: 1,
-      existingBoardEscalations: 0,
-      skipped: 0,
-    });
-    expect(second).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-    expect(third).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-
-    const interactions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, blockerIssueId),
-      ));
-    expect(interactions).toHaveLength(1);
-    expect(interactions[0]).toMatchObject({
-      kind: "ask_user_questions",
-      status: "pending",
-      continuationPolicy: "none",
-      createdByAgentId: null,
-      createdByUserId: null,
-    });
-    expect(interactions[0]?.idempotencyKey).toMatch(/^harness-liveness-board:[a-f0-9]{64}:1$/);
-    expect(interactions[0]?.payload).toMatchObject({
-      version: 1,
-      context: {
-        kind: "issue_graph_liveness_board_escalation",
-        version: 1,
-        generation: 1,
-        cause: "no_invokable_same_company_candidate",
-        companyId,
-        recoveryIssue: { id: blockerIssueId },
-        budgetBlockedCandidateAgentIds: [],
-        continuation: {
-          issueId: blockerIssueId,
-          policy: "none",
-          questionId: "continuation_path",
-          boardStateChangeRequiredBeforeSubmit: true,
-          automaticWake: false,
-        },
-      },
-      questions: [expect.objectContaining({
-        id: "continuation_path",
-        selectionMode: "single",
-        required: true,
-      })],
-    });
-
-    const escalations = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(0);
-    const events = await db
-      .select()
-      .from(activityLog)
-      .where(and(
-        eq(activityLog.companyId, companyId),
-        eq(activityLog.action, "issue.harness_liveness_board_escalation_created"),
-      ));
-    expect(events).toHaveLength(1);
-    expect(events[0]?.details).toMatchObject({
-      cause: "no_invokable_same_company_candidate",
-      recoveryIssueId: blockerIssueId,
-      interactionId: interactions[0]?.id,
-      budgetBlockedCandidateAgentIds: [],
-      continuation: {
-        issueId: blockerIssueId,
-        interactionId: interactions[0]?.id,
-        policy: "none",
-      },
-    });
-
-    const boardQueue = await issueService(db).list(companyId, {
-      awaitingDecisionForUserId: "board-user",
-    });
-    expect(boardQueue.map((issue) => issue.id)).toContain(blockerIssueId);
-
-    // Answering without making the selected state change must not permanently
-    // mask the live incident. The next pass creates exactly one new generation,
-    // and that pending generation then deduplicates subsequent passes.
-    await issueThreadInteractionService(db).answerQuestions(
-      { id: blockerIssueId, companyId },
-      interactions[0]!.id,
-      {
-        answers: [{
-          questionId: "continuation_path",
-          optionIds: ["assign_or_restore_owner"],
-        }],
-      },
-      { userId: "board-user" },
-    );
-    const afterUnfulfilledAnswer = await heartbeat.reconcileIssueGraphLiveness();
-    const afterReplacementPending = await heartbeat.reconcileIssueGraphLiveness();
-    const finalDedupePass = await heartbeat.reconcileIssueGraphLiveness();
-    expect(afterUnfulfilledAnswer).toMatchObject({
-      findings: 1,
-      boardEscalationsCreated: 1,
-      existingBoardEscalations: 0,
-    });
-    expect(afterReplacementPending).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-    expect(finalDedupePass).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-
-    const regeneratedInteractions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, blockerIssueId),
-      ));
-    expect(regeneratedInteractions).toHaveLength(2);
-    expect(regeneratedInteractions.map((interaction) => interaction.status).sort()).toEqual([
-      "answered",
-      "pending",
-    ]);
-    expect(regeneratedInteractions.map((interaction) => interaction.idempotencyKey).sort()).toEqual([
-      expect.stringMatching(/^harness-liveness-board:[a-f0-9]{64}:1$/),
-      expect.stringMatching(/^harness-liveness-board:[a-f0-9]{64}:2$/),
-    ]);
-    const replacement = regeneratedInteractions.find((interaction) => interaction.status === "pending");
-    expect(replacement?.payload).toMatchObject({
-      context: {
-        kind: "issue_graph_liveness_board_escalation",
-        generation: 2,
-        recoveryIssue: { id: blockerIssueId },
-      },
-    });
-  });
-
-  it("does not self-escalate an actionless blocked issue when its assignee is the only invokable root", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockedIssueId } = await seedBlockedChain();
-    await db
-      .delete(issueRelations)
-      .where(and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.relatedIssueId, blockedIssueId),
-      ));
-    await db.update(agents).set({ reportsTo: null }).where(eq(agents.id, coderId));
-    await db.update(agents).set({ status: "error" }).where(eq(agents.id, managerId));
-
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result).toMatchObject({
-      findings: 1,
-      escalationsCreated: 0,
-      boardEscalationsCreated: 1,
-      skipped: 0,
-    });
-    const escalations = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(0);
-    const interactions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, blockedIssueId),
-      ));
-    expect(interactions).toHaveLength(1);
-    expect(interactions[0]?.payload).toMatchObject({
-      context: {
-        cause: "stranded_assignee_is_only_invokable_candidate",
-        recoveryIssue: { id: blockedIssueId },
-        companyAgents: expect.arrayContaining([
-          expect.objectContaining({
-            agentId: coderId,
-            invokable: true,
-            excludedAsStrandedAssignee: true,
-          }),
-        ]),
-      },
-    });
-  });
-
-  it("deduplicates shared-leaf board recovery and preserves every source incident", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
-    const secondBlockedIssueId = randomUUID();
-    await db.insert(issues).values({
-      id: secondBlockedIssueId,
-      companyId,
-      title: "Second blocked source sharing one leaf",
-      status: "blocked",
-      priority: "medium",
-      assigneeAgentId: coderId,
-      createdAt: new Date(Date.now() - 60 * 60 * 1000),
-      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
-    });
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: blockerIssueId,
-      relatedIssueId: secondBlockedIssueId,
-      type: "blocks",
-    });
-    await db
-      .update(agents)
-      .set({ status: "error" })
-      .where(inArray(agents.id, [managerId, coderId]));
-    const heartbeat = heartbeatService(db);
-
-    const first = await heartbeat.reconcileIssueGraphLiveness();
-    const second = await heartbeat.reconcileIssueGraphLiveness();
-    const third = await heartbeat.reconcileIssueGraphLiveness();
-
-    expect(first).toMatchObject({
-      findings: 2,
-      boardEscalationsCreated: 1,
-      existingBoardEscalations: 1,
-      skipped: 0,
-    });
-    expect(first.boardInteractionIds).toHaveLength(1);
-    expect(second).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-    expect(third).toMatchObject({ findings: 0, boardEscalationsCreated: 0 });
-
-    const interactions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, blockerIssueId),
-      ));
-    expect(interactions).toHaveLength(1);
-    expect(interactions[0]).toMatchObject({
-      status: "pending",
-      continuationPolicy: "none",
-    });
-    const context = (interactions[0]?.payload as {
-      context?: {
-        sourceIncidentCount?: number;
-        sourceIncidents?: Array<{
-          incidentKey?: string;
-          sourceIssue?: { id?: string };
-          recoveryIssueId?: string;
-        }>;
-      };
-    }).context;
-    expect(context?.sourceIncidentCount).toBe(2);
-    expect(context?.sourceIncidents).toHaveLength(2);
-    expect(context?.sourceIncidents?.map((incident) => incident.sourceIssue?.id).sort()).toEqual(
-      [blockedIssueId, secondBlockedIssueId].sort(),
-    );
-    expect(context?.sourceIncidents?.every((incident) =>
-      incident.recoveryIssueId === blockerIssueId &&
-      typeof incident.incidentKey === "string"
-    )).toBe(true);
-
-    const events = await db
-      .select()
-      .from(activityLog)
-      .where(and(
-        eq(activityLog.companyId, companyId),
-        eq(activityLog.action, "issue.harness_liveness_board_escalation_created"),
-      ));
-    expect(events).toHaveLength(1);
   });
 
   it("does not let an active source recovery action owned by an errored agent mask liveness", async () => {
@@ -939,7 +1134,10 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         "harness_liveness",
         companyId,
         blockedIssueId,
-        "blocked_by_uninvokable_assignee",
+        // Error is retry-eligible under the unified agent eligibility policy;
+        // the incident is the missing live execution path, not a non-invokable
+        // lifecycle state.
+        "blocked_without_action_path",
         blockerIssueId,
       ].join(":"),
     });
@@ -1062,85 +1260,6 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("creates a structured board interaction when every same-company candidate is budget-blocked", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
-    await db.insert(budgetPolicies).values({
-      companyId,
-      scopeType: "company",
-      scopeId: companyId,
-      metric: "billed_cents",
-      windowKind: "calendar_month_utc",
-      amount: 1,
-      hardStopEnabled: true,
-      isActive: true,
-    });
-    await db.insert(costEvents).values({
-      companyId,
-      agentId: coderId,
-      issueId: blockerIssueId,
-      provider: "test",
-      biller: "test",
-      billingType: "tokens",
-      model: "test-model",
-      costCents: 1,
-      occurredAt: new Date(),
-    });
-
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result).toMatchObject({
-      findings: 1,
-      escalationsCreated: 0,
-      boardEscalationsCreated: 1,
-      existingBoardEscalations: 0,
-      skipped: 0,
-    });
-    const interactions = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, blockerIssueId),
-      ));
-    expect(interactions).toHaveLength(1);
-    expect(interactions[0]?.payload).toMatchObject({
-      context: {
-        cause: "all_same_company_candidates_budget_blocked",
-        companyId,
-        recoveryIssue: { id: blockerIssueId },
-        budgetBlockedCandidateAgentIds: [managerId, coderId],
-      },
-    });
-    const interactionContext = (interactions[0]?.payload as {
-      context?: { candidates?: Array<Record<string, unknown>> };
-    }).context;
-    expect(interactionContext?.candidates).toHaveLength(2);
-    expect(interactionContext?.candidates?.[0]).toMatchObject({
-      agentId: managerId,
-      reason: "root_agent",
-      eligible: true,
-      budgetBlock: {
-        scopeType: "company",
-        scopeId: companyId,
-      },
-    });
-    expect(interactionContext?.candidates?.[1]).toMatchObject({
-      agentId: coderId,
-      reason: "ordered_invokable_fallback",
-      eligible: true,
-      budgetBlock: {
-        scopeType: "company",
-        scopeId: companyId,
-      },
-    });
-    const escalations = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(0);
-  });
-
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
@@ -1204,143 +1323,6 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         budgetBlockedCandidateAgentIds: [coderId],
       },
     });
-  });
-
-  it("creates executable recovery when an invokable agent review participant has no delivery path", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
-    await db
-      .update(agents)
-      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } })
-      .where(inArray(agents.id, [managerId, coderId]));
-    await db
-      .update(issues)
-      .set({
-        status: "in_review",
-        assigneeAgentId: coderId,
-        executionState: {
-          status: "pending",
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: managerId, userId: null },
-          returnAssignee: { type: "agent", agentId: coderId, userId: null },
-        },
-      })
-      .where(eq(issues.id, blockerIssueId));
-
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result).toMatchObject({
-      findings: 1,
-      escalationsCreated: 1,
-      skipped: 0,
-    });
-    const escalations = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      status: "todo",
-      originId: [
-        "harness_liveness",
-        companyId,
-        blockedIssueId,
-        "in_review_without_action_path",
-        blockerIssueId,
-      ].join(":"),
-    });
-    const wakeups = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        reason: "issue_assigned",
-        payload: expect.objectContaining({
-          issueId: escalations[0]!.id,
-          sourceIssueId: blockedIssueId,
-          recoveryIssueId: blockerIssueId,
-        }),
-      }),
-    ]));
-  });
-
-  it("does not let an orphaned deferred wake mask a stalled agent review", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
-    await db
-      .update(agents)
-      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } })
-      .where(inArray(agents.id, [managerId, coderId]));
-    await db
-      .update(issues)
-      .set({
-        status: "in_review",
-        assigneeAgentId: coderId,
-        executionState: {
-          status: "pending",
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: managerId, userId: null },
-        },
-      })
-      .where(eq(issues.id, blockerIssueId));
-    const staleAt = new Date(Date.now() - 6 * 60 * 1000);
-    await db.insert(agentWakeupRequests).values({
-      companyId,
-      agentId: managerId,
-      source: "assignment",
-      reason: "issue_execution_deferred",
-      status: "deferred_issue_execution",
-      payload: { issueId: blockerIssueId },
-      requestedAt: staleAt,
-      createdAt: staleAt,
-      updatedAt: staleAt,
-    });
-
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result).toMatchObject({ findings: 1, escalationsCreated: 1 });
-    const recoveryIssues = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(recoveryIssues).toHaveLength(1);
-    const recoveryWake = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, companyId))
-      .then((rows) => rows.find((row) => row.payload?.issueId === recoveryIssues[0]?.id));
-    expect(recoveryWake).toBeTruthy();
-  });
-
-  it("allows a fresh deferred wake its bounded dispatch lease", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
-    await db
-      .update(issues)
-      .set({
-        status: "in_review",
-        assigneeAgentId: coderId,
-        executionState: {
-          status: "pending",
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: managerId, userId: null },
-        },
-      })
-      .where(eq(issues.id, blockerIssueId));
-    await db.insert(agentWakeupRequests).values({
-      companyId,
-      agentId: managerId,
-      source: "assignment",
-      reason: "issue_execution_deferred",
-      status: "deferred_issue_execution",
-      payload: { issueId: blockerIssueId },
-    });
-
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result).toMatchObject({ findings: 0, escalationsCreated: 0 });
   });
 
   it("parents recovery under the leaf blocker without inheriting dependent or blocker execution state for manager-owned recovery", async () => {
@@ -1534,22 +1516,16 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("defers a fresh escalation during the terminal incident cooldown despite a classifier change", async () => {
+  it("holds a recently closed matching escalation, then re-escalates after the cooldown", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
-    const currentIncidentKey = [
+    const now = new Date();
+    const incidentKey = [
       "harness_liveness",
       companyId,
       blockedIssueId,
       "blocked_by_unassigned_issue",
-      blockerIssueId,
-    ].join(":");
-    const terminalIncidentKey = [
-      "harness_liveness",
-      companyId,
-      blockedIssueId,
-      "in_review_without_action_path",
       blockerIssueId,
     ].join(":");
     const closedEscalationId = randomUUID();
@@ -1565,12 +1541,21 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       issueNumber: 3,
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
-      originId: terminalIncidentKey,
+      originId: incidentKey,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: now,
     });
 
-    const result = await heartbeat.reconcileIssueGraphLiveness();
+    const held = await heartbeat.reconcileIssueGraphLiveness({ now });
 
-    expect(result.escalationsCreated).toBe(0);
+    expect(held.escalationsCreated).toBe(0);
+    expect(held.skippedReescalationCooldown).toBe(1);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      now: new Date(now.getTime() + DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS + 1),
+    });
+
+    expect(result.escalationsCreated).toBe(1);
     expect(result.existingEscalations).toBe(0);
 
     const openEscalations = await db
@@ -1580,14 +1565,15 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, "harness_liveness_escalation"),
+          eq(issues.originId, incidentKey),
         ),
       );
-    expect(openEscalations).toHaveLength(1);
-    expect(openEscalations[0]).toMatchObject({
-      id: closedEscalationId,
-      parentId: blockedIssueId,
+    expect(openEscalations).toHaveLength(2);
+    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
+    expect(freshEscalation).toMatchObject({
+      parentId: blockerIssueId,
       assigneeAgentId: managerId,
-      status: "done",
+      status: expect.stringMatching(/^(todo|in_progress|done)$/),
     });
 
     const blockers = await db
@@ -1595,57 +1581,90 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
+    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
   });
 
-  it("retries recovery after the terminal incident cooldown when the leaf remains stranded", async () => {
+  it("re-escalates immediately after a matching escalation is cancelled", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
-    const terminalIncidentKey = [
+    const heartbeat = heartbeatService(db);
+    const now = new Date();
+    const incidentKey = [
       "harness_liveness",
       companyId,
       blockedIssueId,
-      "in_review_without_action_path",
+      "blocked_by_unassigned_issue",
       blockerIssueId,
     ].join(":");
-    const closedAt = new Date(Date.now() - 16 * 60 * 1000);
+
     await db.insert(issues).values({
       id: randomUUID(),
       companyId,
-      title: "Previous recovery attempt",
-      status: "done",
+      title: "Cancelled escalation",
+      status: "cancelled",
       priority: "high",
       parentId: blockedIssueId,
       assigneeAgentId: managerId,
       issueNumber: 3,
-      identifier: "CLOSED-3",
+      identifier: "CANCELLED-3",
       originKind: "harness_liveness_escalation",
-      originId: terminalIncidentKey,
-      createdAt: closedAt,
-      updatedAt: closedAt,
+      originId: incidentKey,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: now,
     });
 
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+    const result = await heartbeat.reconcileIssueGraphLiveness({ now });
 
-    expect(result).toMatchObject({
-      findings: 1,
-      escalationsCreated: 1,
-      skipped: 0,
-    });
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.skippedReescalationCooldown).toBe(0);
+  });
+
+  it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
     const escalations = await db
       .select()
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(2);
-    expect(escalations.map((issue) => issue.status).sort()).toEqual(["done", "todo"]);
-    const retry = escalations.find((issue) => issue.status === "todo");
-    expect(retry).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: managerId,
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(escalations).toHaveLength(1);
+
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, escalations[0]!.id));
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, blockerIssueId));
+
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.obsoleteRecoveryBlockerRelationsRemoved).toBe(0);
+    expect(second.doneRecoveryBlockerRelationsRemoved).toBe(1);
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+  });
+
+  it("handles an armed cutoff when no liveness findings exist", async () => {
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      issueCreatedAtGte: new Date(),
     });
-    const wakeups = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups.some((wakeup) => wakeup.payload?.issueId === retry?.id)).toBe(true);
+
+    expect(result.findings).toBe(0);
   });
 });

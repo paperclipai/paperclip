@@ -29,10 +29,14 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
+  getGeneral: vi.fn(),
+  get: vi.fn(),
 }));
 
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listUserSecretDefinitions: vi.fn(),
+  listProposals: vi.fn(),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -89,6 +93,11 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
+}));
+
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
 }));
@@ -127,7 +136,11 @@ describe("AgentConfigForm", () => {
     mockCredentialsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: false });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockInstanceSettingsApi.get.mockResolvedValue({});
     mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
   });
 
   afterEach(() => {

@@ -1,10 +1,11 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   authUsers,
   companyMemberships,
   issueCollaborators,
+  issues,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import { extractAgentMentionIds, extractUserMentionIds } from "@paperclipai/shared";
@@ -337,4 +338,12 @@ export function issueVisibilityService(db: Db) {
     removeCollaborator,
     resolveMentionsToCollaborators,
   };
+}
+
+export function visibleIssueCondition(): SQL {
+  return and(isNull(issues.hiddenAt), isNull(issues.harnessKind))!;
+}
+
+export function visibleIssueSql(alias = "issues") {
+  return `"${alias}"."hidden_at" IS NULL AND "${alias}"."harness_kind" IS NULL`;
 }

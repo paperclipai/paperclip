@@ -4,7 +4,10 @@
     "outDir": "dist",
     "rootDir": "src",
     "lib": ["ES2023"],
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@paperclipai/plugin-sdk": ["../../sdk/dist/index.d.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

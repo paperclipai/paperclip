@@ -1,5 +1,5 @@
 import { memo, type ComponentType, type SVGProps } from "react";
-import { Bot, FileText, Hexagon, MessageSquare, Quote } from "lucide-react";
+import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,7 @@ type SnippetStyle = {
 const SNIPPET_STYLES: Record<string, SnippetStyle> = {
   comment: { Icon: MessageSquare, label: "Comment" },
   document: { Icon: FileText, label: "Doc" },
+  artifact: { Icon: Paperclip, label: "Artifact" },
   description: { Icon: Quote, label: "Description" },
 };
 
@@ -109,6 +110,55 @@ function SearchResultRowImpl({
     );
   }
 
+  if (result.type === "artifact") {
+    const artifact = result.artifact;
+    if (!artifact) return null;
+    const updated = formatRelativeTime(result.updatedAt ?? artifact.updatedAt);
+    return (
+      <Link
+        to={result.href}
+        disableIssueQuicklook
+        className={cn(ROW_BASE, "py-4", isActive && "bg-muted/40", className)}
+        data-result-type="artifact"
+      >
+        <Paperclip className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <span className="truncate text-sm font-medium text-foreground">{result.title}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {artifact.issueIdentifier}
+            </span>
+          </div>
+          {result.snippet ? (
+            <SnippetLine
+              text={result.snippets[0]?.text ?? result.snippet}
+              highlights={result.snippets[0]?.highlights}
+              field="artifact"
+              fallbackLabel={result.sourceLabel ?? "Artifact"}
+              multiline
+            />
+          ) : null}
+          <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:hidden">
+            <span className="truncate">{artifact.issueTitle}</span>
+            {updated ? <span className="ml-auto shrink-0 tabular-nums">{updated}</span> : null}
+          </div>
+        </div>
+        <div className="ml-2 hidden shrink-0 flex-col items-end gap-2 sm:flex">
+          {updated ? <span className="text-xs tabular-nums text-muted-foreground">{updated}</span> : null}
+          {result.previewImageUrl ? (
+            <img
+              src={result.previewImageUrl}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
+            />
+          ) : null}
+        </div>
+      </Link>
+    );
+  }
+
   const issue = result.issue;
   if (!issue) return null;
   const assigneeName = issue.assigneeAgentId
@@ -174,7 +224,7 @@ function SearchResultRowImpl({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-[88px] w-[88px] shrink-0 rounded-md border border-border bg-muted object-cover"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
             />
           ) : null}
         </div>
@@ -206,7 +256,11 @@ function SnippetLine({ text, highlights, field, fallbackLabel, multiline = false
         className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/60", multiline && "mt-0.5")}
         aria-hidden
       />
-      <span className="sr-only">{label}: </span>
+      <span
+        className="shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        {label}
+      </span>
       <HighlightedText
         text={text}
         highlights={highlights}

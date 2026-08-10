@@ -46,6 +46,8 @@ export const help: Record<string, string> = {
   args: "Command-line arguments, comma-separated.",
   extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
+  secretAccess:
+    "Secrets this agent can reach. Env-var bindings are injected at run start; API-access bindings are fetched on demand via the run-bound agent API and never written to the environment.",
   bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
   payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
   webhookUrl: "The URL that receives POST requests when the agent is invoked.",
@@ -116,23 +118,14 @@ export function ToggleField({
         <span className="text-xs text-muted-foreground">{label}</span>
         {hint && <HintIcon text={hint} />}
       </div>
-      <button
-        data-slot="toggle"
+      {/* Gallery feedback r3: was a hand-rolled h-5 w-9 pill with a bg-green-600
+          track — the app's second switch implementation. Converged on the one
+          canonical ToggleSwitch (status-green on-state), DESIGN.md principle 1. */}
+      <ToggleSwitch
         data-testid={toggleTestId}
-        type="button"
-        className={cn(
-          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
-        )}
-        onClick={() => onChange(!checked)}
-      >
-        <span
-          className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-            checked ? "translate-x-4.5" : "translate-x-0.5"
-          )}
-        />
-      </button>
+        checked={checked}
+        onCheckedChange={onChange}
+      />
     </div>
   );
 }

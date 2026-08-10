@@ -9,6 +9,10 @@ export type RunSkillPreparationSource =
   | "agent_selection"
   | "issue_mention";
 
+type RuntimeSkillTelemetryEntry = PaperclipSkillEntry & {
+  required?: boolean;
+};
+
 export interface RunSkillTelemetry {
   schemaVersion: 2;
   availableCount: number;
@@ -30,7 +34,7 @@ export interface RunSkillTelemetry {
  * Neither field claims that an adapter activated or executed a skill.
  */
 export function buildRunSkillTelemetry(input: {
-  runtimeEntries: PaperclipSkillEntry[];
+  runtimeEntries: RuntimeSkillTelemetryEntry[];
   effectiveConfig: Record<string, unknown>;
   mentionedSkillKeys: string[];
 }): RunSkillTelemetry {

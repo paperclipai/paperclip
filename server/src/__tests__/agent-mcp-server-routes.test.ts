@@ -11,6 +11,19 @@ const mockAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => true),
   hasPermission: vi.fn(async () => false),
+  decide: vi.fn(async (input: {
+    actor?: { type?: string; agentId?: string };
+    action?: string;
+    resource?: { agentId?: string };
+  }) => {
+    const allowed = input.actor?.type === "board" || input.actor?.agentId === input.resource?.agentId;
+    return {
+      allowed,
+      action: input.action,
+      reason: allowed ? "allow_test" : "deny_test",
+      explanation: allowed ? "Allowed by test mock." : "Denied by test mock.",
+    };
+  }),
 }));
 
 const mockSecretService = vi.hoisted(() => ({

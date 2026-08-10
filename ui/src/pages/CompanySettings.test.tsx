@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyEnvironments } from "./CompanyEnvironments";
@@ -24,6 +25,7 @@ const mockAssetsApi = vi.hoisted(() => ({
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   capabilities: vi.fn(),
+  secretRefs: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   probe: vi.fn(),
@@ -32,6 +34,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   getExperimental: vi.fn(),
 }));
 
@@ -77,19 +80,14 @@ vi.mock("../context/ToastContext", () => ({
   useToast: () => ({
     pushToast: mockPushToast,
   }),
+  useToastActions: () => ({ pushToast: mockPushToast }),
+  useOptionalToastActions: () => ({ pushToast: mockPushToast }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP" }],
-    selectedCompany: {
-      id: "company-1",
-      name: "Paperclip",
-      description: null,
-      brandColor: null,
-      logoUrl: null,
-      issuePrefix: "PAP",
-    },
+    selectedCompany: null,
     selectedCompanyId: "company-1",
     setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
@@ -97,6 +95,21 @@ vi.mock("../context/CompanyContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flushReact() {
   await act(async () => {
@@ -105,8 +118,48 @@ async function flushReact() {
   });
 }
 
+async function waitForAssertion(assertion: () => void) {
+  let lastError: unknown;
+  const deadline = Date.now() + 2_000;
+  while (true) {
+    await flushReact();
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  }
+  throw lastError;
+}
+
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function getEnvironmentFormPage(root: ParentNode): HTMLElement | null {
+  return root.querySelector("[data-testid='environment-form-page']");
+}
+
+function renderCompanyEnvironments(queryClient: QueryClient, initialPath = ENVIRONMENTS_PATH) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <TooltipProvider>
+          <Routes>
+            <Route path={ENVIRONMENTS_PATH} element={<CompanyEnvironments />} />
+            <Route path={`${ENVIRONMENTS_PATH}/new`} element={<CompanyEnvironments mode="create" />} />
+            <Route path={`${ENVIRONMENTS_PATH}/:environmentId/edit`} element={<CompanyEnvironments mode="edit" />} />
+          </Routes>
+        </TooltipProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 describe("CompanyEnvironments", () => {
   let container: HTMLDivElement;
+  let activeRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -115,10 +168,12 @@ describe("CompanyEnvironments", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
     });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),
     );
+    mockEnvironmentsApi.secretRefs.mockResolvedValue({ refs: [] });
     mockSecretsApi.list.mockResolvedValue([]);
     mockCompaniesApi.update.mockResolvedValue({
       id: "company-1",
@@ -130,7 +185,11 @@ describe("CompanyEnvironments", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await act(async () => {
+      activeRoot?.unmount();
+    });
+    activeRoot = null;
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -138,18 +197,13 @@ describe("CompanyEnvironments", () => {
 
   it("hides sandbox creation when no run-capable sandbox provider plugins are installed", async () => {
     const root = createRoot(container);
+    activeRoot = root;
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
     await flushReact();
@@ -160,13 +214,104 @@ describe("CompanyEnvironments", () => {
     expect(container.textContent).not.toContain("Fake sandbox");
     expect(container.textContent).not.toContain("Fake is the deterministic test provider");
 
-    await act(async () => {
-      root.unmount();
+  });
+
+  it("omits the Local driver option and lists Sandbox before SSH", async () => {
+    const root = createRoot(container);
+    activeRoot = root;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
     });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
+        sandboxProviders: {
+          "secure-plugin": {
+            status: "supported",
+            supportsSavedProbe: true,
+            supportsUnsavedProbe: true,
+            supportsRunExecution: true,
+            supportsReusableLeases: true,
+            displayName: "Secure Sandbox",
+            configSchema: { type: "object", properties: {} },
+          },
+        },
+      }),
+    );
+
+    await act(async () => {
+      root.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`));
+    });
+
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage(container);
+      expect(dialog).toBeTruthy();
+      const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+        .find((select) => Array.from(select.options).some((option) => option.value === "ssh"));
+      expect(driverSelect).toBeTruthy();
+      expect(Array.from(driverSelect!.options).map((option) => option.value)).toEqual(["sandbox", "ssh"]);
+    });
+    const dialog = getEnvironmentFormPage(container);
+
+    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+      | HTMLSelectElement
+      | undefined;
+    expect(driverSelect).toBeTruthy();
+
+    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
+    expect(driverOptionValues).not.toContain("local");
+    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+  });
+
+  it("shows the Local driver option when editing an existing local environment", async () => {
+    const root = createRoot(container);
+    activeRoot = root;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      {
+        id: "env-local",
+        companyId: "company-1",
+        name: "Local host",
+        description: null,
+        driver: "local",
+        status: "active",
+        config: {},
+        metadata: null,
+        createdAt: new Date("2026-04-25T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-25T00:00:00.000Z"),
+      },
+    ]);
+
+    await act(async () => {
+      root.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-local/edit`));
+    });
+
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage(container);
+      expect(dialog).toBeTruthy();
+      const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+        .find((select) => Array.from(select.options).some((option) => option.value === "ssh"));
+      expect(driverSelect).toBeTruthy();
+      expect(driverSelect!.value).toBe("local");
+    });
+    const dialog = getEnvironmentFormPage(container);
+
+    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
+      | HTMLSelectElement
+      | undefined;
+    expect(driverSelect).toBeTruthy();
+
+    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
+    expect(driverOptionValues).toContain("local");
+    expect(driverSelect!.value).toBe("local");
   });
 
   it("preserves sandbox config when re-selecting the same provider while editing", async () => {
     const root = createRoot(container);
+    activeRoot = root;
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -209,32 +354,22 @@ describe("CompanyEnvironments", () => {
     );
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-1/edit`));
     });
-    await flushReact();
-    await flushReact();
 
-    expect(container.textContent).toContain("Installed sandbox providers:");
-    expect(container.textContent).toContain("Secure Sandbox");
-    expect(container.textContent).toContain("These are not adapter types.");
-
-    const editButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Edit");
-    expect(editButton).toBeTruthy();
-
-    await act(async () => {
-      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage(container);
+      expect(dialog).toBeTruthy();
+      const providerSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
+        .find((select) => Array.from(select.options).some((option) => option.value === "secure-plugin"));
+      expect(providerSelect).toBeTruthy();
+      expect(providerSelect!.value).toBe("secure-plugin");
     });
-    await flushReact();
+    const dialog = getEnvironmentFormPage(container);
 
-    const providerSelect = Array.from(container.querySelectorAll("select"))
-      .find((select) => Array.from(select.options).some((option) => option.value === "secure-plugin")) as HTMLSelectElement | undefined;
+    const providerSelect = Array.from(dialog?.querySelectorAll("select") ?? []).find((select) =>
+      Array.from(select.options).some((option) => option.value === "secure-plugin"),
+    ) as HTMLSelectElement | undefined;
     expect(providerSelect).toBeTruthy();
 
     await act(async () => {
@@ -243,12 +378,8 @@ describe("CompanyEnvironments", () => {
     });
     await flushReact();
 
-    const templateInput = Array.from(container.querySelectorAll("input"))
+    const templateInput = Array.from(dialog?.querySelectorAll("input") ?? [])
       .find((input) => (input as HTMLInputElement).value === "saved-template") as HTMLInputElement | undefined;
     expect(templateInput?.value).toBe("saved-template");
-
-    await act(async () => {
-      root.unmount();
-    });
   });
 });

@@ -14,6 +14,15 @@ export type {
 } from "./origins.js";
 export {
   classifyIssueGraphLiveness,
+  classifyIssueReviewPaths,
+  hasScheduledIssueMonitorPath,
+  hasScheduledMonitor,
+  isIssueLivenessPendingInteractionCurrent,
+  issueLivenessPendingInteractionExpiresAt,
+  ISSUE_LIVENESS_DURABLE_PENDING_INTERACTION_KIND,
+  ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS,
+  ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS,
+  ISSUE_LIVENESS_WAKE_DISPATCH_MAX_AGE_MS,
 } from "./issue-graph-liveness.js";
 export type {
   IssueGraphLivenessInput,
@@ -24,7 +33,11 @@ export type {
   IssueLivenessIssueInput,
   IssueLivenessOwnerCandidate,
   IssueLivenessOwnerCandidateReason,
+  IssueLivenessPendingInteractionPathInput,
   IssueLivenessRelationInput,
+  IssueLivenessWaitingPathInput,
+  IssueReviewPathFact,
+  IssueReviewPathFactKind,
   IssueLivenessSeverity,
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
@@ -56,9 +69,24 @@ export {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
+  isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
 } from "./successful-run-handoff.js";
+export {
+  DEFAULT_STRANDED_RECOVERY_NOTICE_BODY,
+  buildConfigurationIncompleteRecoveryNoticeSeed,
+  buildExecutionReviewParticipantRecoveryNoticeSeed,
+  buildExecutionReviewParticipantUnavailableNoticeSeed,
+  buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildStrandedRecoveryEscalationNotice,
+  buildWorkspaceValidationRecoveryNoticeSeed,
+} from "./stranded-notice.js";
+export type {
+  StrandedRecoveryEscalationNotice,
+  StrandedRecoveryNoticeSeed,
+} from "./stranded-notice.js";

@@ -17,6 +17,7 @@ export const projects = pgTable(
     leadAgentId: uuid("lead_agent_id").references(() => agents.id),
     targetDate: date("target_date"),
     color: text("color"),
+    icon: text("icon"),
     env: jsonb("env").$type<AgentEnvConfig>(),
     githubConnectionId: uuid("github_connection_id").references(() => companyGithubConnections.id, { onDelete: "set null" }),
     pauseReason: text("pause_reason"),

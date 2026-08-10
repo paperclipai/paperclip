@@ -6,7 +6,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, companyAuthenticatorAgents, companyAuthenticators, companySecretBindings } from "@paperclipai/db";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, secretService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo, requirePermission } from "./authz.js";
 
 const createSchema = z.object({
   name: z.string().min(1).max(120),
@@ -166,9 +166,13 @@ export function authenticatorRoutes(db: Db) {
   });
 
   router.post("/authenticators/:id/code", async (req, res) => {
-    const record = await db.select().from(companyAuthenticators).where(eq(companyAuthenticators.id, req.params.id as string)).then((rows) => rows[0] ?? null);
-    if (!record) throw notFound("Authenticator not found");
-    assertCompanyAccess(req, record.companyId);
+    const record = await getAccessibleResource(
+      req,
+      res,
+      db.select().from(companyAuthenticators).where(eq(companyAuthenticators.id, req.params.id as string)).then((rows) => rows[0] ?? null),
+      "Authenticator not found",
+    );
+    if (!record) return;
     const actor = getActorInfo(req);
     if (actor.actorType === "agent") {
       const binding = await db.select({ id: companyAuthenticatorAgents.id }).from(companyAuthenticatorAgents).where(and(eq(companyAuthenticatorAgents.authenticatorId, record.id), eq(companyAuthenticatorAgents.agentId, actor.agentId!))).then((rows) => rows[0] ?? null);

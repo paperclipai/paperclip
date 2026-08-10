@@ -441,7 +441,7 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
-  it("detects cancelled blockers and uninvokable blocker assignees deterministically", () => {
+  it("detects cancelled and paused blockers while preserving errored-agent retry eligibility", () => {
     const cancelled = classifyIssueGraphLiveness({
       issues: [
         issue(),
@@ -495,7 +495,7 @@ describe("issue graph liveness classifier", () => {
       relations: blocks,
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Errored", status: "error" })],
     });
-    expect(errored[0]?.state).toBe("blocked_by_uninvokable_assignee");
+    expect(errored).toEqual([]);
   });
 
   it("prioritizes an uninvokable review owner over a future monitor waiting path", () => {
@@ -546,6 +546,80 @@ describe("issue graph liveness classifier", () => {
     });
 
     expect(findings).toEqual([]);
+  });
+
+  it("detects a cancelled blocker on an assigned todo source", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "todo" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_cancelled_issue",
+      recoveryIssueId: blockerId,
+    });
+  });
+
+  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "in_review" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+  });
+
+  it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Invalid tree unblock work",
+          status: "todo",
+          assigneeAgentId: "qa-2",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "qa-2", name: "QA 2", status: "active", reportsTo: "cto-2" }),
+        agent({ id: "cto-2", name: "CTO 2", status: "terminated", reportsTo: "ceo-2" }),
+        agent({ id: "ceo-2", name: "CEO 2", status: "terminated", reportsTo: null }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_uninvokable_assignee",
+      reason: "PAP-1703 is blocked by PAP-1704, but its assignee is in an invalid org chain.",
+      recommendedOwnerAgentId: managerId,
+    });
   });
 
   it("detects invalid in_review execution participant", () => {
@@ -678,6 +752,7 @@ describe("issue graph liveness classifier", () => {
         issue: {
           ...baseReviewIssue,
           executionState: {
+            status: "pending",
             currentParticipant: { type: "agent", agentId: coderId },
           },
         },
@@ -694,6 +769,7 @@ describe("issue graph liveness classifier", () => {
         issue: {
           ...baseReviewIssue,
           executionState: {
+            status: "pending",
             currentParticipant: { type: "user", userId: "board-user-1" },
           },
         },
@@ -786,7 +862,6 @@ describe("issue graph liveness classifier", () => {
         createdAt: new Date(now.getTime() - ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS - 1),
         status: "pending",
       },
-      { name: "missing creation time", createdAt: null, status: "pending" },
       {
         name: "future creation time",
         createdAt: new Date(
@@ -854,26 +929,113 @@ describe("issue graph liveness classifier", () => {
     const reviewIssueId = "review-1";
     const now = new Date("2026-07-10T12:00:00.000Z");
 
+    for (const createdAt of [
+      new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+      new Date(now.getTime() + ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS + 1),
+    ]) {
+      const findings = classifyIssueGraphLiveness({
+        issues: [issue({
+          id: reviewIssueId,
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        })],
+        relations: [],
+        agents: [agent(), manager],
+        pendingInteractions: [{
+          companyId,
+          issueId: reviewIssueId,
+          kind: "request_confirmation",
+          status: "pending",
+          createdAt,
+        }],
+        now,
+      });
+
+      expect(findings).toEqual([]);
+    }
+  });
+
+  it("keeps legacy pending interactions without a timestamp temporarily compatible", () => {
+    const reviewIssueId = "review-1";
     const findings = classifyIssueGraphLiveness({
-      issues: [issue({
-        id: reviewIssueId,
-        status: "in_review",
-        assigneeAgentId: coderId,
-        executionState: null,
-      })],
+      issues: [issue({ id: reviewIssueId, status: "in_review", executionState: null })],
       relations: [],
       agents: [agent(), manager],
       pendingInteractions: [{
         companyId,
         issueId: reviewIssueId,
-        kind: "request_confirmation",
+        kind: "ask_user_questions",
         status: "pending",
-        createdAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+        createdAt: null,
       }],
-      now,
+      now: "2026-07-10T12:00:00.000Z",
     });
 
     expect(findings).toEqual([]);
+  });
+
+  it("does not treat a participant retained after changes are requested as an active review path", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: {
+            status: "changes_requested",
+            currentParticipant: { type: "agent", agentId: coderId },
+          },
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+    });
+  });
+
+  it("still flags a stalled in_review issue when its blocker has an active run", () => {
+    const reviewIssueId = "review-1";
+    const activeBlockerId = "active-blocker-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+        issue({
+          id: activeBlockerId,
+          identifier: "PAP-2280",
+          title: "Active blocker",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: activeBlockerId, blockedIssueId: reviewIssueId }],
+      agents: [agent(), manager],
+      activeRuns: [{ companyId, issueId: activeBlockerId, agentId: coderId, status: "running" }],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewIssueId,
+  });
   });
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {

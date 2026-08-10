@@ -5,11 +5,11 @@
   "private": true,
   "description": "Local-file LLM Wiki plugin for source ingestion, wiki browsing, query, lint, and maintenance workflows.",
   "files": [
-    "dist/",
-    "templates/",
-    "agents/",
-    "skills/",
-    "migrations/",
+    "agents",
+    "dist",
+    "migrations",
+    "skills",
+    "templates",
     "README.md"
   ],
   "scripts": {
@@ -40,16 +40,16 @@
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-typescript": "^12.1.2",
     "@types/d3-force": "^3.0.10",
-    "@types/node": "^24.6.0",
-    "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.1",
     "d3-force": "^3.0.0",
-    "esbuild": "^0.27.3",
-    "react-dom": "^19.0.0",
-    "rollup": "^4.38.0",
+    "react-dom": "^19.2.7",
+    "rollup": "^4.62.2",
     "tslib": "^2.8.1",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "react": ">=18"

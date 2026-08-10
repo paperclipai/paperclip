@@ -21,6 +21,14 @@ const managerId = "manager-1";
 const issueId = "issue-1";
 const blockerId = "blocker-1";
 const runId = "run-1";
+const manager = {
+  id: managerId,
+  companyId,
+  name: "CTO",
+  role: "cto",
+  status: "idle",
+  reportsTo: null,
+};
 
 describe("recovery classifier boundary", () => {
   it("keeps issue graph liveness classifier parity with the compatibility export", () => {
@@ -103,6 +111,7 @@ describe("recovery classifier boundary", () => {
           status: "idle",
           reportsTo: managerId,
         },
+        manager,
       ],
     });
 
@@ -130,6 +139,7 @@ describe("recovery classifier boundary", () => {
         status: "idle",
         reportsTo: managerId,
       },
+      manager,
     ];
 
     const overdue = classifyIssueGraphLiveness({

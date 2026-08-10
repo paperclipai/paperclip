@@ -39,6 +39,14 @@ describe("redactSensitive", () => {
     expect(out.limit).toBe(20);
   });
 
+  it("strips secret-bearing query and fragment values from source URLs", () => {
+    const out = redactSensitive({
+      source: "https://github.com/acme/private-skill?token=secret#token=secret",
+    }) as Record<string, unknown>;
+
+    expect(out.source).toBe("https://github.com/acme/private-skill");
+  });
+
   it("recurses into nested objects and arrays", () => {
     const out = redactSensitive({
       user: { email: "user@example.com", password: "secret-pass" },
@@ -52,10 +60,40 @@ describe("redactSensitive", () => {
     expect(tokens[1].access_token).toBe("[REDACTED]");
   });
 
+  it("leaves primitives and non-sensitive keys untouched", () => {
+    const body = { email: "a@b.c", name: "Alice", count: 7, active: true, missing: null };
+
+    expect(redactSensitive(body)).toEqual(body);
+  });
+
+  it("returns primitives unchanged", () => {
+    expect(redactSensitive("hello")).toBe("hello");
+    expect(redactSensitive(42)).toBe(42);
+    expect(redactSensitive(null)).toBe(null);
+    expect(redactSensitive(undefined)).toBe(undefined);
+  });
+
   it("caps recursion depth so cycles do not pin the logger", () => {
     const cycle: Record<string, unknown> = { name: "root" };
     cycle.self = cycle;
 
     expect(() => redactSensitive(cycle)).not.toThrow();
+  });
+  it("omits deeply-nested arrays at the depth cap instead of leaking null entries to JSON", () => {
+    // Build an object whose array field is reached at MAX_DEPTH. Recursing
+    // into the array elements would exceed the cap; without the array-level
+    // guard, `value.map` would produce `[undefined, ...]` which JSON.stringify
+    // renders as `[null, ...]`. Object properties at the same cap are
+    // already absent from the JSON output (JSON.stringify skips undefined
+    // values on objects), so this test pins the array path to the same
+    // contract: silently absent, not visible as nulls.
+    let payload: Record<string, unknown> = { values: [1, 2, 3] };
+    for (let i = 0; i < 5; i++) payload = { nested: payload };
+
+    const out = redactSensitive(payload);
+
+    const json = JSON.stringify(out);
+    expect(json).not.toContain("null");
+    expect(json).not.toContain("[1,2,3]");
   });
 });

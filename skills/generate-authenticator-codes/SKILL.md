@@ -1,6 +1,6 @@
 ---
 name: generate-authenticator-codes
-description: Enroll, discover, and use company-scoped time-based one-time passwords (TOTP/2FA/authenticator codes) safely from Paperclip's native encrypted authenticator vault, an otpauth QR-code screenshot, a Paperclip issue image attachment, an otpauth URI, or a Base32 setup secret. Use when an agent must save or assign a 2FA generator, complete an authenticator challenge, log into a service requiring a six-digit code, or process an attached authenticator enrollment QR screenshot.
+description: Safely enroll, discover, and use company-scoped TOTP/2FA codes from Paperclip's encrypted authenticator vault, QR screenshots or attachments, otpauth URIs, or Base32 secrets. Use for authenticator setup, assigning a generator, or completing a six-digit challenge; never expose the seed.
 ---
 
 # Generate authenticator codes

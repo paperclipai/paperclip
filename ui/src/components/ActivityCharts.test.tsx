@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  chartSemanticColors,
   IssueStatusChart,
   PriorityChart,
   RunActivityChart,
@@ -28,13 +27,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => root.unmount());
+  flushSync(() => root.unmount());
   container.remove();
   vi.useRealTimers();
 });
 
 function render(ui: ReactNode) {
-  act(() => {
+  flushSync(() => {
     root.render(ui);
   });
 }
@@ -44,6 +43,7 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
     id: "run-1",
     companyId: "company-1",
     agentId: "agent-1",
+    responsibleUserId: null,
     invocationSource: "on_demand",
     triggerDetail: "manual",
     status: "succeeded",
@@ -95,14 +95,6 @@ function renderedDotColors() {
     .map((node) => node.style.getPropertyValue("--dot-color"));
 }
 
-function hexToRgb(hex: string) {
-  const normalized = hex.replace("#", "");
-  const red = Number.parseInt(normalized.slice(0, 2), 16);
-  const green = Number.parseInt(normalized.slice(2, 4), 16);
-  const blue = Number.parseInt(normalized.slice(4, 6), 16);
-  return `rgb(${red}, ${green}, ${blue})`;
-}
-
 describe("ActivityCharts", () => {
   it("renders empty run charts when dashboard aggregate data is temporarily missing", () => {
     render(<RunActivityChart activity={undefined} />);
@@ -117,13 +109,38 @@ describe("ActivityCharts", () => {
       <RunActivityChart
         runs={[
           createRun({ id: "run-success", status: "succeeded" }),
-          createRun({ id: "run-failed", status: "failed" }),
+          createRun({ id: "run-failed", status: "failed", errorCode: "provider_quota" }),
         ]}
       />,
     );
 
     expect(container.textContent).not.toContain("No runs yet");
-    expect(container.querySelector("[title='2026-04-20: 2 runs']")).not.toBeNull();
+    // Tooltip now carries the per-day breakdown (incl. failure error codes).
+    const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
+    expect(dayCell).not.toBeNull();
+    expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
+  });
+
+  it("renders a distinct recovered segment and legend for recovered restart kills", () => {
+    render(
+      <RunActivityChart
+        activity={[
+          {
+            date: "2026-04-20",
+            succeeded: 3,
+            failed: 1,
+            recovered: 4,
+            other: 0,
+            total: 8,
+            failedByErrorCode: { process_lost: 1 },
+          },
+        ]}
+      />,
+    );
+
+    expect(container.textContent).toContain("Recovered");
+    const dayCell = container.querySelector("[title*='recovered: 4']");
+    expect(dayCell).not.toBeNull();
   });
 
   it("keeps run activity colors semantic and does not paint zero-count segments", () => {
@@ -136,10 +153,12 @@ describe("ActivityCharts", () => {
       />,
     );
 
-    const colors = renderedDotColors();
-    expect(colors).toContain(chartSemanticColors.success);
-    expect(colors).toContain(chartSemanticColors.danger);
-    expect(colors).not.toContain(chartSemanticColors.other);
+    const dayCell = container.querySelector<HTMLElement>("[title^='2026-04-20: 2 runs']");
+    const colors = Array.from(dayCell?.querySelectorAll<HTMLElement>("[style*='background-color']") ?? [])
+      .map((node) => node.style.backgroundColor);
+    expect(colors).toContain("var(--hex-10b981)");
+    expect(colors).toContain("var(--hex-ef4444)");
+    expect(colors).not.toContain("var(--hex-737373)");
   });
 
   it("renders priority bars with critical/high/medium semantic colors and neutral low color", () => {
@@ -155,11 +174,10 @@ describe("ActivityCharts", () => {
     );
 
     const colors = renderedDotColors();
-    expect(colors).toContain(chartSemanticColors.danger);
-    expect(colors).toContain(chartSemanticColors.high);
-    expect(colors).toContain(chartSemanticColors.warning);
-    expect(colors).toContain("var(--foreground)");
-    expect(colors).not.toContain(chartSemanticColors.info);
+    expect(colors).toContain("var(--hex-ef4444)");
+    expect(colors).toContain("var(--hex-f97316)");
+    expect(colors).toContain("var(--hex-eab308)");
+    expect(colors).toContain("var(--hex-6b7280)");
   });
 
   it("renders issue status bars with workflow semantic colors", () => {
@@ -179,18 +197,18 @@ describe("ActivityCharts", () => {
 
     expect(renderedDotColors()).toHaveLength(0);
     expect(container.querySelector<HTMLElement>("[data-status-segment='todo']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.info));
+      .toBe("var(--status-task-todo)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='in_progress']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.warning));
+      .toBe("var(--status-task-in_progress)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='in_review']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.review));
+      .toBe("var(--status-task-in_review)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='done']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.success));
+      .toBe("var(--status-task-done)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='blocked']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.danger));
+      .toBe("var(--status-task-blocked)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='cancelled']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.cancelled));
+      .toBe("var(--status-task-cancelled)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='backlog']")?.style.backgroundColor)
-      .toBe(hexToRgb(chartSemanticColors.backlog));
+      .toBe("var(--project-none)");
   });
 });

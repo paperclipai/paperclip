@@ -11,6 +11,7 @@ import {
   defaultIssueFilterState,
   normalizeIssueFilterState,
   type IssueFilterState,
+  type IssueFilterWorkspaceContext,
 } from "./issue-filters";
 import { formatAssigneeUserLabel } from "./assignees";
 
@@ -25,7 +26,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "decisions" | "mine" | "recent" | "unread" | "all";
+export type InboxTab = "decisions" | "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -40,6 +41,7 @@ export const inboxIssueColumns = [
   "id",
   "priority",
   "assignee",
+  "kickedOffBy",
   "project",
   "workspace",
   "parent",
@@ -468,6 +470,7 @@ export function getInboxSearchSupplementIssues({
   currentUserId,
   enableRoutineVisibilityFilter = false,
   liveIssueIds,
+  issueFilterContext = {},
 }: {
   query: string;
   filteredWorkItems: InboxWorkItem[];
@@ -477,6 +480,7 @@ export function getInboxSearchSupplementIssues({
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
+  issueFilterContext?: IssueFilterWorkspaceContext;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -486,7 +490,14 @@ export function getInboxSearchSupplementIssues({
       .map((item) => item.issue.id),
     ...archivedSearchIssues.map((issue) => issue.id),
   ]);
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter, liveIssueIds)
+  return applyIssueFilters(
+    remoteIssues,
+    issueFilters,
+    currentUserId,
+    enableRoutineVisibilityFilter,
+    liveIssueIds,
+    issueFilterContext,
+  )
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
@@ -637,13 +648,13 @@ export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
     if (
-      raw === "decisions" ||
-      raw === "all" ||
-      raw === "unread" ||
-      raw === "recent" ||
-      raw === "mine"
-    )
-      return raw;
+      raw === "all"
+      || raw === "unread"
+      || raw === "recent"
+      || raw === "mine"
+      || raw === "blocked"
+      || raw === "decisions"
+    ) return raw;
     if (raw === "new") return "mine";
     return "mine";
   } catch {
@@ -831,7 +842,7 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
-  issue: "Issues",
+  issue: "Tasks",
   approval: "Approvals",
   failed_run: "Failed runs",
   join_request: "Join requests",
@@ -1125,6 +1136,9 @@ export function buildGroupedInboxSections(
   const keyPrefix = options?.keyPrefix ?? "";
   const searchSection = options?.searchSection ?? "none";
   const nestingEnabled = options?.nestingEnabled ?? false;
+  if (searchSection !== "none" && items.length === 0) {
+    return [];
+  }
 
   return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
     const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")

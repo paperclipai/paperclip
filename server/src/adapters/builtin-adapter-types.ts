@@ -10,10 +10,10 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "cursor",
   "deepseek_api",
   "gemini_local",
+  "grok_local",
   "openclaw_gateway",
   "opencode_local",
   "pi_local",
-  "hermes_local",
   "process",
   "http",
 ]);

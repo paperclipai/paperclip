@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
@@ -33,20 +33,7 @@ export interface AgentRuntimeRouteOverlay {
   cleared?: boolean;
 }
 
-const ADAPTER_AGNOSTIC_KEYS = [
-  "env",
-  "promptTemplate",
-  "instructionsFilePath",
-  "cwd",
-  "timeoutSec",
-  "graceSec",
-  "bootstrapPromptTemplate",
-  // Skill selections belong to the Paperclip agent identity, not to one
-  // adapter implementation. Keep them when operators switch runtimes.
-  "paperclipSkillSync",
-] as const;
-
-function omitUndefinedEntries(value: Record<string, unknown>) {
+export function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
   );

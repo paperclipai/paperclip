@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { buildReleasePackagePlan } from "./release-package-map.mjs";
 
@@ -20,8 +20,8 @@ function usage() {
       "  node scripts/bootstrap-npm-package.mjs <package-name-or-dir> [--publish --otp <code>] [--skip-build]",
       "",
       "Examples:",
-      "  node scripts/bootstrap-npm-package.mjs @paperclipai/adapter-acpx-local",
-      "  node scripts/bootstrap-npm-package.mjs packages/adapters/acpx-local --publish",
+      "  node scripts/bootstrap-npm-package.mjs @paperclipai/plugin-workspace-diff",
+      "  node scripts/bootstrap-npm-package.mjs packages/plugins/plugin-workspace-diff --publish",
       "",
     ].join("\n"),
   );
@@ -187,13 +187,24 @@ function printNextSteps(pkg) {
   );
 }
 
-function publishPackage(pkg, otp) {
-  const publishArgs = ["publish", "--access", "public"];
-  if (otp) {
-    publishArgs.push("--otp", otp);
+function buildPublishArgs(pkg, { dryRun = false, otp = null } = {}) {
+  const args = ["publish", pkg.dir, "--no-git-checks", "--access", "public"];
+
+  if (dryRun) {
+    args.push("--dry-run");
   }
 
-  const result = runCommand("npm", publishArgs, { cwd: join(repoRoot, pkg.dir) });
+  if (otp) {
+    args.push("--otp", otp);
+  }
+
+  return args;
+}
+
+function publishPackage(pkg, otp) {
+  const publishArgs = buildPublishArgs(pkg, { otp });
+
+  const result = runCommand("pnpm", publishArgs);
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
   const output = `${stdout}\n${stderr}`.trim();
@@ -214,7 +225,7 @@ function publishPackage(pkg, otp) {
     );
   }
 
-  throw new Error(`${formatCommand("npm", publishArgs)} failed with status ${result.status ?? "unknown"}`);
+  throw new Error(`${formatCommand("pnpm", publishArgs)} failed with status ${result.status ?? "unknown"}`);
 }
 
 function main(argv) {
@@ -255,7 +266,7 @@ function main(argv) {
   }
 
   process.stdout.write(`Previewing publish payload for ${pkg.name}...\n`);
-  runChecked("npm", ["pack", "--dry-run"], { cwd: join(repoRoot, pkg.dir) });
+  runChecked("pnpm", buildPublishArgs(pkg, { dryRun: true }));
 
   if (!publish) {
     process.stdout.write(
@@ -286,6 +297,7 @@ if (isDirectRun) {
 }
 
 export {
+  buildPublishArgs,
   ensureNpmAuth,
   inspectNpmPackage,
   parseArgs,

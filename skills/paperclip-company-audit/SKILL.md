@@ -1,12 +1,9 @@
 ---
 name: paperclip-company-audit
 description: >
-  Audit whether a Paperclip company is structurally capable of running as a 24/7
-  AI factory. Use when asked to audit a company, assess factory readiness, review
-  org/skill/QA/delegation health, or diagnose why a company keeps producing
-  wrong-problem or reworked output. Produces a factory readiness report with
-  scored gaps and remediation recommendations. Do NOT use for auditing a single
-  issue or a single agent — this is a whole-company structural review.
+  Audit a Paperclip company’s 24/7 operating readiness. Use for whole-company
+  reviews of org, skills, QA, delegation, and recurring rework; produce scored
+  gaps and remediation recommendations. Do not use for one issue or agent.
 ---
 
 # Paperclip Company Audit

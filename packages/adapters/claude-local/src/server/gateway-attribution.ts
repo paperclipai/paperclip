@@ -112,8 +112,10 @@ export function resolveGatewayReportedModel(input: {
   return parsed;
 }
 
-function normalizeCostUsd(value: number | null | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+function normalizeCostUsd(value: number | null | undefined): number | null {
+  // A missing CLI cost is unknown, not a measured $0. Preserve an explicitly
+  // reported zero while leaving absent or invalid values unset.
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function estimateMimoCostUsd(usage: UsageSummary): number {
@@ -147,7 +149,7 @@ export function resolveGatewayCostUsd(input: {
   model: string;
   usage: UsageSummary;
   cliCostUsd: number | null | undefined;
-}): number {
+}): number | null {
   if (isMimoGateway(input.env)) return estimateMimoCostUsd(input.usage);
   if (isDeepSeekGateway(input.env)) return estimateDeepSeekCostUsd(input.model, input.usage);
   return normalizeCostUsd(input.cliCostUsd);

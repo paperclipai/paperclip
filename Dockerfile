@@ -1,22 +1,31 @@
 # syntax=docker/dockerfile:1.20
 FROM node:lts-trixie-slim AS base
+ARG USER_UID=1000
+ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git jq \
-  && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable
+
+# Modify the existing node user/group to have the specified UID/GID to match host user
+RUN usermod -u $USER_UID --non-unique node \
+  && groupmod -g $USER_GID --non-unique node \
+  && usermod -g $USER_GID -d /paperclip node
 
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
-COPY patches ./patches
 COPY cli/package.json cli/
 COPY server/package.json server/
 COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
+COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
+COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
 COPY packages/mcp-server/package.json packages/mcp-server/
-COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
+COPY packages/skills-catalog/package.json packages/skills-catalog/
+COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/claude-tui/package.json packages/adapters/claude-tui/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
@@ -24,80 +33,62 @@ COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/deepseek-api/package.json packages/adapters/deepseek-api/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
+COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
-COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
-COPY packages/plugins/examples/plugin-authoring-smoke-example/package.json packages/plugins/examples/plugin-authoring-smoke-example/
-COPY packages/plugins/examples/plugin-file-browser-example/package.json packages/plugins/examples/plugin-file-browser-example/
-COPY packages/plugins/examples/plugin-hello-world-example/package.json packages/plugins/examples/plugin-hello-world-example/
-COPY packages/plugins/examples/plugin-kitchen-sink-example/package.json packages/plugins/examples/plugin-kitchen-sink-example/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-operator-assistant/package.json packages/plugins/plugin-operator-assistant/
+COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
+COPY patches/ patches/
+COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
-RUN pnpm install
+RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
-ARG CACHE_BUST=1
 COPY . .
-RUN rm -rf ui/dist server/ui-dist server/dist \
-  && pnpm --filter "@paperclipai/ui..." build \
-  && mkdir -p server/ui-dist \
-  && cp -R ui/dist/. server/ui-dist/ \
-  && node -e "const fs=require('fs');const path=require('path');const root='server/ui-dist';const html=fs.readFileSync(path.join(root,'index.html'),'utf8');const refs=[...html.matchAll(/(?:src|href)=['\\\"](\\/assets\\/[^'\\\"]+)/g)].map((m)=>m[1]);const missing=refs.filter((ref)=>!fs.existsSync(path.join(root,ref)));if(missing.length){console.error('Missing UI assets referenced by index.html:',missing.join(', '));process.exit(1);}"
-RUN pnpm --filter "@paperclipai/server..." build
-RUN pnpm --filter "@paperclipai/mcp-server" build
-RUN pnpm --filter "@paperclipai/plugin-llm-wiki" build
-RUN pnpm --filter "@paperclipai/plugin-operator-assistant" build
+RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
-RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: Paperclip MCP build output missing" && exit 1)
-RUN node --import ./server/node_modules/tsx/dist/loader.mjs -e "import('./packages/mcp-server/dist/tools.js')"
 
 FROM base AS production
+ARG USER_UID=1000
+ARG USER_GID=1000
+# Real version for this build, computed from `git describe` on the CI runner
+# (the image has no .git, so the server cannot derive it at runtime). Empty for
+# local `docker build`, which just leaves the server on its normal fallbacks.
+ARG PAPERCLIP_BUILD_VERSION=""
+# The exact commit this image was built from, for the same reason: server-info
+# falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
+# /api/health `commit` field that deploy tooling verifies. Empty locally.
+ARG PAPERCLIP_BUILD_COMMIT=""
+# Refreshes the tool layer below when it changes (CI stamps an ISO week, so
+# the @latest CLI tools advance weekly). Without it the cached layer would
+# freeze the tools until an unrelated cache bust.
+ARG CLI_TOOLS_CACHE_EPOCH=""
 WORKDIR /app
-COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils zbar-tools ffmpeg python3 python3-pip python3-venv libgtk-3-0t64 && rm -rf /var/lib/apt/lists/*
-ARG CLAUDE_CODE_VERSION=2.1.141
-ARG CODEX_VERSION=0.144.1
-ARG AGENT_BROWSER_VERSION=0.27.0
-ARG CAMOUFOX_VERSION=0.4.11
-ARG CAMOUFOX_PLAYWRIGHT_VERSION=1.49.1
-# claude-p: drop-in `claude -p` replacement that drives the interactive Claude
-# Code TUI in a PTY (used by the claude_tui adapter). Ships a prebuilt glibc
-# binary via npm postinstall; base image is Debian (glibc) so it runs as-is.
-ARG CLAUDE_P_VERSION=0.1.0
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} claude-p@${CLAUDE_P_VERSION} playwright agent-browser@${AGENT_BROWSER_VERSION}
+# Tool and OS layer BEFORE the app copy: it references nothing from /app, and
+# the app copy changes on every commit — ordered the other way around, this
+# (the single most expensive layer: four CLI toolchains + apt, per arch) can
+# never hit the layer cache and rebuilds on every build.
+RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends openssh-client jq \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /paperclip \
+  && chown node:node /paperclip
 
-# Camoufox is the managed fallback when Chromium automation reaches a durable
-# bot challenge. Keep it isolated from the system Python and fetch its pinned
-# Firefox build during image creation so agent runs never install code at runtime.
-RUN python3 -m venv /opt/camoufox \
-  && /opt/camoufox/bin/pip install --no-cache-dir "camoufox==${CAMOUFOX_VERSION}" "playwright==${CAMOUFOX_PLAYWRIGHT_VERSION}" \
-  && mkdir -p /opt/runtime-cache \
-  && XDG_CACHE_HOME=/opt/runtime-cache /opt/camoufox/bin/python -m camoufox fetch \
-  && chmod 1777 /opt/runtime-cache \
-  && ln -s /opt/camoufox/bin/camoufox /usr/local/bin/camoufox
-RUN install -m 0755 /app/scripts/browser/paperclip-camoufox /usr/local/bin/paperclip-camoufox \
-  && install -m 0755 /app/scripts/browser/paperclip-camoufox-python /usr/local/bin/paperclip-camoufox-python \
-  && install -m 0755 /app/scripts/browser/paperclip-browser-open /usr/local/bin/paperclip-browser-open \
-  && ln -sf /usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64 /usr/local/bin/agent-browser-real \
-  && rm -f /usr/local/bin/agent-browser \
-  && install -m 0755 /app/scripts/browser/agent-browser-managed /usr/local/bin/agent-browser
+COPY scripts/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Install Chromium + all system dependencies for headless browser automation
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN npx playwright install --with-deps chromium
-
-# Create non-root user so Claude Code allows --dangerously-skip-permissions
-RUN groupadd -r paperclip && useradd -r -g paperclip -m -d /paperclip -s /bin/bash paperclip
-RUN mkdir -p /paperclip/instances/default && chown -R paperclip:paperclip /paperclip
-RUN mkdir -p /app/data && chown paperclip:paperclip /app/data
-RUN chmod 755 /app/entrypoint.sh
+COPY --chown=node:node --from=build /app /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -106,13 +97,52 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  PAPERCLIP_BUILD_VERSION=${PAPERCLIP_BUILD_VERSION} \
+  PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_BUILD_COMMIT} \
+  USER_UID=${USER_UID} \
+  USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  XDG_CACHE_HOME=/opt/runtime-cache \
-  PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  GEMINI_SANDBOX=false
 
-VOLUME ["/paperclip"]
 EXPOSE 3100
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+# Cloud image variant (build with `--target cloud`): the production image
+# plus built bundled sandbox-provider plugins. Managed instances receive a
+# `plugins.autoInstall` key list through PAPERCLIP_MANAGED_CONFIG and
+# install those plugins from the bundled catalog at boot
+# (server/src/services/bundled-plugins.ts), which requires each plugin's
+# dist/ to exist in the image — the default image ships only their source,
+# so auto-install logs "bundle not present" and skips. The plugins are
+# built in this separate target so the default (self-hosted) image stays
+# lean; CI pins the default build to `--target production`, which is
+# byte-identical to before this stage existed.
+#
+# The sandbox providers are intentionally excluded from the pnpm workspace
+# (see pnpm-workspace.yaml), so each installs standalone exactly as its
+# README prescribes. Installing in a `build`-based stage (not `production`)
+# keeps devDependencies available for tsc: `production` sets
+# NODE_ENV=production, which would make pnpm skip them.
+#
+# CLOUD_BUNDLED_PLUGINS is the space-separated list of sandbox-provider
+# directory names to build into the variant. Only what managed deployments
+# actually auto-install belongs here — every entry adds its node_modules
+# to the image. Growing the list is a one-line workflow change.
+FROM build AS cloud-plugins
+ARG CLOUD_BUNDLED_PLUGINS="daytona"
+RUN set -eu; \
+  for name in $CLOUD_BUNDLED_PLUGINS; do \
+    dir="packages/plugins/sandbox-providers/$name"; \
+    test -d "$dir" || { echo "ERROR: unknown sandbox provider '$name'" >&2; exit 1; }; \
+    pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
+    pnpm -C "$dir" build; \
+    test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
+  done
+
+FROM production AS cloud
+COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers

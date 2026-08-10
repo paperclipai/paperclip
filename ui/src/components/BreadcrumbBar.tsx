@@ -20,14 +20,23 @@ import { cn } from "../lib/utils";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
-function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
+/** Task identifier rendered in gray monospace between the glyph and the title. */
+function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  if (!identifier) return null;
+  return <span className="shrink-0 font-mono text-muted-foreground">{identifier}</span>;
+}
+
+function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
-  if (slots.length === 0 && launchers.length === 0) return null;
   return (
-    <div className="flex items-center gap-1 ml-auto shrink-0 pl-2">
-      <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
-      <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+    <div className="ml-auto flex shrink-0 items-center gap-1 pl-2 empty:hidden">
+      {slots.length > 0 ? (
+        <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+      ) : null}
+      {launchers.length > 0 ? (
+        <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+      ) : null}
     </div>
   );
 }
@@ -77,7 +86,7 @@ export function BreadcrumbBar() {
     [selectedCompanyId, selectedCompany?.issuePrefix],
   );
 
-  const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+  const globalToolbarSlots = <GlobalToolbar context={globalToolbarSlotContext} />;
 
   // Show the hamburger any time the sidebar is off-canvas (phone + tablet,
   // <lg). isMobile alone would skip tablets and strand users with no way to
@@ -169,9 +178,19 @@ export function BreadcrumbBar() {
         {menuButton}
         {inboxButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="font-display text-lg leading-none truncate">
-            {breadcrumbs[0].label}
-          </h1>
+          {breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
+            <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
+              {breadcrumbs[0].leading && (
+                <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+              )}
+              <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
+              <span className="truncate">{breadcrumbs[0].label}</span>
+            </h1>
+          ) : (
+            <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+              {breadcrumbs[0].label}
+            </h1>
+          )}
         </div>
         {globalToolbarSlots}
       </div>
@@ -199,10 +218,30 @@ export function BreadcrumbBar() {
                   {i > 0 && <BreadcrumbSeparator />}
                   <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      crumb.leading || crumb.identifier ? (
+                        <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
+                          {crumb.leading && (
+                            <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                          )}
+                          <CrumbIdentifier identifier={crumb.identifier} />
+                          <span className="truncate">{crumb.label}</span>
+                        </BreadcrumbPage>
+                      ) : (
+                        <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      )
                     ) : (
                       <BreadcrumbLink asChild>
-                        <Link to={crumb.href}>{crumb.label}</Link>
+                        {crumb.leading || crumb.identifier ? (
+                          <Link to={crumb.href} className="flex items-center gap-1.5">
+                            {crumb.leading && (
+                              <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                            )}
+                            <CrumbIdentifier identifier={crumb.identifier} />
+                            <span className="truncate">{crumb.label}</span>
+                          </Link>
+                        ) : (
+                          <Link to={crumb.href}>{crumb.label}</Link>
+                        )}
                       </BreadcrumbLink>
                     )}
                   </BreadcrumbItem>

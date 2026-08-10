@@ -7,6 +7,7 @@ import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId,
+  selectReusableOnboardingProject,
 } from "./onboarding-launch";
 
 describe("selectDefaultCompanyGoalId", () => {
@@ -140,6 +141,22 @@ describe("onboarding launch payloads", () => {
         requiredOutputs: [{ workProductType: "document" }],
       },
     });
+  });
+
+  it("reuses a non-cancelled Onboarding project by name", () => {
+    expect(
+      selectReusableOnboardingProject([
+        { id: "cancelled", name: "Onboarding", status: "cancelled" },
+        { id: "active", name: " onboarding ", status: "in_progress" },
+      ]),
+    ).toEqual({ id: "active", name: " onboarding ", status: "in_progress" });
+
+    expect(
+      selectReusableOnboardingProject([
+        { id: "cancelled", name: "Onboarding", status: "cancelled" },
+        { id: "other", name: "Roadmap", status: "in_progress" },
+      ]),
+    ).toBeNull();
   });
 
   it("links the onboarding project and first issue to the selected goal", () => {

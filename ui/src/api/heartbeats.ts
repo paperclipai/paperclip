@@ -37,6 +37,11 @@ export interface ActiveRunForIssue {
   lastUsefulActionAt?: string | Date | null;
   nextAction?: string | null;
   outputSilence?: HeartbeatRun["outputSilence"];
+  currentStatusMessage?: string | null;
+  currentStatusUpdatedAt?: string | Date | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: string | Date | null;
 }
 
 export interface LiveRunForIssue {
@@ -64,6 +69,11 @@ export interface LiveRunForIssue {
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   outputSilence?: HeartbeatRun["outputSilence"];
+  currentStatusMessage?: string | null;
+  currentStatusUpdatedAt?: string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: string | null;
 }
 
 export interface WatchdogDecisionInput {
@@ -87,6 +97,10 @@ export interface BrowserProfilesResponse {
   projects: Array<{ id: string; name: string; profileId: string }>;
 }
 
+export interface HeartbeatRunListOptions {
+  summary?: boolean;
+}
+
 export const heartbeatsApi = {
   browserProfiles: (companyId: string) =>
     api.get<BrowserProfilesResponse>(`/companies/${companyId}/browser-profiles`),
@@ -96,10 +110,11 @@ export const heartbeatsApi = {
     api.put<{ projectId: string; profileId: string }>(`/companies/${companyId}/browser-profiles/project-assignment`, { projectId, profileId }),
   deleteBrowserProfile: (companyId: string, profileId: string) =>
     api.delete<{ ok: true }>(`/companies/${companyId}/browser-profiles/${profileId}`),
-  list: (companyId: string, agentId?: string, limit?: number) => {
+  list: (companyId: string, agentId?: string, limit?: number, options: HeartbeatRunListOptions = {}) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
+    if (options.summary) searchParams.set("summary", "true");
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
   },

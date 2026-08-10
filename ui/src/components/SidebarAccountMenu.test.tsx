@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -14,11 +14,32 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({
+  collapsed: false,
+  isMobile: false,
+  peeking: false,
+}));
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: mockNavigateTopLevel,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -29,7 +50,7 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
-    isMobile: false,
+    ...mockSidebarState,
     setSidebarOpen: mockSetSidebarOpen,
   }),
 }));
@@ -44,6 +65,12 @@ vi.mock("../context/ThemeContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  await callback();
+  await Promise.resolve();
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -57,6 +84,9 @@ describe("SidebarAccountMenu", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockSidebarState.collapsed = false;
+    mockSidebarState.isMobile = false;
+    mockSidebarState.peeking = false;
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: {
@@ -66,6 +96,10 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
+    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
   });
 
   afterEach(() => {
@@ -74,10 +108,14 @@ describe("SidebarAccountMenu", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the signed-in user and opens the account card menu", async () => {
+  it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
     });
 
     await act(async () => {
@@ -85,7 +123,6 @@ describe("SidebarAccountMenu", () => {
         <QueryClientProvider client={queryClient}>
           <SidebarAccountMenu
             deploymentMode="authenticated"
-            instanceSettingsTarget="/instance/settings/general"
             version="1.2.3"
           />
         </QueryClientProvider>,
@@ -106,11 +143,158 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
+    expect(document.body.textContent).toContain("Feedback");
+
+    // Feedback link opens in a new tab pointing at the feedback URL
+    const feedbackAnchor = document.body.querySelector('a[href="https://paperclip.ing/feedback"]') as HTMLAnchorElement | null;
+    expect(feedbackAnchor).not.toBeNull();
+    expect(feedbackAnchor?.getAttribute("target")).toBe("_blank");
+
+    // Feedback appears after Documentation and before the theme toggle
+    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
+    const docsPos = menuText.indexOf("Documentation");
+    const feedbackPos = menuText.indexOf("Feedback");
+    const themePos = menuText.indexOf("Switch to");
+    expect(docsPos).toBeLessThan(feedbackPos);
+    expect(feedbackPos).toBeLessThan(themePos);
+
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-[var(--radix-popover-trigger-width)]");
+      .toContain("w-(--sz-277px)");
+    expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
+    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
+    const root = createRoot(container);
+    const onOpenChange = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: {
+        managed: true,
+        managedBy: "paperclip-cloud",
+        stackSlug: "acme-labs",
+        cloudBaseUrl: "https://cloud.example.test",
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            open
+            onOpenChange={onOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+    expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
+    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps sign-out hidden outside authenticated deployment mode", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" open />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Sign out");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the short commit sha instead of a version for source builds", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            version="2026.626.0+58.git.518fc71ce"
+            serverGit={{
+              available: true,
+              fullSha: "518fc71ce1234567890abcdef1234567890abcde",
+              shortSha: "518fc71",
+              branchName: "feature/source-build-label",
+              subject: "Show source build label",
+              committedAt: "2026-06-26T00:00:00.000Z",
+              localChanges: {
+                available: true,
+                hasLocalChanges: false,
+                stagedFileCount: 0,
+                unstagedFileCount: 0,
+                untrackedFileCount: 0,
+              },
+            }}
+            open
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
+    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
+      "feature/source-build-label",
+    );
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
+      "518fc71",
+    );
 
     await act(async () => {
       root.unmount();
@@ -122,14 +306,13 @@ describe("SidebarAccountMenu", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    mockSidebarState.collapsed = true;
 
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarAccountMenu
-            collapsed
             deploymentMode="authenticated"
-            instanceSettingsTarget="/instance/settings/general"
             version="1.2.3"
           />
         </QueryClientProvider>,
@@ -140,11 +323,12 @@ describe("SidebarAccountMenu", () => {
 
     const trigger = container.querySelector('button[aria-label="Open account menu"]');
     expect(trigger).not.toBeNull();
-    expect(trigger?.className).toContain("w-12");
+    expect(trigger?.className).toContain("w-full");
     expect(trigger?.textContent).toContain("JE");
-    expect(trigger?.querySelector(".min-w-0")).toBeNull();
-    expect(trigger?.getAttribute("title")).toBe("Jane Example");
-    expect(container.querySelector(".sr-only")?.textContent).toBe("Jane Example");
+    const label = trigger?.querySelector(".min-w-0");
+    expect(label).not.toBeNull();
+    expect(label?.className).toContain("w-0");
+    expect(label?.className).toContain("text-transparent");
 
     await act(async () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -153,7 +337,7 @@ describe("SidebarAccountMenu", () => {
 
     expect(document.body.textContent).toContain("Edit profile");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-72");
+      .toContain("w-(--sz-277px)");
 
     await act(async () => {
       root.unmount();

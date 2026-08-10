@@ -1,15 +1,14 @@
 import type { UIAdapterModule } from "./types";
-import { acpxLocalUIAdapter } from "./acpx-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { claudeTuiUIAdapter } from "./claude-tui";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
+import { grokLocalUIAdapter } from "./grok-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
-import { hermesLocalUIAdapter } from "./hermes-local";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 import { loadDynamicParser, invalidateDynamicParser, setDynamicParserResultNotifier } from "./dynamic-loader";
@@ -28,6 +27,11 @@ const builtinAdaptersByType = new Map<string, UIAdapterModule>();
 
 // Tracks which builtin types currently have an active external override.
 const activeExternalOverrides = new Set<string>();
+
+// Tracks non-builtin entries created by syncExternalAdapters so a later server
+// response can remove only registry-owned external bridges, never a caller's
+// manually registered adapter.
+const syncedExternalTypes = new Set<string>();
 
 // Generation counter to discard stale dynamic parser loads. When an override
 // is deactivated while a load is in-flight, the generation is bumped and the
@@ -52,13 +56,12 @@ setDynamicParserResultNotifier(notifyAdapterChange);
 
 function registerBuiltInUIAdapters() {
   for (const adapter of [
-    acpxLocalUIAdapter,
     claudeLocalUIAdapter,
     claudeTuiUIAdapter,
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
-    hermesLocalUIAdapter,
+    grokLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,
@@ -221,8 +224,17 @@ export function syncExternalAdapters(
 
   // ── Non-builtin externals ───────────────────────────────────────────────
 
+  for (const type of syncedExternalTypes) {
+    if (allExternalTypes.has(type)) continue;
+    syncedExternalTypes.delete(type);
+    invalidateDynamicParser(type);
+    unregisterUIAdapter(type);
+    notifyAdapterChange();
+  }
+
   for (const { type, label } of serverAdapters) {
     if (builtinTypes.has(type)) continue; // handled above
+    syncedExternalTypes.add(type);
 
     const existing = adaptersByType.get(type);
 

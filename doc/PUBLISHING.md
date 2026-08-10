@@ -195,22 +195,26 @@ PR CI now checks changed release-enabled package manifests against npm. That cat
 The first publish of a brand-new package still needs one human maintainer with npm write access.
 After that, trusted publishing can take over.
 
-Example for `@paperclipai/adapter-acpx-local` from the repo root:
+Example for a newly added public package from the repo root:
 
 ```bash
 # safe preview
-pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local
+pnpm run release:bootstrap-package -- @paperclipai/new-package
 
 # one-time first publish from an authenticated maintainer machine
-pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local --publish --otp 123456
+pnpm run release:bootstrap-package -- @paperclipai/new-package --publish --otp 123456
 ```
 
 The helper script:
 
 - checks that the package does not already exist on npm
 - builds the target package unless `--skip-build` is passed
-- runs `npm pack --dry-run` in the package directory
-- only runs the real `npm publish --access public` when `--publish --otp <code>` is provided
+- runs `pnpm publish <package-dir> --dry-run --no-git-checks --access public` from the repo root
+- only runs the real `pnpm publish <package-dir> --no-git-checks --access public` when `--publish --otp <code>` is provided
+
+The helper intentionally uses `pnpm publish` instead of `npm publish` so workspace
+dependencies and `publishConfig` export fields are normalized before the package
+is sent to the registry.
 
 For the real `--publish` step, the maintainer machine must already be authenticated to npm.
 If `npm whoami` returns `401`, first run `npm logout --registry=https://registry.npmjs.org/` to clear any stale local auth, then run `npm login` or `npm adduser` locally as an npm org member, and finally rerun the helper.
@@ -219,7 +223,7 @@ The helper now requires `--otp <code>` up front for `--publish`, so it fails bef
 
 After that first publish succeeds:
 
-1. open `https://www.npmjs.com/package/@paperclipai/adapter-acpx-local`
+1. open `https://www.npmjs.com/package/@paperclipai/new-package`
 2. go to `Settings` → `Trusted publishing`
 3. add repository `paperclipai/paperclip`
 4. set workflow filename to `release.yml`

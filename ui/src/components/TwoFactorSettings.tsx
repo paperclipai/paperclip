@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, ShieldOff, Copy, Check, Eye, EyeOff, RefreshCw } from "lucide-react";
 
@@ -131,7 +132,7 @@ export function TwoFactorSettings() {
 
   const handleCopyBackupCodes = async () => {
     try {
-      await navigator.clipboard.writeText(backupCodes.join("\n"));
+      await copyTextToClipboard(backupCodes.join("\n"));
       setBackupCodesCopied(true);
       setTimeout(() => setBackupCodesCopied(false), 2000);
     } catch {

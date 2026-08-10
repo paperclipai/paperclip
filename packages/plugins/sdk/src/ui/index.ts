@@ -57,6 +57,8 @@ export {
   usePluginToast,
 } from "./hooks.js";
 
+export { copyTextToClipboard } from "./clipboard.js";
+
 export {
   MetricCard,
   StatusBadge,
@@ -146,6 +148,7 @@ export type {
 // Slot component prop interfaces
 export type {
   PluginPageProps,
+  PluginCompanySettingsPageProps,
   PluginWidgetProps,
   PluginDetailTabProps,
   PluginSidebarProps,

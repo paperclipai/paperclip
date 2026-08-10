@@ -8,6 +8,7 @@ import {
   issueThreadInteractionContinuationPolicySchema,
   mcpServerConfigSchema,
   mcpServerNameSchema,
+  requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
   updateIssueSchema,
@@ -76,6 +77,7 @@ const listIssuesSchema = z.object({
   originKind: z.string().optional(),
   originId: z.string().optional(),
   includeRoutineExecutions: z.boolean().optional(),
+  includeLiveDescendantSummary: z.boolean().optional(),
   q: z.string().optional(),
 });
 
@@ -159,6 +161,17 @@ const createRequestConfirmationToolSchema = z.object({
   // resumes the work (was "none" — which woke nobody, stranding the issue).
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
   payload: requestConfirmationPayloadSchema,
+});
+
+const createRequestCheckboxConfirmationToolSchema = z.object({
+  issueId: issueIdSchema,
+  idempotencyKey: z.string().trim().max(255).nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  title: z.string().trim().max(240).nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+  continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+  payload: requestCheckboxConfirmationPayloadSchema,
 });
 
 const approvalDecisionSchema = z.object({
@@ -613,6 +626,18 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
           body: {
             kind: "request_confirmation",
+            ...body,
+          },
+        }),
+    ),
+    makeTool(
+      "paperclipRequestCheckboxConfirmation",
+      "Create a request_checkbox_confirmation interaction on an issue",
+      createRequestCheckboxConfirmationToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
+          body: {
+            kind: "request_checkbox_confirmation",
             ...body,
           },
         }),

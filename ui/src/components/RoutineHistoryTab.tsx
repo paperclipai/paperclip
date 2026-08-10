@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History as HistoryIcon, RotateCcw, Search } from "lucide-react";
 import type {
+  CompanySecret,
+  EnvBinding,
+  EnvSecretRefBinding,
   Routine,
+  RoutineEnvConfig,
   RoutineRevision,
   RoutineRevisionSnapshotTriggerV1,
   RoutineVariable,
+  SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
   routinesApi,
@@ -30,9 +35,11 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./EmptyState";
 import { MarkdownBody } from "./MarkdownBody";
+import { Badge } from "@/components/ui/badge";
 
 type AgentLookup = Map<string, { id: string; name: string }>;
 type ProjectLookup = Map<string, { id: string; name: string }>;
+type SecretLookup = Map<string, CompanySecret>;
 
 type DirtyFieldDescriptor = {
   key: string;
@@ -47,6 +54,7 @@ type Props = {
   onSaveEdits: () => void;
   agents: AgentLookup;
   projects: ProjectLookup;
+  secrets?: CompanySecret[];
   onRestoreSecretMaterials: (response: RestoreRoutineRevisionResponse) => void;
   onRestored?: (response: RestoreRoutineRevisionResponse) => void;
 };
@@ -59,9 +67,14 @@ export function RoutineHistoryTab({
   onSaveEdits,
   agents,
   projects,
+  secrets,
   onRestoreSecretMaterials,
   onRestored,
 }: Props) {
+  const secretLookup = useMemo<SecretLookup>(
+    () => new Map((secrets ?? []).map((secret) => [secret.id, secret])),
+    [secrets],
+  );
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
@@ -172,7 +185,7 @@ export function RoutineHistoryTab({
 
   if (revisionsQuery.isLoading) {
     return (
-      <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+      <div className="grid gap-5 md:grid-cols-(--gtc-9)">
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, idx) => (
             <Skeleton key={idx} className="h-10 w-full" />
@@ -204,7 +217,7 @@ export function RoutineHistoryTab({
   const onlyBootstrapRevision = revisions.length <= 1;
 
   return (
-    <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+    <div className="grid gap-5 md:grid-cols-(--gtc-9)">
       <RevisionList
         revisions={visibleRevisions}
         latestRevisionId={routine.latestRevisionId}
@@ -277,6 +290,10 @@ export function RoutineHistoryTab({
             selectedRevision,
             currentRevision,
           )}
+          envDiffCounts={summarizeEnvDiffCounts(
+            currentRevision.snapshot.routine.env ?? null,
+            selectedRevision.snapshot.routine.env ?? null,
+          )}
         />
       )}
 
@@ -289,6 +306,7 @@ export function RoutineHistoryTab({
           initialNewRevisionId={currentRevision.id}
           agents={agents}
           projects={projects}
+          secrets={secretLookup}
           onRestore={(rev) => {
             setSelectedRevisionId(rev.id);
             setDiffOpen(false);
@@ -318,7 +336,7 @@ function HistoricalPreviewBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
             Viewing revision {revisionNumber} (read-only)
           </p>
           <p className="text-xs text-muted-foreground">
@@ -357,7 +375,7 @@ function ConflictBanner({
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Unsaved routine edits</p>
           <p className="text-xs text-muted-foreground">
             You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
             restoring an older revision.
@@ -410,10 +428,10 @@ function RevisionList({
   return (
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Revisions
         </p>
-        <span className="text-[11px] text-muted-foreground">{totalRevisions} total</span>
+        <span className="text-(length:--text-micro) text-muted-foreground">{totalRevisions} total</span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -443,14 +461,14 @@ function RevisionList({
             <div className="flex items-center gap-2 text-sm font-medium">
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && (
-                <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   Current
-                </span>
+                </Badge>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                   Restored
-                </span>
+                </Badge>
               )}
             </div>
             <div className="text-xs text-muted-foreground truncate">
@@ -498,6 +516,10 @@ function RevisionPreview({
     highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
   }`;
 
+  const envSummary = summarizeEnv(snapshot.env ?? null);
+  const envDiffers = !!currentSnapshot
+    && JSON.stringify(normalizeEnv(currentSnapshot.env ?? null))
+      !== JSON.stringify(normalizeEnv(snapshot.env ?? null));
   const fieldRows: Array<{ key: string; label: string; value: string; differs: boolean }> = [
     {
       key: "title",
@@ -541,6 +563,12 @@ function RevisionPreview({
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.catchUpPolicy !== snapshot.catchUpPolicy,
     },
+    {
+      key: "env",
+      label: "Env",
+      value: envSummary,
+      differs: envDiffers,
+    },
   ];
 
   return (
@@ -574,19 +602,19 @@ function RevisionPreview({
       </header>
 
       <div className={`${cardWrapper} p-3`}>
-        <p className="pb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="pb-2 text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Structured fields
         </p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{row.label}</p>
+              <p className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">{row.label}</p>
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                  <Badge variant="outline" className="ml-2 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:text-amber-200">
                     differs from current
-                  </span>
+                  </Badge>
                 )}
               </p>
             </div>
@@ -595,7 +623,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Description
         </p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
@@ -608,7 +636,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
           Triggers ({triggers.length})
         </p>
         {triggers.length === 0 ? (
@@ -617,9 +645,9 @@ function RevisionPreview({
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
               <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
-                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                <Badge variant="outline" className="border-border text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                   {trigger.kind}
-                </span>
+                </Badge>
                 <span className="font-medium">{trigger.label ?? trigger.kind}</span>
                 <span className="text-xs text-muted-foreground">
                   {summarizeTriggerSnapshot(trigger)}
@@ -641,7 +669,7 @@ function RevisionPreview({
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
             Variables ({snapshot.variables.length})
           </p>
           <ul className="divide-y divide-border">
@@ -670,6 +698,7 @@ function RestoreConfirmDialog({
   onConfirm,
   pending,
   recreatedWebhookLabels,
+  envDiffCounts,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -680,6 +709,7 @@ function RestoreConfirmDialog({
   onConfirm: () => void;
   pending: boolean;
   recreatedWebhookLabels: string[];
+  envDiffCounts: EnvDiffCounts;
 }) {
   const newRevisionNumber = currentRevisionNumber + 1;
   return (
@@ -698,12 +728,18 @@ function RestoreConfirmDialog({
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
             Routine field values, variables, and schedule cron will revert.
           </li>
+          {envDiffCounts.total > 0 && (
+            <li className="flex items-start gap-2">
+              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Routine secrets will revert: {formatEnvDiffCounts(envDiffCounts)}.
+            </li>
+          )}
           <li className="flex items-start gap-2">
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
             Previous run history is preserved.
           </li>
           {recreatedWebhookLabels.map((label) => (
-            <li key={label} className="flex items-start gap-2 text-amber-200">
+            <li key={label} className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
               <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
               The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
               show the secret once after restore — copy it before closing.
@@ -743,6 +779,7 @@ function RoutineRevisionDiffModal({
   initialNewRevisionId,
   agents,
   projects,
+  secrets,
   onRestore,
 }: {
   open: boolean;
@@ -752,6 +789,7 @@ function RoutineRevisionDiffModal({
   initialNewRevisionId: string;
   agents: AgentLookup;
   projects: ProjectLookup;
+  secrets: SecretLookup;
   onRestore: (revision: RoutineRevision) => void;
 }) {
   const [leftId, setLeftId] = useState<string>(initialOldRevisionId);
@@ -767,8 +805,8 @@ function RoutineRevisionDiffModal({
   const left = revisions.find((r) => r.id === leftId) ?? null;
   const right = revisions.find((r) => r.id === rightId) ?? null;
   const fieldChanges = useMemo(
-    () => (left && right ? computeFieldChanges(left, right, agents, projects) : []),
-    [left, right, agents, projects],
+    () => (left && right ? computeFieldChanges(left, right, agents, projects, secrets) : []),
+    [left, right, agents, projects, secrets],
   );
   const descriptionDiff = useMemo<DiffRow[]>(
     () => (left && right
@@ -781,7 +819,7 @@ function RoutineRevisionDiffModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="!max-w-(--pct-90) w-full max-h-(--sz-85vh) overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>Compare routine revisions</DialogTitle>
         </DialogHeader>
@@ -803,7 +841,7 @@ function RoutineRevisionDiffModal({
         </div>
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Field changes
             </p>
             {fieldChanges.length === 0 ? (
@@ -821,10 +859,10 @@ function RoutineRevisionDiffModal({
                   {fieldChanges.map((change) => (
                     <tr key={change.field} className="border-t border-border/60">
                       <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
-                      <td className="px-3 py-2 align-top text-xs text-red-300">
+                      <td className="px-3 py-2 align-top text-xs text-red-700 dark:text-red-300">
                         {change.oldValue ?? "—"}
                       </td>
-                      <td className="px-3 py-2 align-top text-xs text-emerald-300">
+                      <td className="px-3 py-2 align-top text-xs text-emerald-700 dark:text-emerald-300">
                         {change.newValue ?? "—"}
                       </td>
                     </tr>
@@ -834,7 +872,7 @@ function RoutineRevisionDiffModal({
             )}
           </section>
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Description diff
             </p>
             <DiffTable rows={descriptionDiff} />
@@ -870,19 +908,19 @@ function RevisionPicker({
   tone: "red" | "green";
 }) {
   const toneClass = tone === "red"
-    ? "border-red-500/30 bg-red-500/10 text-red-300"
-    : "border-green-500/30 bg-green-500/10 text-green-300";
+    ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
+    : "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300";
   return (
     <div className="flex items-center gap-2">
-      <span
-        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${toneClass}`}
+      <Badge variant="outline"
+        className={`text-(length:--text-nano) uppercase tracking-wider ${toneClass}`}
       >
         {label}
-      </span>
+      </Badge>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 min-w-[12rem] rounded-md border border-border/60 bg-background px-2 text-xs"
+        className="h-8 min-w-(--sz-12rem) rounded-md border border-border/60 bg-background px-2 text-xs"
       >
         {revisions.map((revision) => (
           <option key={revision.id} value={revision.id}>
@@ -904,8 +942,8 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-red-500/10 text-red-900 dark:text-red-100",
+    added: "bg-green-500/10 text-green-900 dark:text-green-100",
   };
   const markerByKind: Record<DiffRow["kind"], string> = {
     context: " ",
@@ -914,7 +952,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   };
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
-      <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>Old</span>
         <span>New</span>
         <span />
@@ -923,7 +961,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
       {rows.map((row, index) => (
         <div
           key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-          className={`grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
+          className={`grid grid-cols-(--gtc-1) gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
         >
           <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">
             {row.oldLineNumber ?? ""}
@@ -1003,6 +1041,7 @@ function computeFieldChanges(
   right: RoutineRevision,
   agents: AgentLookup,
   projects: ProjectLookup,
+  secrets: SecretLookup,
 ): Array<{ field: string; oldValue: string | null; newValue: string | null }> {
   const oldRoutine = left.snapshot.routine;
   const newRoutine = right.snapshot.routine;
@@ -1042,8 +1081,168 @@ function computeFieldChanges(
       newValue: summarizeVariables(newRoutine.variables),
     });
   }
+  compareEnv(oldRoutine.env ?? null, newRoutine.env ?? null, secrets, changes);
   compareTriggers(left.snapshot.triggers, right.snapshot.triggers, changes);
   return changes;
+}
+
+function normalizeEnv(env: RoutineEnvConfig | null): Record<string, EnvBinding> {
+  if (!env) return {};
+  return env;
+}
+
+function envBindingKind(binding: EnvBinding): "plain" | "secret_ref" {
+  if (typeof binding === "string") return "plain";
+  if (binding && typeof binding === "object" && "type" in binding && binding.type === "secret_ref") {
+    return "secret_ref";
+  }
+  return "plain";
+}
+
+function asSecretRef(binding: EnvBinding): EnvSecretRefBinding | null {
+  if (typeof binding === "string") return null;
+  if (binding && typeof binding === "object" && "type" in binding && binding.type === "secret_ref") {
+    return binding;
+  }
+  return null;
+}
+
+function formatVersionSelector(version: SecretVersionSelector | undefined): string {
+  if (version == null || version === "latest") return "latest";
+  return `v${version}`;
+}
+
+function describeSecretRef(ref: EnvSecretRefBinding, secrets: SecretLookup): string {
+  const secret = secrets.get(ref.secretId);
+  const name = secret?.name ?? "<missing-secret>";
+  return `${name} ${formatVersionSelector(ref.version)}`;
+}
+
+function describeEnvBinding(binding: EnvBinding | undefined, secrets: SecretLookup): string {
+  if (binding === undefined) return "—";
+  const ref = asSecretRef(binding);
+  if (ref) return `secret_ref → ${describeSecretRef(ref, secrets)}`;
+  return "plain (set)";
+}
+
+function summarizeEnv(env: RoutineEnvConfig | null): string {
+  const entries = Object.entries(normalizeEnv(env));
+  if (entries.length === 0) return "";
+  const secretCount = entries.filter(([, binding]) => envBindingKind(binding) === "secret_ref").length;
+  const keyLabel = entries.length === 1 ? "key" : "keys";
+  if (secretCount === 0) return `${entries.length} ${keyLabel}`;
+  return `${entries.length} ${keyLabel} (${secretCount} secret ${secretCount === 1 ? "ref" : "refs"})`;
+}
+
+type EnvDiffCounts = {
+  added: number;
+  removed: number;
+  changed: number;
+  total: number;
+};
+
+function summarizeEnvDiffCounts(
+  current: RoutineEnvConfig | null,
+  target: RoutineEnvConfig | null,
+): EnvDiffCounts {
+  const currentRec = normalizeEnv(current);
+  const targetRec = normalizeEnv(target);
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  const keys = new Set<string>([...Object.keys(currentRec), ...Object.keys(targetRec)]);
+  for (const key of keys) {
+    const inCurrent = key in currentRec;
+    const inTarget = key in targetRec;
+    if (inTarget && !inCurrent) {
+      added += 1;
+      continue;
+    }
+    if (!inTarget && inCurrent) {
+      removed += 1;
+      continue;
+    }
+    if (JSON.stringify(currentRec[key]) !== JSON.stringify(targetRec[key])) {
+      changed += 1;
+    }
+  }
+  return { added, removed, changed, total: added + removed + changed };
+}
+
+function formatEnvDiffCounts(counts: EnvDiffCounts): string {
+  const parts: string[] = [];
+  if (counts.added > 0) parts.push(`${counts.added} ${counts.added === 1 ? "key" : "keys"} added`);
+  if (counts.removed > 0) parts.push(`${counts.removed} ${counts.removed === 1 ? "key" : "keys"} removed`);
+  if (counts.changed > 0) parts.push(`${counts.changed} ${counts.changed === 1 ? "key" : "keys"} changed`);
+  return parts.join(", ");
+}
+
+function compareEnv(
+  oldEnv: RoutineEnvConfig | null,
+  newEnv: RoutineEnvConfig | null,
+  secrets: SecretLookup,
+  changes: Array<{ field: string; oldValue: string | null; newValue: string | null }>,
+) {
+  const oldRec = normalizeEnv(oldEnv);
+  const newRec = normalizeEnv(newEnv);
+  const keys = new Set<string>([...Object.keys(oldRec), ...Object.keys(newRec)]);
+  const sortedKeys = [...keys].sort();
+  for (const key of sortedKeys) {
+    const oldBinding = oldRec[key];
+    const newBinding = newRec[key];
+    const inOld = key in oldRec;
+    const inNew = key in newRec;
+    if (inNew && !inOld) {
+      changes.push({
+        field: `Env added (${key})`,
+        oldValue: "—",
+        newValue: describeEnvBinding(newBinding, secrets),
+      });
+      continue;
+    }
+    if (!inNew && inOld) {
+      changes.push({
+        field: `Env removed (${key})`,
+        oldValue: describeEnvBinding(oldBinding, secrets),
+        newValue: "—",
+      });
+      continue;
+    }
+    if (JSON.stringify(oldBinding) === JSON.stringify(newBinding)) continue;
+    const oldKind = envBindingKind(oldBinding);
+    const newKind = envBindingKind(newBinding);
+    if (oldKind !== newKind) {
+      changes.push({
+        field: `Env ${key} binding kind`,
+        oldValue: describeEnvBinding(oldBinding, secrets),
+        newValue: describeEnvBinding(newBinding, secrets),
+      });
+      continue;
+    }
+    if (newKind === "secret_ref") {
+      const oldRef = asSecretRef(oldBinding)!;
+      const newRef = asSecretRef(newBinding)!;
+      if (oldRef.secretId !== newRef.secretId) {
+        changes.push({
+          field: `Env ${key} secret`,
+          oldValue: describeEnvBinding(oldBinding, secrets),
+          newValue: describeEnvBinding(newBinding, secrets),
+        });
+        continue;
+      }
+      changes.push({
+        field: `Env ${key} version`,
+        oldValue: describeSecretRef(oldRef, secrets),
+        newValue: describeSecretRef(newRef, secrets),
+      });
+      continue;
+    }
+    changes.push({
+      field: `Env ${key} value`,
+      oldValue: "plain (set)",
+      newValue: "plain (changed)",
+    });
+  }
 }
 
 function summarizeVariables(variables: RoutineVariable[]): string {

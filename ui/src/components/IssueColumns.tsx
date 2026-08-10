@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
@@ -20,10 +20,12 @@ import { timeAgo } from "../lib/timeAgo";
 import { Identity } from "./Identity";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
+import { Badge } from "@/components/ui/badge";
 
 export const issueTrailingColumns: InboxIssueColumn[] = [
   "priority",
   "assignee",
+  "kickedOffBy",
   "project",
   "workspace",
   "parent",
@@ -40,10 +42,11 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
   priority: "Priority",
-  assignee: "Assignee",
+  assignee: "Responsible",
+  kickedOffBy: "Kicked off by",
   project: "Project",
   workspace: "Workspace",
-  parent: "Parent issue",
+  parent: "Parent task",
   storyPoints: "Story points",
   estimateHours: "Estimate",
   actualHumanTime: "Human time",
@@ -54,18 +57,19 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
+  status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
   priority: "Critical, high, medium, or low planning signal.",
-  assignee: "Assigned agent or board user.",
+  assignee: "Responsible agent or board user.",
+  kickedOffBy: "Board user or agent who created the task.",
   project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
+  workspace: "Execution or project workspace used for the task.",
+  parent: "Parent task identifier and title.",
   storyPoints: "Human planning points used for workload rollups.",
   estimateHours: "Rough hour estimate for human coordination.",
   actualHumanTime: "Automatic time from issue creation to done, cancelled, or now.",
   actualAiTime: "Actual elapsed AI run time recorded from heartbeat runs.",
-  labels: "Issue labels and tags.",
+  labels: "Task labels and tags.",
   dueDate: "Due date when one is set.",
   updated: "Latest visible activity time.",
 };
@@ -79,6 +83,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
     .map((column) => {
       if (column === "priority") return "minmax(3.75rem, 5rem)";
       if (column === "assignee") return "minmax(6rem, 8rem)";
+      if (column === "kickedOffBy") return "minmax(6rem, 8rem)";
       if (column === "project") return "minmax(4.5rem, 7rem)";
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
@@ -168,11 +173,11 @@ export function IssueColumnPicker({
           {!iconOnly && "Columns"}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
+      <DropdownMenuContent align="end" className="w-(--sz-300px) rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+            <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
+              Desktop task rows
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -214,6 +219,8 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
+  subtreeLiveCount = 0,
+  showSubtreeLiveChip = true,
   showStatus = true,
   showIdentifier = true,
   statusSlot,
@@ -221,6 +228,8 @@ export function InboxIssueMetaLeading({
 }: {
   issue: Issue;
   isLive: boolean;
+  subtreeLiveCount?: number;
+  showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
@@ -229,7 +238,7 @@ export function InboxIssueMetaLeading({
   return (
     <>
       {showStatus ? (
-        <span className="hidden shrink-0 sm:inline-flex">
+        <span className="hidden shrink-0 items-center sm:inline-flex">
           {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
         </span>
       ) : null}
@@ -244,9 +253,9 @@ export function InboxIssueMetaLeading({
         </span>
       ) : null}
       {isLive && (
-        <span
+        <Badge variant="ghost"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+            "px-1.5 sm:gap-1.5 sm:px-2",
             "bg-blue-500/10",
           )}
         >
@@ -261,13 +270,33 @@ export function InboxIssueMetaLeading({
           </span>
           <span
             className={cn(
-              "hidden text-[11px] font-medium sm:inline",
+              "hidden text-(length:--text-micro) font-medium sm:inline",
               "text-blue-600 dark:text-blue-400",
             )}
           >
             Live
           </span>
-        </span>
+        </Badge>
+      )}
+      {showSubtreeLiveChip && !isLive && subtreeLiveCount > 0 && (
+        <Badge variant="outline"
+          className={cn(
+            "px-1.5 sm:gap-1.5 sm:px-2",
+            "border-border bg-transparent",
+          )}
+          title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
+        >
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full border",
+              "border-muted-foreground/60 bg-transparent",
+            )}
+            aria-hidden="true"
+          />
+          <span className="hidden text-(length:--text-micro) font-medium text-muted-foreground sm:inline">
+            {subtreeLiveCount} live below
+          </span>
+        </Badge>
       )}
     </>
   );
@@ -283,6 +312,10 @@ export function InboxIssueTrailingColumns({
   assigneeName,
   assigneeUserName,
   assigneeUserAvatarUrl,
+  creatorAgentName,
+  creatorUserName,
+  creatorUserAvatarUrl,
+  viaAgentName,
   currentUserId,
   parentIdentifier,
   parentTitle,
@@ -298,6 +331,10 @@ export function InboxIssueTrailingColumns({
   assigneeName: string | null;
   assigneeUserName?: string | null;
   assigneeUserAvatarUrl?: string | null;
+  creatorAgentName?: string | null;
+  creatorUserName?: string | null;
+  creatorUserAvatarUrl?: string | null;
+  viaAgentName?: string | null;
   currentUserId: string | null;
   parentIdentifier: string | null;
   parentTitle: string | null;
@@ -306,6 +343,9 @@ export function InboxIssueTrailingColumns({
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const originatingActor = deriveOriginatingActor(issue);
+  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(originatingUserId, currentUserId) ?? "User";
 
   return (
     <span
@@ -333,6 +373,7 @@ export function InboxIssueTrailingColumns({
                 <Identity
                   name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
                   size="sm"
+                  shape="square"
                   className="min-w-0"
                 />
               </span>
@@ -359,8 +400,55 @@ export function InboxIssueTrailingColumns({
           );
         }
 
+        if (column === "kickedOffBy") {
+          if (originatingActor?.kind === "agent") {
+            const name = creatorAgentName ?? originatingActor.id.slice(0, 8);
+            return (
+              <Tooltip key={column}>
+                <TooltipTrigger asChild>
+                  <span className="min-w-0 text-xs text-foreground">
+                    <Identity
+                      name={name}
+                      size="sm"
+                      shape="square"
+                      className="min-w-0"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>{name}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
+          if (originatingActor?.kind === "user") {
+            const tooltipText = viaAgentName ? `${creatorUserLabel} · via ${viaAgentName}` : creatorUserLabel;
+            return (
+              <Tooltip key={column}>
+                <TooltipTrigger asChild>
+                  <span className="min-w-0 text-xs text-foreground">
+                    <Identity
+                      name={creatorUserLabel}
+                      avatarUrl={creatorUserAvatarUrl}
+                      size="sm"
+                      className="min-w-0"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>{tooltipText}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
+          return (
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
+              Unknown
+            </span>
+          );
+        }
+
         if (column === "project") {
           if (projectName) {
+            // token-extraction: allowlisted — accentColor also feeds pickTextColorForPillBg() contrast math; a var() string can't be parsed as a hex color there.
             const accentColor = projectColor ?? "#64748b";
             return (
               <span
@@ -389,9 +477,9 @@ export function InboxIssueTrailingColumns({
             return (
               <span key={column} className="flex min-w-0 items-center gap-1 overflow-hidden">
                 {(issue.labels ?? []).slice(0, 2).map((label) => (
-                  <span
+                  <Badge variant="outline"
                     key={label.id}
-                    className="inline-flex min-w-0 max-w-full shrink-0 items-center rounded-full border px-1.5 py-0 text-[10px] font-medium"
+                    className="min-w-0 max-w-full px-1.5 py-0 text-(length:--text-nano)"
                     style={{
                       borderColor: label.color,
                       color: pickTextColorForPillBg(label.color, 0.12),
@@ -399,10 +487,10 @@ export function InboxIssueTrailingColumns({
                     }}
                   >
                     <span className="truncate">{label.name}</span>
-                  </span>
+                  </Badge>
                 ))}
                 {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+                  <span className="shrink-0 text-(length:--text-nano) font-medium text-muted-foreground">
                     +{(issue.labels ?? []).length - 2}
                   </span>
                 ) : null}
@@ -456,7 +544,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">Sub-task</span>
               )}
             </span>
           );
@@ -496,7 +584,7 @@ export function InboxIssueTrailingColumns({
 
         if (column === "updated") {
           return (
-            <span key={column} className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground">
+            <span key={column} className="min-w-0 truncate text-right text-(length:--text-micro) font-medium text-muted-foreground">
               {activityText}
             </span>
           );

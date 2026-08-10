@@ -6,7 +6,7 @@ import {
   type Agent,
   type PermissionKey,
 } from "@paperclipai/shared";
-import { ShieldCheck, Trash2, Users } from "lucide-react";
+import { Shield, ShieldCheck, Trash2, Users } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
@@ -25,15 +25,30 @@ import { Badge } from "@/components/ui/badge";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
+import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { usePluginSlots } from "@/plugins/slots";
 
 const permissionLabels: Record<PermissionKey, string> = {
   "agents:create": "Create agents",
+  "agents:configure": "Configure agents",
+  "agents:suggest-changes": "Suggest agent changes",
+  "skills:create": "Create skills",
+  "skills:suggest-changes": "Suggest skill changes",
+  "tools:admin": "Administer tools",
+  "tools:manage_connections": "Manage tool connections",
+  "tools:manage_profiles": "Manage tool profiles",
+  "tools:view_audit": "View tool audit logs",
+  "audit:view_agent_actions": "View agent action audit logs",
+  "tools:use": "Use tools",
+  "tools:manage_runtime": "Manage tool runtime",
+  "inbox:manage": "Manage inbox",
   "users:invite": "Invite humans and agents",
   "users:manage_permissions": "Manage members and grants",
   "tasks:assign": "Assign tasks",
   "tasks:assign_scope": "Assign scoped tasks",
   "tasks:manage_active_checkouts": "Manage active task checkouts",
+  "pipelines:write": "Manage pipelines",
   "joins:approve": "Approve join requests",
   "credentials:manage": "Manage provider credentials",
   "credentials:view": "View provider credentials",
@@ -674,6 +689,71 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * Preserves the upstream legacy `/access` entry point without weakening the
+ * fork's first-class member and explicit-grant controls at `/members`.
+ * Installed settings plugins can take over the advanced permission route.
+ */
+export function CompanyAccessLegacyRoute() {
+  const { selectedCompanyId } = useCompany();
+  const { setBreadcrumbs } = useBreadcrumbs();
+  const { slots, isLoading, errorMessage } = usePluginSlots({
+    slotTypes: ["companySettingsPage"],
+    companyId: selectedCompanyId,
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    setBreadcrumbs([
+      { label: "Settings", href: "/company/settings" },
+      { label: "Access" },
+    ]);
+  }, [setBreadcrumbs]);
+
+  const permissionsSlot = slots.find((slot) => slot.routePath === "permissions");
+  if (permissionsSlot) {
+    return <Navigate to="/company/settings/permissions" replace />;
+  }
+
+  if (isLoading) {
+    return <div className="text-sm text-muted-foreground">Checking for advanced permission extensions...</div>;
+  }
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Advanced Permissions</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-xl border border-border px-5 py-5">
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
+          <p className="text-sm text-muted-foreground">
+            Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
+          </p>
+          {errorMessage ? (
+            <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild>
+            <Link to="/company/settings/members">Open Members</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/company/settings/invites">Open Invites</Link>
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

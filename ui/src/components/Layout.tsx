@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { PanelLeftOpen } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
-import { InstanceSidebar } from "./InstanceSidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsNav } from "./access/CompanySettingsNav";
+import { AppsSidebar } from "./AppsSidebar";
+import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -17,7 +18,10 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
-import { ResizableSidebarPane } from "./ResizableSidebarPane";
+import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
+import { SidebarShell } from "./SidebarShell";
+import { SecondarySidebar } from "./SecondarySidebar";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { useDialogActions } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
@@ -26,16 +30,14 @@ import { useCompany } from "../context/CompanyContext";
 import { useOrg } from "../context/OrgContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { isBoardPathWithoutPrefix } from "../lib/company-routes";
 import {
-  DEFAULT_INSTANCE_SETTINGS_PATH,
-  normalizeRememberedInstanceSettingsPath,
-} from "../lib/instance-settings";
-import {
+  applyMainContentScrollTop,
+  NavigationScrollMemory,
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
 } from "../lib/navigation-scroll";
@@ -46,44 +48,51 @@ import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
 
-const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
-
 function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
-  if (!companyPrefix) return null;
+  return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
+}
+
+function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
+  if (!companyPrefix) return [];
   const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
-  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
-  return segments[1]?.toLowerCase() ?? null;
+  if (segments.length < 2) return [];
+  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return [];
+  return segments.slice(1);
 }
 
-function readRememberedInstanceSettingsPath(): string {
-  if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
-  try {
-    return normalizeRememberedInstanceSettingsPath(window.localStorage.getItem(INSTANCE_SETTINGS_MEMORY_KEY));
-  } catch {
-    return DEFAULT_INSTANCE_SETTINGS_PATH;
-  }
-}
+const RESERVED_APP_SUBPATHS = new Set([
+  "browse",
+  "connections",
+  "connect",
+  "review",
+  "attention",
+  "gateways",
+  "advanced",
+  "app",
+]);
 
-// Detect whether the viewport is narrower than the `lg` Tailwind breakpoint
-// (1024px). Used to show/hide the mobile bottom-nav and off-canvas sidebar
-// on both phones (<768px) and tablets (768px–1023px).
-function useIsNarrow() {
-  const [isNarrow, setIsNarrow] = useState(() => window.innerWidth < 1024);
-  useEffect(() => {
-    const mql = window.matchMedia("(max-width: 1023px)");
-    const onChange = (e: MediaQueryListEvent) => setIsNarrow(e.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-  return isNarrow;
+function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0]?.toLowerCase() === "skills") return true;
+  if (!companyPrefix) return false;
+  return (
+    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
+    segments[1]?.toLowerCase() === "skills"
+  );
 }
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  // isNarrow = true on phone AND tablet (<lg / 1024px).
-  // isMobile (from SidebarContext) = true only on phone (<md / 768px).
-  const isNarrow = useIsNarrow();
+  const {
+    sidebarOpen,
+    setSidebarOpen,
+    toggleSidebar,
+    toggleCollapsed,
+    collapsed,
+    peeking,
+    setPeeking,
+    isMobile,
+    setForceCollapsed,
+  } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
   const {
@@ -94,44 +103,48 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { companyPrefix } = useParams<{ companyPrefix: string }>();
+  const {
+    companyPrefix,
+    pluginRoutePath: matchedPluginRoutePath,
+  } = useParams<{ companyPrefix: string; pluginRoutePath?: string }>();
   const { selectedOrgId, setSelectedOrgId } = useOrg();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
-  const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
+  const { enabled: appsEnabled } = useAppsEnabled();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
+  const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
+  const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appDetailConnectionId =
+    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
+      ? companyPathSegments[1]
+      : null;
+  const appDetailApplicationId =
+    isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
+      ? companyPathSegments[2]
+      : null;
+  // The Skills Store renders its own secondary (category) sidebar, so the main
+  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
+  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
-  const previousCompanyRouteSyncState = useRef<{
-    pathname: string;
-    selectedCompanyId: string | null;
-  }>({ pathname: location.pathname, selectedCompanyId });
   const mainContentRef = useRef<HTMLElement | null>(null);
+  const scrollMemory = useRef(new NavigationScrollMemory());
+  const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
-  const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
     return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
   }, [companies, companyPrefix]);
-  const shouldRedirectUnprefixedBoardRoute =
-    Boolean(companyPrefix)
-    && !companiesLoading
-    && companies.length > 0
-    && !matchedCompany
-    && isBoardPathWithoutPrefix(location.pathname);
   const hasUnknownCompanyPrefix =
-    Boolean(companyPrefix)
-    && !companiesLoading
-    && companies.length > 0
-    && !matchedCompany
-    && !shouldRedirectUnprefixedBoardRoute;
+    Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
-    () => getCompanyRouteSegment(location.pathname, companyPrefix),
-    [companyPrefix, location.pathname],
+    () => matchedPluginRoutePath?.toLowerCase() ?? getCompanyRouteSegment(location.pathname, companyPrefix),
+    [companyPrefix, location.pathname, matchedPluginRoutePath],
   );
   const routeSidebarCompanyId = matchedCompany?.id ?? null;
   const routeSidebarCompanyPrefix = matchedCompany?.issuePrefix ?? null;
@@ -151,16 +164,27 @@ export function Layout() {
     }),
     [routeSidebarCompanyId, routeSidebarCompanyPrefix],
   );
-  const companySidebar = routeSidebarSlot ? (
+  // Takeover routes (company settings, plugin `routeSidebar`) no longer replace
+  // the app `<Sidebar/>`. Instead the host collapses it to its rail and renders
+  // the contextual sidebar in a second pane (PAP-10695). One resolver drives
+  // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
+  const secondarySidebar = isCompanySettingsRoute ? (
+    <CompanySettingsSidebar />
+  ) : appsEnabled && appDetailConnectionId ? (
+    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
+  ) : appsEnabled && appDetailApplicationId ? (
+    <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
+  ) : appsEnabled && (isAppsRoute || isToolsRoute) ? (
+    <AppsSidebar />
+  ) : routeSidebarSlot ? (
     <PluginSlotMount
       slot={routeSidebarSlot}
       context={sidebarContext}
       className="h-full w-full"
       missingBehavior="placeholder"
     />
-  ) : (
-    <Sidebar />
-  );
+  ) : null;
+  const hasSecondarySidebar = secondarySidebar != null;
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -176,33 +200,36 @@ export function Layout() {
     queryFn: () => instanceSettingsApi.getGeneral(),
   }).data?.keyboardShortcuts === true;
 
+  // A secondary sidebar always collapses the app sidebar to its rail (still
+  // peek-able) — a hard invariant that overrides the user pin while the route
+  // is active, but does NOT mutate the persisted preference. Clearing the force
+  // on cleanup restores the user's expanded/collapsed choice when navigating
+  // off the takeover route (PAP-10694).
+  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
+  useLayoutEffect(() => {
+    setForceCollapsed(forceRailCollapsed);
+    return () => setForceCollapsed(false);
+  }, [forceRailCollapsed, setForceCollapsed]);
+
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
     if (health?.deploymentMode === "authenticated") return;
+    // Cloud provisions the single company for a stack, and POST /companies is a
+    // 403 floor there — auto-opening the wizard could only dead-end.
+    if (health?.cloud) return;
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
 
   useEffect(() => {
-    const routeChangedSinceSelection =
-      previousCompanyRouteSyncState.current.selectedCompanyId === selectedCompanyId &&
-      previousCompanyRouteSyncState.current.pathname !== location.pathname;
-
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
 
     if (!matchedCompany) {
       const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
         ?? companies[0]
         ?? null;
-      if (fallback && isBoardPathWithoutPrefix(location.pathname)) {
-        navigate(
-          `/${fallback.issuePrefix}${location.pathname}${location.search}${location.hash}`,
-          { replace: true },
-        );
-        return;
-      }
       if (fallback && selectedCompanyId !== fallback.id) {
         setSelectedCompanyId(fallback.id, { source: "route_sync" });
       }
@@ -220,15 +247,10 @@ export function Layout() {
         selectionSource,
         selectedCompanyId,
         routeCompanyId: matchedCompany.id,
-        routeChangedSinceSelection,
       })
     ) {
       setSelectedCompanyId(matchedCompany.id, { source: "route_sync" });
     }
-    previousCompanyRouteSyncState.current = {
-      pathname: location.pathname,
-      selectedCompanyId,
-    };
   }, [
     companyPrefix,
     companies,
@@ -236,26 +258,31 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
-    location.hash,
     navigate,
     selectionSource,
     selectedCompanyId,
     setSelectedCompanyId,
   ]);
 
+  // Keep the fork's organization context aligned with a company selected from
+  // a prefixed route, without overriding an in-progress manual company switch.
   useEffect(() => {
     if (!matchedCompany?.organizationId) return;
     if (selectedOrgId === matchedCompany.organizationId) return;
-    // Skip if a different company is selected — we're mid-switch (e.g., the
-    // sidebar org switcher just set selectedCompanyId to a company in another
-    // org and the URL hasn't caught up yet). Syncing here would revert that
-    // manual switch. useCompanyPageMemory will land us on the new company's
-    // URL, after which this effect re-runs with the correct matchedCompany.
     if (selectedCompanyId !== null && selectedCompanyId !== matchedCompany.id) return;
     setSelectedOrgId(matchedCompany.organizationId);
   }, [matchedCompany, selectedOrgId, selectedCompanyId, setSelectedOrgId]);
 
   const togglePanel = togglePanelVisible;
+  // Cmd/Ctrl+B: collapse/expand the pinned rail on desktop; on mobile keep
+  // toggling the off-canvas drawer.
+  const toggleCollapse = useCallback(() => {
+    if (isMobile) {
+      toggleSidebar();
+    } else {
+      toggleCollapsed();
+    }
+  }, [isMobile, toggleSidebar, toggleCollapsed]);
   const openSearch = useCallback(() => {
     document.dispatchEvent(new KeyboardEvent("keydown", {
       key: "k",
@@ -265,6 +292,102 @@ export function Layout() {
     }));
   }, []);
 
+  // Peek (hover flyout) triggers for the collapsed rail. Opening has a tiny
+  // delay so a pointer merely sweeping across the rail doesn't flash it open;
+  // closing is debounced to avoid flicker on the rail→overlay seam. Keyboard
+  // focus opens immediately so tabbing reaches the full nav. Context gates the
+  // effective `peeking` to desktop + collapsed + hover-capable pointers, so
+  // these handlers are inert otherwise.
+  const peekTimer = useRef<number | null>(null);
+  // Whether the pointer is currently over the peek panel. Used to keep the peek
+  // open across focus changes (e.g. navigation steals focus to <main>) as long as
+  // the user is still hovering — it should only close when they actually mouse off
+  // (PAP-10676).
+  const pointerInsidePanel = useRef(false);
+  // When the user explicitly collapses while the pointer is still over the panel,
+  // suppress re-peeking until the pointer actually leaves — otherwise the lingering
+  // hover immediately re-expands the rail and the collapse "doesn't take" until the
+  // mouse moves away (PAP-10676). Re-armed on the next genuine pointer-leave.
+  const suppressPeekRef = useRef(false);
+  const clearPeekTimer = useCallback(() => {
+    if (peekTimer.current !== null) {
+      window.clearTimeout(peekTimer.current);
+      peekTimer.current = null;
+    }
+  }, []);
+  const openPeek = useCallback(() => {
+    clearPeekTimer();
+    peekTimer.current = window.setTimeout(() => setPeeking(true), 50);
+  }, [clearPeekTimer, setPeeking]);
+  const openPeekImmediate = useCallback(() => {
+    clearPeekTimer();
+    setPeeking(true);
+  }, [clearPeekTimer, setPeeking]);
+  const closePeek = useCallback(() => {
+    clearPeekTimer();
+    peekTimer.current = window.setTimeout(() => setPeeking(false), 120);
+  }, [clearPeekTimer, setPeeking]);
+  // Tracked even while expanded so that, at the moment of collapse, we know
+  // whether the pointer is over the panel and should suppress the re-peek.
+  const handlePanelPointerEnter = useCallback(() => {
+    pointerInsidePanel.current = true;
+    if (collapsed && !suppressPeekRef.current) openPeek();
+  }, [collapsed, openPeek]);
+  const handlePanelPointerLeave = useCallback(() => {
+    pointerInsidePanel.current = false;
+    suppressPeekRef.current = false; // pointer left — re-arm peek for the next hover
+    closePeek();
+  }, [closePeek]);
+  const handlePanelFocus = useCallback(() => {
+    if (suppressPeekRef.current) return;
+    openPeekImmediate();
+  }, [openPeekImmediate]);
+  // Close on focus leaving the panel only when the pointer isn't hovering it.
+  // Clicking a rail/peek nav item moves focus to <main> on navigation; if the
+  // mouse is still over the flyout we keep it open until the pointer leaves.
+  const handlePanelBlur = useCallback(() => {
+    if (pointerInsidePanel.current) return;
+    closePeek();
+  }, [closePeek]);
+
+  // Tidy up any pending peek timer on unmount.
+  useEffect(() => clearPeekTimer, [clearPeekTimer]);
+
+  // An explicit collapse must be atomic: cancel any in-flight/active peek, and if
+  // the pointer is still over the panel suppress re-peeking until it leaves, so the
+  // rail doesn't immediately re-expand under the lingering hover (PAP-10676).
+  const wasCollapsed = useRef(collapsed);
+  useEffect(() => {
+    if (collapsed !== wasCollapsed.current) {
+      if (collapsed) {
+        clearPeekTimer();
+        setPeeking(false);
+        suppressPeekRef.current = pointerInsidePanel.current;
+      } else {
+        suppressPeekRef.current = false;
+      }
+      wasCollapsed.current = collapsed;
+    }
+  }, [collapsed, clearPeekTimer, setPeeking]);
+
+  // Intentionally do NOT close the peek on navigation: clicking a nav item means
+  // the pointer is still over the flyout, so it should stay open until the user
+  // actually mouses off (handled by onPanelMouseLeave) or blurs out / hits Escape
+  // (PAP-10676). Auto-closing here made the sidebar collapse on every page change.
+
+  // Escape closes an open peek without trapping the pointer.
+  useEffect(() => {
+    if (!peeking) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        clearPeekTimer();
+        setPeeking(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [peeking, clearPeekTimer, setPeeking]);
+
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
@@ -272,22 +395,24 @@ export function Layout() {
     onNewIssue: () => openNewIssue(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
+    onToggleCollapse: toggleCollapse,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onGoToInbox: () => navigate("/inbox"),
   });
 
   useEffect(() => {
-    if (!isNarrow) {
+    if (!isMobile) {
       setMobileNavVisible(true);
       return;
     }
     lastMainScrollTop.current = 0;
     setMobileNavVisible(true);
-  }, [isNarrow]);
+  }, [isMobile]);
 
-  // Swipe gesture to open/close sidebar on phone+tablet
+  // Swipe gesture to open/close sidebar on mobile
   useEffect(() => {
-    if (!isNarrow) return;
+    if (!isMobile) return;
 
     const EDGE_ZONE = 30; // px from left edge to start open-swipe
     const MIN_DISTANCE = 50; // minimum horizontal swipe distance
@@ -328,7 +453,7 @@ export function Layout() {
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("touchend", onTouchEnd);
     };
-  }, [isNarrow, sidebarOpen, setSidebarOpen]);
+  }, [isMobile, sidebarOpen, setSidebarOpen]);
 
   const updateMobileNavVisibility = useCallback((currentTop: number) => {
     const delta = currentTop - lastMainScrollTop.current;
@@ -345,7 +470,7 @@ export function Layout() {
   }, []);
 
   useEffect(() => {
-    if (!isNarrow) {
+    if (!isMobile) {
       setMobileNavVisible(true);
       lastMainScrollTop.current = 0;
       return;
@@ -361,37 +486,28 @@ export function Layout() {
     return () => {
       window.removeEventListener("scroll", onScroll);
     };
-  }, [isNarrow, updateMobileNavVisibility]);
+  }, [isMobile, updateMobileNavVisibility]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
-    // Phone and tablet use window scroll; desktop uses in-element overflow.
-    document.body.style.overflow = isNarrow ? "visible" : "clip";
+
+    document.body.style.overflow = isMobile ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isNarrow]);
+  }, [isMobile]);
 
+  // `scrollIntoView` walks every ancestor scroll container. On a long thread
+  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
+  // animates `documentElement.scrollTop` via the browser's internal scroll
+  // algorithm, which bypasses the CSS `overflow` on the root element and
+  // visually shifts the entire shell (sidebar included) off-screen. Pin
+  // both roots to scrollTop=0 on every scroll tick.
   useEffect(() => {
-    if (isNarrow) return;
+    if (isMobile) return;
     return pinDocumentScrollToZero();
-  }, [isNarrow]);
-
-  useEffect(() => {
-    if (!location.pathname.startsWith("/instance/settings/")) return;
-
-    const nextPath = normalizeRememberedInstanceSettingsPath(
-      `${location.pathname}${location.search}${location.hash}`,
-    );
-    setInstanceSettingsTarget(nextPath);
-
-    try {
-      window.localStorage.setItem(INSTANCE_SETTINGS_MEMORY_KEY, nextPath);
-    } catch {
-      // Ignore storage failures in restricted environments.
-    }
-  }, [location.hash, location.pathname, location.search]);
+  }, [isMobile]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -399,7 +515,20 @@ export function Layout() {
     return scheduleMainContentFocus(mainContent);
   }, [location.pathname]);
 
+  // Continuously record the scroll offset of the active history entry so a
+  // later back/forward navigation can restore it (see NavigationScrollMemory).
   useEffect(() => {
+    const main = mainContentRef.current;
+    if (!main) return;
+    const recordScroll = () => {
+      scrollMemory.current.remember(activeScrollKey.current, main.scrollTop);
+    };
+    main.addEventListener("scroll", recordScroll, { passive: true });
+    return () => main.removeEventListener("scroll", recordScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const main = mainContentRef.current;
     const shouldResetScroll = shouldResetScrollOnNavigation({
       previousPathname: previousPathname.current,
       pathname: location.pathname,
@@ -409,160 +538,149 @@ export function Layout() {
 
     previousPathname.current = location.pathname;
 
-    if (!shouldResetScroll) return;
-    resetNavigationScroll(mainContentRef.current);
-  }, [location.pathname, navigationType]);
+    const isHistoryPop = navigationType === "POP";
+    const restoredScrollTop = isHistoryPop ? scrollMemory.current.recall(location.key) : 0;
+    activeScrollKey.current = location.key;
+
+    if (isHistoryPop) {
+      applyMainContentScrollTop(main, restoredScrollTop);
+      // Cached page content can finish laying out a frame after commit; re-apply
+      // once it has so the restored offset isn't clamped to a shorter interim height.
+      const raf = requestAnimationFrame(() => applyMainContentScrollTop(main, restoredScrollTop));
+      return () => cancelAnimationFrame(raf);
+    }
+
+    if (shouldResetScroll) {
+      resetNavigationScroll(main);
+    }
+  }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
-        className={cn(
-          "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-          // Narrow (phone+tablet <lg): window-scroll layout, full height
-          // Desktop (>=lg): flex column with overflow-clip for in-element scroll
-          isNarrow ? "min-h-dvh" : "flex h-dvh flex-col overflow-clip",
-        )}
+      className={cn(
+        "bg-background text-foreground pt-(--sz-safe-top)",
+        // overflow-x-clip on mobile keeps a stray wide descendant from making the
+        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+        // computed as visible, so native body scroll + the sticky breadcrumb keep
+        // working.
+        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
+      )}
       >
-        <a
-          href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Skip to Main Content
-        </a>
-        <WorktreeBanner />
-        <DevRestartBanner devServer={health?.devServer} />
-        <div className={cn("min-h-0 flex-1", isNarrow ? "w-full" : "flex overflow-clip")}>
-          {/* ── Off-canvas overlay backdrop (phone + tablet) ── */}
-          {isNarrow && sidebarOpen && (
-            <button
-              type="button"
-              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
-              onClick={() => setSidebarOpen(false)}
-              aria-label="Close sidebar"
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Skip to Main Content
+      </a>
+      <WorktreeBanner />
+      <DevRestartBanner devServer={health?.devServer} />
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
+        {isMobile && sidebarOpen && (
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          />
+        )}
+
+        {isMobile ? (
+          <div
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
+              sidebarOpen ? "translate-x-0" : "-translate-x-full"
+            )}
+          >
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <div className="w-60 shrink-0 overflow-hidden">
+                {hasSecondarySidebar ? secondarySidebar : <Sidebar />}
+              </div>
+            </div>
+            <SidebarAccountMenu
+              deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
+              version={health?.version}
             />
-          )}
+          </div>
+        ) : (
+          <SidebarShell
+            open={sidebarOpen}
+            collapsed={collapsed}
+            peeking={peeking}
+            resizable
+            onPanelMouseEnter={handlePanelPointerEnter}
+            onPanelMouseLeave={handlePanelPointerLeave}
+            onPanelFocusCapture={collapsed ? handlePanelFocus : undefined}
+            onPanelBlurCapture={collapsed ? handlePanelBlur : undefined}
+          >
+            <div className="flex flex-1 min-h-0">
+              <Sidebar />
+            </div>
+            <SidebarAccountMenu
+              deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
+              version={health?.version}
+            />
+          </SidebarShell>
+        )}
 
-          {/* ── Sidebar: off-canvas on narrow (<lg), static on desktop ── */}
-          {isNarrow ? (
-            // Off-canvas slide-in: glass-blur frosted panel from left edge
-            <div
+        {!isMobile && hasSecondarySidebar ? (
+          <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+        ) : null}
+
+        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
+          <div
+            className={cn(
+              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+            )}
+          >
+            <StandaloneBrowserControls mobile={isMobile} />
+            <BreadcrumbBar />
+            {isMobile && isCompanySettingsRoute ? (
+              <div className="border-b border-border px-4 pb-3">
+                <CompanySettingsNav />
+              </div>
+            ) : null}
+          </div>
+          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+            <main
+              id="main-content"
+              ref={mainContentRef}
+              tabIndex={-1}
               className={cn(
-                "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden",
-                // Safe-area top padding so content clears the notch
-                "pt-[env(safe-area-inset-top)]",
-                // Glass surface with rounded right edge
-                "glass-surface shadow-2xl",
-                // Wider on tablet, standard on phone
-                "w-72 sm:w-80",
-                // Slide-in transition
-                "transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)]",
-                sidebarOpen ? "translate-x-0" : "-translate-x-full",
+                "flex-1 p-4 outline-none md:p-6",
+                // Reserve the scrollbar gutter on desktop so pages whose height
+                // changes (e.g. switching skill-detail tabs) don't widen/shift
+                // when the vertical scrollbar appears or disappears (PAP-10907).
+                isMobile
+                  ? "overflow-visible pb-(--sz-calc-14)"
+                  : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
-              <div className="flex flex-1 min-h-0 overflow-hidden">
-                <div className="w-full overflow-hidden">
-                  {isInstanceSettingsRoute ? (
-                    <InstanceSidebar />
-                  ) : isCompanySettingsRoute ? (
-                    <CompanySettingsSidebar />
-                  ) : (
-                    companySidebar
-                  )}
-                </div>
-              </div>
-              <SidebarAccountMenu
-                deploymentMode={health?.deploymentMode}
-                instanceSettingsTarget={instanceSettingsTarget}
-                version={health?.version}
-              />
-            </div>
-          ) : (
-            // Desktop static sidebar
-            <div className="flex h-full flex-col shrink-0">
-              <div className="flex flex-1 min-h-0">
-                <ResizableSidebarPane open={sidebarOpen} resizable className="h-full shrink-0">
-                  {isInstanceSettingsRoute ? (
-                    <InstanceSidebar />
-                  ) : isCompanySettingsRoute ? (
-                    <CompanySettingsSidebar />
-                  ) : (
-                    companySidebar
-                  )}
-                </ResizableSidebarPane>
-                {!sidebarOpen ? (
-                  <div className="flex w-16 shrink-0 justify-center border-r border-border bg-background pt-3">
-                    <button
-                      type="button"
-                      className="inline-flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={() => setSidebarOpen(true)}
-                      aria-label="Expand sidebar"
-                      aria-expanded="false"
-                      title="Expand sidebar"
-                    >
-                      <PanelLeftOpen className="h-4 w-4" />
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <SidebarAccountMenu
-                collapsed={!sidebarOpen}
-                deploymentMode={health?.deploymentMode}
-                instanceSettingsTarget={instanceSettingsTarget}
-                version={health?.version}
-              />
-            </div>
-          )}
-
-          {/* ── Main content column ── */}
-          <div className={cn("flex min-w-0 flex-col", isNarrow ? "w-full" : "h-full flex-1")}>
-            {/* BreadcrumbBar: sticky + glass on narrow, plain on desktop */}
-            <div
-              className={cn(
-                isNarrow && "sticky top-0 z-20",
-              )}
-            >
-              <BreadcrumbBar />
-            </div>
-
-            <div className={cn(isNarrow ? "block" : "flex flex-1 min-h-0")}>
-              <main
-                id="main-content"
-                ref={mainContentRef}
-                tabIndex={-1}
-                className={cn(
-                  "flex-1 p-4 outline-none md:p-6",
-                  // Narrow: window-scroll, add bottom clearance for nav bar + safe area
-                  // Desktop: in-element scroll
-                  isNarrow ? "overflow-visible pb-safe-nav" : "overflow-auto",
-                )}
-              >
-                {hasUnknownCompanyPrefix ? (
-                  <NotFoundPage
-                    scope="invalid_company_prefix"
-                    requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
-                  />
-                ) : shouldRedirectUnprefixedBoardRoute ? (
-                  <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>
-                ) : (
+              {hasUnknownCompanyPrefix ? (
+                <NotFoundPage
+                  scope="invalid_company_prefix"
+                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
+                />
+              ) : (
+                <RouteErrorBoundary>
                   <Outlet />
-                )}
-              </main>
-              {/* PropertiesPanel: bottom-sheet on <lg, side-pane on desktop */}
-              <PropertiesPanel />
-            </div>
+                </RouteErrorBoundary>
+              )}
+            </main>
+            <PropertiesPanel />
           </div>
         </div>
-
-        {/* MobileBottomNav: visible on phone+tablet (<lg), hidden on desktop via CSS */}
-        <MobileBottomNav visible={mobileNavVisible} />
-
-        <CommandPalette />
-        <NewIssueDialog />
-        <NewProjectDialog />
-        <NewGoalDialog />
-        <NewAgentDialog />
-        <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-        <ToastViewport />
+      </div>
+      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+      <CommandPalette />
+      <NewIssueDialog />
+      <NewProjectDialog />
+      <NewGoalDialog />
+      <NewAgentDialog />
+      <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <ToastViewport />
       </div>
     </GeneralSettingsProvider>
   );

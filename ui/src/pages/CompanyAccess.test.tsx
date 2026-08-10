@@ -4,23 +4,29 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyAccess } from "./CompanyAccess";
+import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 
 const listMembersMock = vi.hoisted(() => vi.fn());
 const listJoinRequestsMock = vi.hoisted(() => vi.fn());
-const updateMemberAccessMock = vi.hoisted(() => vi.fn());
+const updateMemberMock = vi.hoisted(() => vi.fn());
 const archiveMemberMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
+const listAgentPermissionsMock = vi.hoisted(() => vi.fn());
 const listIssuesMock = vi.hoisted(() => vi.fn());
+const mockUsePluginSlots = vi.hoisted(() => vi.fn());
+const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/access", () => ({
   accessApi: {
     listMembers: (companyId: string) => listMembersMock(companyId),
     listJoinRequests: (companyId: string, status: string) => listJoinRequestsMock(companyId, status),
-    updateMember: vi.fn(),
+    updateMember: (companyId: string, memberId: string, input: unknown) =>
+      updateMemberMock(companyId, memberId, input),
+    listAgentPermissions: (companyId: string) => listAgentPermissionsMock(companyId),
     updateMemberPermissions: vi.fn(),
     updateMemberAccess: (companyId: string, memberId: string, input: unknown) =>
-      updateMemberAccessMock(companyId, memberId, input),
+      updateMemberMock(companyId, memberId, input),
+    updateAgentPermissions: vi.fn(),
     archiveMember: (companyId: string, memberId: string, input: unknown) =>
       archiveMemberMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
@@ -38,6 +44,18 @@ vi.mock("@/api/issues", () => ({
   issuesApi: {
     list: (companyId: string, filters: unknown) => listIssuesMock(companyId, filters),
   },
+}));
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+  Navigate: ({ to, replace }: { to: string; replace?: boolean }) => {
+    mockNavigate(to, replace);
+    return <div data-testid="navigate">{to}</div>;
+  },
+}));
+
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: mockUsePluginSlots,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -146,7 +164,7 @@ describe("CompanyAccess", () => {
         },
       },
     ]);
-    updateMemberAccessMock.mockResolvedValue({});
+    updateMemberMock.mockResolvedValue({});
     archiveMemberMock.mockResolvedValue({ reassignedIssueCount: 1 });
     listAgentsMock.mockResolvedValue([
       {
@@ -156,6 +174,17 @@ describe("CompanyAccess", () => {
         status: "active",
       },
     ]);
+    listAgentPermissionsMock.mockResolvedValue({
+      agents: [
+        {
+          id: "agent-1",
+          name: "Codex Worker",
+          role: "engineer",
+          status: "active",
+          grants: [],
+        },
+      ],
+    });
     listIssuesMock.mockResolvedValue([
       {
         id: "issue-1",
@@ -164,6 +193,11 @@ describe("CompanyAccess", () => {
         status: "todo",
       },
     ]);
+    mockUsePluginSlots.mockReturnValue({
+      slots: [],
+      isLoading: false,
+      errorMessage: null,
+    });
   });
 
   afterEach(() => {
@@ -172,7 +206,7 @@ describe("CompanyAccess", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps the page human-focused and explains implicit versus explicit grants", async () => {
+  it("shows member and agent access controls", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -188,17 +222,14 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Manage company user memberships");
+    expect(container.textContent).toContain("Manage company user memberships, membership status, and explicit permission grants for Paperclip");
     expect(container.textContent).toContain("Humans");
     expect(container.textContent).toContain("Pending human joins");
     expect(container.textContent).toContain("User account");
-    expect(container.textContent).not.toContain("Agents");
-    expect(container.textContent).not.toContain("Pending agent joins");
-    expect(container.textContent).not.toContain("Open join request queue");
-    expect(container.textContent).not.toContain("Manage invites");
-    expect(container.textContent).not.toContain("Active user accounts");
-    expect(container.textContent).not.toContain("Suspended user accounts");
-    expect(container.textContent).not.toContain("Pending user joins");
+    expect(container.textContent).toContain("Grants");
+    expect(container.textContent).toContain("No explicit grants");
+    expect(container.textContent).toContain("AI agent access");
+    expect(container.textContent).toContain("Codex Worker");
 
     const editButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Edit",
@@ -210,18 +241,16 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
+    expect(document.body.textContent).toContain("Update company role, membership status, and explicit grants");
     expect(document.body.textContent).toContain("Implicit grants from role");
-    expect(document.body.textContent).toContain("Owner currently includes these permissions automatically.");
-    expect(document.body.textContent).toContain(
-      "Included implicitly by the Owner role. Add an explicit grant only if it should stay after the role changes.",
-    );
+    expect(document.body.textContent).toContain("tasks:assign");
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("saves member role, status, and grants in one request", async () => {
+  it("saves member role, status, and grants together", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -257,7 +286,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(updateMemberAccessMock).toHaveBeenCalledWith("company-1", "member-1", {
+    expect(updateMemberMock).toHaveBeenCalledWith("company-1", "member-1", {
       membershipRole: "owner",
       status: "active",
       grants: [],
@@ -377,6 +406,67 @@ describe("CompanyAccess", () => {
     );
     expect(removeButton).toBeTruthy();
     expect(removeButton).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("redirects legacy access deep links to the permissions extension route when installed", async () => {
+    mockUsePluginSlots.mockReturnValue({
+      slots: [
+        {
+          type: "companySettingsPage",
+          id: "permissions",
+          displayName: "Permissions",
+          routePath: "permissions",
+          pluginKey: "permissions-extension",
+        },
+      ],
+      isLoading: false,
+      errorMessage: null,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccessLegacyRoute />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockNavigate).toHaveBeenCalledWith("/company/settings/permissions", true);
+    expect(container.textContent).toContain("/company/settings/permissions");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows a read-only unavailable fallback for legacy access deep links", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccessLegacyRoute />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Advanced Permissions");
+    expect(container.textContent).toContain("Advanced permissions unavailable");
+    expect(container.textContent).toContain("Open Members");
+    expect(container.textContent).toContain("Open Invites");
 
     await act(async () => {
       root.unmount();

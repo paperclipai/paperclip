@@ -1,6 +1,16 @@
 import type { Issue, IssueComment } from "@paperclipai/shared";
 
-export const ISSUE_COMMENT_THREAD_PAGE_SIZE = 10;
+/**
+ * First-page size for the issue-detail comment feed. Single source of truth so
+ * the render path (IssueDetail's `useInfiniteQuery`) and the navigation prefetch
+ * (`prefetchIssueComments`) request identically-shaped pages — a mismatch would
+ * leave the prefetched cache entry unable to satisfy the mounted query without a
+ * refetch, defeating warm-navigation instant paint.
+ */
+export const ISSUE_COMMENT_PAGE_SIZE = 50;
+// Retained for the existing live-update path; both reads and writes must use
+// the same query shape as the detail-page cache.
+export const ISSUE_COMMENT_THREAD_PAGE_SIZE = ISSUE_COMMENT_PAGE_SIZE;
 
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
