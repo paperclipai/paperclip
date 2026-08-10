@@ -22,6 +22,26 @@ describe("parseDeviceLoginPrompt", () => {
     expect(result?.code).toBe("????-?????");
   });
 
+  it("parse_returns_url_and_code_from_ansi_colored_output", () => {
+    // Codex CLI 0.128.0 and later add ANSI color (SGR) sequences around the URL
+    // and the code. A live sandbox run confirmed this format. The parser removes
+    // the Control Sequence Introducer sequences and reads the tokens the same as
+    // plain output.
+    const cyan = "\x1b[36m";
+    const bold = "\x1b[1m";
+    const reset = "\x1b[0m";
+    const text = [
+      "1. Open this link in your browser and sign in to your account",
+      `${cyan}${EXACT_URL}${reset}`,
+      "2. Enter this one-time code (expires in 15 minutes)",
+      `${bold}ABCD-EFGHJ${reset}`,
+    ].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(EXACT_URL);
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
   it("parse_returns_null_when_prompt_absent", () => {
     const text = "Some unrelated log line\nNothing to see here\n";
     expect(parseDeviceLoginPrompt(text)).toBeNull();
