@@ -144,11 +144,11 @@ function buildInstantTitlePreamble(
   taskId: string | undefined,
 ): string {
   // Hermes derives and reserves the initial session title from the first
-  // non-empty prompt line. Keep this stable for the run, but distinct across
-  // agents/runs so a shared instruction preamble cannot collide globally.
+  // non-empty prompt line. Keep the run identity before the truncation
+  // boundary so concurrent runs cannot collapse to the same title prefix.
   const agentIdentity = ctx.agent?.id || ctx.agent?.name || "unknown-agent";
   const runIdentity = ctx.runId || new Date().toISOString();
-  return `# Paperclip Hermes session — ${agentIdentity} — ${taskId || "no-task"} — ${runIdentity}`;
+  return `# Paperclip Hermes ${runIdentity} — session — ${agentIdentity} — ${taskId || "no-task"}`;
 }
 
 export function buildPrompt(
