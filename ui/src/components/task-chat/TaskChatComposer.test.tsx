@@ -375,12 +375,14 @@ describe("TaskChatComposer", () => {
 
     // The all-non-image paste is swallowed before the editor sees it.
     expect(paste.defaultPrevented).toBe(true);
-    expect(onAttachImage).toHaveBeenCalledWith(file);
-    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
-    expect(chips?.textContent).toContain("notes.txt");
-    // base/attachment chip: kind · size description and a settled state.
-    expect(chips?.textContent).toContain("Text · 5 B");
-    expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("done");
+    await vi.waitFor(() => {
+      expect(onAttachImage).toHaveBeenCalledWith(file);
+      const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
+      expect(chips?.textContent).toContain("notes.txt");
+      // base/attachment chip: kind · size description and a settled state.
+      expect(chips?.textContent).toContain("Text · 5 B");
+      expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("done");
+    });
 
     // The editor stays prose-only; the reference rides along at submit time,
     // and an attached chip alone is enough to enable send.
@@ -388,14 +390,17 @@ describe("TaskChatComposer", () => {
     const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
     expect(send.disabled).toBe(false);
     flushSync(() => send.click());
-    await flushAsync();
-    expect(onAdd).toHaveBeenCalledWith(
-      "[notes.txt](/attachments/notes.txt)",
-      undefined,
-      undefined,
-    );
+    await vi.waitFor(() => {
+      expect(onAdd).toHaveBeenCalledWith(
+        "[notes.txt](/attachments/notes.txt)",
+        undefined,
+        undefined,
+      );
+    });
     // Chips clear once the message posts.
-    expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')).toBeNull();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')).toBeNull();
+    });
   });
 
   it("appends file references after typed prose on submit", async () => {
@@ -440,21 +445,25 @@ describe("TaskChatComposer", () => {
 
     // Text alone would enable send, but the in-flight upload must hold it —
     // otherwise the comment posts without the file the user selected.
-    expect(sendButton().disabled).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendButton().disabled).toBe(true);
+    });
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     expect(onAdd).not.toHaveBeenCalled();
 
     resolveUpload({ contentPath: "/attachments/notes.txt", originalFilename: "notes.txt" });
-    await flushAsync();
-    expect(sendButton().disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(sendButton().disabled).toBe(false);
+    });
     flushSync(() => sendButton().click());
-    await flushAsync();
-    expect(onAdd).toHaveBeenCalledWith(
-      "Here is the file.\n\n[notes.txt](/attachments/notes.txt)",
-      undefined,
-      undefined,
-    );
+    await vi.waitFor(() => {
+      expect(onAdd).toHaveBeenCalledWith(
+        "Here is the file.\n\n[notes.txt](/attachments/notes.txt)",
+        undefined,
+        undefined,
+      );
+    });
   });
 
   it("blocks send while a failed attachment chip remains, then sends after it is removed", async () => {
@@ -468,17 +477,24 @@ describe("TaskChatComposer", () => {
 
     // Text alone would enable send, but the failed chip must hold it —
     // otherwise the comment posts without the file and the error chip clears.
-    expect(sendButton().disabled).toBe(true);
+    let remove: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      expect(sendButton().disabled).toBe(true);
+      remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]');
+      expect(remove).not.toBeNull();
+    });
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     expect(onAdd).not.toHaveBeenCalled();
 
-    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]');
     flushSync(() => remove!.click());
-    expect(sendButton().disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(sendButton().disabled).toBe(false);
+    });
     flushSync(() => sendButton().click());
-    await flushAsync();
-    expect(onAdd).toHaveBeenCalledWith("Here is the file.", undefined, undefined);
+    await vi.waitFor(() => {
+      expect(onAdd).toHaveBeenCalledWith("Here is the file.", undefined, undefined);
+    });
   });
 
   it("removes an attachment chip via its remove button", async () => {
@@ -491,8 +507,13 @@ describe("TaskChatComposer", () => {
     pasteFiles([new File(["plain"], "notes.txt", { type: "text/plain" })]);
     await flushAsync();
 
-    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]');
-    expect(remove).not.toBeNull();
+    let remove: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
+      expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("done");
+      remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]');
+      expect(remove).not.toBeNull();
+    });
     flushSync(() => remove!.click());
     expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')).toBeNull();
   });
@@ -504,9 +525,11 @@ describe("TaskChatComposer", () => {
     pasteFiles([new File(["plain"], "notes.txt", { type: "text/plain" })]);
     await flushAsync();
 
-    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
-    expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("error");
-    expect(chips?.textContent).toContain("Too large");
+    await vi.waitFor(() => {
+      const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
+      expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("error");
+      expect(chips?.textContent).toContain("Too large");
+    });
   });
 
   it("leaves pasted images to the editor's image plugin (no chip, paste not swallowed)", async () => {
@@ -523,11 +546,13 @@ describe("TaskChatComposer", () => {
 
     // Mixed paste: the non-image is chipped, the image flows through untouched.
     expect(paste.defaultPrevented).toBe(false);
-    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]')!;
-    expect(chips.textContent).toContain("notes.txt");
-    expect(chips.textContent).not.toContain("shot.png");
-    expect(onAttachImage).toHaveBeenCalledTimes(1);
-    expect(onAttachImage).toHaveBeenCalledWith(text);
+    await vi.waitFor(() => {
+      const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
+      expect(chips?.textContent).toContain("notes.txt");
+      expect(chips?.textContent).not.toContain("shot.png");
+      expect(onAttachImage).toHaveBeenCalledTimes(1);
+      expect(onAttachImage).toHaveBeenCalledWith(text);
+    });
   });
 
   it("inserts an @-mention from the autocomplete menu and posts it", async () => {
@@ -705,14 +730,17 @@ describe("TaskChatComposer", () => {
       pressKey("Enter", { metaKey: true });
       await flushAsync();
       pasteFiles([new File(["next"], "next.txt", { type: "text/plain" })]);
-      await flushAsync();
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent)
+          .toContain("next.txt");
+      });
       resolveSend();
-      await flushAsync();
-      await flushAsync();
 
-      expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
-      expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent)
-        .toContain("next.txt");
+      await vi.waitFor(() => {
+        expect(onAdd).toHaveBeenCalledWith("first message", undefined, undefined);
+        expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')?.textContent)
+          .toContain("next.txt");
+      });
     });
 
     it("keeps the body and saved draft when sending fails", async () => {
