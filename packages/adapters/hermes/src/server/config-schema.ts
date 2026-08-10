@@ -51,6 +51,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Optional Hermes --max-turns limit for tool-calling iterations.",
       },
       {
+        key: "recoveryMaxTurns",
+        label: "Recovery max turns",
+        type: "number",
+        default: 2,
+        hint: "Maximum turns for recovery-only wakes. Defaults to 2 so disposition repairs cannot consume a full work session.",
+      },
+      {
         key: "toolsets",
         label: "Toolsets",
         type: "text",

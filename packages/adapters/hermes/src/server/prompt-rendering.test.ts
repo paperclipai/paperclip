@@ -222,6 +222,40 @@ test("places managed agent instructions behind the runtime anti-echo wrapper", (
   expect(prompt.indexOf("Managed agent instructions:")).toBeLessThan(prompt.lastIndexOf("## Paperclip Wake Payload"));
 });
 
+test("omits the full managed-instructions bundle on recovery-only wakes", () => {
+  const prompt = buildPrompt(
+    baseContext({
+      paperclipWake: {
+        reason: "source_scoped_recovery_action",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-778",
+          title: "Record missing disposition",
+          status: "blocked",
+        },
+        recovery: {
+          cause: "successful_run_missing_state",
+          failureSummary: "No final disposition was stored.",
+          attemptCount: 1,
+          nextAction: "Record the existing disposition.",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+    }),
+    {},
+    {
+      agentInstructions: "# Large managed policy\nThis must not be injected into a recovery-only wake.",
+      instructionsFilePath: "/tmp/hermes/AGENTS.md",
+    },
+  );
+
+  expect(prompt).toContain("Recovery contract: your job is to RECOVER this task");
+  expect(prompt).not.toContain("Managed agent instructions:");
+  expect(prompt).not.toContain("Large managed policy");
+});
+
 test("renders accepted-plan continuation without authorizing implementation on the planning issue", () => {
   const prompt = buildPrompt(baseContext({
     paperclipWake: {

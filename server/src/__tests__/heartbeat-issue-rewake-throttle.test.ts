@@ -110,7 +110,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedCompanyAgentIssue() {
+  async function seedCompanyAgentIssue(options: { status?: "in_progress" | "blocked" } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -142,7 +142,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       id: issueId,
       companyId,
       title: "Interrupted import mission",
-      status: "in_progress",
+      status: options.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
@@ -261,6 +261,37 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       requestedByActorId: "test",
     });
     expect(commentWake).not.toBeNull();
+  });
+
+  it("suppresses automated handoff and recovery echoes for an already blocked issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue({ status: "blocked" });
+
+    for (const reason of ["finish_successful_run_handoff", "source_scoped_recovery_action", "issue_commented"]) {
+      const wake = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason,
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: reason },
+        requestedByActorType: "system",
+        requestedByActorId: "test",
+      });
+      expect(wake).toBeNull();
+    }
+
+    const wakeups = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(3);
+    expect(wakeups.every((wakeup) => wakeup.status === "skipped")).toBe(true);
+    expect(wakeups.every((wakeup) => wakeup.reason === "blocked_issue_noop_wake")).toBe(true);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(0);
   });
 
   it("does not throttle the wake that follows a failed run", async () => {

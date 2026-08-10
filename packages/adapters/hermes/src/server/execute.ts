@@ -19,7 +19,10 @@
  */
 
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import type {
   AdapterExecutionContext,
@@ -99,8 +102,6 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
   "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
   "",
-  ...HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES,
-  "",
   "Safe multiline update pattern:",
   "```bash",
   "api=\"${PAPERCLIP_API_URL%/}\"",
@@ -126,6 +127,9 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
 
 const HERMES_WAKE_DISCIPLINE_SECTION =
   HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES.join("\n");
+
+const execFileAsync = promisify(execFile);
+const DEFAULT_RECOVERY_MAX_TURNS = 2;
 
 function renderConditionalSections(template: string, vars: Record<string, unknown>): string {
   const isTruthy = (key: string) => {
@@ -206,10 +210,18 @@ export function buildPrompt(
   });
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
-  const managedInstructionsSection = renderManagedInstructionsSection({
-    agentInstructions: options.agentInstructions,
-    instructionsFilePath: options.instructionsFilePath,
-  });
+  const recoveryScoped = isPaperclipRecoveryWakePayload(context.paperclipWake);
+  // Recovery wakes are deliberately limited to recording or repairing the
+  // execution path. Re-sending a full managed-instructions bundle (often tens
+  // of KB) is pure context tax and can turn a one-write repair into a large
+  // resumed session. The compact recovery contract in paperclipWakePrompt is
+  // authoritative for this path.
+  const managedInstructionsSection = recoveryScoped
+    ? ""
+    : renderManagedInstructionsSection({
+      agentInstructions: options.agentInstructions,
+      instructionsFilePath: options.instructionsFilePath,
+    });
 
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
@@ -241,8 +253,13 @@ export function buildPrompt(
   const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
     ? ""
     : renderTemplate(renderConditionalSections(template, vars), vars);
+  // Keep the discipline section at the top for the default template. A custom
+  // template may choose to place it itself, in which case avoid duplication.
+  const wakeDisciplineSection = rendered.includes(HERMES_WAKE_DISCIPLINE_SECTION)
+    ? ""
+    : HERMES_WAKE_DISCIPLINE_SECTION;
   return joinPromptSections([
-    HERMES_WAKE_DISCIPLINE_SECTION,
+    wakeDisciplineSection,
     rendered,
     managedInstructionsSection,
     wakePrompt,
@@ -377,6 +394,39 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   return result;
 }
 
+async function readHermesSessionUsage(sessionId: string): Promise<UsageSummary | undefined> {
+  // Hermes persists cumulative per-session usage locally even when quiet CLI
+  // output omits token totals. Read it opportunistically; failures must never
+  // affect task execution because non-local Hermes installs may not have this
+  // SQLite database or the sqlite3 CLI.
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return undefined;
+  const stateDbPath = process.env.HERMES_STATE_DB || path.join(os.homedir(), ".hermes", "state.db");
+  try {
+    await fs.access(stateDbPath);
+    const query = [
+      "SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,",
+      "cache_read_tokens AS cachedInputTokens",
+      "FROM sessions",
+      `WHERE id = '${sessionId}'`,
+      "LIMIT 1;",
+    ].join(" ");
+    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, query], {
+      timeout: 2_000,
+      maxBuffer: 16 * 1024,
+    });
+    const row = JSON.parse(stdout) as Array<Record<string, unknown>>;
+    const usage = row[0];
+    if (!usage) return undefined;
+    const inputTokens = cfgNumber(usage.inputTokens) ?? 0;
+    const outputTokens = cfgNumber(usage.outputTokens) ?? 0;
+    const cachedInputTokens = cfgNumber(usage.cachedInputTokens) ?? 0;
+    if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0) return undefined;
+    return { inputTokens, outputTokens, cachedInputTokens };
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
@@ -400,6 +450,11 @@ export async function execute(
   const prevSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
+  const isRecoveryWake = isPaperclipRecoveryWakePayload((ctx as any).context?.paperclipWake);
+  const recoveryMaxTurns = cfgNumber(config.recoveryMaxTurns) ?? DEFAULT_RECOVERY_MAX_TURNS;
+  const effectiveMaxTurns = isRecoveryWake
+    ? Math.min(maxTurns && maxTurns > 0 ? maxTurns : recoveryMaxTurns, recoveryMaxTurns)
+    : maxTurns;
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
@@ -485,8 +540,8 @@ export async function execute(
     args.push("-t", toolsets);
   }
 
-  if (maxTurns && maxTurns > 0) {
-    args.push("--max-turns", String(maxTurns));
+  if (effectiveMaxTurns && effectiveMaxTurns > 0) {
+    args.push("--max-turns", String(effectiveMaxTurns));
   }
 
   if (worktreeMode) args.push("-w");
@@ -550,7 +605,7 @@ export async function execute(
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
+    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${effectiveMaxTurns ? `, max_turns=${effectiveMaxTurns}` : ""})\n`,
   );
   if (prevSessionId) {
     await ctx.onLog(
@@ -594,6 +649,7 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const sessionUsage = parsed.sessionId ? await readHermesSessionUsage(parsed.sessionId) : undefined;
 
   await ctx.onLog(
     "stdout",
@@ -616,8 +672,11 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   }
 
-  if (parsed.usage) {
-    executionResult.usage = parsed.usage;
+  if (sessionUsage || parsed.usage) {
+    executionResult.usage = sessionUsage ?? parsed.usage;
+    // The state database holds cumulative usage for a persisted Hermes session;
+    // Paperclip derives the correct run delta before it writes usage_json.
+    if (sessionUsage) executionResult.usageBasis = "session_cumulative";
   }
 
   if (parsed.costUsd !== undefined) {
@@ -633,7 +692,7 @@ export async function execute(
   executionResult.resultJson = {
     result: parsed.response || "",
     session_id: parsed.sessionId || null,
-    usage: parsed.usage || null,
+    usage: sessionUsage ?? parsed.usage ?? null,
     cost_usd: parsed.costUsd ?? null,
   };
 

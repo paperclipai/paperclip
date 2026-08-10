@@ -168,4 +168,52 @@ describe("hermes execute", () => {
     const call = runChildProcessMock.mock.calls[0] as [string, string, string[]];
     expect(call[2]).not.toContain("-Q");
   });
+
+  it("caps recovery-only wakes to two turns and does not inject managed instructions", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const instructionsPath = path.join(root, "AGENTS.md");
+    await fs.writeFile(instructionsPath, "# Very large managed instruction bundle", "utf8");
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-recovery\nRecorded disposition",
+      stderr: "",
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-recovery",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5", maxTurnsPerRun: 10, instructionsFilePath: instructionsPath },
+      context: {
+        issueId: "issue-1",
+        paperclipWake: {
+          reason: "source_scoped_recovery_action",
+          issue: { id: "issue-1", identifier: "PAP-778", title: "Record state", status: "blocked" },
+          recovery: { cause: "successful_run_missing_state", attemptCount: 1, nextAction: "Record state." },
+          commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+          comments: [],
+          fallbackFetchNeeded: false,
+        },
+      },
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    await execute(ctx);
+
+    const call = runChildProcessMock.mock.calls[0] as [string, string, string[]];
+    expect(call[2]).toContain("--max-turns");
+    expect(call[2][call[2].indexOf("--max-turns") + 1]).toBe("2");
+    const prompt = call[2][call[2].indexOf("-q") + 1];
+    expect(prompt).toContain("Recovery contract");
+    expect(prompt).not.toContain("Very large managed instruction bundle");
+  });
 });

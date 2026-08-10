@@ -19989,6 +19989,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // A blocked issue already has an explicit external owner/action. System
+        // lifecycle echoes after an otherwise successful heartbeat cannot make
+        // progress on it, but previously each one started another full adapter
+        // session (and often another recovery wake). Preserve board/user input
+        // and genuine blocker resolution; suppress only the self-generated
+        // handoff/recovery/comment cascade while the issue remains blocked.
+        const blockedNoopWakeReasons = new Set([
+          "finish_successful_run_handoff",
+          "source_scoped_recovery_action",
+          "issue_commented",
+          "issue_execution_promoted",
+        ]);
+        const shouldSuppressBlockedNoopWake =
+          issue.status === "blocked" &&
+          isAutomatedWake &&
+          opts.requestedByActorType !== "user" &&
+          reason !== null &&
+          blockedNoopWakeReasons.has(reason);
+        if (shouldSuppressBlockedNoopWake) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "blocked_issue_noop_wake",
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                reason: "Suppressed an automated handoff/recovery echo because the issue is already blocked.",
+                issueId: issue.id,
+                issueStatus: issue.status,
+                requestedReason: reason,
+              },
+            },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
           const issueCancelled = issue.status === "cancelled";
           if (
