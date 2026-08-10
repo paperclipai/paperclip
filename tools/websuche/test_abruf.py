@@ -1,9 +1,26 @@
+import time
+
 import pytest
 import requests
 import requests_mock
 
+import abruf
 from abruf import (AbrufErgebnis, extrahiere_text, hole_text, kappe,
-                   darf_abrufen)
+                   darf_abrufen, pruefe_ziel)
+
+# Namensaufloesung fuer die Tests: Standard ist eine oeffentliche Adresse,
+# einzelne Tests tragen hier gezielt eine lokale ein. Ohne das wuerde die
+# Suite echtes DNS brauchen — sie muss aber ohne Netz laufen.
+DNS = {}
+
+
+@pytest.fixture(autouse=True)
+def dns_ohne_netz(monkeypatch):
+    DNS.clear()
+    monkeypatch.setattr(abruf, "_aufloesen",
+                        lambda host: DNS.get(host, ["93.184.216.34"]))
+    yield
+    DNS.clear()
 
 SEITE = """
 <html><head><title>T</title><style>p{color:red}</style></head>
@@ -191,3 +208,172 @@ def test_hole_text_fangt_extraktion_fehler_auf(monkeypatch):
 
     assert ergebnis.text is None
     assert "Text-Extraktion fehlgeschlagen" in ergebnis.fehler
+
+
+# --- Weiterleitungen, Ziel-Pruefung, Groessen- und Zeitdeckel (I1) ---------
+
+def test_weiterleitung_in_lokalen_dienst_wird_verweigert():
+    """Eine Trefferseite darf uns nicht auf vault-lookup, Brain, n8n oder
+    Paperclip umleiten — die sind auth-frei, weil sie als nur lokal
+    erreichbar gelten. Deren Antwort als 'Quelltext' im Dossier waere ein
+    Datenabfluss durch die Hintertuer.
+    """
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/umleitung", status_code=302,
+              headers={"Location": "http://127.0.0.1:7788/suche?q=gehalt"})
+        lokal = m.get("http://127.0.0.1:7788/suche", text="GEHEIM")
+        ergebnis = hole_text("https://a.de/umleitung")
+    assert ergebnis.text is None
+    assert "127.0.0.1" in ergebnis.fehler
+    assert lokal.call_count == 0, "Der lokale Dienst wurde tatsaechlich angefragt!"
+
+
+def test_weiterleitung_ins_lan_wird_verweigert():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/umleitung", status_code=301,
+              headers={"Location": "http://192.168.2.40:1234/v1/models"})
+        lan = m.get("http://192.168.2.40:1234/v1/models", text="MODELLE")
+        ergebnis = hole_text("https://a.de/umleitung")
+    assert ergebnis.text is None
+    assert "192.168.2.40" in ergebnis.fehler
+    assert lan.call_count == 0
+
+
+def test_weiterleitung_auf_namen_der_lokal_aufloest_wird_verweigert():
+    """Nicht nur IP-Literale: ein Name, der per DNS auf 127.0.0.1 zeigt,
+    fuehrt genauso in die lokalen Dienste."""
+    DNS["intern.beispiel.de"] = ["127.0.0.1"]
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/umleitung", status_code=302,
+              headers={"Location": "http://intern.beispiel.de:7777/"})
+        intern = m.get("http://intern.beispiel.de:7777/", text="BRAIN")
+        ergebnis = hole_text("https://a.de/umleitung")
+    assert ergebnis.text is None
+    assert "127.0.0.1" in ergebnis.fehler
+    assert intern.call_count == 0
+
+
+def test_weiterleitung_auf_ipv6_loopback_wird_verweigert():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/umleitung", status_code=302,
+              headers={"Location": "http://[::1]:7789/suche"})
+        ergebnis = hole_text("https://a.de/umleitung")
+    assert ergebnis.text is None
+    assert "::1" in ergebnis.fehler
+
+
+def test_ursprungs_url_im_lokalen_netz_wird_gar_nicht_erst_abgerufen():
+    with requests_mock.Mocker() as m:
+        lokal = m.get("http://127.0.0.1:3100/dashboard", text="PAPERCLIP")
+        robots = m.get("http://127.0.0.1:3100/robots.txt", status_code=404)
+        ergebnis = hole_text("http://127.0.0.1:3100/dashboard")
+    assert ergebnis.text is None
+    assert lokal.call_count == 0 and robots.call_count == 0
+
+
+def test_fremdes_schema_wird_verweigert():
+    ergebnis = hole_text("file:///etc/passwd")
+    assert ergebnis.text is None
+    assert "file" in ergebnis.fehler
+
+
+def test_weiterleitung_auf_oeffentliches_ziel_kommt_durch():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://b.de/robots.txt", status_code=404)
+        m.get("https://a.de/alt", status_code=301,
+              headers={"Location": "https://b.de/neu"})
+        m.get("https://b.de/neu", text=SEITE)
+        ergebnis = hole_text("https://a.de/alt")
+    assert ergebnis.fehler is None
+    assert "Der erste Absatz." in ergebnis.text
+
+
+def test_zu_viele_weiterleitungen_brechen_ab():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        for nr in range(20):
+            m.get(f"https://a.de/{nr}", status_code=302,
+                  headers={"Location": f"https://a.de/{nr + 1}"})
+        ergebnis = hole_text("https://a.de/0")
+    assert ergebnis.text is None
+    assert "Weiterleitung" in ergebnis.fehler
+
+
+def test_weiterleitung_ohne_ziel_ist_ein_fehler():
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/kaputt", status_code=302)
+        ergebnis = hole_text("https://a.de/kaputt")
+    assert ergebnis.text is None
+    assert "Weiterleitung" in ergebnis.fehler
+
+
+def test_grosse_antwort_wird_bei_der_obergrenze_gekappt(monkeypatch):
+    """requests' timeout ist ein Lesetimeout zwischen Bytes, kein Deckel:
+    ohne Obergrenze landet eine 500-MB-Datei vollstaendig im Speicher."""
+    monkeypatch.setattr(abruf, "MAX_RUMPF_BYTES", 5000)
+    riesig = "<html><body><p>" + ("wort " * 200000) + "</p></body></html>"
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/riesig", text=riesig)
+        ergebnis = hole_text("https://a.de/riesig", max_zeichen=12000)
+    assert ergebnis.fehler is None
+    # Gelesen wurde hoechstens die Obergrenze, nicht die volle Seite.
+    assert len(ergebnis.text) <= 5000
+
+
+def test_troepfelnder_server_reisst_die_gesamtzeit_nicht(monkeypatch):
+    """Ein Server, der alle 50 ms ein Byte schickt, laeuft unter reinem
+    Lesetimeout beliebig lange weiter."""
+    class TroepfelAntwort:
+        status_code = 200
+        headers = {"Content-Type": "text/html"}
+        is_redirect = False
+
+        def iter_content(self, groesse):
+            while True:
+                time.sleep(0.05)
+                yield b"<p>x</p>"
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(abruf, "darf_abrufen", lambda url, timeout=5.0: True)
+    monkeypatch.setattr(abruf.requests, "get",
+                        lambda *a, **k: TroepfelAntwort())
+
+    start = time.monotonic()
+    ergebnis = hole_text("https://a.de/troepfel", timeout=0.5)
+    dauer = time.monotonic() - start
+    assert dauer < 2.0, f"lief {dauer:.2f}s trotz 0,5s Budget"
+    assert ergebnis.text is None
+    assert "Zeit" in ergebnis.fehler
+
+
+def test_pruefe_ziel_erlaubt_oeffentliche_adresse():
+    assert pruefe_ziel("https://bmwk.de/foerderung") is None
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:7788/x",       # vault-lookup
+    "http://127.0.0.1:7777/x",       # Brain WHITESTAG
+    "http://127.0.0.1:5678/webhook", # n8n
+    "http://127.0.0.1:3100/",        # Paperclip
+    "http://127.0.0.1:4711/",        # PII-Proxy
+    "http://10.0.0.5/",
+    "http://172.16.3.4/",
+    "http://192.168.2.1/",
+    "http://[fd00::1]/",             # IPv6 unique local
+    "http://[::1]/",                 # IPv6 loopback
+    "http://169.254.169.254/latest/", # Link-local (Metadaten-Dienste)
+])
+def test_pruefe_ziel_verweigert_lokale_und_private_adressen(url):
+    assert pruefe_ziel(url) is not None
