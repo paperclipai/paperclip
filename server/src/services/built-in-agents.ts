@@ -143,6 +143,7 @@ export interface RequiredBuiltInAgent {
 }
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
+const LEGACY_BUILT_IN_BUNDLE_USER_ID = "built-in-bundles";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -1278,7 +1279,10 @@ export function builtInAgentService(db: Db) {
 
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
-    const actor = { agentId: null, userId: "built-in-bundles" };
+    // Bundle reconciliation is a system mutation. Leaving userId null makes the
+    // routine service resolve the company's real responsible user instead of
+    // persisting the audit actor label as an on-behalf-of user.
+    const actor = { agentId: null, userId: null };
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
         title: routine.title,
@@ -1289,7 +1293,9 @@ export function builtInAgentService(db: Db) {
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
-      }, actor)
+      }, actor, {
+        replaceResponsibleUser: existing.responsibleUserId === LEGACY_BUILT_IN_BUNDLE_USER_ID,
+      })
       : await routineSvc.create(agent.companyId, {
         title: routine.title,
         description: routine.description,
@@ -1373,7 +1379,8 @@ export function builtInAgentService(db: Db) {
     const shouldWrite =
       mode === "reset"
       || currentState.stockStatus === "missing"
-      || currentState.stockStatus === "stock_update_available";
+      || currentState.stockStatus === "stock_update_available"
+      || routine?.responsibleUserId === LEGACY_BUILT_IN_BUNDLE_USER_ID;
     const nextRoutine = shouldWrite
       ? await createOrResetRoutine(agent, definition, routine, mode)
       : routine!;
