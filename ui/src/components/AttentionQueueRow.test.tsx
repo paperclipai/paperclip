@@ -525,8 +525,9 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
-  it("opens the matching confirmation form when requesting changes from a compact action", () => {
+  it("rejects inline from a compact action, without expanding the row", async () => {
     const onToggleExpand = vi.fn();
+    vi.mocked(issuesApi.rejectInteraction).mockResolvedValue({} as never);
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -555,8 +556,11 @@ describe("AttentionQueueRow", () => {
     );
     act(() => requestChanges?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
-    expect(onToggleExpand).toHaveBeenCalledOnce();
-    expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
+    // Decline now resolves in place (symmetric with Confirm), rather than
+    // expanding the row's resolver — the compact reject verb is a bare decline.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(issuesApi.rejectInteraction).toHaveBeenCalledWith("issue-1", "interaction-1");
+    expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
   // The old context row bundled project identity + thumbnails together; project

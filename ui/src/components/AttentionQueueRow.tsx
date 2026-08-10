@@ -206,7 +206,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
         <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
           {showCompact && (
-            <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />
+            <CompactDecisionActions item={item} companyId={companyId} />
           )}
 
           {showOpen && (
@@ -513,11 +513,9 @@ function collectCompactActions(item: AttentionItem): CompactAction[] {
 function CompactDecisionActions({
   item,
   companyId,
-  onOpen,
 }: {
   item: AttentionItem;
   companyId: string;
-  onOpen: () => void;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -598,10 +596,6 @@ function CompactDecisionActions({
           disabled={decision.isPending}
           onClick={(event) => {
             event.stopPropagation();
-            if (item.sourceKind === "issue_thread_interaction" && action === "reject") {
-              onOpen();
-              return;
-            }
             decision.mutate(action);
           }}
         >

@@ -12,7 +12,9 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   already-authorized data). Shipped as an isolated local commit (NOT a PR): the tree carries
   Trevor's budgets WIP + tonight's unpushed commits, so push/PR/auto-merge to shared `master`
   would entangle them — flagged per the fences. Companion same-session desk fixes: graceful
-  "already resolved" + 45s self-clear (46a0433d3).
+  "already resolved" + 45s self-clear (46a0433d3); Decline now rejects inline instead of
+  expanding the row (removed the `issue_thread_interaction && reject -> onOpen` special-case;
+  reject reason is optional server-side) — symmetric with Confirm, +updated row test.
   - Deferred (RISKY): auto-tuck stale (>3d) decisions into the Aging curtain — `attentionIsAging`
     reads the SERVER-computed `item.shelf` (30d retention), so this is a server retention change
     affecting the whole queue, not a client tweak. Needs Trevor's go before touching retention.
