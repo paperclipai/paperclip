@@ -32,12 +32,28 @@ return $input.all().map((item) => ({ json: signiere(item.json, leseDatei) }));
 """
 
 
-def node_code() -> str:
-    """relay_signatur.js ohne CommonJS-Export, dafuer mit n8n-Aufrufrahmen."""
-    with open(os.path.join(HIER, "relay_signatur.js"), encoding="utf-8") as fh:
-        code = fh.read()
+def node_code(quelltext: str | None = None) -> str:
+    """relay_signatur.js ohne CommonJS-Export, dafuer mit n8n-Aufrufrahmen.
+
+    quelltext dient nur dem Test — im Normalbetrieb wird relay_signatur.js
+    von der Platte gelesen.
+    """
+    if quelltext is None:
+        with open(os.path.join(HIER, "relay_signatur.js"), encoding="utf-8") as fh:
+            quelltext = fh.read()
+    marker = "module.exports"
+    # str.partition() liefert bei fehlendem Marker STILLSCHWEIGEND den
+    # ganzen Text zurueck (kopf == quelltext, rest == ''). Aendert sich der
+    # Exportstil in relay_signatur.js spaeter (z.B. ESM statt CommonJS),
+    # landete ohne diese Zusicherung ein "module.exports" im Code-Node —
+    # "module" existiert in n8n nicht, die Ausfuehrung bricht mit
+    # ReferenceError ab, und weil kein Code-Node continueOnFail gesetzt
+    # hat, reisst das den kompletten Mailweg samt Waechter-Alarmen mit.
+    assert marker in quelltext, (
+        "relay_signatur.js hat kein module.exports mehr — der Zuschnitt fuer "
+        "den n8n-Node wuerde stillschweigend den ganzen Text uebernehmen.")
     # Der Export erstreckt sich ueber zwei Zeilen — beide raus.
-    kopf, _, _rest = code.partition("module.exports")
+    kopf, _, _rest = quelltext.partition(marker)
     return kopf.rstrip() + "\n" + RAHMEN
 
 

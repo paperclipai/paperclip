@@ -21,6 +21,10 @@ class SendTest(unittest.TestCase):
         self.assertEqual(p["approval"], "SECRET")
         self.assertEqual(p["inReplyTo"], "<id@x>")
         self.assertEqual(p["html"], "<p>Hallo</p>")
+        # Sicherheitsrelevant: ohne signatur:"none" haengt der Relay Lunas
+        # bereits client-seitig signierten Kundenmails eine zweite Signatur
+        # an (Vorfall beim V17-Rollout, Task 5). Muss "none" bleiben.
+        self.assertEqual(p["signatur"], "none")
 
     def test_send_approved_posts_and_returns_code(self):
         captured = {}
