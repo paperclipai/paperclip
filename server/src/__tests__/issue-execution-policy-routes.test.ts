@@ -226,7 +226,14 @@ describe("issue execution policy routes", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
-    mockAgentService.resolveByReference.mockResolvedValue({ agent: null, ambiguous: false });
+    mockAgentService.resolveByReference.mockImplementation(async (companyId: string, reference: string) => ({
+      agent: {
+        id: reference,
+        companyId,
+        status: "idle",
+      },
+      ambiguous: false,
+    }));
     mockValidateDelegatedIssueExecutionContract.mockReturnValue({ valid: true, warnings: [] });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
@@ -370,7 +377,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: workerId,
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -427,7 +434,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: ctoId,
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -491,7 +498,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: ceoId,
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -1331,7 +1338,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "22222222-2222-4222-8222-222222222222",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
       .send({
@@ -1370,7 +1377,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
       .send({
