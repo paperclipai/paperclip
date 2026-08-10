@@ -22,6 +22,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import { conflict } from "../errors.js";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -418,6 +419,20 @@ describePg("decisionService", () => {
     expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
     expect((await service().get(created.id))?.metadata).toMatchObject({ continuationPending: false });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+  });
+
+  it("defers a paused-origin continuation without failing the expiry sweep", async () => {
+    const created = await createCommentDecision();
+    const pausedOrigin = decisionService(db, { wakeOriginAgent: async () => {
+      throw conflict("Agent is not invokable in its current state", { status: "paused" });
+    } });
+
+    await expect(pausedOrigin.decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
+      .resolves.toMatchObject({ executionStatus: "succeeded" });
+    expect((await pausedOrigin.get(created.id))?.metadata).toMatchObject({ continuationPending: true });
+
+    await expect(pausedOrigin.sweepExpired()).resolves.toMatchObject({ expired: 0, resumed: 0 });
+    expect((await pausedOrigin.get(created.id))?.metadata).toMatchObject({ continuationPending: true });
   });
 
   it("delivers the continuation when the origin agent cancels a decision", async () => {

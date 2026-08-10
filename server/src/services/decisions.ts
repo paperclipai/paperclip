@@ -3,7 +3,7 @@ import { and, asc, count, desc, eq, gt, gte, inArray, lte, or, sql } from "drizz
 import type { Db } from "@paperclipai/db";
 import { agents, companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
-import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
+import { HttpError, conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { logActivity } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
@@ -482,8 +482,21 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     // Delivery is intentionally at-least-once: a crash after wakeup but before
     // this acknowledgement can retry, while a crash before wakeup cannot lose
     // the continuation. Heartbeat wakeups coalesce concurrent queued work.
-    await options.wakeOriginAgent({ companyId: decision.companyId, agentId: decision.originAgentId,
-      issueId: decision.originIssueId, decisionId: decision.id, outcome });
+    try {
+      await options.wakeOriginAgent({ companyId: decision.companyId, agentId: decision.originAgentId,
+        issueId: decision.originIssueId, decisionId: decision.id, outcome });
+    } catch (error) {
+      // A paused (or otherwise non-invokable) origin agent cannot consume this
+      // continuation. Keep the pending marker so it can be delivered after the
+      // agent becomes invokable again, but do not let a background expiry sweep
+      // take the control plane down while it is paused.
+      if (error instanceof HttpError
+        && error.status === 409
+        && error.message === "Agent is not invokable in its current state") {
+        return;
+      }
+      throw error;
+    }
     await db.update(decisions).set({
       metadata: sql`coalesce(${decisions.metadata}, '{}'::jsonb) || jsonb_build_object(
         'continuationPending', false,
