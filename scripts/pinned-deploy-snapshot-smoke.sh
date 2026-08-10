@@ -327,12 +327,16 @@ write_isolated_instance_config() {
     const fs = require("fs");
     const [root, dbUrl, port, keyPath] = process.argv.slice(1);
     const cfg = {
-      $meta: { version: 1, updatedAt: new Date().toISOString(), source: "pinned-deploy-snapshot-smoke" },
+      // This must remain a valid persisted Paperclip config: the isolated smoke
+      // server reads it through the same schema as production.
+      $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
       database: {
         mode: "postgres",
         connectionString: dbUrl,
         embeddedPostgresDataDir: root + "/db",
-        embeddedPostgresPort: 0,
+        // The external disposable DATABASE_URL is authoritative here, but the
+        // schema still requires a valid positive value in the config file.
+        embeddedPostgresPort: 54329,
         backup: { enabled: false, intervalMinutes: 60, retentionDays: 1, dir: root + "/data/backups" },
       },
       logging: { mode: "file", logDir: root + "/logs" },
