@@ -3231,6 +3231,29 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Strip OpenCode / Orca nesting-guard env vars so spawned `opencode`
+    // processes don't inherit the parent Orca/opencode session. When the
+    // Paperclip server is started from inside an OpenCode/Orca terminal, these
+    // leak into process.env (OPENCODE=1, OPENCODE_PID, OPENCODE_CONFIG_DIR,
+    // ORCA_* hooks). Left in place they make the spawned `opencode` think it is
+    // nested inside another OpenCode/Orca session, which can stall `opencode
+    // models`/`run` under load. Mirrors the claude strip above.
+    const OPENCODE_NESTING_VARS = [
+      "OPENCODE",
+      "OPENCODE_PID",
+      "OPENCODE_CONFIG_DIR",
+      "OPENCODE_CLIENT",
+      "OPENCODE_ACP_PROFILE",
+    ] as const;
+    for (const key of OPENCODE_NESTING_VARS) {
+      delete rawMerged[key];
+    }
+    for (const key of Object.keys(rawMerged)) {
+      if (key.startsWith("ORCA_")) {
+        delete rawMerged[key];
+      }
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     if (opts.localProcessSandbox?.homeDir) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;
