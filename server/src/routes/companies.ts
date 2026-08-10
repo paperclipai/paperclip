@@ -836,15 +836,47 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     } satisfies CompanyImportTransferStatus);
   });
 
-  // Assemble the spooled parts back into the original zip, verify it against
-  // the declared whole-file hash, and run it through the exact import path a
-  // single-shot zip upload takes. The body carries the same meta fields the
-  // multipart route's `meta` field does (include/target/collisionStrategy/...).
-  router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/apply`, async (req, res) => {
-    assertBoard(req);
+  /**
+   * Resolve a completed transfer into the same raw preview/import body a
+   * single-shot zip upload produces: load the run, require every part, then
+   * assemble the spool and verify it against the declared whole-file hash.
+   * Shared by the transfer preview and apply routes; returns null after
+   * responding 409 when parts are still missing. A whole-file mismatch fails
+   * closed for both callers: every part verified individually but the whole
+   * does not match the declaration, so the spool is deleted and a resume
+   * re-uploads every part instead of re-assembling the same corrupt bytes.
+   *
+   * With `claimApply` (the apply route), the run is atomically claimed before
+   * the spool is touched: the import pipeline is not idempotent, so of any
+   * overlapping applies of this transfer exactly one may run it — a single
+   * guarded status flip to "applying" that losers see as 409. The claim is
+   * settled by complete() on success or the guarded releaseApplyClaim() on
+   * error (a released run stays retryable; a settled one is never reopened).
+   * The preview route takes no claim — it never consumes the transfer — so
+   * both its status gate and its assembly errors are re-checked against the
+   * ledger (see the catch below) to keep a concurrent apply's spool cleanup
+   * from surfacing as an internal error.
+   */
+  async function resolveImportTransferBody(
+    req: Request,
+    res: Response,
+    options: { claimApply?: boolean } = {},
+  ) {
     const run = await requireImportTransferRun(req);
     if (run.status === "completed") {
       throw conflict("Import transfer has already been applied");
+    }
+    if (run.status === "applying") {
+      // An apply holds the claim right now: its assembly is reading the spool
+      // and its success deletes it, so neither a preview nor a second apply
+      // may touch the parts until the claim settles.
+      throw conflict("Import transfer apply is in progress; retry after it settles");
+    }
+    if (run.status === "cancelled") {
+      // The abandoned-spool sweep cancelled the run and deleted its parts —
+      // same contract as the part-upload route: the caller re-creates it.
+      res.status(410).json({ error: "Import transfer expired — re-create it" });
+      return null;
     }
     const manifest = storedImportTransferManifest(run);
     const missingParts = await importTransferMissingParts(run, manifest);
@@ -853,33 +885,82 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
         error: "Import transfer is missing parts",
         missingParts,
       });
-      return;
+      return null;
     }
-    // Atomic claim: the import pipeline is not idempotent, so of any
-    // overlapping applies of this transfer exactly one may run it. The claim
-    // is a single guarded status flip to "applying"; complete() or the
-    // guarded releaseApplyClaim() below settle it (a released run stays
-    // retryable). Losers get 409.
-    if (!(await companyTransferRunService.claimApply(db, run.id))) {
+    if (options.claimApply && !(await companyTransferRunService.claimApply(db, run.id))) {
       throw conflict("Import transfer apply is already in progress");
     }
     try {
       const zipBytes = await assembleImportTransferZip(importTransferSpoolRoot, run.id, manifest.parts.length);
       const zipSha256 = createHash("sha256").update(zipBytes).digest("hex");
       if (zipBytes.length !== manifest.totalBytes || zipSha256 !== manifest.zipSha256) {
-        // Fail closed: every part verified individually but the whole does not
-        // match the declaration. The spool is deleted so a resume re-uploads
-        // every part instead of re-assembling the same corrupt bytes.
         await companyTransferRunService.fail(db, run.id, "Assembled import package failed whole-file verification");
         await removeImportTransferSpool(importTransferSpoolRoot, run.id);
         throw unprocessable("Assembled import package failed verification; upload the transfer again");
       }
       const archive = await readImportZipArchive(zipBytes);
-      const meta = importTransferApplyMeta(req.body);
-      const rawImportBody = {
-        ...meta,
-        source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+      return {
+        run,
+        rawBody: {
+          ...importTransferApplyMeta(req.body),
+          source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+        },
       };
+    } catch (error) {
+      // Whatever escapes here (a malformed zip, the verification failure
+      // above) must not leave a claimed run parked in "applying": release
+      // the claim, which fails the run and keeps it retryable. The release
+      // is guarded on "applying", so the verification path that already
+      // failed the run keeps its more specific terminal state.
+      if (options.claimApply) {
+        await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
+        throw error;
+      }
+      // Unclaimed (preview) path: assembly read the spool without freezing
+      // it, so a concurrent apply may have completed — or the sweep cancelled
+      // the run — and deleted the part files mid-assembly. Re-read the ledger
+      // and surface those races as the same clean signals the status gate
+      // above sends; only a run that is genuinely still open rethrows as a
+      // real assembly failure.
+      const current = await companyTransferRunService.getRun(db, run.id);
+      if (current?.status === "completed") {
+        throw conflict("Import transfer has already been applied");
+      }
+      if (current?.status === "applying") {
+        throw conflict("Import transfer apply is in progress; retry after it settles");
+      }
+      if (current?.status === "cancelled") {
+        res.status(410).json({ error: "Import transfer expired — re-create it" });
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  // Run the import preview against the assembled spool without consuming the
+  // transfer: the ledger run stays open and the parts stay spooled, so the
+  // subsequent apply reuses them instead of re-uploading. The body carries the
+  // same meta fields the multipart preview route's `meta` field does.
+  router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/preview`, async (req, res) => {
+    assertBoard(req);
+    const resolved = await resolveImportTransferBody(req, res);
+    if (!resolved) return;
+    const body = companyPortabilityPreviewSchema.parse(resolved.rawBody);
+    assertImportTargetAccess(req, body.target);
+    const preview = await portability.previewImport(body);
+    res.json(preview);
+  });
+
+  // Assemble the spooled parts back into the original zip, verify it against
+  // the declared whole-file hash, and run it through the exact import path a
+  // single-shot zip upload takes. The body carries the same meta fields the
+  // multipart route's `meta` field does (include/target/collisionStrategy/...).
+  router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/apply`, async (req, res) => {
+    assertBoard(req);
+    const resolved = await resolveImportTransferBody(req, res, { claimApply: true });
+    if (!resolved) return;
+    const { run, rawBody: rawImportBody } = resolved;
+    try {
       await executeImportRequest(req, res, rawImportBody, {
         onSuccess: async (result) => {
           // Settle the run the moment the import is committed: every later
@@ -944,12 +1025,11 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
         },
       });
     } catch (error) {
-      // Whatever escapes here (bad meta, malformed zip, an import error
-      // rethrown after onFailure) must not leave the run parked in
-      // "applying": release the claim, which keeps the run retryable. The
-      // release is guarded on "applying", so a run that already settled —
-      // failed by onFailure, or completed before a late error — keeps its
-      // terminal state.
+      // Whatever escapes here (bad meta, an import error rethrown after
+      // onFailure) must not leave the run parked in "applying": release the
+      // claim, which keeps the run retryable. The release is guarded on
+      // "applying", so a run that already settled — failed by onFailure, or
+      // completed before a late error — keeps its terminal state.
       await companyTransferRunService.releaseApplyClaim(db, run.id, errorMessage(error));
       throw error;
     }

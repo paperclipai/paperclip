@@ -68,7 +68,10 @@ vi.mock("../services/index.js", () => ({
 // Passthrough wrapper around the real spool module whose removeImportTransferSpool
 // can be made to throw, so tests can exercise a post-success cleanup failure
 // (e.g. EACCES on the spool dir) without touching real filesystem permissions.
+// assembleImportTransferZip can likewise be made to throw, standing in for the
+// spool being deleted out from under an unclaimed preview mid-assembly.
 const spoolRemovalFailure = vi.hoisted(() => ({ error: null as Error | null }));
+const assemblyFailure = vi.hoisted(() => ({ error: null as Error | null }));
 vi.mock("../services/company-import-transfers.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/company-import-transfers.js")>();
   return {
@@ -76,6 +79,10 @@ vi.mock("../services/company-import-transfers.js", async (importOriginal) => {
     removeImportTransferSpool: async (spoolRoot: string, runId: string) => {
       if (spoolRemovalFailure.error) throw spoolRemovalFailure.error;
       return actual.removeImportTransferSpool(spoolRoot, runId);
+    },
+    assembleImportTransferZip: async (spoolRoot: string, runId: string, partCount: number) => {
+      if (assemblyFailure.error) throw assemblyFailure.error;
+      return actual.assembleImportTransferZip(spoolRoot, runId, partCount);
     },
   };
 });
@@ -260,6 +267,7 @@ describeEmbeddedPostgres("company import transfer routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     spoolRemovalFailure.error = null;
+    assemblyFailure.error = null;
     mockCompanyPortabilityService.importBundle.mockResolvedValue({
       company: { id: companyId, action: "updated" },
       agents: [{ id: "agent-1" }],
@@ -329,6 +337,173 @@ describeEmbeddedPostgres("company import transfer routes", () => {
     const finished = await request(app).get(`/api/companies/import/transfers/${transferId}`);
     expect(finished.body.status).toBe("completed");
     expect(finished.body.missingParts).toEqual([]);
+  });
+
+  it("previews the assembled spool without consuming it, then applies the same transfer", async () => {
+    mockCompanyPortabilityService.previewImport.mockResolvedValue({
+      plan: { companyAction: "update" },
+      warnings: [],
+      errors: [],
+    });
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 3));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    for (const [index, slice] of slices.entries()) {
+      expect((await putPart(transferId, index, slice)).status).toBe(200);
+    }
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(200);
+    expect(previewed.body.plan).toEqual({ companyAction: "update" });
+
+    // The assembled zip fed the existing preview pipeline unchanged.
+    expect(mockCompanyPortabilityService.previewImport).toHaveBeenCalledTimes(1);
+    const previewBody = mockCompanyPortabilityService.previewImport.mock.calls[0]![0];
+    expect(previewBody.source.type).toBe("inline");
+    expect(previewBody.source.files["COMPANY.md"]).toContain("Chunked Import");
+    expect(previewBody.target).toEqual(importMeta.target);
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+
+    // Preview consumed nothing: the run stays open, the spool stays on disk,
+    // and no part needs re-uploading before the apply.
+    const run = (await companyTransferRunService.getRun(db, transferId))!;
+    expect(run.status).not.toBe("completed");
+    await expect(fs.stat(path.join(spoolRoot, transferId))).resolves.toBeDefined();
+    const status = await request(app).get(`/api/companies/import/transfers/${transferId}`);
+    expect(status.body.missingParts).toEqual([]);
+
+    const applied = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/apply`)
+      .send(importMeta);
+    expect(applied.status).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledTimes(1);
+    expect((await companyTransferRunService.getRun(db, transferId))!.status).toBe("completed");
+  });
+
+  it("refuses to preview while parts are missing", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 3));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 1, slices[1]!)).status).toBe(200);
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(409);
+    expect(previewed.body.missingParts).toEqual([0, 2]);
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("refuses to preview while an apply holds the claim and leaves the spool untouched", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    for (const [index, slice] of slices.entries()) {
+      expect((await putPart(transferId, index, slice)).status).toBe(200);
+    }
+
+    // Claim the run as an in-flight apply would: the preview must refuse
+    // before reading the spool the apply is assembling (and deleting on
+    // success) rather than race it.
+    expect(await companyTransferRunService.claimApply(db, transferId)).toBe(true);
+    try {
+      const previewed = await request(app)
+        .post(`/api/companies/import/transfers/${transferId}/preview`)
+        .send(importMeta);
+      expect(previewed.status).toBe(409);
+      expect(previewed.body.error).toContain("apply is in progress");
+    } finally {
+      await companyTransferRunService.releaseApplyClaim(db, transferId, "test release");
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    // Every part file survived for the apply to read.
+    for (const [index] of slices.entries()) {
+      await expect(fs.stat(path.join(spoolRoot, transferId, `part-${index}`))).resolves.toBeDefined();
+    }
+  });
+
+  it("refuses to preview an already-applied transfer", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, zip.length);
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+    expect(
+      (await request(app).post(`/api/companies/import/transfers/${transferId}/apply`).send(importMeta)).status,
+    ).toBe(200);
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(409);
+    expect(previewed.body.error).toContain("already been applied");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("returns 410 for a preview against a swept transfer", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    expect((await putPart(transferId, 0, slices[0]!)).status).toBe(200);
+
+    const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    const swept = await sweepAbandonedImportTransferSpools(db, spoolRoot, { now: later });
+    expect(swept.swept).toBeGreaterThanOrEqual(1);
+
+    const previewed = await request(app)
+      .post(`/api/companies/import/transfers/${transferId}/preview`)
+      .send(importMeta);
+    expect(previewed.status).toBe(410);
+    expect(previewed.body.error).toContain("expired");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect((await companyTransferRunService.getRun(db, transferId))!.status).toBe("cancelled");
+  });
+
+  it("returns a clean conflict when an apply completes and sweeps the spool mid-preview-assembly", async () => {
+    const zip = buildFixtureZip();
+    const { body, slices } = declareTransfer(zip, Math.ceil(zip.length / 2));
+    const created = await request(app).post("/api/companies/import/transfers").send(body);
+    const transferId = created.body.transferId as string;
+    for (const [index, slice] of slices.entries()) {
+      expect((await putPart(transferId, index, slice)).status).toBe(200);
+    }
+
+    // The race: the preview's initial read sees an open run, then a
+    // concurrent apply settles the run completed and deletes the spool while
+    // the preview is assembling it. The stale initial read comes from a
+    // one-shot getRunForActor stub; the ledger itself already says completed
+    // and the assembly blows up the way missing part files would.
+    expect(await companyTransferRunService.claimApply(db, transferId)).toBe(true);
+    await companyTransferRunService.complete(db, transferId);
+    const completedRun = (await companyTransferRunService.getRun(db, transferId))!;
+    expect(completedRun.status).toBe("completed");
+    const staleRead = vi
+      .spyOn(companyTransferRunService, "getRunForActor")
+      .mockResolvedValueOnce({ ...completedRun, status: "running" });
+    assemblyFailure.error = Object.assign(new Error("ENOENT: no such file or directory, open 'part-0'"), {
+      code: "ENOENT",
+    });
+    try {
+      const previewed = await request(app)
+        .post(`/api/companies/import/transfers/${transferId}/preview`)
+        .send(importMeta);
+      // A clean already-applied conflict, not a 500 from the torn spool.
+      expect(previewed.status).toBe(409);
+      expect(previewed.body.error).toContain("already been applied");
+    } finally {
+      staleRead.mockRestore();
+      assemblyFailure.error = null;
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    // Preview stayed read-only: the run keeps the terminal state the apply
+    // gave it.
+    expect((await companyTransferRunService.getRun(db, transferId))!.status).toBe("completed");
   });
 
   it("applies through the async import job machinery when requested", async () => {

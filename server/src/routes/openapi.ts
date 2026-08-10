@@ -6009,6 +6009,34 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}/preview`,
+  tags: ["companies"],
+  summary: "Preview a completed company import transfer",
+  description:
+    "Runs the import preview against the assembled spool without consuming the transfer: the " +
+    "ledger run stays open and the parts stay spooled, so the subsequent apply reuses them " +
+    "instead of re-uploading. The JSON body carries the same fields as the multipart preview " +
+    "route's `meta` field (include, target, collisionStrategy, ...).",
+  request: {
+    params: z.object({ transferId: z.string() }),
+    body: jsonBody(companyPortabilityPreviewSchema.omit({ source: true })),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: {
+      description:
+        "Parts are still missing, an apply is in progress, or the transfer was already applied",
+    },
+    410: { description: "The transfer expired and its spooled parts were deleted" },
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: `${COMPANY_IMPORT_TRANSFERS_API_PATH}/{transferId}/apply`,
   tags: ["companies"],
   summary: "Apply a completed company import transfer",
@@ -6034,6 +6062,7 @@ registry.registerPath({
       description:
         "Parts are still missing, an apply is already in progress, or the transfer was already applied",
     },
+    410: { description: "The transfer expired and its spooled parts were deleted" },
     422: r.unprocessable,
   },
 });
