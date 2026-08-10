@@ -96,6 +96,26 @@ describe("runDeviceLogin", () => {
     expect(onPrompt).toHaveBeenCalledWith({ url: REAL_SHAPED_URL, code: REAL_SHAPED_CODE });
   });
 
+  it("runner_surfaces_prompt_at_the_start_of_one_large_chunk", async () => {
+    // One stdout callback supplies more than the retained-buffer limit. The
+    // prompt sits near the start, and a large volume of output follows it. The
+    // runner parses the whole chunk before it trims the retained window, so it
+    // still finds the early prompt and never drops it.
+    const trailingNoise = "unrelated sandbox log line\n".repeat(20000);
+    const { driver } = createFakeDriver({
+      chunks: [
+        `1. Open this link\n${REAL_SHAPED_URL}\n2. Enter this one-time code (expires in 15 minutes)\n${REAL_SHAPED_CODE}\nDone.\n${trailingNoise}`,
+      ],
+      exitCode: 0,
+    });
+    const onPrompt = vi.fn();
+    const result = await runDeviceLogin(driver, { onPrompt, timeoutMs: 1000 });
+    expect(result.outcome).toBe("success");
+    expect(result.promptSurfaced).toBe(true);
+    expect(onPrompt).toHaveBeenCalledTimes(1);
+    expect(onPrompt).toHaveBeenCalledWith({ url: REAL_SHAPED_URL, code: REAL_SHAPED_CODE });
+  });
+
   it("runner_disposes_sandbox_on_timeout", async () => {
     const { driver, disposeCalls } = createFakeDriver({ hang: true });
     const onPrompt = vi.fn();

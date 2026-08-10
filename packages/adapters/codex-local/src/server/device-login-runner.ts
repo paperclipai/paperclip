@@ -19,12 +19,13 @@ import { parseDeviceLoginPrompt, type DeviceLoginPrompt } from "./device-login-p
 export const CODEX_DEVICE_LOGIN_COMMAND = "codex login --device-auth";
 
 /**
- * The maximum number of characters the runner keeps in the parse buffer. The
+ * The maximum number of characters the runner keeps for the next chunk. The
  * Codex prompt is small and puts the URL and the code close together. A sandbox
- * can stream a large volume of output before the prompt. So the runner keeps
- * only the most recent characters up to this limit. A large stream cannot grow
- * the buffer without a bound. The limit is far larger than the prompt, so the
- * runner never drops a real prompt.
+ * can stream a large volume of output before the prompt. So after each parse the
+ * runner keeps only the most recent characters up to this limit. The retained
+ * buffer cannot grow without a bound across many chunks. The limit is far larger
+ * than the prompt, so the trailing window never drops a real prompt that spans a
+ * chunk boundary.
  */
 const MAX_PARSE_BUFFER_CHARS = 64 * 1024;
 
@@ -137,23 +138,25 @@ export async function runDeviceLogin(
   let promptSurfaced = false;
   // The in-memory parse buffer. The runner drops it as soon as it finds the
   // prompt, so the secret-bearing stream never lives longer than one parse. The
-  // runner also bounds the buffer to {@link MAX_PARSE_BUFFER_CHARS}. When a new
-  // chunk makes the buffer larger than the limit, the runner drops the oldest
-  // characters from the front and keeps the trailing window. The prompt puts the
-  // URL and the code close together at the end of the stream, so the trailing
-  // window always holds a real prompt.
+  // runner parses the full buffer, and it includes the whole new chunk. So a
+  // prompt at the start of one large chunk still parses. The runner bounds only
+  // the buffer that it keeps for the next chunk to {@link MAX_PARSE_BUFFER_CHARS}.
+  // The runner keeps the trailing window and drops the oldest characters. The
+  // prompt puts the URL and the code close together, so the trailing window
+  // always holds a real prompt that spans a chunk boundary.
   let buffer = "";
   const onStdout = (chunk: string): void => {
     if (promptSurfaced) return;
     buffer += chunk;
-    if (buffer.length > MAX_PARSE_BUFFER_CHARS) {
-      buffer = buffer.slice(buffer.length - MAX_PARSE_BUFFER_CHARS);
-    }
     const prompt = parseDeviceLoginPrompt(buffer);
     if (prompt) {
       promptSurfaced = true;
       buffer = "";
       onPrompt(prompt);
+      return;
+    }
+    if (buffer.length > MAX_PARSE_BUFFER_CHARS) {
+      buffer = buffer.slice(buffer.length - MAX_PARSE_BUFFER_CHARS);
     }
   };
 
