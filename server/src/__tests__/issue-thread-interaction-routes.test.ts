@@ -896,6 +896,31 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
   });
 
+  it("rejects creator-agent cancellation under human_only review policy", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      reviewPolicy: "human_only",
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+    }));
+    const app = await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: "run-cancel-human-only-creator" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining("only an authenticated user"),
+      details: {
+        code: "review_policy_denied",
+        policy: "human_only",
+        allowedActor: "authenticated_user_with_issue_write_access",
+      },
+    });
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
   it("rejects creator-agent cancellation outside the authorization boundary", async () => {
     mockAccessDecide.mockResolvedValueOnce({
       allowed: false,
@@ -930,6 +955,31 @@ describe.sequential("issue thread interaction routes", () => {
       expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, userId: null }),
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects assignee-agent cancellation under human_only review policy", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      reviewPolicy: "human_only",
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+    }));
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: "run-cancel-human-only-assignee" });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining("only an authenticated user"),
+      details: {
+        code: "review_policy_denied",
+        policy: "human_only",
+        allowedActor: "authenticated_user_with_issue_write_access",
+      },
+    });
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
   });
 
   it("rechecks assignee-agent cancellation through issue mutation authorization", async () => {
