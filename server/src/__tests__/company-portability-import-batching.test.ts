@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  agents,
   assets,
+  companies,
   createDb,
   documentRevisions,
   documents,
@@ -369,6 +371,56 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     });
     expect(mineAfterCreate.map((issue) => issue.id)).toContain(fresh.id);
     expect(mineAfterCreate.filter((issue) => importedIds.has(issue.id))).toEqual([]);
+  });
+
+  it("imports in_progress issues with a null startedAt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Carried Over Co",
+      issuePrefix: "CAR",
+      requireBoardApprovalForNewAgents: false,
+    });
+    // pauseAutomations imports assignees paused; paused agents keep assignments.
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Carried Coder",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await issueService(db).importIssues(companyId, [{
+      id: randomUUID(),
+      ref: "carried-over",
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Carried-over work",
+      description: null,
+      assigneeAgentId: agentId,
+      status: "in_progress",
+      priority: "medium",
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    }]);
+
+    const [imported] = await db
+      .select({ status: issues.status, startedAt: issues.startedAt })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(imported?.status).toBe("in_progress");
+    // A fabricated import-time startedAt made carried-over work look hours
+    // stale to duration-based sweeps (e.g. the productivity review).
+    expect(imported?.startedAt).toBeNull();
   });
 
   it("rolls back the whole work-product batch when a later chunk fails", async () => {

@@ -7352,7 +7352,9 @@ export function issueService(db: Db) {
             responsibleUserId: null,
             requestDepth: clampIssueRequestDepth(undefined),
             originKind: "manual",
-            startedAt: row.status === "in_progress" ? new Date() : null,
+            // Imported in-progress work did not start at import time; fabricating
+            // startedAt here trips duration-based sweeps (e.g. productivity review).
+            startedAt: null,
             completedAt: row.status === "done" ? new Date() : null,
             cancelledAt: row.status === "cancelled" ? new Date() : null,
             monitorNotes: row.monitorNotes ?? null,

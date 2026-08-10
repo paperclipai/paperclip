@@ -896,6 +896,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
+      // A paused assignee cannot act on a review, so raising one only creates noise.
+      if (sourceAgent.status === "paused") {
+        result.skipped += 1;
+        continue;
+      }
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
