@@ -14,6 +14,7 @@ import { Building2, Maximize2, Minus, Plus } from "lucide-react";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { useOrgViewport } from "../components/org/useOrgViewport";
 import { useAgentActivity } from "../hooks/useAgentActivity";
+import { useOffice3D } from "../hooks/useOffice3D";
 import { ActivityBeams, type NodePositions } from "../components/activity/ActivityBeams";
 import { Office3DFrame } from "../components/office/Office3DFrame";
 import { layoutOffice, rosterForView, type OfficeView as OfficeViewMode } from "../components/office/officeLayout";
@@ -74,8 +75,11 @@ export function OfficeView() {
     writeStoredView(next);
   }, []);
 
-  // Optional real-3D (CLAW3D) behind a local flag; never available on mobile.
-  const office3dUrl = useMemo(() => readOffice3dUrl(), []);
+  // CLAW3D 3D office URL: instance experimental setting first, local dev flag as
+  // fallback. Never available on mobile. When set, a 2.5D⇄3D toggle appears.
+  const { url: instanceOffice3dUrl } = useOffice3D();
+  const localOffice3dUrl = useMemo(() => readOffice3dUrl(), []);
+  const office3dUrl = instanceOffice3dUrl ?? localOffice3dUrl;
   const [render3d, setRender3d] = useState(false);
   const show3dToggle = !!office3dUrl && !isMobile;
   const show3d = show3dToggle && render3d;
