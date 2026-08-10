@@ -372,7 +372,11 @@ export function decideHighInputTokenRunGuard(input: {
   highRunCount: number;
 }): HighInputTokenRunGuardDecision {
   if (input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) return "none";
-  return input.highRunCount >= 2 ? "block" : "review";
+  // This is an absolute safety ceiling, not a two-strikes warning. The prior
+  // implementation left the first million-token run reviewable, which still
+  // allowed an autonomous continuation to start before a board exception was
+  // recorded.
+  return "block";
 }
 
 /**
@@ -407,8 +411,43 @@ export function decideTokenLedgerWarning(input: {
   totalTokens: number;
   totalInputTokens: number;
 }): TokenLedgerWarningDecision {
-  if (input.totalInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD) return "none";
   return input.totalTokens >= TOKEN_LEDGER_WARN_THRESHOLD ? "warn" : "none";
+}
+
+export type UnscopedRunControlDecision = "none" | "flag" | "deny";
+
+/** Defaults are deliberately protective; operators can narrow them through
+ * company runPauseState.finopsGuard or agent runtimeConfig.finopsGuard. */
+export function resolveFinopsGuardConfig(input: {
+  companyConfig?: Record<string, unknown> | null;
+  agentConfig?: Record<string, unknown> | null;
+}) {
+  const company = parseObject(input.companyConfig).finopsGuard;
+  const agent = parseObject(input.agentConfig).finopsGuard;
+  const merged = { ...parseObject(company), ...parseObject(agent) };
+  const mode = merged.unscopedRunMode === "deny" ? "deny" : "flag";
+  return {
+    tokenWarningEnabled: merged.tokenWarningEnabled !== false,
+    hardStopEnabled: merged.hardStopEnabled !== false,
+    unscopedRunMode: mode,
+    unscopedCostlyTokenThreshold: Math.max(
+      1,
+      Math.floor(asNumber(merged.unscopedCostlyTokenThreshold, TOKEN_LEDGER_WARN_THRESHOLD)),
+    ),
+  } as const;
+}
+
+export function decideUnscopedRunControl(input: {
+  invocationSource: string;
+  issueId: string | null;
+  totalTokens: number;
+  mode: "flag" | "deny";
+  costlyTokenThreshold: number;
+}): UnscopedRunControlDecision {
+  if (input.invocationSource !== "on_demand" || input.issueId || input.totalTokens < input.costlyTokenThreshold) {
+    return "none";
+  }
+  return input.mode;
 }
 
 export type BoardTokenExceptionDecision =
@@ -9741,12 +9780,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const totalInputTokens = totalInputTokensIncludingCache(input);
     const totalTokens = totalInputTokens + Math.max(0, input.outputTokens ?? 0);
+    const company = await db
+      .select({ runPauseState: companies.runPauseState })
+      .from(companies)
+      .where(eq(companies.id, input.run.companyId))
+      .then((rows) => rows[0] ?? null);
+    const config = resolveFinopsGuardConfig({
+      companyConfig: company?.runPauseState,
+      agentConfig: input.agent.runtimeConfig,
+    });
 
     // Soft ceiling: warn once, non-blockingly, when a run's total ledgered
     // tokens cross the warn threshold but stay below the hard >=1M input guard.
     // This is observation only — it never changes issue status or continuation.
     if (
-      decideTokenLedgerWarning({ totalTokens, totalInputTokens }) === "warn"
+      config.tokenWarningEnabled && decideTokenLedgerWarning({ totalTokens, totalInputTokens }) === "warn"
     ) {
       await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
         eventType: "lifecycle",
@@ -9766,7 +9814,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
-    if (!issueId || totalInputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+    const unscopedDecision = decideUnscopedRunControl({
+      invocationSource: input.run.invocationSource,
+      issueId,
+      totalTokens,
+      mode: config.unscopedRunMode,
+      costlyTokenThreshold: config.unscopedCostlyTokenThreshold,
+    });
+    if (unscopedDecision !== "none") {
+      await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: unscopedDecision === "deny" ? "error" : "warn",
+        message: unscopedDecision === "deny"
+          ? "Costly unscoped on-demand run denied by FinOps policy"
+          : "Costly unscoped on-demand run flagged by FinOps policy",
+        payload: { totalTokens, threshold: config.unscopedCostlyTokenThreshold, mode: config.unscopedRunMode },
+      });
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: input.agent.id,
+        runId: input.run.id,
+        action: unscopedDecision === "deny" ? "finops.unscoped_run_denied" : "finops.unscoped_run_flagged",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: { totalTokens, threshold: config.unscopedCostlyTokenThreshold },
+      });
+    }
+
+    // Exceptions must name a task, so an unscoped run never receives one.
+    if (!config.hardStopEnabled || !issueId || input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
       return { decision: "none" as const, highRunCount: 0 };
     }
 
@@ -9781,14 +9860,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(costEvents.companyId, input.run.companyId),
           eq(costEvents.issueId, issueId),
           gte(
-            sql`${costEvents.inputTokens} + ${costEvents.cachedInputTokens}`,
+            costEvents.inputTokens,
             HIGH_INPUT_TOKEN_RUN_THRESHOLD,
           ),
         ),
       );
     const highRunCount = Number(highRunCountRow?.count ?? 0);
     const decision = decideHighInputTokenRunGuard({
-      inputTokens: totalInputTokens,
+      inputTokens: input.inputTokens,
       highRunCount,
     });
     if (decision === "none") return { decision, highRunCount };
@@ -9842,7 +9921,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           revokedAt: exceptionRow.revokedAt,
         }
         : null,
-      totalInputTokens,
+      totalInputTokens: input.inputTokens,
       now: new Date(),
     });
     if (exceptionDecision === "allow" && exceptionRow) {
@@ -9852,7 +9931,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "Oversized run permitted by an active board token exception",
         payload: {
-          totalInputTokens,
+          totalInputTokens: input.inputTokens,
           freshInputTokens: input.inputTokens,
           cachedInputTokens: input.cachedInputTokens,
           threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
@@ -9886,7 +9965,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { decision: "exception_allowed" as const, highRunCount, exceptionId: exceptionRow.id };
     }
 
-    const millionTokens = (totalInputTokens / 1_000_000).toFixed(2);
+    const millionTokens = (input.inputTokens / 1_000_000).toFixed(2);
     const interactionsSvc = issueThreadInteractionService(db);
     const isRepeat = decision === "block";
     const action = isRepeat

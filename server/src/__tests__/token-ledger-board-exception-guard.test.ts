@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   decideBoardTokenException,
   decideTokenLedgerWarning,
+  decideUnscopedRunControl,
   HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+  resolveFinopsGuardConfig,
   TOKEN_LEDGER_WARN_THRESHOLD,
 } from "../services/heartbeat.js";
 
@@ -29,10 +31,51 @@ describe("token-ledger soft warning", () => {
     })).toBe("warn");
   });
 
-  it("defers to the hard >=1M guard: no soft warning once input crosses 1M", () => {
+  it("also warns when a hard-stop run crosses the total-token threshold", () => {
     expect(decideTokenLedgerWarning({
       totalTokens: 2_000_000,
       totalInputTokens: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+    })).toBe("warn");
+  });
+});
+
+describe("unscoped-run FinOps control", () => {
+  it("defaults to warn + hard-stop + flag and lets an agent deny its own unscoped runs", () => {
+    expect(resolveFinopsGuardConfig({})).toMatchObject({
+      tokenWarningEnabled: true,
+      hardStopEnabled: true,
+      unscopedRunMode: "flag",
+    });
+    expect(resolveFinopsGuardConfig({
+      companyConfig: { finopsGuard: { unscopedRunMode: "flag" } },
+      agentConfig: { finopsGuard: { unscopedRunMode: "deny" } },
+    }).unscopedRunMode).toBe("deny");
+  });
+
+  it("flags costly on-demand runs without an issue by default", () => {
+    expect(decideUnscopedRunControl({
+      invocationSource: "on_demand",
+      issueId: null,
+      totalTokens: 250_000,
+      mode: "flag",
+      costlyTokenThreshold: 250_000,
+    })).toBe("flag");
+  });
+
+  it("denies costly unscoped runs only when configured", () => {
+    expect(decideUnscopedRunControl({
+      invocationSource: "on_demand",
+      issueId: null,
+      totalTokens: 250_000,
+      mode: "deny",
+      costlyTokenThreshold: 250_000,
+    })).toBe("deny");
+    expect(decideUnscopedRunControl({
+      invocationSource: "assignment",
+      issueId: null,
+      totalTokens: 250_000,
+      mode: "deny",
+      costlyTokenThreshold: 250_000,
     })).toBe("none");
   });
 });

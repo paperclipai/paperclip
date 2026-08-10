@@ -122,6 +122,25 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .from(costEvents)
         .where(and(...conditions));
 
+      // `cost_events.issue_id` is the durable attribution key. Restricting the
+      // joined run as well avoids counting imported/manual cost events that do
+      // not represent an on-demand heartbeat invocation.
+      const [unscoped] = await db
+        .select({
+          runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+          costCents: sumAsNumber(costEvents.costCents),
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(costEvents)
+        .innerJoin(heartbeatRuns, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
+        .where(and(
+          ...conditions,
+          isNull(costEvents.issueId),
+          eq(heartbeatRuns.invocationSource, "on_demand"),
+        ));
+
       const spendCents = Number(total);
       const utilization =
         company.budgetMonthlyCents > 0
@@ -133,6 +152,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unscopedOnDemand: {
+          runCount: Number(unscoped?.runCount ?? 0),
+          costCents: Number(unscoped?.costCents ?? 0),
+          inputTokens: Number(unscoped?.inputTokens ?? 0),
+          cachedInputTokens: Number(unscoped?.cachedInputTokens ?? 0),
+          outputTokens: Number(unscoped?.outputTokens ?? 0),
+        },
       };
     },
 
