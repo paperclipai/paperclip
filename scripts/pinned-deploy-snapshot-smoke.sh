@@ -541,8 +541,11 @@ run_restore_migrate() {
       fi
       mkdir -p "$RECEIPT_DIR"
       dump="$RECEIPT_DIR/live-pre-promote-$(date +%Y%m%d%H%M%S).dump"
-      log "taking read-only pg_dump -Fc of $LIVE_DB_NAME -> $dump"
-      PGPASSWORD="$PGPASSWORD" /opt/homebrew/bin/pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -Fc -f "$dump" "$LIVE_DB_NAME" \
+      log "taking background-priority read-only pg_dump -Fc of $LIVE_DB_NAME -> $dump"
+      # This is a disposable promotion smoke, never a reason to make the live
+      # control plane unresponsive. Keep the dump read-only and below service
+      # work in the local scheduler; callers may still provide an existing dump.
+      PGPASSWORD="$PGPASSWORD" nice -n 19 /opt/homebrew/bin/pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -Fc -f "$dump" "$LIVE_DB_NAME" \
         || fail "pg_dump failed"
     fi
     [ -f "$dump" ] || fail "dump missing: $dump"
