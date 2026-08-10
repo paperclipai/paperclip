@@ -14691,7 +14691,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { reaped: reaped.length, ids: reaped.map((r) => r.id) };
   }
 
-  async function resumeQueuedRuns() {
+  async function resumeQueuedRuns(opts?: { maxRounds?: number }) {
     if (resumeQueuedRunsInFlight) {
       await resumeQueuedRunsInFlight;
       return;
@@ -14725,7 +14725,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })),
       );
 
+      let rounds = 0;
       while (true) {
+        if (opts?.maxRounds !== undefined && rounds >= opts.maxRounds) {
+          logger.info(
+            { maxRounds: opts.maxRounds, queuedAgents: orderedAgentIds.length },
+            "queued-run recovery pass reached its configured round limit",
+          );
+          break;
+        }
+        rounds += 1;
         let attempted = false;
         let claimedAny = false;
         for (const agentId of orderedAgentIds) {

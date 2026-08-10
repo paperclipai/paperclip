@@ -1004,6 +1004,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
 
+  let runStartupHeartbeatRecovery: (() => Promise<void>) | null = null;
   if (heartbeat) {
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
@@ -1048,13 +1049,16 @@ export async function startServer(): Promise<StartedServer> {
     // still-"running" run as process_lost — runs touched within 60s of the prior
     // process get a chance to be re-adopted; the periodic reaper (5-min threshold)
     // still catches genuine orphans. Part of the 2026-06-13 restart-race storm fix.
+    // Startup must become reachable before it tries to repair a potentially
+    // large persisted queue.  Recovery is deliberately asynchronous below:
+    // the periodic scheduler remains the backstop if a recovery call fails.
     if (heartbeatSchedulingSuppression.suppressed) {
       logger.warn(
         { reason: heartbeatSchedulingSuppression.reason },
         "heartbeat scheduling suppressed for this runtime instance",
       );
     } else {
-      const startupHeartbeatRecovery = (async () => {
+      runStartupHeartbeatRecovery = async () => {
         try {
           const hotRestart = await heartbeat.reconcileHotRestartAdoption();
           if (hotRestart.mode === "reported") {
@@ -1091,7 +1095,9 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
-        await heartbeat.resumeQueuedRuns();
+        // One fair pass is enough to prove the recovery pump is alive.  Do
+        // not make HTTP readiness depend on draining an unbounded backlog.
+        await heartbeat.resumeQueuedRuns({ maxRounds: 1 });
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         const restartLaneRecovery = await heartbeat.sweepRestartLaneRecovery();
         const assigneeNotInvokableHealed = await heartbeat.healAssigneeNotInvokableBlockedIssues({
@@ -1150,11 +1156,7 @@ export async function startServer(): Promise<StartedServer> {
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
-      })().catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
-      trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
-      await startupHeartbeatRecovery;
+      };
     }
 
     const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
@@ -1628,6 +1630,16 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
+
+  // The board is now available for inspection and intervention even when a
+  // recovery backlog is slow or malformed.  Keep recovery tracked so shutdown
+  // still waits for it, but never make listener readiness contingent on it.
+  if (runStartupHeartbeatRecovery) {
+    const startupHeartbeatRecovery = runStartupHeartbeatRecovery().catch((err) => {
+      logger.error({ err }, "startup heartbeat recovery failed");
+    });
+    trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
+  }
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
