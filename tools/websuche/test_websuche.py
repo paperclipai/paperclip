@@ -186,3 +186,23 @@ def test_abrufe_verschiedener_domains_laufen_parallel(monkeypatch):
                            t("https://c.de/3")])
     recherchiere("f", quellen=3, backend=backend, abrufer=abrufer)
     assert hoechststand[0] > 1
+
+
+def test_gesamt_deadline_wird_durchgesetzt():
+    """Ein Abrufer, der die Deadline weit ueberschreitet, darf recherchiere()
+    nicht laenger als das Deadline-Budget blockieren — sonst reisst der
+    30s-Deckel von shell_exec, der ueber der 25s-Default-Deadline liegt.
+    """
+    def abrufer(url, max_zeichen, timeout):
+        time.sleep(1.0)
+        return AbrufErgebnis(text="ok")
+
+    backend = FakeBackend([t("https://a.de/1")])
+    start = time.monotonic()
+    ergebnis = recherchiere("f", quellen=1, deadline=0.2, backend=backend,
+                            abrufer=abrufer)
+    dauer = time.monotonic() - start
+    assert dauer < 0.8  # deutlich unter dem 1.0s-Schlaf des Abrufers
+    quelle = ergebnis["quellen"][0]
+    assert "fehler" in quelle
+    assert "text" not in quelle

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 from urllib.parse import urlparse
 
@@ -72,6 +72,10 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     backend = backend or SearxngBackend()
     abrufer = abrufer or abruf.hole_text
 
+    # Uhr fuer die Gesamt-Deadline laeuft ab hier — sie deckt Suche UND Abruf,
+    # denn beides zaehlt fuer den Aufrufer (z.B. der 30s-Deckel von shell_exec).
+    start = time.monotonic()
+
     # Ueberzaehlig abfragen: die Deduplizierung verwirft Treffer, und ohne
     # Reserve bleiben sonst regelmaessig weniger Quellen uebrig als angefordert.
     kandidaten = backend.suche(frage, limit=max(10, quellen * 3))
@@ -95,14 +99,32 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
             bereits_abgerufen.add(domain)
             return abrufer(url, zeichen, seiten_timeout)
 
-    with ThreadPoolExecutor(max_workers=max(1, len(gewaehlt))) as pool:
-        laeufe = [pool.submit(hole, k.url, domain) for k, domain in gewaehlt]
-        ergebnisse = []
-        for lauf in laeufe:
-            try:
-                ergebnisse.append(lauf.result(timeout=deadline))
-            except Exception as e:  # noqa: BLE001 — eine Seite darf den Lauf nie kippen
-                ergebnisse.append(abruf.AbrufErgebnis(fehler=f"Abbruch: {e}"))
+    # Kein `with`-Block: dessen Ausstieg riefe implizit shutdown(wait=True) auf
+    # und wuerde blockieren, bis JEDER Thread fertig ist — auch die, deren
+    # Ergebnis wir per Deadline laengst aufgegeben haben. Python-Threads lassen
+    # sich nicht von aussen abbrechen, also muss der Aufrufer zurueckkehren
+    # duerfen, waehrend ein haengender Thread im Hintergrund weiterlaeuft.
+    pool = ThreadPoolExecutor(max_workers=max(1, len(gewaehlt)))
+    laeufe = [pool.submit(hole, k.url, domain) for k, domain in gewaehlt]
+
+    # Restbudget statt volles `deadline` je Future: sonst summieren sich bei
+    # seriellem Abruf derselben Domain mehrere volle Fenster und die
+    # Gesamt-Deadline greift nie.
+    verstrichen = time.monotonic() - start
+    restbudget = max(0.0, deadline - verstrichen)
+    fertig, unfertig = wait(laeufe, timeout=restbudget)
+    pool.shutdown(wait=False)
+
+    ergebnisse = []
+    for lauf in laeufe:
+        if lauf in unfertig:
+            ergebnisse.append(abruf.AbrufErgebnis(
+                fehler=f"Abbruch: Deadline von {deadline}s ueberschritten"))
+            continue
+        try:
+            ergebnisse.append(lauf.result())
+        except Exception as e:  # noqa: BLE001 — eine Seite darf den Lauf nie kippen
+            ergebnisse.append(abruf.AbrufErgebnis(fehler=f"Abbruch: {e}"))
 
     ausgabe = []
     for (kandidat, domain), ergebnis in zip(gewaehlt, ergebnisse):
