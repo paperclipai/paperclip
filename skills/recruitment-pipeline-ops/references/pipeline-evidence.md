@@ -39,6 +39,12 @@ node ~/scripts/tsr-fulfilment/scripts/render-application-pack-bundle.mjs \
   --bundle-dir <bundle-dir> --out-dir <output-dir> --template legacy-classic
 ```
 
+Resolve `<bundle-dir>`, `<output-dir>`, and every renderer `--content`, `--md`,
+or `--out` argument to an absolute path before invocation. The guarded browser
+launches from a stable home-directory cwd; relative output paths can therefore
+pass preflight but fail at PDF write time. Treat a relative renderer path as a
+configuration error, not a reason for another LLM recovery turn.
+
 `legacy-classic` is the default for personal application packs. It preserves the navy,
 left-aligned name, italic positioning line, rule treatment, serif body and small-caps
 section hierarchy of the approved reference. `classic`, `classic-header`, `modern`,

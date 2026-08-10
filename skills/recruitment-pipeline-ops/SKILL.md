@@ -1,6 +1,6 @@
 ---
 name: recruitment-pipeline-ops
-description: ThinkStack Recruitment procedures for the candidate pipeline and the $29 CV-polish wedge. Use for candidate issues ("Onboard first candidate", "intake follow-up", "questionnaire nudge", "job market scan", "Route ... questionnaire reply") and wedge orders ("[PHASE-0-WEDGE] CV polish order <id>"). Encodes the intake questionnaire flow, the profile gate, the SLA clock rules, the least-privilege comment-routing pattern, and the delivery-SOP stage owners for paid orders.
+description: ThinkStack Recruitment procedures for the candidate pipeline and the $29 CV-polish wedge. Use for candidate issues ("Onboard first candidate", "intake follow-up", "questionnaire nudge", "job market scan", "Route ... questionnaire reply") and PHASE-0-WEDGE CV-polish orders. Encodes the intake questionnaire flow, the profile gate, the SLA clock rules, the least-privilege comment-routing pattern, and the delivery-SOP stage owners for paid orders.
 ---
 
 # Recruitment Pipeline Ops
