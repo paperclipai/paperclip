@@ -545,12 +545,15 @@ NODE
 # Single sanctioned door: pointer flip + zero-loss LaunchAgent handoff.
 # Still requires dual allow flags; never touches source coexist agents.
 cmd_promote_and_restart() {
-  cmd_promote_pointer "$@"
   local api_base old_pid
   api_base="$(live_api_base)"
   old_pid="$(read_live_server_pid "$api_base")" \
     || fail "promote-and-restart: live health did not expose a valid server pid at $api_base"
   request_hot_restart_handoff "$api_base" "$old_pid"
+  # Capture and validate the live handoff before changing the deploy pointer.
+  # Otherwise a down service leaves a newly promoted pointer with no verified
+  # runtime and no way to complete the handoff it just requested.
+  cmd_promote_pointer "$@"
   local label="${PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL:-ie.thinkstack.paperclip-deploy}"
   local uid domain target
   uid="$(id -u)"
