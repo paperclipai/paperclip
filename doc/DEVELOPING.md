@@ -933,6 +933,26 @@ Optional auth flags (for authenticated mode):
 - `PAPERCLIP_AUTH_HEADER` (for example `Bearer ...`)
 - `PAPERCLIP_COOKIE` (session cookie header value)
 
+## Managed Codex Home Permission Repair
+
+New managed Codex homes use `0700` directories and `0600` Paperclip-owned
+files. Audit an existing company's managed Codex home with:
+
+```sh
+pnpm codex:remediate-home-permissions -- --company-id <company-id>
+```
+
+The command is dry-run by default. Stop and drain all Codex runs for that
+company before applying changes, then explicitly confirm the drain:
+
+```sh
+pnpm codex:remediate-home-permissions -- --company-id <company-id> --apply --post-drain-confirmed
+```
+
+The remediation only changes the Paperclip-managed company home. It does not
+follow symlinks, delete sessions, or touch an adapter-configured external
+`CODEX_HOME`.
+
 ## OpenClaw Docker UI One-Command Script
 
 To boot OpenClaw in Docker and print a host-browser dashboard URL in one command:
