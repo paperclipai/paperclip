@@ -94,6 +94,8 @@ export interface IssueAssigneeAdapterOverrides {
 export interface IssueCloseEvidenceContract {
   mode?: "evidence";
   evidenceTarget: number;
+  /** Minimum board-visible (attachment/work-product) evidence required to close. */
+  portableEvidenceTarget?: number;
   evidencePath: string;
   /** Concrete artifact class required at authoring time (not a generic "file"). */
   artifactKind: string;

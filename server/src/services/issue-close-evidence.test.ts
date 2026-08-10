@@ -6,6 +6,7 @@ import {
   acceptanceCriteriaChangedAfterRunStart,
   commentSignalsAcceptanceCriteriaChange,
   countCloseEvidenceLocalFiles,
+  inferDefaultCloseContractForIssueCreate,
   selectFreshestCloseGateRun,
 } from "./issue-close-evidence.js";
 
@@ -46,6 +47,21 @@ describe("countCloseEvidenceLocalFiles", () => {
     ).resolves.toEqual({
       count: 2,
       localPath: issueRoot,
+    });
+  });
+});
+
+describe("inferDefaultCloseContractForIssueCreate", () => {
+  it("requires portable evidence when the task explicitly says acceptance evidence", () => {
+    expect(inferDefaultCloseContractForIssueCreate({
+      title: "Deterministic benchmark controls",
+      description: "Acceptance evidence: commit, tests and a dry-run fixture.",
+      identifier: "TSMC-20662",
+    })).toMatchObject({
+      evidenceTarget: 1,
+      portableEvidenceTarget: 1,
+      evidencePath: "TSMC-20662",
+      artifactKind: "acceptance_evidence",
     });
   });
 });

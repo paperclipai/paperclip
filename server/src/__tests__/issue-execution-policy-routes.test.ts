@@ -351,6 +351,61 @@ describe("issue execution policy routes", () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
+  it("rejects done when local files meet the target but board-visible evidence is missing", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-portable-evidence-route-"));
+    process.env.PAPERCLIP_WORK_PRODUCTS_DIR = tempRoot;
+    const evidenceDir = path.join(tempRoot, "TSMC-20662");
+    await mkdir(evidenceDir, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(evidenceDir, "implementation.mjs"), "export {};"),
+      writeFile(path.join(evidenceDir, "tests.txt"), "passed"),
+      writeFile(path.join(evidenceDir, "manifest.json"), "{}"),
+      writeFile(path.join(evidenceDir, "ledger.jsonl"), "{}"),
+    ]);
+
+    mockIssueService.getById.mockResolvedValue({
+      id: "abababab-abab-4bab-8bab-abababababab",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "TSMC-20662",
+      title: "Deterministic benchmark admission gate",
+      closeContract: {
+        evidenceTarget: 4,
+        portableEvidenceTarget: 4,
+        evidencePath: "TSMC-20662",
+        artifactKind: "benchmark_control_evidence",
+      },
+      executionPolicy: null,
+      executionState: null,
+    });
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/abababab-abab-4bab-8bab-abababababab")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      reason: "close_portable_evidence_unmet",
+      portableMeasuredCount: 0,
+      portableTargetCount: 4,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
   it("rejects done when another live execution run still targets the issue", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

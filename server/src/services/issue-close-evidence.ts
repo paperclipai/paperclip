@@ -26,10 +26,17 @@ const GENERATION_MEASUREMENT_LABEL_HINTS = [
 const GENERATION_MEASUREMENT_TITLE_RE =
   /(\[burn\]|\bburn[- ]tail\b|\basset[- ]generation\b|\bbenchmark[- ]cell\b|\bmatrix[- ]cells?\b|\bvision[- ]judge\b|\bgenerated media\b|\burl[- ]pool\b|\bmatrix incomplete\b)/i;
 
+// Authors use this exact phrase to state that a task cannot be accepted from
+// prose alone. Make it executable at creation time instead of relying on an
+// agent to remember to add a close contract later.
+const EXPLICIT_ACCEPTANCE_EVIDENCE_RE = /\bacceptance\s+evidence\b/i;
+
 export type CloseEvidenceMeasurement = {
   closeContract: IssueCloseEvidenceContract;
   measuredCount: number;
   targetCount: number;
+  portableCount: number;
+  portableTargetCount: number | null;
   breakdown: {
     attachments: number;
     workProducts: number;
@@ -47,7 +54,8 @@ export type CloseContractEvaluation =
       reason:
         | "close_contract_required"
         | "close_contract_invalid"
-        | "close_evidence_unmet";
+        | "close_evidence_unmet"
+        | "close_portable_evidence_unmet";
       message: string;
       details: Record<string, unknown>;
     };
@@ -203,6 +211,7 @@ export function defaultCloseContractForCardTemplate(
 
 export function inferDefaultCloseContractForIssueCreate(input: {
   title?: string | null;
+  description?: string | null;
   cardTemplate?: string | null;
   closeContract?: unknown;
   identifier: string;
@@ -223,6 +232,15 @@ export function inferDefaultCloseContractForIssueCreate(input: {
       evidenceTarget: 1,
       evidencePath: input.identifier,
       artifactKind: "generated_media",
+    };
+  }
+  if (EXPLICIT_ACCEPTANCE_EVIDENCE_RE.test(`${input.title ?? ""}\n${input.description ?? ""}`)) {
+    return {
+      mode: "evidence",
+      evidenceTarget: 1,
+      portableEvidenceTarget: 1,
+      evidencePath: input.identifier,
+      artifactKind: "acceptance_evidence",
     };
   }
   return null;
@@ -359,11 +377,14 @@ export async function measureCloseEvidence(input: {
   const evidenceContract = parsed.data;
   const { count: localFiles, localPath } = await countCloseEvidenceLocalFiles(input.companyId, evidenceContract);
   const measuredCount = input.attachmentsCount + input.workProductsCount + localFiles;
+  const portableCount = input.attachmentsCount + input.workProductsCount;
 
   return {
     closeContract: evidenceContract,
     measuredCount,
     targetCount: evidenceContract.evidenceTarget,
+    portableCount,
+    portableTargetCount: evidenceContract.portableEvidenceTarget ?? null,
     breakdown: {
       attachments: input.attachmentsCount,
       workProducts: input.workProductsCount,
@@ -446,23 +467,47 @@ export async function evaluateCloseContractForDone(input: {
     };
   }
 
-  if (measurement.measuredCount >= measurement.targetCount) {
-    return { outcome: "satisfied", measurement };
+  if (measurement.measuredCount < measurement.targetCount) {
+    return {
+      outcome: "unmet",
+      reason: "close_evidence_unmet",
+      message: `Issue cannot close until close evidence reaches ${measurement.targetCount}; measured ${measurement.measuredCount}.`,
+      details: {
+        code: "invalid_issue_disposition",
+        reason: "close_evidence_unmet",
+        measuredCount: measurement.measuredCount,
+        targetCount: measurement.targetCount,
+        evidencePath: measurement.closeContract.evidencePath,
+        artifactKind: measurement.closeContract.artifactKind,
+        localPath: measurement.localPath,
+        breakdown: measurement.breakdown,
+      },
+    };
   }
 
-  return {
-    outcome: "unmet",
-    reason: "close_evidence_unmet",
-    message: `Issue cannot close until close evidence reaches ${measurement.targetCount}; measured ${measurement.measuredCount}.`,
-    details: {
-      code: "invalid_issue_disposition",
-      reason: "close_evidence_unmet",
-      measuredCount: measurement.measuredCount,
-      targetCount: measurement.targetCount,
-      evidencePath: measurement.closeContract.evidencePath,
-      artifactKind: measurement.closeContract.artifactKind,
-      localPath: measurement.localPath,
-      breakdown: measurement.breakdown,
-    },
-  };
+  if (
+    measurement.portableTargetCount !== null
+    && measurement.portableCount < measurement.portableTargetCount
+  ) {
+    return {
+      outcome: "unmet",
+      reason: "close_portable_evidence_unmet",
+      message:
+        `Issue cannot close until board-visible evidence reaches ${measurement.portableTargetCount}; `
+        + `measured ${measurement.portableCount} attachments/work products.`,
+      details: {
+        code: "invalid_issue_disposition",
+        reason: "close_portable_evidence_unmet",
+        portableMeasuredCount: measurement.portableCount,
+        portableTargetCount: measurement.portableTargetCount,
+        measuredCount: measurement.measuredCount,
+        targetCount: measurement.targetCount,
+        evidencePath: measurement.closeContract.evidencePath,
+        artifactKind: measurement.closeContract.artifactKind,
+        breakdown: measurement.breakdown,
+      },
+    };
+  }
+
+  return { outcome: "satisfied", measurement };
 }

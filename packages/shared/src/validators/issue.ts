@@ -225,11 +225,23 @@ export const issueCloseEvidenceContractSchema = z
   .object({
     mode: z.literal("evidence").optional().default("evidence"),
     evidenceTarget: z.number().int().positive().max(100000),
+    // Local workspace files are useful during execution, but a board-facing
+    // delivery must also carry inspectable evidence on the issue itself.
+    portableEvidenceTarget: z.number().int().positive().max(100000).optional(),
     evidencePath: governedWorkProductsPathSchema,
     artifactKind: closeContractArtifactKindSchema,
     cardTemplate: z.enum(GENERATION_MEASUREMENT_CARD_TEMPLATES).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.portableEvidenceTarget && value.portableEvidenceTarget > value.evidenceTarget) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["portableEvidenceTarget"],
+        message: "portableEvidenceTarget cannot exceed evidenceTarget",
+      });
+    }
+  });
 
 export const issueCloseExemptContractSchema = z
   .object({

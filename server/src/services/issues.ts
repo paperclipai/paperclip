@@ -7800,6 +7800,7 @@ export function issueService(db: Db) {
         };
         const defaultedCloseContract = inferDefaultCloseContractForIssueCreate({
           title: issueData.title,
+          description: issueData.description ?? null,
           cardTemplate: cardTemplateRaw,
           closeContract: issueData.closeContract ?? null,
           identifier,
