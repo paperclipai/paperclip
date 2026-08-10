@@ -4113,40 +4113,49 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
   resolvedWorkspace: ResolvedWorkspaceForRun;
-}) {
+}): {
+  sessionParams: Record<string, unknown> | null;
+  warning: string | null;
+  resetReason: string | null;
+} {
   const { agentId, previousSessionParams, resolvedWorkspace } = input;
   const previousSessionId = readNonEmptyString(previousSessionParams?.sessionId);
   const previousCwd = readNonEmptyString(previousSessionParams?.cwd);
   if (!previousSessionId || !previousCwd) {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
   if (resolvedWorkspace.source !== "project_primary") {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
   const projectCwd = readNonEmptyString(resolvedWorkspace.cwd);
   if (!projectCwd) {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
   const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
   if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
   if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
   const previousWorkspaceId = readNonEmptyString(previousSessionParams?.workspaceId);
@@ -4157,23 +4166,22 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
   ) {
     return {
       sessionParams: previousSessionParams,
-      warning: null as string | null,
+      warning: null,
+      resetReason: null,
     };
   }
 
-  const migratedSessionParams: Record<string, unknown> = {
-    ...(previousSessionParams ?? {}),
-    cwd: projectCwd,
-  };
-  if (resolvedWorkspace.workspaceId) migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
-  if (resolvedWorkspace.repoUrl) migratedSessionParams.repoUrl = resolvedWorkspace.repoUrl;
-  if (resolvedWorkspace.repoRef) migratedSessionParams.repoRef = resolvedWorkspace.repoRef;
-
   return {
-    sessionParams: migratedSessionParams,
+    // A provider conversation that was started in agent-home can contain stale
+    // file discoveries and continuation guidance from that fallback tree. Moving
+    // its cwd does not make that context trustworthy for a newly available
+    // project workspace. Rotate once; the first project-scoped run establishes
+    // the session that later project-scoped continuations may resume.
+    sessionParams: null,
     warning:
       `Project workspace "${projectCwd}" is now available. ` +
-      `Attempting to resume session "${previousSessionId}" that was previously saved in fallback workspace "${previousCwd}".`,
+      `Starting a fresh session instead of resuming "${previousSessionId}" from fallback workspace "${previousCwd}".`,
+    resetReason: "project_workspace_migration_from_fallback",
   };
 }
 
@@ -16289,7 +16297,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
-    const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const ephemeralStatusOnlyRecoverySession = isEphemeralStatusOnlyRecoverySession(context);
     const previousSessionParams =
@@ -16817,6 +16824,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cwd: executionWorkspace.cwd,
       },
     });
+    const workspaceMigrationSessionResetReason = runtimeSessionResolution.resetReason;
+    const resetTaskSessionForWorkspaceMigration = workspaceMigrationSessionResetReason !== null;
+    const taskSessionForAdapter = resetTaskSessionForWorkspaceMigration ? null : taskSessionForRun;
+    const effectiveSessionReset = resetTaskSession || resetTaskSessionForWorkspaceMigration;
+    const effectiveSessionResetReasons = [
+      ...sessionConfigFreshness.reasons,
+      ...(workspaceMigrationSessionResetReason ? [workspaceMigrationSessionResetReason] : []),
+    ];
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
@@ -16827,11 +16842,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             `Execution workspace reuse freshness action "${workspaceConfigFreshness.action}" because ${workspaceConfigFreshness.reasons.join("; ")}.`,
           ]
         : []),
-      ...(resetTaskSession && sessionResetReason
+      ...(effectiveSessionReset && effectiveSessionResetReasons.length > 0
         ? [
             taskKey
-              ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
-              : `Skipping saved session resume because ${sessionResetReason}.`,
+              ? `Skipping saved session resume for task "${taskKey}" because ${effectiveSessionResetReasons.join("; ")}.`
+              : `Skipping saved session resume because ${effectiveSessionResetReasons.join("; ")}.`,
           ]
         : []),
     ];
@@ -16905,25 +16920,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession
+    const runtimeSessionFallback = taskKey || effectiveSessionReset
       ? null
       : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)
         ? runtime.sessionId
         : null;
     const runtimeSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
-        taskSessionForRun?.sessionDisplayId ??
+        taskSessionForAdapter?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
-    let previousSessionDisplayId = requiresCanonicalSessionIds(agent.adapterType)
-      ? truncateDisplayId(
-          readNonEmptyString(previousSessionParams?.sessionId) ??
-            (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
-            runtimeSessionFallback,
-        )
-      : runtimeSessionDisplayId;
+    let previousSessionDisplayId = resetTaskSessionForWorkspaceMigration
+      ? null
+      : requiresCanonicalSessionIds(agent.adapterType)
+        ? truncateDisplayId(
+            readNonEmptyString(previousSessionParams?.sessionId) ??
+              (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
+              runtimeSessionFallback,
+          )
+        : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = normalizeSessionParams(
@@ -16965,20 +16982,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       session: {
         fingerprintVersion: sessionConfigMetadata.version,
         categories: sessionConfigMetadata.categories,
-        reset: resetTaskSession,
-        resetReasons: sessionConfigFreshness.reasons,
+        reset: effectiveSessionReset,
+        resetReasons: effectiveSessionResetReasons,
         // This is intentionally a decision record, rather than an inference
         // from the adapter result: a recovery handoff must make it clear
         // whether Paperclip deliberately reset a saved task session before a
         // provider could start a fresh session of its own.
-        reuseDecision: resetTaskSession
+        reuseDecision: effectiveSessionReset
           ? "reset"
-          : taskSessionForRun
+          : taskSessionForAdapter
             ? "reuse_saved_task_session"
             : "fresh_no_saved_task_session",
         changedCategories: sessionConfigFreshness.changedCategories,
         taskSessionAvailable: taskSession != null,
-        taskSessionReused: taskSessionForRun != null,
+        taskSessionReused: taskSessionForAdapter != null,
         storedFingerprintPresent: Boolean(sessionConfigFreshness.storedFingerprint),
         nextFingerprint: sessionConfigFreshness.nextFingerprint,
       },
@@ -17830,12 +17847,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // usage_json null so portfolio fresh_session_ratio saw 0 fresh + 0 reused.
       const sessionReusedForUsage =
         runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null;
-      const taskSessionReusedForUsage = taskSessionForRun != null;
+      const taskSessionReusedForUsage = taskSessionForAdapter != null;
       // This is intentionally narrower than `freshSession`: it counts only a
       // run for which a valid task session was retained and Paperclip made no
       // deliberate reset/rotation decision. It therefore exposes real resume
       // failures without conflating first touches or policy-driven freshness.
-      const resumeOpportunityForUsage = taskSessionForRun != null && !sessionCompaction.rotate;
+      const resumeOpportunityForUsage = taskSessionForAdapter != null && !sessionCompaction.rotate;
       const resumeOpportunityMissedForUsage =
         resumeOpportunityForUsage && !sessionReusedForUsage;
       const persistedSessionIdForUsage =

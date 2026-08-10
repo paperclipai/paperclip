@@ -1024,7 +1024,7 @@ describe("resolveWorkspaceAfterLowTrustPreflight", () => {
 });
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
-  it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
+  it("rotates fallback workspace sessions when a project cwd becomes available", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
 
@@ -1038,12 +1038,9 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
     });
 
-    expect(result.sessionParams).toMatchObject({
-      sessionId: "session-1",
-      cwd: "/tmp/new-project-cwd",
-      workspaceId: "workspace-1",
-    });
-    expect(result.warning).toContain("Attempting to resume session");
+    expect(result.sessionParams).toBeNull();
+    expect(result.resetReason).toBe("project_workspace_migration_from_fallback");
+    expect(result.warning).toContain("Starting a fresh session");
   });
 
   it("does not migrate when previous session cwd is not the fallback workspace", () => {
