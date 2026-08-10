@@ -19504,6 +19504,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
+    // Internal recovery/scheduler calls must never turn a deliberately paused
+    // lane into a process-level failure. Manual board wakes retain the 409 so
+    // the operator gets an explicit answer.
+    const isAutomatedWake =
+      triggerDetail === "system" || opts.requestedByActorType === "system";
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
@@ -19643,8 +19648,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // EXEMPTIONS (shell-handler/compiler adapters + runtimeConfig.ignoreActivityWindow)
     // are handled inside getActivityWindowScheduleSkip via isActivityWindowExemptAgent,
     // so exempt agents are still enqueued even when the company is dormant.
-    const isAutomatedWake =
-      triggerDetail === "system" || opts.requestedByActorType === "system";
     if (isAutomatedWake) {
       const companyWindowRow = await db
         .select({ name: companies.name, activityWindow: companies.activityWindow })
@@ -19754,6 +19757,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (budgetBlock) {
       await writeSkippedRequest("budget.blocked");
+      if (isAutomatedWake) return null;
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
@@ -19762,11 +19766,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      if (opts.requestedByActorType !== "user") {
+      if (isAutomatedWake || opts.requestedByActorType !== "user") {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
         });
       }
+      if (isAutomatedWake) return null;
       throw conflict(invokability.message, {
         status: agent.status,
         reason: invokability.reason,

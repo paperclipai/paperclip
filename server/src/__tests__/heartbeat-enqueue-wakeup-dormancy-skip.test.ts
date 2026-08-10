@@ -158,6 +158,29 @@ describe("enqueueWakeup dormancy guard", () => {
     expect(await skippedRequest(db, agentId, "outside_activity_window")).not.toBeNull();
   });
 
+  it("records and skips an automated wake for a paused agent, while a manual wake still conflicts", async () => {
+    const heartbeat = heartbeatService(db);
+    const companyId = await seedCompany(db, null);
+    const agentId = await seedAgent(db, companyId, { status: "paused" });
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "startup_recovery",
+      requestedByActorType: "system",
+      requestedByActorId: "startup",
+    })).resolves.toBeNull();
+    expect(await countRuns(db, agentId)).toHaveLength(0);
+    expect(await skippedRequest(db, agentId, "agent.not_invokable")).not.toBeNull();
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    })).rejects.toMatchObject({ status: 409 });
+  });
+
   it("does NOT skip a MANUAL operator wake (triggerDetail:manual, actorType:user) in a dormant company — operator override survives", async () => {
     const heartbeat = heartbeatService(db);
     const { dormant } = windowsForNow();
