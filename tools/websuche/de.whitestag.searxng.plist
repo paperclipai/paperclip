@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>de.whitestag.searxng</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>cd ~/.paperclip/dienste/searxng &amp;&amp; SEARXNG_SETTINGS_PATH=$PWD/settings-whitestag.yml exec ./venv/bin/python -m searx.webapp</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/searxng.log</string>
+  <key>StandardErrorPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/searxng.log</string>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>de.whitestag.websuche</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/zsh</string><string>-lc</string>
+    <string>cd ~/.paperclip/scripts/websuche &amp;&amp; exec ./venv/bin/python server.py</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/websuche.log</string>
+  <key>StandardErrorPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/websuche.log</string>
+</dict>
+</plist>
