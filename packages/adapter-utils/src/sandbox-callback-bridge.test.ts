@@ -611,6 +611,54 @@ describe("sandbox callback bridge", () => {
     expect((requestStep as { criticalPath?: boolean }).criticalPath).toBe(false);
   });
 
+  it("wraps each request in a sandbox.callbackBridge.relayRequest span", async () => {
+    // With a span runner injected, the worker wraps each request in one
+    // `sandbox.callbackBridge.relayRequest` span, so the request's read, write,
+    // and remove execs group under one named span. This test drives the worker
+    // with a recording runner and proves it opens the wrapper span around the
+    // request work.
+    const wrapped: string[] = [];
+    let served = false;
+    let resolveServed: () => void = () => {};
+    const requestServed = new Promise<void>((resolve) => {
+      resolveServed = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-relay-span-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir: async () => {},
+        makeDirs: async () => {},
+        listJsonFiles: async () => (served ? [] : ["000000000001.json"]),
+        readTextFile: async () =>
+          JSON.stringify({ id: "req-1", method: "GET", path: "/", query: "", headers: {}, body: "" }),
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => {
+        served = true;
+        resolveServed();
+        return { status: 200, body: "ok" };
+      },
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        wrapped.push(name);
+        return work();
+      },
+    });
+
+    await requestServed;
+    await worker.stop();
+
+    expect(wrapped).toContain("sandbox.callbackBridge.relayRequest");
+  });
+
   it("test_paperclip_loop_exec_stays_unparented_without_getter", async () => {
     // With no `getRuntimeParentContext`, a request runs with an empty active
     // step store, exactly like the earlier `runWithoutActiveStep` behavior. So a

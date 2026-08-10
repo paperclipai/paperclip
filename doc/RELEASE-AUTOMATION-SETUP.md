@@ -141,6 +141,12 @@ Reasoning:
 - every push to `master` should be able to publish a canary automatically
 - no human approval should be required for canaries
 
+The scheduled nightly lane also publishes under `npm-canary`: it is the same
+trust level (fully automated, no human gate), its runs execute on `master` so
+the branch rule is satisfied, and reusing the environment means the nightly
+lane required no new environments and no npm trusted-publisher changes
+(publishing still happens from `release.yml`, see section 2.2).
+
 ## 6. Configure `npm-stable`
 
 Recommended settings for `npm-stable`:

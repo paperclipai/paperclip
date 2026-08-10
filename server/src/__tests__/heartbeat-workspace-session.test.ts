@@ -25,6 +25,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
+  reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
@@ -2882,5 +2883,31 @@ describe("isWorkspaceSyncConflictFailure", () => {
     expect(isWorkspaceSyncConflictFailure("no Codex credentials provisioned for managed home")).toBe(false);
     expect(isWorkspaceSyncConflictFailure(null)).toBe(false);
     expect(isWorkspaceSyncConflictFailure("")).toBe(false);
+  });
+});
+
+describe("reconcileReusedExecutionWorkspaceProjectWorkspaceId", () => {
+  it("backfills a null existing binding from the resolved value", () => {
+    expect(
+      reconcileReusedExecutionWorkspaceProjectWorkspaceId(null, "resolved-workspace"),
+    ).toBe("resolved-workspace");
+  });
+
+  it("never overwrites an existing binding, even when a resolved value is present", () => {
+    expect(
+      reconcileReusedExecutionWorkspaceProjectWorkspaceId("existing-workspace", "resolved-workspace"),
+    ).toBe("existing-workspace");
+  });
+
+  it("returns null when both existing and resolved are absent", () => {
+    expect(reconcileReusedExecutionWorkspaceProjectWorkspaceId(null, null)).toBeNull();
+    expect(reconcileReusedExecutionWorkspaceProjectWorkspaceId(undefined, undefined)).toBeNull();
+    expect(reconcileReusedExecutionWorkspaceProjectWorkspaceId(null, undefined)).toBeNull();
+  });
+
+  it("backfills when existing is undefined and resolved is present", () => {
+    expect(
+      reconcileReusedExecutionWorkspaceProjectWorkspaceId(undefined, "resolved-workspace"),
+    ).toBe("resolved-workspace");
   });
 });

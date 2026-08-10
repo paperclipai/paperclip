@@ -3005,6 +3005,18 @@ describe("company portability", () => {
       id: "agent-created",
       name: "ClaudeCoder",
     });
+    companySkillSvc.importPackageFiles.mockResolvedValueOnce([{
+      skill: {
+        id: "skill-imported",
+        key: paperclipKey,
+        slug: "paperclip",
+      },
+      action: "renamed",
+      originalKey: "paperclip",
+      originalSlug: "paperclip",
+      requestedRefs: ["paperclip"],
+      reason: "Existing skill matched; renamed to paperclip-2.",
+    }]);
 
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -3017,7 +3029,7 @@ describe("company portability", () => {
 
     agentSvc.list.mockResolvedValue([]);
 
-    await portability.importBundle({
+    const result = await portability.importBundle({
       source: {
         type: "inline",
         rootPath: exported.rootPath,
@@ -3039,8 +3051,17 @@ describe("company portability", () => {
 
     const textOnlyFiles = Object.fromEntries(Object.entries(exported.files).filter(([, v]) => typeof v === "string"));
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith("company-imported", textOnlyFiles, {
-      onConflict: "replace",
+      onConflict: "rename",
     });
+    expect(result.skills).toEqual([{
+      originalKey: "paperclip",
+      originalSlug: "paperclip",
+      key: paperclipKey,
+      slug: "paperclip",
+      id: "skill-imported",
+      action: "renamed",
+      reason: "Existing skill matched; renamed to paperclip-2.",
+    }]);
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.objectContaining({
         paperclipSkillSync: {
@@ -3301,7 +3322,7 @@ describe("company portability", () => {
         "agents/cmo/AGENTS.md": expect.any(String),
       }),
       {
-        onConflict: "replace",
+        onConflict: "rename",
       },
     );
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith(
@@ -3310,7 +3331,7 @@ describe("company portability", () => {
         "agents/claudecoder/AGENTS.md": expect.any(String),
       }),
       {
-        onConflict: "replace",
+        onConflict: "rename",
       },
     );
     expect(agentSvc.create).toHaveBeenCalledTimes(1);

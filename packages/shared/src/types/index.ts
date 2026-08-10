@@ -250,6 +250,7 @@ export type {
 } from "./teams-catalog.js";
 export type {
   AgentSkillSyncMode,
+  AgentSkillAssignmentMode,
   AgentSkillState,
   AgentSkillOrigin,
   AgentDesiredSkillEntry,

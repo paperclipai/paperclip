@@ -1111,24 +1111,49 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps priority under the mobile overflow menu", async () => {
+  it("hides the priority chip and mobile priority option (PAP-411)", async () => {
     const { root } = renderDialog(container);
     await flush();
 
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off). Neither the
+    // desktop priority chip nor the mobile overflow priority option should render.
     const priorityChip = container.querySelector('[data-testid="new-issue-priority-chip"]');
-    expect(priorityChip?.className).toContain("hidden");
-    expect(priorityChip?.className).toContain("sm:inline-flex");
+    expect(priorityChip).toBeNull();
 
     const highPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(highPriorityOption?.textContent).toContain("High");
+    expect(highPriorityOption).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("still submits the default priority when the priority UI is hidden (PAP-411)", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Priority default persists",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
-      highPriorityOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    const selectedHighPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(selectedHighPriorityOption?.className).toContain("bg-accent");
+    // PAP-411: the priority control is hidden, but the data-model default must survive.
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Priority default persists",
+        priority: "medium",
+      }),
+    );
 
     act(() => root.unmount());
   });

@@ -81,4 +81,29 @@ describe("IssueFiltersPopover", () => {
     expect(layoutGrid?.className).toContain("grid-cols-1");
     expect(popoverContent?.textContent).toContain("Live runs only");
   });
+
+  it("hides the Priority filter section while priority UI is off (PAP-411)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueFiltersPopover
+          state={defaultIssueFilterState}
+          onChange={vi.fn()}
+          activeFilterCount={0}
+          agents={[{ id: "agent-1", name: "Agent One" }]}
+          projects={[{ id: "project-1", name: "Project One" }]}
+          labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
+          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
+          enableRoutineVisibilityFilter
+        />,
+      );
+    });
+
+    const popoverContent = container.querySelector("[data-testid='popover-content']");
+    expect(popoverContent).not.toBeNull();
+    // Status section still renders, Priority section is gated off (PAP-411).
+    expect(popoverContent?.textContent).toContain("Status");
+    expect(popoverContent?.textContent).not.toContain("Priority");
+  });
 });

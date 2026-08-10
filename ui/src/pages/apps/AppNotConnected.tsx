@@ -1,6 +1,11 @@
 import { useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ToolConnection } from "@paperclipai/shared";
+import {
+  connectionDisplaySecondaryHint,
+  humanizeConnectionDisplayName,
+  isToolConnectionAttentionHealth,
+} from "@paperclipai/shared";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -13,11 +18,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
 import {
+  appApplicationSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
+import { isMcpDirectOAuthConnectSlug } from "./app-connect-policy";
 import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDetail";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
@@ -52,11 +59,25 @@ export function AppNotConnected() {
     () => (applicationsQuery.data?.applications ?? []).find((app) => app.id === applicationId),
     [applicationsQuery.data, applicationId],
   );
+  const appSourceSlug = appApplicationSourceSlug(application);
+  const relatedApplicationIds = useMemo(() => {
+    if (!application) return new Set<string>();
+    if (!appSourceSlug) return new Set([application.id]);
+    return new Set(
+      (applicationsQuery.data?.applications ?? [])
+        .filter((candidate) => appApplicationSourceSlug(candidate) === appSourceSlug)
+        .map((candidate) => candidate.id),
+    );
+  }, [application, applicationsQuery.data, appSourceSlug]);
   const appConnections = useMemo(
-    () => (connectionsQuery.data?.connections ?? []).filter((c) => c.applicationId === applicationId),
-    [connectionsQuery.data, applicationId],
+    () => (connectionsQuery.data?.connections ?? []).filter((c) => relatedApplicationIds.has(c.applicationId)),
+    [connectionsQuery.data, relatedApplicationIds],
   );
-  const activeConnection = appConnections.find((c) => c.status !== "archived") ?? null;
+  const activeConnections = useMemo(
+    () => appConnections.filter((c) => c.status !== "archived" && c.status !== "draft"),
+    [appConnections],
+  );
+  const activeConnection = activeConnections[0] ?? null;
   const previousConnection = useMemo(() => latestArchivedConnection(appConnections), [appConnections]);
   const activityQuery = useQuery({
     queryKey: queryKeys.tools.connectionActivity(previousConnection?.id ?? "__none__"),
@@ -90,7 +111,7 @@ export function AppNotConnected() {
         body: `${appName} no longer shows in your apps. You can connect it again any time.`,
         tone: "success",
       });
-      navigate("/apps");
+      navigate("/apps/connections");
     },
     onError: (error) => {
       pushToast({
@@ -105,7 +126,7 @@ export function AppNotConnected() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
   }
   if (!applicationId || !activeTab) {
-    return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "setup") : "/apps"} replace />;
+    return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "setup") : "/apps/connections"} replace />;
   }
   if (applicationsQuery.isLoading || connectionsQuery.isLoading) {
     return (
@@ -119,39 +140,48 @@ export function AppNotConnected() {
     return (
       <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
         <p>This app doesn’t exist anymore.</p>
-        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to apps</Button>
+        <Button variant="outline" size="sm" onClick={() => navigate("/apps/connections")}>Back to apps</Button>
       </div>
     );
   }
-  if (activeConnection) {
+  if (activeConnection && activeTab !== "setup") {
     return <Navigate to={appTabHref(activeConnection.id, activeTab)} replace />;
   }
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
   const logoUrl =
-    (application.applicationKey
-      ? appDefinitionLogoUrl(gallery.find((entry) => appDefinitionSlug(entry) === application.applicationKey))
+    (appSourceSlug
+      ? appDefinitionLogoUrl(gallery.find((entry) => appDefinitionSlug(entry) === appSourceSlug))
       : undefined) ??
     appDefinitionLogoUrl(
       gallery.find((entry) => appDefinitionName(entry).toLowerCase() === application.name.toLowerCase()),
     );
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
-  const connectHref = reconnectHref({
+  const connectHref = newConnectionHref({
     applicationId,
     appName: application.name,
     previousAddress,
+    sourceSlug: appSourceSlug,
   });
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">
-      <ApplicationHeader applicationName={application.name} description={application.description} logoUrl={logoUrl} />
+      <ApplicationHeader
+        applicationName={application.name}
+        description={application.description}
+        logoUrl={logoUrl}
+        connectedCount={activeConnections.length}
+      />
 
       {activeTab === "setup" && (
         <SetupTab
+          applicationName={application.name}
+          activeConnections={activeConnections}
           previousConnection={previousConnection}
           previousAddress={previousAddress}
           onConnect={() => navigate(connectHref)}
+          onEdit={(connectionId) => navigate(appTabHref(connectionId, "setup"))}
         />
       )}
       {activeTab === "review" && (
@@ -215,10 +245,12 @@ function ApplicationHeader({
   applicationName,
   description,
   logoUrl,
+  connectedCount,
 }: {
   applicationName: string;
   description: string | null;
   logoUrl: string | undefined;
+  connectedCount: number;
 }) {
   return (
     <header className="flex flex-wrap items-center gap-4">
@@ -227,7 +259,7 @@ function ApplicationHeader({
         <div className="flex items-center gap-2">
           <h1 className="truncate text-2xl font-bold tracking-tight">{applicationName}</h1>
           <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            Not connected
+            {connectedCount > 0 ? `${connectedCount} connected` : "Not connected"}
           </span>
         </div>
         {description && (
@@ -239,14 +271,75 @@ function ApplicationHeader({
 }
 
 function SetupTab({
+  applicationName,
+  activeConnections,
   previousConnection,
   previousAddress,
   onConnect,
+  onEdit,
 }: {
+  applicationName: string;
+  activeConnections: ToolConnection[];
   previousConnection: ToolConnection | null;
   previousAddress: string | null;
   onConnect: () => void;
+  onEdit: (connectionId: string) => void;
 }) {
+  if (activeConnections.length > 0) {
+    return (
+      <div className="space-y-6">
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-sm font-bold text-foreground">Already connected to {applicationName}</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Open a connection to edit it, or add another account.
+            </p>
+          </div>
+          <div className="overflow-hidden rounded-lg border border-border">
+            {activeConnections.map((connection) => {
+              const secondary = connectionDisplaySecondaryHint(connection) ??
+                (connection.lastUsedAt ? `Last used ${timeAgo(connection.lastUsedAt)}` : "Not used yet");
+              const status = connection.enabled === false || connection.status === "disabled"
+                ? "Paused"
+                : isToolConnectionAttentionHealth(connection.healthStatus)
+                  ? "Needs attention"
+                  : "Connected";
+              return (
+                <button
+                  key={connection.id}
+                  type="button"
+                  onClick={() => onEdit(connection.id)}
+                  className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-0 hover:bg-muted/30"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {humanizeConnectionDisplayName(connection)}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">{secondary}</div>
+                  </div>
+                  <span className="text-xs text-muted-foreground">{status}</span>
+                  <span className="text-xs font-semibold text-primary">Edit →</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-card px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-foreground">Connect another</h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                Add another {applicationName} account without changing the connections above.
+              </p>
+            </div>
+            <Button onClick={onConnect}>Connect another</Button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <section className="rounded-xl border border-border bg-card px-5 py-4">
@@ -366,16 +459,20 @@ function latestArchivedConnection(connections: ToolConnection[]): ToolConnection
   });
 }
 
-function reconnectHref({
+function newConnectionHref({
   applicationId,
   appName,
   previousAddress,
+  sourceSlug,
 }: {
   applicationId: string;
   appName: string;
   previousAddress: string | null;
+  sourceSlug: string | null;
 }): string {
-  const params = new URLSearchParams({ byo: "1", applicationId, name: appName });
+  const params = new URLSearchParams({ applicationId, name: appName, new: "1" });
+  if (sourceSlug) params.set("source", sourceSlug);
+  if (!isMcpDirectOAuthConnectSlug(sourceSlug)) params.set("byo", "1");
   if (previousAddress && /^https?:\/\//i.test(previousAddress)) params.set("link", previousAddress);
   return `/apps/connect?${params.toString()}`;
 }

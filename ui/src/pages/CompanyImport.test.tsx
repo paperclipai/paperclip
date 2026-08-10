@@ -160,6 +160,7 @@ function buildImportResult(): CompanyPortabilityImportResult {
   return {
     company: { id: "company-2", name: "Imported Test", action: "created" },
     agents: [{ slug: "coder", id: "agent-1", action: "created", name: "Coder", reason: null }],
+    skills: [],
     projects: [],
     routines: [{ slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly Report", status: "paused" }],
     envInputs: [],
@@ -419,7 +420,7 @@ describe("CompanyImport", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Preview failed: stream disconnected");
-    expect(container.textContent).toContain("Retry, or use the CLI folder import");
+    expect(container.textContent).toContain("Retry, or re-export the package without large attachments");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
 
     // Changing the package supersedes the failed request: the error panel resets.

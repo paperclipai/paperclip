@@ -161,7 +161,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
       a.textContent?.includes("Browse planned app connections"),
     );
     expect(link).toBeTruthy();
-    expect(link?.getAttribute("href")).toBe("/apps/browse");
+    expect(link?.getAttribute("href")).toBe("/apps");
   });
 });
 

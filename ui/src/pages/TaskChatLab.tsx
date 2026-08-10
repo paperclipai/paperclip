@@ -8,8 +8,32 @@ import {
 import { buildScenario } from "@/components/task-chat/task-chat-fixtures";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatPlanView } from "@/components/task-chat/TaskChatPlanView";
+import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
 import { TweakPanel } from "@/components/task-chat/TweakPanel";
-import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
+import type {
+  TaskChatItem,
+  TaskChatMessageItem,
+} from "@/components/task-chat/task-chat-model";
+
+/**
+ * Demo binding for the agent-bubble copy · 👍 · 👎 cluster (PAP-413). The live
+ * thread wires these to the feedback-vote API; here the votes no-op so the
+ * harness can show the footer without a control plane.
+ */
+function labMessageActions(item: TaskChatMessageItem) {
+  if (item.author !== "agent" || item.optimistic) return null;
+  return (
+    <TaskChatBubbleActions
+      copyText={item.text}
+      feedback={{
+        activeVote: null,
+        sharingPreference: "allowed",
+        termsUrl: null,
+        onVote: async () => {},
+      }}
+    />
+  );
+}
 
 /** Replay ticks of selfTalk gap between scripted interstitial updates (~0.7s at 1×). */
 const SELF_TALK_GAP_TICKS = 30;
@@ -210,7 +234,7 @@ export function TaskChatLab() {
               </div>
             ) : (
               <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col">
-                <TaskChatThreadView items={items} />
+                <TaskChatThreadView items={items} renderMessageActions={labMessageActions} />
               </div>
             )}
           </div>

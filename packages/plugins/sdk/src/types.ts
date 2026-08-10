@@ -1984,6 +1984,30 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2093,6 +2117,11 @@ export interface PluginContext {
 
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
+
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;

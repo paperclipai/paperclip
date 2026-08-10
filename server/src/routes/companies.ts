@@ -6,7 +6,11 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
 import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
-import { readZipArchive } from "@paperclipai/shared/portability-zip";
+import {
+  MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
+  MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
+  readZipArchive,
+} from "@paperclipai/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
@@ -131,7 +135,9 @@ async function resolveImportPayload(req: Request, res: Response): Promise<unknow
     } catch (error) {
       if (error instanceof multer.MulterError) {
         if (error.code === "LIMIT_FILE_SIZE") {
-          throw unprocessable(`Import package exceeds ${PORTABLE_ZIP_UPLOAD_LIMIT_BYTES} bytes`);
+          throw unprocessable(
+            `Import package exceeds the ${Math.floor(PORTABLE_ZIP_UPLOAD_LIMIT_BYTES / (1024 * 1024))} MB upload limit`,
+          );
         }
         throw badRequest(error.message);
       }
@@ -157,7 +163,16 @@ async function resolveImportPayload(req: Request, res: Response): Promise<unknow
   }
   let archive: Awaited<ReturnType<typeof readZipArchive>>;
   try {
-    archive = await readZipArchive(zipBytes);
+    // Scale the bomb guards from the configured upload cap so a legitimately
+    // compressible package under the cap never trips them (~4x covers dense
+    // text; the per-entry ceiling is bounded by V8's string limit regardless).
+    archive = await readZipArchive(zipBytes, {
+      maxEntryDecompressedBytes: MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
+      maxTotalDecompressedBytes: Math.max(
+        MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
+        PORTABLE_ZIP_UPLOAD_LIMIT_BYTES * 4,
+      ),
+    });
   } catch (error) {
     throw badRequest(`Import package could not be read: ${errorMessage(error)}`);
   }

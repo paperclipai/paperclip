@@ -1454,8 +1454,29 @@
     {
       "idx": 209,
       "version": "7",
+      "when": 1786020026023,
+      "tag": "0209_heartbeat_context_snapshot_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786032087897,
+      "tag": "0210_heartbeat_context_taskkey_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1786129601533,
+      "tag": "0211_bright_morg",
+      "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "7",
       "when": 1786074234743,
-      "tag": "0209_run_process_identity_binding",
+      "tag": "0212_run_process_identity_binding",
       "breakpoints": true
     }
   ]

@@ -945,7 +945,6 @@ export function Inbox() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -1001,6 +1000,15 @@ export function Inbox() {
     enabled: shouldUseIssueSearchSupplement,
     placeholderData: (previousData) => previousData,
   });
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(liveRuns, [
+      ...(issues ?? []),
+      ...mineIssuesRaw,
+      ...touchedIssuesRaw,
+      ...remoteIssueSearchResults,
+    ]),
+    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+  );
   const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
     const issueIds = new Set<string>();
     for (const issue of mineIssues) issueIds.add(issue.id);

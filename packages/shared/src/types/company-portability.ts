@@ -402,6 +402,15 @@ export interface CompanyPortabilityImportResult {
     name: string;
     reason: string | null;
   }[];
+  skills: {
+    originalKey: string;
+    originalSlug: string;
+    key: string;
+    slug: string;
+    id: string;
+    action: "created" | "renamed" | "replaced" | "skipped";
+    reason: string | null;
+  }[];
   projects: {
     slug: string;
     id: string | null;

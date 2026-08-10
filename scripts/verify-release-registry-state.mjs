@@ -3,11 +3,18 @@
 import { pathToFileURL } from "node:url";
 
 const CANARY_VERSION_RE = /-canary\.\d+$/;
+const PRERELEASE_VERSION_RE = /-(?:canary|nightly)\.\d+$/;
+// Channels that publish prerelease versions and must never move `latest`.
+const PRERELEASE_CHANNELS = new Set(["canary", "nightly"]);
 const EXIT_RETRIABLE_FAILURE = 1;
 const EXIT_NON_RETRIABLE_FAILURE = 2;
 
 export function isCanaryVersion(version) {
   return CANARY_VERSION_RE.test(version);
+}
+
+export function isPrereleaseVersion(version) {
+  return PRERELEASE_VERSION_RE.test(version);
 }
 
 function createExitError(message, exitCode = EXIT_RETRIABLE_FAILURE) {
@@ -22,7 +29,7 @@ function usage() {
   process.stderr.write(
     [
       "Usage:",
-      "  node scripts/verify-release-registry-state.mjs --channel <canary|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest]",
+      "  node scripts/verify-release-registry-state.mjs --channel <canary|nightly|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest]",
       "",
     ].join("\n"),
   );
@@ -69,8 +76,8 @@ function parseArgs(argv) {
     }
   }
 
-  if (options.channel !== "canary" && options.channel !== "stable") {
-    throw createExitError("--channel must be canary or stable", EXIT_NON_RETRIABLE_FAILURE);
+  if (!PRERELEASE_CHANNELS.has(options.channel) && options.channel !== "stable") {
+    throw createExitError("--channel must be canary, nightly, or stable", EXIT_NON_RETRIABLE_FAILURE);
   }
 
   if (!options.distTag) {
@@ -284,19 +291,19 @@ export function verifyPackageRegistryProblems({
     }
   }
 
-  if (channel === "canary") {
+  if (PRERELEASE_CHANNELS.has(channel)) {
     const latestVersion = distTags.latest;
 
-    if (latestVersion && isCanaryVersion(latestVersion) && !allowCanaryLatest) {
+    if (latestVersion && isPrereleaseVersion(latestVersion) && !allowCanaryLatest) {
       problems.push(
         createProblem(
-          `${packageName}: latest dist-tag still resolves to canary ${latestVersion}; if that state is intentional, rerun the verification script directly with --allow-canary-latest`,
+          `${packageName}: latest dist-tag still resolves to prerelease ${latestVersion}; if that state is intentional, rerun the verification script directly with --allow-canary-latest`,
           { retriable: false },
         ),
       );
     }
 
-    if (latestVersion && isCanaryVersion(latestVersion)) {
+    if (latestVersion && isPrereleaseVersion(latestVersion)) {
       const latestManifest = requireManifest(
         packageName,
         latestVersion,

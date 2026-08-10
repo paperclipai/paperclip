@@ -18,11 +18,12 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|nightly|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
+  ./scripts/release.sh nightly --dry-run
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
@@ -32,6 +33,10 @@ Notes:
     zero-padded UTC day, and P is the same-day stable patch slot.
   - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
     "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
+  - Nightly releases republish a commit that already shipped a canary (HEAD
+    must carry a canary/v* tag) as YYYY.MDD.P-nightly.N under the npm
+    dist-tag "nightly", with the git tag nightly/vYYYY.MDD.P-nightly.N.
+    The version dates the nightly cut, not the source canary.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
   - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
@@ -85,7 +90,7 @@ set_cleanup_trap() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    canary|stable)
+    canary|nightly|stable)
       if [ -n "$channel" ]; then
         release_fail "only one release channel may be provided."
       fi
@@ -146,9 +151,17 @@ DIST_TAG="latest"
 
 if [ "$channel" = "canary" ]; then
   require_on_master_branch
-  TARGET_PUBLISH_VERSION="$(next_canary_version "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
+  TARGET_PUBLISH_VERSION="$(next_prerelease_version canary "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
   DIST_TAG="canary"
-  tag_name="$(canary_tag_name "$TARGET_PUBLISH_VERSION")"
+  tag_name="$(prerelease_tag_name canary "$TARGET_PUBLISH_VERSION")"
+elif [ "$channel" = "nightly" ]; then
+  # Nightly promotes an already-shipped canary commit, so it runs from a
+  # detached checkout of that commit rather than the master branch tip.
+  require_channel_tag_at_head canary
+  require_channel_tag_absent_at_head nightly
+  TARGET_PUBLISH_VERSION="$(next_prerelease_version nightly "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
+  DIST_TAG="nightly"
+  tag_name="$(prerelease_tag_name nightly "$TARGET_PUBLISH_VERSION")"
 else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
 fi
@@ -193,11 +206,11 @@ release_info "  Last stable tag: ${LAST_STABLE_TAG:-<none>}"
 release_info "  Current stable version: $CURRENT_STABLE_VERSION"
 release_info "  Release date (UTC): $RELEASE_DATE"
 release_info "  Target stable version: $TARGET_STABLE_VERSION"
-if [ "$channel" = "canary" ]; then
-  release_info "  Canary version: $TARGET_PUBLISH_VERSION"
-else
-  release_info "  Stable version: $TARGET_PUBLISH_VERSION"
-fi
+case "$channel" in
+  canary) release_info "  Canary version: $TARGET_PUBLISH_VERSION" ;;
+  nightly) release_info "  Nightly version: $TARGET_PUBLISH_VERSION" ;;
+  *) release_info "  Stable version: $TARGET_PUBLISH_VERSION" ;;
+esac
 release_info "  Dist-tag: $DIST_TAG"
 release_info "  Git tag: $tag_name"
 if [ "$channel" = "stable" ]; then
@@ -358,14 +371,17 @@ release_info ""
 if [ "$dry_run" = true ]; then
   release_info "Dry run complete for $channel ${TARGET_PUBLISH_VERSION}."
 else
-  if [ "$channel" = "canary" ]; then
-    release_info "Published canary ${TARGET_PUBLISH_VERSION}."
-    release_info "Install with: npx paperclipai@canary onboard"
-    release_info "Next step: git push ${PUBLISH_REMOTE} refs/tags/${tag_name}"
-  else
-    release_info "Published stable ${TARGET_PUBLISH_VERSION}."
-    release_info "Next steps:"
-    release_info "  git push ${PUBLISH_REMOTE} refs/tags/${tag_name}"
-    release_info "  ./scripts/create-github-release.sh $TARGET_STABLE_VERSION"
-  fi
+  case "$channel" in
+    canary|nightly)
+      release_info "Published $channel ${TARGET_PUBLISH_VERSION}."
+      release_info "Install with: npx paperclipai@$channel onboard"
+      release_info "Next step: git push ${PUBLISH_REMOTE} refs/tags/${tag_name}"
+      ;;
+    *)
+      release_info "Published stable ${TARGET_PUBLISH_VERSION}."
+      release_info "Next steps:"
+      release_info "  git push ${PUBLISH_REMOTE} refs/tags/${tag_name}"
+      release_info "  ./scripts/create-github-release.sh $TARGET_STABLE_VERSION"
+      ;;
+  esac
 fi

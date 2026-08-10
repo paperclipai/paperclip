@@ -281,6 +281,7 @@ export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 export const finishToolAppSchema = z.object({
   enabledCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
   askFirstCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
+  reviewedCatalogEntryIds: z.array(z.string().uuid()).max(500).optional(),
   access: z.union([
     z.literal("all_agents"),
     z.object({ agentIds: z.array(z.string().uuid()).min(1).max(250) }),

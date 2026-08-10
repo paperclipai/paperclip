@@ -59,7 +59,16 @@ function getCompanyPathSegments(pathname: string, companyPrefix: string | undefi
   return segments.slice(1);
 }
 
-const RESERVED_APP_SUBPATHS = new Set(["browse", "connect", "review", "attention", "gateways", "advanced", "app"]);
+const RESERVED_APP_SUBPATHS = new Set([
+  "browse",
+  "connections",
+  "connect",
+  "review",
+  "attention",
+  "gateways",
+  "advanced",
+  "app",
+]);
 
 function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
   const segments = pathname.split("/").filter(Boolean);
