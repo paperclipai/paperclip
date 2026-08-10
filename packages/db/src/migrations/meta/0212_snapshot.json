@@ -1,6 +1,6 @@
 {
-  "id": "efcce7d4-cdbc-4914-bd51-4068abc87676",
-  "prevId": "2ba3c35f-4897-487a-abe1-ef29a176a424",
+  "id": "b6ec56f5-7e56-42b1-bcb6-2ec5c12fccad",
+  "prevId": "c56d3441-2ed4-4249-a115-99d55d395899",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1016,7 +1016,7 @@
         },
         "agent_ownership_grants_source_check": {
           "name": "agent_ownership_grants_source_check",
-          "value": "\"agent_ownership_grants\".\"source\" in (\n        'agent_create',\n        'agent_created_default',\n        'agent_hire',\n        'manual_grant',\n        'transfer_accept',\n        'instance_admin_override'\n      )"
+          "value": "\"agent_ownership_grants\".\"source\" in (\n        'agent_create',\n        'agent_created_default',\n        'agent_hire',\n        'manual_grant',\n        'transfer_accept',\n        'instance_admin_override',\n        'instance_admin_bootstrap'\n      )"
         }
       },
       "isRLSEnabled": false
@@ -34208,27 +34208,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tool_connections_company_name_uq": {
-          "name": "tool_connections_company_name_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
