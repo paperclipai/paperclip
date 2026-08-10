@@ -19,6 +19,16 @@ import { parseDeviceLoginPrompt, type DeviceLoginPrompt } from "./device-login-p
 export const CODEX_DEVICE_LOGIN_COMMAND = "codex login --device-auth";
 
 /**
+ * The maximum number of characters the runner keeps in the parse buffer. The
+ * Codex prompt is small and puts the URL and the code close together. A sandbox
+ * can stream a large volume of output before the prompt. So the runner keeps
+ * only the most recent characters up to this limit. A large stream cannot grow
+ * the buffer without a bound. The limit is far larger than the prompt, so the
+ * runner never drops a real prompt.
+ */
+const MAX_PARSE_BUFFER_CHARS = 64 * 1024;
+
+/**
  * The sandbox side of the device-login run. The runner never calls Daytona
  * directly; a caller injects a concrete driver. A production driver binds these
  * three methods to a non-persisting Daytona exec path, a file read, and a
@@ -126,11 +136,19 @@ export async function runDeviceLogin(
 
   let promptSurfaced = false;
   // The in-memory parse buffer. The runner drops it as soon as it finds the
-  // prompt, so the secret-bearing stream never lives longer than one parse.
+  // prompt, so the secret-bearing stream never lives longer than one parse. The
+  // runner also bounds the buffer to {@link MAX_PARSE_BUFFER_CHARS}. When a new
+  // chunk makes the buffer larger than the limit, the runner drops the oldest
+  // characters from the front and keeps the trailing window. The prompt puts the
+  // URL and the code close together at the end of the stream, so the trailing
+  // window always holds a real prompt.
   let buffer = "";
   const onStdout = (chunk: string): void => {
     if (promptSurfaced) return;
     buffer += chunk;
+    if (buffer.length > MAX_PARSE_BUFFER_CHARS) {
+      buffer = buffer.slice(buffer.length - MAX_PARSE_BUFFER_CHARS);
+    }
     const prompt = parseDeviceLoginPrompt(buffer);
     if (prompt) {
       promptSurfaced = true;

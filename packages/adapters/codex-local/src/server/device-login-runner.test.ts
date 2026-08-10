@@ -71,6 +71,24 @@ describe("runDeviceLogin", () => {
     expect(disposeCalls.count).toBe(1);
   });
 
+  it("runner_surfaces_prompt_after_a_large_pre_prompt_stream", async () => {
+    // The sandbox streams a large volume of output before the prompt. The runner
+    // bounds the parse buffer, so the memory stays limited. The prompt arrives at
+    // the end of the stream, so the trailing window still holds it and the runner
+    // surfaces it.
+    const noise = "unrelated sandbox log line\n".repeat(20000);
+    const { driver } = createFakeDriver({
+      chunks: [noise, `1. Open this link\n${REAL_SHAPED_URL}\n${REAL_SHAPED_CODE}\nDone.\n`],
+      exitCode: 0,
+    });
+    const onPrompt = vi.fn();
+    const result = await runDeviceLogin(driver, { onPrompt, timeoutMs: 1000 });
+    expect(result.outcome).toBe("success");
+    expect(result.promptSurfaced).toBe(true);
+    expect(onPrompt).toHaveBeenCalledTimes(1);
+    expect(onPrompt).toHaveBeenCalledWith({ url: REAL_SHAPED_URL, code: REAL_SHAPED_CODE });
+  });
+
   it("runner_disposes_sandbox_on_timeout", async () => {
     const { driver, disposeCalls } = createFakeDriver({ hang: true });
     const onPrompt = vi.fn();

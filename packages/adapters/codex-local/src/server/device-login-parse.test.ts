@@ -94,6 +94,36 @@ describe("parseDeviceLoginPrompt", () => {
     expect(parseDeviceLoginPrompt(noCode)).toBeNull();
   });
 
+  it("parse_binds_code_to_url_and_ignores_a_code_before_the_url", () => {
+    // A code-shaped token appears before the URL. The parser reads the code only
+    // after the URL, so it uses the code that follows the URL.
+    const text = [
+      "WXYZ-98765",
+      "1. Open this link in your browser and sign in to your account",
+      EXACT_URL,
+      "2. Enter this one-time code (expires in 15 minutes)",
+      "ABCD-EFGHJ",
+    ].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
+  it("parse_returns_null_when_only_code_is_before_the_url", () => {
+    // The only code-shaped token sits before the URL. No code follows the URL,
+    // so the parser rejects the output instead of binding the earlier token.
+    const text = ["WXYZ-98765", "Open this link", EXACT_URL].join("\n");
+    expect(parseDeviceLoginPrompt(text)).toBeNull();
+  });
+
+  it("parse_returns_null_when_code_is_far_after_the_url", () => {
+    // A code-shaped token sits far below the URL, past the proximity window. The
+    // parser does not bind a distant token to the URL.
+    const filler = "unrelated log line\n".repeat(40);
+    const text = [EXACT_URL, filler, "ABCD-EFGHJ"].join("\n");
+    expect(parseDeviceLoginPrompt(text)).toBeNull();
+  });
+
   it("parse_ignores_token_like_text", () => {
     // Token-like noise without the exact device URL must not yield a prompt.
     const text = [

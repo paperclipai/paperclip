@@ -45,16 +45,32 @@ const TRAILING_PUNCTUATION_RE = /[)\].,;:!]+$/;
 // on a word boundary at the start and requires a space or the end after it.
 const SHORT_CODE_RE = /(?:^|\s)([A-Za-z0-9?]{4}-[A-Za-z0-9?]{5})(?=\s|$)/m;
 
+// The maximum number of characters between the end of the URL and the start of
+// the code. The Codex prompt puts the code about two lines after the URL. The
+// parser looks for the code only inside this window after the URL. So an
+// unrelated code-shaped token that sits far away in the output cannot bind to
+// the URL. The window is large enough for the real gap, which is about 52
+// characters, and small enough to reject distant noise.
+const MAX_URL_TO_CODE_GAP = 256;
+
+// The result of a URL search: the canonical URL and the index of the first
+// character after the matched URL token. The code search starts at this index.
+interface DeviceUrlMatch {
+  url: string;
+  end: number;
+}
+
 /**
- * Returns the exact device-login URL when `text` holds it as a standalone token
- * with the exact origin `https://auth.openai.com` and the exact path
- * `/codex/device` and no query, fragment, or credentials. Returns null
- * otherwise. Returns the canonical {@link DEVICE_LOGIN_URL} constant on a match.
+ * Returns the exact device-login URL and its end index when `text` holds it as
+ * a standalone token with the exact origin `https://auth.openai.com` and the
+ * exact path `/codex/device` and no query, fragment, or credentials. Returns
+ * null otherwise. Returns the canonical {@link DEVICE_LOGIN_URL} constant on a
+ * match. The `end` index is the position of the first character after the
+ * matched token in `text`.
  */
-function findExactDeviceUrl(text: string): string | null {
-  const tokens = text.match(URL_TOKEN_RE);
-  if (!tokens) return null;
-  for (const token of tokens) {
+function findExactDeviceUrl(text: string): DeviceUrlMatch | null {
+  for (const match of text.matchAll(URL_TOKEN_RE)) {
+    const token = match[0];
     const cleaned = token.replace(TRAILING_PUNCTUATION_RE, "");
     let parsed: URL;
     try {
@@ -71,7 +87,7 @@ function findExactDeviceUrl(text: string): string | null {
       parsed.username === "" &&
       parsed.password === ""
     ) {
-      return DEVICE_LOGIN_URL;
+      return { url: DEVICE_LOGIN_URL, end: (match.index ?? 0) + token.length };
     }
   }
   return null;
@@ -79,28 +95,33 @@ function findExactDeviceUrl(text: string): string | null {
 
 /**
  * Returns the one-time code when `text` holds a token with the structure
- * `XXXX-XXXXX`. Returns null otherwise.
+ * `XXXX-XXXXX` inside the window that starts at `fromIndex`. The parser reads
+ * the code only after the URL, so the code binds to its URL. Returns null
+ * otherwise.
  */
-function findShortCode(text: string): string | null {
-  const match = SHORT_CODE_RE.exec(text);
+function findShortCode(text: string, fromIndex: number): string | null {
+  const window = text.slice(fromIndex, fromIndex + MAX_URL_TO_CODE_GAP);
+  const match = SHORT_CODE_RE.exec(window);
   return match ? match[1] : null;
 }
 
 /**
  * Parses Codex device-login output. Removes ANSI color sequences first, so
  * colored output from Codex CLI 0.128.0 and later reads the same as plain
- * output. Returns the login URL and the one-time code when both are present and
- * valid. Returns null for any other input, including a non-string input, an
- * absent prompt, a URL with a query or a fragment, a wrong origin or path, and a
- * malformed short code. Never throws on input, and never puts the URL or the
- * code into a log or an error.
+ * output. The parser reads the URL first, then reads the first code that follows
+ * the URL inside a fixed window. So the code binds to its URL, and an unrelated
+ * code elsewhere in the output cannot form a prompt. Returns the login URL and
+ * the one-time code when both are present and valid. Returns null for any other
+ * input, including a non-string input, an absent prompt, a URL with a query or a
+ * fragment, a wrong origin or path, and a malformed short code. Never throws on
+ * input, and never puts the URL or the code into a log or an error.
  */
 export function parseDeviceLoginPrompt(text: string): DeviceLoginPrompt | null {
   if (typeof text !== "string" || text.length === 0) return null;
   const clean = text.replace(ANSI_CSI_RE, "");
-  const url = findExactDeviceUrl(clean);
-  if (!url) return null;
-  const code = findShortCode(clean);
+  const urlMatch = findExactDeviceUrl(clean);
+  if (!urlMatch) return null;
+  const code = findShortCode(clean, urlMatch.end);
   if (!code) return null;
-  return { url, code };
+  return { url: urlMatch.url, code };
 }
