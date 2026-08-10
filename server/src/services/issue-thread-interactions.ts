@@ -463,8 +463,121 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   return Boolean(args.issue.assigneeUserId);
 }
 
+/**
+ * RBR-875 (CEO ruling, separated from RBR-852). The default for `supersedeOnUserComment`.
+ *
+ * This was `true` — every ask created without an opinion opted itself in to being expired by the
+ * next human comment on the issue. That is the RBR-823 defect at its source: the board types one
+ * comment and unrelated pending interactions are silently garbage-collected, including
+ * contradictory irreversible asks that nobody ever answered.
+ *
+ * It is now `false`. RBR-852 shipped the supported alternative — an explicit
+ * `supersedesInteractionIds` link that retires the specific target it names at create time with an
+ * auditable pointer back — which makes blanket expiry-by-proximity redundant rather than merely
+ * damaging. A redundant default can be removed on its own evidence.
+ *
+ * Consequence, stated plainly: expiry-by-comment is now strictly **opt-in**. A caller that wants a
+ * human comment to retire its ask must pass `supersedeOnUserComment: true` deliberately. Nothing
+ * in-tree does, so `selectCommentSupersededRows` is now a backstop for opt-in callers only.
+ */
+const SUPERSEDE_ON_USER_COMMENT_DEFAULT = false;
+
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
   return interaction.payload.supersedeOnUserComment === true;
+}
+
+/**
+ * RBR-852 AC1 + AC5. Given every pending supersedable row a single human comment could otherwise
+ * expire, return only the rows that comment is actually allowed to expire.
+ *
+ * The defect this fixes: one board comment used to expire *every* pending interaction on the
+ * issue, so contradictory irreversible asks were silently garbage-collected together and the
+ * board could not tell which question it had just answered — including the newest, still-correct
+ * ask the agent was actively waiting on.
+ *
+ * The rule is deliberately unclever:
+ *  - Exactly one pending supersedable candidate: the comment supersedes it. A comment posted
+ *    instead of answering the only open card is a reply to that card. This is the historical
+ *    behaviour and the only one that survives unchanged.
+ *  - More than one: expire nothing and log loudly. Product direction (RBR-852 AC1) is explicit
+ *    that the fallback must never guess a winner. Every tiebreak available here is a guess —
+ *    "newest" would destroy the fresh ask and keep the stale one, which is precisely backwards.
+ *
+ * Note this is only a *backstop*. The primary mechanism is explicit `supersedesInteractionIds`,
+ * which retires the superseded ask at create time, so a well-behaved agent arrives at comment time
+ * with exactly one pending card and lands in the single-candidate branch. Interactions predating
+ * explicit linking simply stay pending until their author withdraws them.
+ */
+export function selectCommentSupersededRows(
+  candidates: readonly IssueThreadInteractionRow[],
+): IssueThreadInteractionRow[] {
+  if (candidates.length <= 1) return [...candidates];
+
+  console.warn(
+    `[paperclip] RBR-852: a user comment matched ${candidates.length} pending supersedable interactions on issue `
+    + `${candidates[0]!.issueId}; expiring none of them rather than guessing which ask the comment answered. `
+    + `Left pending: ${candidates.map((row) => `${row.id} (${row.kind})`).join(", ")}. `
+    + "The creating agent should declare supersedesInteractionIds on the replacement, or withdraw these explicitly.",
+  );
+  return [];
+}
+
+/**
+ * RBR-893 AC3. Given the confirmation-like row that was just created and every pending
+ * confirmation-like row still live on the same issue, return the ones that now coexist with it.
+ *
+ * Why this exists. Create-time supersession only reaches rows that are same-issue **and**
+ * same-kind **and** same-agent, plus whatever the author explicitly named in
+ * `supersedesInteractionIds`. Everything outside that intersection — a peer agent's confirmation,
+ * a `request_checkbox_confirmation` sitting next to a `request_confirmation`, or a board-created
+ * ask — survives untouched. That is correct (one agent must never be able to silently destroy
+ * another's ask, and AC1 forbids guessing), but it means two contradictory irreversible
+ * instructions can sit pending on the same thread with nothing anywhere saying so. RBR-823's
+ * live example: three pending confirmations for the same mass deletion on RBR-730.
+ *
+ * Silent coexistence is the defect, so the fix is volume, not enforcement. Per the hard
+ * constraints on this issue we must not block interaction creation and must not change what
+ * agents are permitted to ask, so this returns rows for the caller to *report*, never to expire:
+ *  - auto-expiring a peer's ask would hand any agent a deletion primitive over other agents' cards
+ *  - 4xx-ing the create would fail an agent on the very call replacing a bad ask, which is the
+ *    prose-cleanup-chore RBR-823 exists to kill
+ *
+ * The author's supported route to a clean thread stays `supersedesInteractionIds` (its own asks)
+ * or an explicit withdraw. This is the alarm that tells it, and the board, that the route is
+ * needed.
+ */
+export function selectContradictoryPendingConfirmations(
+  created: Pick<IssueThreadInteractionRow, "id" | "kind">,
+  pendingOnIssue: readonly IssueThreadInteractionRow[],
+): IssueThreadInteractionRow[] {
+  if (!isRequestConfirmationLikeKind(created.kind)) return [];
+  return pendingOnIssue.filter((row) => (
+    row.id !== created.id
+    && row.status === "pending"
+    && isRequestConfirmationLikeKind(row.kind)
+  ));
+}
+
+/**
+ * RBR-893 AC3. Emit the loud signal for the rows above. Kept separate from selection so the
+ * decision is unit-testable without asserting on console output.
+ */
+function warnAboutContradictoryPendingConfirmations(
+  created: Pick<IssueThreadInteractionRow, "id" | "issueId">,
+  contradictory: readonly IssueThreadInteractionRow[],
+) {
+  if (contradictory.length === 0) return;
+  console.warn(
+    `[paperclip] RBR-893: confirmation ${created.id} was created on issue ${created.issueId} while `
+    + `${contradictory.length} other confirmation(s) are still pending there. Contradictory `
+    + "irreversible instructions can now coexist and the board cannot tell which one is current. "
+    + `Still pending: ${contradictory
+      .map((row) => `${row.id} (${row.kind}, createdByAgentId=${row.createdByAgentId ?? "none"})`)
+      .join(", ")}. `
+    + "The creating agent should declare supersedesInteractionIds on the replacement, or withdraw "
+    + "the stale asks explicitly. Nothing was auto-expired: an agent must not be able to retire "
+    + "another agent's ask, and guessing a winner is what RBR-823 reported.",
+  );
 }
 
 function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
@@ -474,7 +587,7 @@ function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): C
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? SUPERSEDE_ON_USER_COMMENT_DEFAULT,
         },
       };
     case "request_confirmation":
@@ -482,7 +595,7 @@ function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): C
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? SUPERSEDE_ON_USER_COMMENT_DEFAULT,
         },
       };
     case "request_checkbox_confirmation":
@@ -490,7 +603,7 @@ function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): C
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? SUPERSEDE_ON_USER_COMMENT_DEFAULT,
         },
       };
     case "request_item_verdicts":
@@ -498,7 +611,7 @@ function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): C
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? SUPERSEDE_ON_USER_COMMENT_DEFAULT,
         },
       };
     default:
@@ -562,6 +675,45 @@ function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
     version: 1,
     outcome: "superseded_by_newer_request",
     supersededByInteractionId: replacementInteractionId,
+  } as const;
+}
+
+/**
+ * RBR-852 AC1/AC3. The creating agent explicitly declared, via
+ * `payload.supersedesInteractionIds`, that the new interaction replaces this one. Per the
+ * product call we auto-expire rather than 4xx the create, so the result must carry a pointer
+ * back to the replacement — otherwise the thread shows a retired ask with no successor and the
+ * board is back to guessing.
+ */
+function buildSupersededByInteractionResult(
+  row: IssueThreadInteractionRow,
+  supersededByInteractionId: string,
+) {
+  if (row.kind === "ask_user_questions") {
+    return {
+      version: 1,
+      answers: [],
+      expirationReason: "superseded_by_interaction",
+      supersededByInteractionId,
+      summaryMarkdown: null,
+    } as const;
+  }
+
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome: "superseded_by_interaction",
+      complete: false,
+      items: interaction.result?.items ?? [],
+      supersededByInteractionId,
+    } satisfies RequestItemVerdictsResult;
+  }
+
+  return {
+    version: 1,
+    outcome: "superseded_by_interaction",
+    supersededByInteractionId,
   } as const;
 }
 
@@ -1234,6 +1386,26 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     return hydrateInteraction(current);
   }
 
+  /**
+   * RBR-852 AC2 + finding 3. Company-scoped read for the cross-issue withdraw route.
+   *
+   * `getForIssue` pins `current.issueId === issue.id`, which is exactly the constraint that forces
+   * an agent to ask a human to clean up an ask it left on another issue. The withdraw route needs
+   * to authorize on `createdByAgentId` before it knows which issue the row lives on, so it needs a
+   * lookup that is scoped by company alone. Company scoping is still absolute.
+   */
+  async function getForCompany(scope: { companyId: string }, interactionId: string) {
+    const current = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    if (!current || current.companyId !== scope.companyId) {
+      throw notFound("Interaction not found");
+    }
+    return hydrateInteraction(current);
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1287,6 +1459,66 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       throw conflict("Interaction has already been resolved");
     }
     return current;
+  }
+
+  async function withdrawPendingInteractionRow(
+    current: IssueThreadInteractionRow,
+    data: WithdrawIssueThreadInteraction,
+    actor: InteractionActor,
+  ) {
+    const reason = data.reason?.trim() || null;
+    const now = new Date();
+    // One transaction, linked tool action first: revoking pending/approved
+    // requests before resolving the card means a concurrent gateway claim
+    // (approved -> executing) either loses to the revocation's row lock or
+    // is detected below and aborts the withdrawal; a concurrent card
+    // resolution rolls the revocation back via the status="pending" guard.
+    // "approved" is revoked too — the request can be approved from the tool
+    // review queue while the card is still pending, and an executable
+    // request must not outlive a withdrawn card.
+    const updated = await db.transaction(async (tx) => {
+      await resolveLinkedToolActionRequests(tx, current, {
+        status: "cancelled",
+        fromStatuses: ["pending", "approved"],
+        actor,
+        now,
+      });
+      if (current.kind === "request_confirmation") {
+        const active = await tx
+          .select({ id: toolActionRequests.id })
+          .from(toolActionRequests)
+          .where(and(
+            eq(toolActionRequests.companyId, current.companyId),
+            eq(toolActionRequests.interactionId, current.id),
+            inArray(toolActionRequests.status, ["executing", "executed"]),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (active) throw conflict("The linked tool action is already executing and can no longer be withdrawn");
+      }
+      const [row] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "cancelled",
+          result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByRunId: actor.runId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, current.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+      if (!row) throw conflict("Interaction has already been resolved");
+      return row;
+    });
+
+    await touchIssue(db, current.issueId);
+    const withdrawn = hydrateInteraction(updated);
+    await emitInteractionResolvedTelemetry(db, withdrawn);
+    return withdrawn;
   }
 
   async function acceptRequestConfirmation(args: {
@@ -1469,6 +1701,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
   return {
     getForIssue,
+    getForCompany,
     sweepMergedPullRequestConfirmations: async () => {
       const rows = await db
         .select({
@@ -1836,8 +2069,97 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         || data.kind === "request_checkbox_confirmation"
         || data.kind === "request_item_verdicts";
 
+      // RBR-852 AC1 + finding 3: explicit, possibly cross-issue supersession links.
+      // Resolve and validate before the insert transaction so a bad link fails the create with
+      // 422 and mutates nothing. Cross-issue is in scope (an agent working RBR-730 must be able
+      // to retire the ask it created on RBR-660); cross-company never is.
+      const declaredSupersedesIds = Array.from(new Set(
+        ((data.payload as { supersedesInteractionIds?: unknown }).supersedesInteractionIds ?? []) as string[],
+      ));
+      let supersedesRows: IssueThreadInteractionRow[] = [];
+      if (declaredSupersedesIds.length > 0) {
+        if (!actor.agentId) {
+          throw unprocessable("supersedesInteractionIds may only be declared by an agent actor");
+        }
+        supersedesRows = await db
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            inArray(issueThreadInteractions.id, declaredSupersedesIds),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+          ));
+
+        const foundIds = new Set(supersedesRows.map((row) => row.id));
+        const missing = declaredSupersedesIds.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+          throw unprocessable("supersedesInteractionIds must reference interactions in the same company", {
+            supersedesInteractionIds: missing,
+          });
+        }
+        const notPending = supersedesRows.filter((row) => row.status !== "pending");
+        if (notPending.length > 0) {
+          throw unprocessable("supersedesInteractionIds must reference pending interactions", {
+            supersedesInteractionIds: notPending.map((row) => row.id),
+          });
+        }
+        // Ownership, not a role grant: an agent may only retire its own ask this way, so
+        // supersession can never silently destroy the board's question or a peer's ask.
+        const notOwned = supersedesRows.filter((row) => row.createdByAgentId !== actor.agentId);
+        if (notOwned.length > 0) {
+          throw unprocessable("supersedesInteractionIds may only reference interactions you created", {
+            supersedesInteractionIds: notOwned.map((row) => row.id),
+          });
+        }
+      }
+
       let created: IssueThreadInteractionRow;
       let superseded: IssueThreadInteractionRow[] = [];
+
+      /**
+       * Expire every interaction the new row explicitly named, inside the create transaction.
+       * Per AC3 this auto-expires with a pointer rather than 4xx-ing the create: rejecting here
+       * would fail the agent on the very call it is making to replace a bad ask, and push it
+       * back to writing cleanup prose for a human. Each row keeps its `status = "pending"`
+       * guard so a concurrent answer wins and is simply not counted as superseded.
+       */
+      const expireDeclaredSupersedes = async (
+        tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+        row: IssueThreadInteractionRow,
+      ): Promise<IssueThreadInteractionRow[]> => {
+        if (supersedesRows.length === 0) return [];
+        const now = new Date();
+        const expiredRows: IssueThreadInteractionRow[] = [];
+        for (const target of supersedesRows) {
+          if (target.id === row.id) continue;
+          const [updatedRow] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByInteractionResult(target, row.id),
+              resolvedByAgentId: actor.agentId ?? null,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, target.id),
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!updatedRow) continue;
+          // An irreversible tool action must not outlive the card that authorized it.
+          await resolveLinkedToolActionRequests(tx, updatedRow, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor,
+            now,
+          });
+          expiredRows.push(updatedRow);
+        }
+        return expiredRows;
+      };
+
       try {
         // A terminal issue must not regain pending actionable cards. FOR UPDATE
         // on the issue row serializes this insert both against terminal status
@@ -1889,7 +2211,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             .returning();
 
           if (data.kind !== "request_confirmation" || !actor.agentId) {
-            return { row, supersededRows: [] };
+            return { row, supersededRows: await expireDeclaredSupersedes(tx, row) };
           }
 
           const now = new Date();
@@ -1920,7 +2242,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               now,
             });
           }
-          return { row, supersededRows };
+          // The blanket rule above only reaches same-issue, same-kind rows. Explicit links can
+          // point at another issue or another kind, so run them too and merge without
+          // double-counting anything the blanket sweep already expired.
+          const alreadyExpired = new Set(supersededRows.map((supersededRow) => supersededRow.id));
+          const declaredRows = (await expireDeclaredSupersedes(tx, row))
+            .filter((declaredRow) => !alreadyExpired.has(declaredRow.id));
+          return { row, supersededRows: [...supersededRows, ...declaredRows] };
         });
         created = result.row;
         superseded = result.supersededRows;
@@ -1942,8 +2270,42 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         return hydrateInteraction(existing);
       }
 
+      /**
+       * RBR-893 AC3. The create transaction has committed, so this sees the real surviving set:
+       * everything the same-agent/same-kind sweep and the explicit `supersedesInteractionIds`
+       * links already expired is gone. Whatever confirmation-like rows are still pending here
+       * genuinely coexist with the new one. Read-only and deliberately outside the transaction —
+       * this must never be able to fail or slow down the create it is reporting on.
+       */
+      if (isRequestConfirmationLikeKind(created.kind)) {
+        try {
+          const stillPending = await db
+            .select()
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+              ne(issueThreadInteractions.id, created.id),
+            ));
+          warnAboutContradictoryPendingConfirmations(
+            created,
+            selectContradictoryPendingConfirmations(created, stillPending),
+          );
+        } catch (error) {
+          console.error("[paperclip] RBR-893: contradictory-confirmation check failed", error);
+        }
+      }
+
       await touchIssue(db, issue.id);
       if (superseded.length > 0) {
+        // Cross-issue links retire cards on other issues; those threads must be touched too or
+        // their boards keep serving a stale pending card from cache.
+        for (const otherIssueId of new Set(
+          superseded.map((row) => row.issueId).filter((issueId) => issueId !== issue.id),
+        )) {
+          await touchIssue(db, otherIssueId);
+        }
         await emitResolvedInteractionsTelemetry(db, superseded.map(hydrateInteraction));
       }
       return hydrateInteraction(created);
@@ -2343,7 +2705,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           eq(issueThreadInteractions.status, "pending"),
         ));
 
-      const superseded = rows.filter((row) => {
+      const superseded = selectCommentSupersededRows(rows.filter((row) => {
         if (!isUserCommentSupersedableKind(row.kind)) return false;
         const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
         return (
@@ -2353,7 +2715,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             interactionCreatedAt: row.createdAt,
           })
         );
-      });
+      }));
 
       if (superseded.length === 0) return [];
 
@@ -2446,9 +2808,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       const rowById = new Map(rows.map((row) => [row.id, row] as const));
       for (const { comment, rowIds } of supersededByComment.values()) {
-        const commentRows = rowIds
+        const commentRows = selectCommentSupersededRows(rowIds
           .map((rowId) => rowById.get(rowId))
-          .filter((row): row is IssueThreadInteractionRow => Boolean(row));
+          .filter((row): row is IssueThreadInteractionRow => Boolean(row)));
         const questionRowIds = commentRows
           .filter((row) => row.kind === "ask_user_questions")
           .map((row) => row.id);
@@ -2662,6 +3024,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return expired;
     },
 
+    /**
+     * RBR-852 AC2 + finding 3. Company-scoped withdraw: retire a pending interaction by id
+     * without addressing the issue it lives on.
+     *
+     * The per-issue `withdrawInteraction` below cannot satisfy the cross-issue case — it pins
+     * `current.issueId === issue.id`, so an agent that created a now-stale ask on another issue
+     * has no way to retire it and falls back to asking a human in prose. That prose-cleanup-chore
+     * is the defect this issue exists to kill. Authorization for this path is pure ownership
+     * (`createdByAgentId`), enforced by the route; this service call never crosses companies.
+     */
+    withdrawCompanyInteraction: async (
+      scope: { companyId: string },
+      interactionId: string,
+      input: WithdrawIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = withdrawIssueThreadInteractionSchema.parse(input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      if (!current || current.companyId !== scope.companyId) {
+        throw notFound("Interaction not found");
+      }
+      if (current.status !== "pending") throw conflict("Interaction has already been resolved");
+      return withdrawPendingInteractionRow(current, data, actor);
+    },
+
     withdrawInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,
@@ -2678,60 +3069,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw notFound("Interaction not found");
       }
       if (current.status !== "pending") throw conflict("Interaction has already been resolved");
-
-      const reason = data.reason?.trim() || null;
-      const now = new Date();
-      // One transaction, linked tool action first: revoking pending/approved
-      // requests before resolving the card means a concurrent gateway claim
-      // (approved -> executing) either loses to the revocation's row lock or
-      // is detected below and aborts the withdrawal; a concurrent card
-      // resolution rolls the revocation back via the status="pending" guard.
-      // "approved" is revoked too — the request can be approved from the tool
-      // review queue while the card is still pending, and an executable
-      // request must not outlive a withdrawn card.
-      const updated = await db.transaction(async (tx) => {
-        await resolveLinkedToolActionRequests(tx, current, {
-          status: "cancelled",
-          fromStatuses: ["pending", "approved"],
-          actor,
-          now,
-        });
-        if (current.kind === "request_confirmation") {
-          const active = await tx
-            .select({ id: toolActionRequests.id })
-            .from(toolActionRequests)
-            .where(and(
-              eq(toolActionRequests.companyId, current.companyId),
-              eq(toolActionRequests.interactionId, current.id),
-              inArray(toolActionRequests.status, ["executing", "executed"]),
-            ))
-            .then((rows) => rows[0] ?? null);
-          if (active) throw conflict("The linked tool action is already executing and can no longer be withdrawn");
-        }
-        const [row] = await tx
-          .update(issueThreadInteractions)
-          .set({
-            status: "cancelled",
-            result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
-            resolvedByAgentId: actor.agentId ?? null,
-            resolvedByRunId: actor.runId ?? null,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedAt: now,
-            updatedAt: now,
-          })
-          .where(and(
-            eq(issueThreadInteractions.id, interactionId),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
-        if (!row) throw conflict("Interaction has already been resolved");
-        return row;
-      });
-
-      await touchIssue(db, issue.id);
-      const withdrawn = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, withdrawn);
-      return withdrawn;
+      return withdrawPendingInteractionRow(current, data, actor);
     },
 
     answerQuestions: async (

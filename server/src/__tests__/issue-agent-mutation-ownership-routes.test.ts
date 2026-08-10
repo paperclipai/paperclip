@@ -2166,4 +2166,106 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * RBR-882: a rejected out-of-boundary write must never deserialize into
+   * something an agent's success path reads as fine.
+   *
+   * The reported symptom was a "success-shaped body": `curl -sS ... | jq` on a
+   * denied write printed `id: null` / `status: null` and the agent moved on
+   * believing the comment landed. The rejection itself was correct; the way a
+   * normal client path *saw* it was not.
+   *
+   * These tests pin the server side of that contract for both write paths the
+   * CEO hit. A denial must be:
+   *   - non-2xx (so `curl -f` / `res.ok` / `raise_for_status` trip),
+   *   - carrying a populated top-level `error` string,
+   *   - carrying a machine-readable `details.code`,
+   *   - and must NOT carry the success-shaped `id` / `status` keys that a
+   *     client reads off a created comment or an updated issue.
+   *
+   * The last assertion is the load-bearing one: it is what makes the failure
+   * visible rather than invisible-by-construction. `id: null` in a denial body
+   * would satisfy the first three and still reproduce the original bug.
+   */
+  describe("RBR-882: out-of-boundary write denials are not success-shaped", () => {
+    function denyAllBoundary() {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+        // The actor can still *see* the issue; only the write actions are
+        // outside its boundary. This is the shape of the reported repro.
+        const allowed = input.action === "issue:read" || input.action === "company_scope:read";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_company_agent" : "deny_low_trust_boundary",
+          explanation: allowed
+            ? "Readable by a company agent."
+            : "Issue is outside this actor's authorization boundary.",
+        };
+      });
+    }
+
+    /** A denial body must be unambiguous to a client that only parses JSON. */
+    function expectUnambiguousDenial(res: { status: number; body: Record<string, unknown> }) {
+      expect(res.status, JSON.stringify(res.body)).toBeGreaterThanOrEqual(400);
+      expect(typeof res.body.error).toBe("string");
+      expect(res.body.error as string).not.toHaveLength(0);
+      // The success-shaped keys must be absent, not null. `id: null` is exactly
+      // the shape that let the original dropped writes look like successes.
+      expect(res.body).not.toHaveProperty("id");
+      expect(res.body).not.toHaveProperty("status");
+      expect((res.body.details as Record<string, unknown> | undefined)?.code).toBeTruthy();
+    }
+
+    it("PATCH /issues/:id carrying a comment fails loudly instead of reporting success", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      denyAllBoundary();
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "A 3.5KB correction that must not silently vanish." });
+
+      expectUnambiguousDenial(res);
+      // AC2: the comment must not be reported as persisted when it was rejected.
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("POST /issues/:id/comments fails loudly instead of returning a null id", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      denyAllBoundary();
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "A correction that must not silently vanish." });
+
+      expectUnambiguousDenial(res);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("keeps 404 on a missing issue unambiguous for both write paths", async () => {
+      // A write to an issue the actor cannot even see resolves as "not found";
+      // that path must be just as loud as the 403 path.
+      mockIssueService.getById.mockResolvedValue(null);
+      mockIssueService.getByIdentifier.mockResolvedValue(null);
+
+      const patchRes = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "Dropped write." });
+      expect(patchRes.status).toBe(404);
+      expect(patchRes.body.error).toBeTruthy();
+      expect(patchRes.body).not.toHaveProperty("id");
+      expect(patchRes.body).not.toHaveProperty("status");
+
+      const commentRes = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body: "Dropped write." });
+      expect(commentRes.status).toBe(404);
+      expect(commentRes.body.error).toBeTruthy();
+      expect(commentRes.body).not.toHaveProperty("id");
+
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
 });

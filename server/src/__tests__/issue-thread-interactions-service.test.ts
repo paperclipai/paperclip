@@ -3467,4 +3467,252 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
     });
   });
+
+  /**
+   * RBR-852. The acceptance gate for "interactions have a lifecycle owner".
+   *
+   * Two production behaviours are pinned here:
+   *  1. A single board comment must never garbage-collect a pile of contradictory pending asks
+   *     (AC5). Before this, one comment expired all of them, so the board could not tell which
+   *     question it had answered and the agent lost the ask it was actually waiting on.
+   *  2. An agent must be able to retire its own stale ask *on another issue* — the case that
+   *     forced two live CEO asks to embed prose begging a human to dismiss a confirmation the
+   *     API refused to let an agent touch.
+   */
+  describe("RBR-852 interaction lifecycle", () => {
+    async function seedAgent(companyId: string, name: string) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      return agentId;
+    }
+
+    async function seedSiblingIssue(companyId: string, goalId: string, title: string) {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        goalId,
+        title,
+        status: "in_progress",
+        priority: "medium",
+      });
+      return issueId;
+    }
+
+    it("AC5: a single user comment leaves three contradictory pending asks alone, including the current one", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Three contradictory device purge asks");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+
+      // Modelled directly on the live RBR-730 pile-up: three irreversible purge confirmations
+      // (188 / 190 / 193 devices) from one author, all pending at once.
+      const [oldest, middle, current] = [randomUUID(), randomUUID(), randomUUID()];
+      await db.insert(issueThreadInteractions).values([
+        { id: oldest, prompt: "Purge 188 devices?", at: "2026-08-02T10:00:00.000Z" },
+        { id: middle, prompt: "Purge 190 devices?", at: "2026-08-05T18:12:00.000Z" },
+        { id: current, prompt: "Purge 193 devices?", at: "2026-08-05T18:46:00.000Z" },
+      ].map((row) => ({
+        id: row.id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: authorAgentId,
+        payload: { version: 1 as const, prompt: row.prompt, supersedeOnUserComment: true },
+        createdAt: new Date(row.at),
+        updatedAt: new Date(row.at),
+      })));
+
+      const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+        { id: issueId, companyId },
+        { id: randomUUID(), createdAt: new Date("2026-08-05T19:00:00.000Z"), authorUserId: "local-board" },
+        { userId: "local-board" },
+      );
+
+      // Nothing is guessed away, and above all the current ask survives.
+      expect(expired).toHaveLength(0);
+      const interactions = await interactionsSvc.listForIssue(issueId);
+      for (const id of [oldest, middle, current]) {
+        expect(interactions.find((interaction) => interaction.id === id)?.status).toBe("pending");
+      }
+    });
+
+    it("AC5: a user comment still supersedes when it is the only pending ask on the issue", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Single pending ask still supersedes");
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "Proceed with the only open draft?" },
+      }, { userId: "local-board" });
+
+      const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+        { id: issueId, companyId },
+        {
+          id: randomUUID(),
+          createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+          authorUserId: "local-board",
+        },
+        { userId: "local-board" },
+      );
+
+      expect(expired).toHaveLength(1);
+      expect(expired[0]).toMatchObject({ id: created.id, status: "expired" });
+    });
+
+    it("AC1 + finding 3: an explicit supersession link retires an ask on another issue and points at its replacement", async () => {
+      const { companyId, goalId, issueId: currentIssueId } = await seedConfirmationIssue("Cross-issue supersession");
+      const otherIssueId = await seedSiblingIssue(companyId, goalId, "Older issue holding the stale ask");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+
+      // The 188-device ask, stranded on a different issue — the exact shape the parent's
+      // per-issue mechanisms are structurally blind to.
+      const stale = await interactionsSvc.create({ id: otherIssueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "Purge 188 devices against the stale keep-list?" },
+      }, { agentId: authorAgentId });
+      expect(stale.status).toBe("pending");
+
+      const replacement = await interactionsSvc.create({ id: currentIssueId, companyId }, {
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Purge 193 devices against the current keep-list?",
+          supersedesInteractionIds: [stale.id],
+        },
+      }, { agentId: authorAgentId });
+
+      const retired = await interactionsSvc.getForIssue({ id: otherIssueId, companyId }, stale.id);
+      expect(retired).toMatchObject({
+        status: "expired",
+        result: {
+          outcome: "superseded_by_interaction",
+          supersededByInteractionId: replacement.id,
+        },
+      });
+      expect(replacement.status).toBe("pending");
+    });
+
+    it("AC1: supersession links may only name pending interactions the calling agent created", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Supersession ownership guard");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+      const otherAgentId = await seedAgent(companyId, "CISO");
+
+      const peerAsk = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        idempotencyKey: "confirmation:peer",
+        payload: { version: 1, prompt: "A peer's ask that must not be retired by someone else" },
+      }, { agentId: otherAgentId });
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        idempotencyKey: "confirmation:hijack",
+        payload: {
+          version: 1,
+          prompt: "Retire someone else's ask?",
+          supersedesInteractionIds: [peerAsk.id],
+        },
+      }, { agentId: authorAgentId })).rejects.toThrow(/only reference interactions you created/);
+
+      expect(
+        (await interactionsSvc.getForIssue({ id: issueId, companyId }, peerAsk.id)).status,
+      ).toBe("pending");
+    });
+
+    it("AC1: supersession links never cross a company boundary", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Supersession company guard");
+      const foreign = await seedConfirmationIssue("Foreign company");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+      const foreignAgentId = await seedAgent(foreign.companyId, "Foreign CEO");
+
+      const foreignAsk = await interactionsSvc.create(
+        { id: foreign.issueId, companyId: foreign.companyId },
+        { kind: "request_confirmation", payload: { version: 1, prompt: "Foreign company ask" } },
+        { agentId: foreignAgentId },
+      );
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Reach into another company?",
+          supersedesInteractionIds: [foreignAsk.id],
+        },
+      }, { agentId: authorAgentId })).rejects.toThrow(/same company/);
+
+      expect(
+        (await interactionsSvc.getForIssue({ id: foreign.issueId, companyId: foreign.companyId }, foreignAsk.id)).status,
+      ).toBe("pending");
+    });
+
+    it("AC2 + finding 3: the author withdraws its own ask on another issue without addressing that issue", async () => {
+      const { companyId, goalId, issueId: currentIssueId } = await seedConfirmationIssue("Cross-issue withdraw");
+      const otherIssueId = await seedSiblingIssue(companyId, goalId, "Issue the author is not working");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+
+      const stale = await interactionsSvc.create({ id: otherIssueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "Purge 188 devices against the stale keep-list?" },
+      }, { agentId: authorAgentId });
+
+      // The per-issue route cannot see it from the issue the author is actually working.
+      await expect(interactionsSvc.withdrawInteraction(
+        { id: currentIssueId, companyId },
+        stale.id,
+        { reason: "Superseded by the 193-device ask" },
+        { agentId: authorAgentId },
+      )).rejects.toThrow(/not found/i);
+
+      const withdrawn = await interactionsSvc.withdrawCompanyInteraction(
+        { companyId },
+        stale.id,
+        { reason: "Superseded by the 193-device ask" },
+        { agentId: authorAgentId },
+      );
+
+      // Withdraw retires the question; it must never manufacture a decision.
+      expect(withdrawn).toMatchObject({
+        id: stale.id,
+        status: "cancelled",
+        result: { outcome: "withdrawn", reason: "Superseded by the 193-device ask" },
+        resolvedByAgentId: authorAgentId,
+      });
+      expect(withdrawn.result).not.toMatchObject({ outcome: "accepted" });
+    });
+
+    it("AC2: company-scoped withdraw refuses to cross a company boundary or retire a resolved ask", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Company withdraw guards");
+      const foreign = await seedConfirmationIssue("Foreign company withdraw");
+      const authorAgentId = await seedAgent(companyId, "CEO");
+
+      const ask = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "An ask to withdraw twice" },
+      }, { agentId: authorAgentId });
+
+      await expect(interactionsSvc.withdrawCompanyInteraction(
+        { companyId: foreign.companyId },
+        ask.id,
+        {},
+        { agentId: authorAgentId },
+      )).rejects.toThrow(/not found/i);
+
+      await interactionsSvc.withdrawCompanyInteraction({ companyId }, ask.id, {}, { agentId: authorAgentId });
+      await expect(interactionsSvc.withdrawCompanyInteraction(
+        { companyId },
+        ask.id,
+        {},
+        { agentId: authorAgentId },
+      )).rejects.toThrow(/already been resolved/i);
+    });
+  });
 });

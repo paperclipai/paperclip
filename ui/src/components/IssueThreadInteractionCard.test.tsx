@@ -310,13 +310,20 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("expired by comment");
   });
 
-  it("makes child tasks explicit in suggested task trees", () => {
-    const host = renderCard({
-      interaction: pendingSuggestedTasksInteraction,
-    });
+  it(
+    "makes child tasks explicit in suggested task trees",
+    () => {
+      const host = renderCard({
+        interaction: pendingSuggestedTasksInteraction,
+      });
 
-    expect(host.textContent).toContain("Child task");
-  });
+      expect(host.textContent).toContain("Child task");
+    },
+    // Pre-existing marginal case: rendering this fixture sits right at the vitest
+    // default 5s ceiling on loaded/oversubscribed hosts (see RBR-974). Bumping the
+    // per-test timeout removes the flake without masking a real regression.
+    20_000,
+  );
 
   it("shows an explicit placeholder when a rejected interaction has no reason", () => {
     const host = renderCard({

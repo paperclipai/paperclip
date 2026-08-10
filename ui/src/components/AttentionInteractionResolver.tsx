@@ -56,6 +56,16 @@ export function AttentionInteractionResolver({
     return match && isIssueThreadInteraction(match) ? match : null;
   }, [interactions, interactionId]);
 
+  /**
+   * RBR-914 (AC4). The queue resolves a decision out of thread context, which is exactly where the
+   * multi-pending-confirmation hazard is most dangerous — the row looks like the only open ask. The
+   * interaction list is already fetched here, so pass the siblings through and let the card say so.
+   */
+  const threadInteractions = useMemo<readonly IssueThreadInteraction[]>(
+    () => (interactions ?? []).filter(isIssueThreadInteraction),
+    [interactions],
+  );
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -120,6 +130,7 @@ export function AttentionInteractionResolver({
   return (
     <IssueThreadInteractionCard
       interaction={interaction}
+      threadInteractions={threadInteractions}
       agentMap={agentMap}
       currentUserId={currentUserId}
       userLabelMap={userLabelMap}

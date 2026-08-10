@@ -439,6 +439,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
         item={item}
+        threadInteractions={interactions}
         agentMap={agentMap}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
@@ -453,6 +454,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ),
     [
       agentMap,
+      interactions,
       currentUserId,
       userLabelMap,
       onAcceptInteraction,

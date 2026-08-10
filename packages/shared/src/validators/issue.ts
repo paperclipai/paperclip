@@ -761,6 +761,20 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
 });
 
+/**
+ * RBR-852 AC1: explicit supersession links declared by the creating agent.
+ *
+ * Ids of pending interactions that this new interaction replaces. Cross-issue links are allowed
+ * (an agent working issue A may retire an ask it created on issue B) but cross-company links are
+ * never allowed; the service rejects those with 422 before the insert. An agent may only name
+ * interactions it created itself, so supersession can never silently retire the board's question
+ * or another agent's ask.
+ */
+export const supersedesInteractionIdsSchema = z
+  .array(z.string().uuid())
+  .max(20)
+  .optional();
+
 export const askUserQuestionsQuestionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(500),
@@ -775,6 +789,7 @@ export const askUserQuestionsPayloadSchema = z.object({
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  supersedesInteractionIds: supersedesInteractionIdsSchema,
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -815,8 +830,9 @@ export const askUserQuestionsResultSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
-  expirationReason: z.literal("superseded_by_comment").optional(),
+  expirationReason: z.enum(["superseded_by_comment", "superseded_by_interaction"]).optional(),
   commentId: z.string().uuid().nullable().optional(),
+  supersededByInteractionId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -879,6 +895,7 @@ export const requestConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  supersedesInteractionIds: supersedesInteractionIdsSchema,
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
 });
@@ -909,6 +926,7 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   allowDeclineReason: z.boolean().optional().default(true),
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  supersedesInteractionIds: supersedesInteractionIdsSchema,
   target: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const optionIds = new Set<string>();
@@ -1014,6 +1032,7 @@ export const requestConfirmationResultSchema = z.object({
     "rejected",
     "superseded_by_comment",
     "superseded_by_newer_request",
+    "superseded_by_interaction",
     "stale_target",
     "withdrawn",
     "issue_closed",
@@ -1076,6 +1095,7 @@ export const requestItemVerdictsPayloadSchema = z.object({
   reasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
   allowBulkApprove: z.boolean().optional().default(true),
   supersedeOnUserComment: z.boolean().optional(),
+  supersedesInteractionIds: supersedesInteractionIdsSchema,
   target: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();
@@ -1141,12 +1161,13 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "superseded_by_interaction", "stale_target", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean(),
   items: z.array(requestItemVerdictsResultItemSchema)
     .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
   commentId: z.string().uuid().nullable().optional(),
+  supersededByInteractionId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();

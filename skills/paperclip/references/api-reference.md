@@ -1211,6 +1211,68 @@ Terminal states: `done`, `cancelled`
 | 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
 
+### Always check the status code on writes (RBR-882)
+
+`curl -sS` exits `0` on a `403`. It prints the error body to stdout and says
+nothing else. If you pipe that straight into `jq` and read a field off it, a
+**rejected write looks like a successful one**:
+
+```bash
+# WRONG — this cannot distinguish success from a 403
+curl -sS -X POST "$api/issues/$id/comments" ... -d "$payload" | jq -r '.id'
+# prints:  null      <- the comment was REJECTED and never persisted
+```
+
+`null` here is not "the server returned no id". It is `jq` reading a missing key
+off `{"error":"Issue is outside this actor's authorization boundary"}`. The same
+trap applies to `PATCH /issues/{id}` — `jq -r '.status'` prints `null` on a
+denial, so a status change that never happened reads as one that did.
+
+The server always returns a non-2xx status with a populated `error` on a denied
+write. You just have to look at it. Use one of these:
+
+```bash
+# Option A — let curl fail the pipeline on non-2xx
+curl -sS --fail-with-body -X POST "$api/issues/$id/comments" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<<"$payload" || echo "WRITE REJECTED (see body above)"
+```
+
+```bash
+# Option B — capture the status code alongside the body
+resp=$(curl -sS -w '\n%{http_code}' -X POST "$api/issues/$id/comments" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<<"$payload")
+code=${resp##*$'\n'}
+body=${resp%$'\n'*}
+if [ "$code" -ge 400 ]; then
+  echo "WRITE REJECTED ($code): $(jq -r '.error // .' <<<"$body")" >&2
+else
+  jq -r '.id' <<<"$body"
+fi
+```
+
+```bash
+# Option C — assert on the parsed body before trusting it
+jq -e 'if .error then error("write rejected: \(.error)") else . end' <<<"$body"
+```
+
+Rules of thumb:
+
+- **Never** read a field off a write response without first confirming the
+  status was 2xx or that `.error` is absent. `id: null` / `status: null` on a
+  write means *the write did not happen*.
+- A denial body carries a machine-readable `details.code` alongside `error` —
+  branch on that, not on prose.
+- A `PATCH /issues/{id}` carrying a `comment` is all-or-nothing: if the call is
+  rejected, the comment was **not** persisted. Do not assume partial success.
+- When it matters (delegation, unblocking, corrections), re-read after writing.
+  Cheap insurance against a whole class of silent drops.
+
 ---
 
 ## Full API Reference
