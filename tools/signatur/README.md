@@ -22,8 +22,8 @@ still), wenn `node` fehlt, sonst nie ohne diesen Test committen.
 
 - Relay: aktive Version deaktivieren, Vorgaengerversion aktivieren
   (`/api/v1/workflows/<id>/activate`). Erst deaktivieren, dann aktivieren —
-  sonst laeuft die alte activeVersionId weiter. Aktuell (V18): V18
-  deaktivieren, `SMTPRelayV17Signat` aktivieren.
+  sonst laeuft die alte activeVersionId weiter. Aktuell (V19): V19
+  deaktivieren, `SMTPRelayV18LogGuard` aktivieren.
 - Luna: `~/Obsidian/WHITESTAG-Vault/Paperclip/Luna/signaturen/abgeloest-20260804/`
   zurueckschieben und `luna_mail_render.py` aus git zuruecksetzen.
 
@@ -43,13 +43,13 @@ CLI-Parameter mit sinnvollen Standardwerten fuer den naechsten Schritt — das
 Skript ist kein Einmal-Werkzeug fuer eine bestimmte Versionsspanne mehr:
 
 ```bash
-python3 patch_relay.py --dry-run   # Standard: SMTPRelayV17Signat -> V18
+python3 patch_relay.py --dry-run   # Standard: SMTPRelayV18LogGuard -> V19
 python3 patch_relay.py --apply
 
-# fuer eine andere Quelle/Ziel-Kombination, z.B. den naechsten Schritt V18->V19:
+# fuer eine andere Quelle/Ziel-Kombination, z.B. den naechsten Schritt V19->V20:
 python3 patch_relay.py --apply \
-  --source-id SMTPRelayV18LogGuard --new-id SMTPRelayV19xxx \
-  --new-name "SMTP Relay V19 — xxx"
+  --source-id SMTPRelayV19StatusMarker --new-id SMTPRelayV20xxx \
+  --new-name "SMTP Relay V20 — xxx"
 ```
 
 **Historie der Patches** (jeweils gefunden beim Testen, nicht immer in der
@@ -87,6 +87,39 @@ urspruenglichen Spec — dieselbe Reihe wie unten):
      hatte kein `onError` gesetzt — schlaegt der Rahmen selbst fehl (nicht
      `signiere()`, das faengt schon alles ab), riss das bisher den ganzen
      Workflow und damit den einzigen Mailweg ab.
+- **V18→V19** (aktuell): schliesst die Luecke, die der V17→V18-Fix (Punkt 3
+  oben) selbst aufgemacht hat. Ein Reviewer hat n8n's Execution Engine
+  gelesen (`n8n-core/dist/execution-engine/workflow-execute.js`, der
+  `continuesOnError`-Zweig) und festgestellt: faengt
+  `onError: "continueRegularOutput"` eine Ausnahme im Aufrufrahmen ab (nicht
+  in `signiere()` selbst — das faengt schon alles ab), ersetzt n8n den
+  Node-Output durch die **unveraenderte Eingabe**. `__signaturFehler` wird
+  dann nie gesetzt, weil `signiere()` gar nicht erst lief — genau der Fall,
+  vor dem `onError` schuetzen sollte, blieb im Log unsichtbar und sah aus
+  wie ein normaler, signierter Versand.
+  1. `relay_signatur.js` setzt jetzt an **jedem** Rueckgabepunkt von
+     `signiere()` einen positiven Marker `json.__signaturStatus`
+     (`SIGNATUR_STATUS`): `signiert` (regulaerer Versand, auch reine
+     Textmails ohne HTML-Teil), `uebersprungen_keine_signatur` (Lunas
+     `signatur:"none"`-Weg), `uebersprungen_kein_absender` (Absender nicht
+     in `ABSENDER`, z.B. Clara) oder `fehler` (Ausnahme in `signiere()`
+     selbst gefangen — `__signaturFehler` traegt wie bisher die Meldung).
+     Abwesenheit von Beweis (kein `__signaturStatus`-Feld) ist damit selbst
+     erkennbar: es kann nur bedeuten, dass `signiere()` nie lief.
+  2. `Attach Signature` bekommt den aktuellen `relay_signatur.js`-Stand neu
+     eingebettet (`patch_attach_signature_code()`) — der Node traegt seinen
+     JS-Text als gefrorene Kopie, Aenderungen an der Datei propagieren sich
+     nicht von selbst in den laufenden Workflow.
+  3. `Build Log Line` bekommt einen dritten Zweig
+     (`patch_build_log_line_status_marker()`): fehlt `__signaturStatus`
+     komplett, erscheint ein eigenes Warnsegment
+     „⚠️ SIGNATUR-MARKER FEHLT (Aufrufrahmen vermutlich abgebrochen, Mail
+     unsigniert versendet)" — unterscheidbar vom bestehenden
+     „⚠️ SIGNATUR FEHLGESCHLAGEN: …"-Segment (`__signaturStatus=fehler`). Bei
+     `signiert` und den beiden bewussten Uebersprung-Faellen bleibt die
+     Zeile **byte-identisch** zum bisherigen Normalformat — die bewussten
+     Uebersprung-Faelle (Luna, Clara) sind kein Fehler und sollen nicht wie
+     einer aussehen.
 
 **Gotchas beim direkten SQLite-Schreiben in n8n 2.29** (2026-08-10 beim
 V16→V17-Testlauf gefunden):
@@ -112,9 +145,9 @@ direkt in die SQLite geschriebene Version sichtbar wird.
 
 ```bash
 source ~/.whitestag.env
-curl -sS -X POST "http://127.0.0.1:5678/api/v1/workflows/SMTPRelayV18LogGuard/deactivate" \
+curl -sS -X POST "http://127.0.0.1:5678/api/v1/workflows/SMTPRelayV19StatusMarker/deactivate" \
   -H "X-N8N-API-KEY: $N8N_API_KEY"
-curl -sS -X POST "http://127.0.0.1:5678/api/v1/workflows/SMTPRelayV17Signat/activate" \
+curl -sS -X POST "http://127.0.0.1:5678/api/v1/workflows/SMTPRelayV18LogGuard/activate" \
   -H "X-N8N-API-KEY: $N8N_API_KEY"
 ```
 

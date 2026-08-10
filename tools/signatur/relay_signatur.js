@@ -7,6 +7,30 @@
 // GRUNDREGEL: Diese Funktion darf niemals werfen. Der Relay ist der einzige
 // Mailweg; ueber ihn laufen auch die Waechter-Alarme. Im Fehlerfall geht die
 // Mail ohne Signatur raus und __signaturFehler traegt den Grund.
+//
+// __signaturStatus (V19): jeder Rueckgabepunkt setzt einen POSITIVEN Marker,
+// der benennt, WAS passiert ist -- nicht nur, dass kein Fehler auftrat.
+// Grund: n8n ersetzt bei einer Ausnahme im Aufrufrahmen (nicht in dieser
+// Funktion, siehe RAHMEN in patch_relay.py) den Node-Output durch die
+// UNVERAENDERTE Eingabe, wenn onError=continueRegularOutput gesetzt ist --
+// __signaturFehler wird dann nie gesetzt, weil signiere() gar nicht erst
+// lief. Ohne einen Marker, der bei jedem echten Durchlauf gesetzt wird, ist
+// dieser Fall vom Normalfall nicht zu unterscheiden: das Fehlen von
+// __signaturStatus im Log-Node ("Build Log Line") IST das Signal.
+const SIGNATUR_STATUS = {
+  // Regulaerer Versand, inkl. reiner Textmails ohne HTML-Teil -- das Feld
+  // beschreibt den Ausgang der Funktion, nicht ob ein Logo angehaengt wurde.
+  SIGNIERT: 'signiert',
+  // Bewusst uebersprungen: Aufrufer hat signatur:"none" gesetzt (Lunas Weg,
+  // sie signiert clientseitig selbst). Kein Fehler.
+  UEBERSPRUNGEN_KEINE_SIGNATUR: 'uebersprungen_keine_signatur',
+  // Bewusst uebersprungen: Absender steht nicht in ABSENDER (z.B. Clara).
+  // Kein Fehler.
+  UEBERSPRUNGEN_KEIN_ABSENDER: 'uebersprungen_kein_absender',
+  // Ausnahme, die signiere() selbst gefangen hat -- __signaturFehler traegt
+  // die Meldung weiter, wie schon vor V19.
+  FEHLER: 'fehler',
+};
 
 const BAUSTEIN_VERZEICHNIS =
   '/Users/walterschoenenbroecher.de/.paperclip/scripts/signatur';
@@ -71,14 +95,23 @@ function zuText(html) {
 
 function signiere(json, leseDatei) {
   if (!json || typeof json !== 'object') {
-    return { __signaturFehler: 'kein json-Objekt: ' + String(json) };
+    return {
+      __signaturFehler: 'kein json-Objekt: ' + String(json),
+      __signaturStatus: SIGNATUR_STATUS.FEHLER,
+    };
   }
   try {
-    if (json.signatur === 'none') return json;
+    if (json.signatur === 'none') {
+      json.__signaturStatus = SIGNATUR_STATUS.UEBERSPRUNGEN_KEINE_SIGNATUR;
+      return json;
+    }
 
     const from = String(json.from || '').trim().toLowerCase();
     const eintrag = ABSENDER[from];
-    if (!eintrag) return json;
+    if (!eintrag) {
+      json.__signaturStatus = SIGNATUR_STATUS.UEBERSPRUNGEN_KEIN_ABSENDER;
+      return json;
+    }
 
     let bereich = String(json.bereich || '').trim().toLowerCase();
     if (!BEREICHE.includes(bereich)) bereich = VORGABE_BEREICH;
@@ -89,7 +122,10 @@ function signiere(json, leseDatei) {
     // Textfassung immer, unabhaengig vom HTML-Teil.
     if (json.text) json.text = `${json.text}\n\n--\n${zuText(sig)}`;
 
-    if (!json.html) return json;
+    if (!json.html) {
+      json.__signaturStatus = SIGNATUR_STATUS.SIGNIERT;
+      return json;
+    }
 
     // Der Lookbehind (?<=[\s"']) verlangt eine echte Attributgrenze vor src.
     // Ohne ihn traefe die Regex auch das Ende eines anderen Attributnamens
@@ -120,9 +156,11 @@ function signiere(json, leseDatei) {
 
     json.html = `${json.html}\n<br>\n${mitCid}`;
     json.attachments = anhaenge;
+    json.__signaturStatus = SIGNATUR_STATUS.SIGNIERT;
     return json;
   } catch (err) {
     json.__signaturFehler = String((err && err.message) || err);
+    json.__signaturStatus = SIGNATUR_STATUS.FEHLER;
     return json;
   }
 }
@@ -132,4 +170,5 @@ function signiere(json, leseDatei) {
 // Ground-Truth-Eingabe fuer signatur.absenderblock(), ohne ihn ein zweites
 // Mal (und damit driftanfaellig) im Python-Testcode nachzubauen.
 module.exports = { signiere, absenderblock, hinweisFuer, zuText, ABSENDER,
-                   BEREICHE, VORGABE_BEREICH, BAUSTEIN_VERZEICHNIS };
+                   BEREICHE, VORGABE_BEREICH, BAUSTEIN_VERZEICHNIS,
+                   SIGNATUR_STATUS };

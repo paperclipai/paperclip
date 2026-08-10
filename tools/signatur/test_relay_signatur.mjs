@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const HIER = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { signiere, ABSENDER } = require(path.join(HIER, 'relay_signatur.js'));
+const { signiere, ABSENDER, SIGNATUR_STATUS } = require(path.join(HIER, 'relay_signatur.js'));
 
 const lies = (p) => fs.readFileSync(p, 'utf8');
 const basis = (extra = {}) => ({
@@ -142,5 +142,59 @@ test('signiere(null, ...) wirft nicht und traegt einen Fehler', () => {
 
 test('signiere(undefined, ...) wirft nicht und traegt einen Fehler', () => {
   const j = signiere(undefined, lies);
+  assert.ok(j.__signaturFehler);
+});
+
+// --- V19: __signaturStatus an jedem Rueckgabepunkt (Finding: Frame-Abbruch
+// blieb unsichtbar, weil Build Log Line nur __signaturFehler kennt und der
+// n8n-Aufrufrahmen bei eigenem Absturz das unveraenderte Eingabeobjekt ohne
+// jedes Signatur-Feld durchreicht — Abwesenheit von Beweis muss selbst
+// erkennbar werden). Vier Ausgaenge, siehe SIGNATUR_STATUS.
+
+test('SIGNATUR_STATUS hat vier paarweise verschiedene Werte', () => {
+  const werte = Object.values(SIGNATUR_STATUS);
+  assert.equal(werte.length, 4);
+  assert.equal(new Set(werte).size, 4);
+});
+
+test('normaler Versand (mit html) setzt __signaturStatus=signiert', () => {
+  const j = signiere(basis(), lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.SIGNIERT);
+  assert.equal(j.__signaturFehler, undefined);
+});
+
+test('reine Textmail (kein html) setzt __signaturStatus ebenfalls auf signiert', () => {
+  const j = signiere(basis({ html: undefined }), lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.SIGNIERT);
+});
+
+test('signatur:"none" (Lunas Weg) setzt __signaturStatus=uebersprungen_keine_signatur', () => {
+  const j = signiere(basis({ signatur: 'none' }), lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.UEBERSPRUNGEN_KEINE_SIGNATUR);
+  assert.equal(j.__signaturFehler, undefined);
+});
+
+test('unbekannter Absender (z.B. Clara) setzt __signaturStatus=uebersprungen_kein_absender', () => {
+  const j = signiere(basis({ from: 'paperclip@clara-werden.de' }), lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.UEBERSPRUNGEN_KEIN_ABSENDER);
+  assert.equal(j.__signaturFehler, undefined);
+});
+
+test('fehlender Baustein setzt __signaturStatus=fehler und traegt __signaturFehler weiter', () => {
+  const kaputt = () => { throw new Error('ENOENT'); };
+  const j = signiere(basis(), kaputt);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.FEHLER);
+  assert.ok(j.__signaturFehler.includes('ENOENT'));
+});
+
+test('signiere(null, ...) setzt __signaturStatus=fehler', () => {
+  const j = signiere(null, lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.FEHLER);
+  assert.ok(j.__signaturFehler);
+});
+
+test('signiere(undefined, ...) setzt __signaturStatus=fehler', () => {
+  const j = signiere(undefined, lies);
+  assert.equal(j.__signaturStatus, SIGNATUR_STATUS.FEHLER);
   assert.ok(j.__signaturFehler);
 });

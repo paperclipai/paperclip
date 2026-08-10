@@ -6,14 +6,19 @@ ausschliesslich auf minimalen, selbstgebauten nodes/connections-Paaren,
 die die fuer die jeweilige Funktion relevante Struktur nachbilden — nie
 auf ~/.n8n/database.sqlite.
 
-Zwei Fixture-Generationen:
+Drei Fixture-Generationen:
   - _fixture_nodes()/_fixture_connections(): V16-Zustand (vor der
     Signatur-Integration), fuer fuege_signatur_knoten_ein() und
     patch_validate_request() — die V16->V17-Migration.
   - _v17_fixture_nodes()/_v17_fixture_connections(): V17-Zustand (Attach
     Signature + Build Log Line bereits vorhanden), fuer
-    patch_build_log_line(), patch_attach_signature_onerror() und baue() —
-    die aktuelle V17->V18-Migration.
+    patch_build_log_line(), patch_attach_signature_onerror(),
+    patch_validate_request_bereich() — die V17->V18-Migration.
+  - _v18_fixture_nodes()/_v18_fixture_connections(): V18-Zustand (bereich-
+    Durchreichung, sigFehler-Logzeile, onError=continueRegularOutput bereits
+    angewendet), fuer patch_attach_signature_code(),
+    patch_build_log_line_status_marker() und baue() — die aktuelle
+    V18->V19-Migration.
 """
 import unittest
 
@@ -172,6 +177,26 @@ def _v17_fixture_connections():
         "main": [[{"node": p.BUILD_LOG_LINE_KNOTEN, "type": "main", "index": 0}]]
     }
     return conns
+
+
+def _v18_fixture_nodes():
+    """V18-Zustand: baut auf dem V17-Fixture auf und wendet die drei
+    V17->V18-Patches an (bereich-Durchreichung, sigFehler-Logzeile,
+    onError=continueRegularOutput) — der Ausgangspunkt fuer den aktuellen
+    V18->V19-Bau. Die 'Attach Signature'-jsCode bleibt dabei der minimale
+    Stub aus _v17_fixture_nodes() (kein Nachbau des echten
+    relay_signatur.js-Textes): patch_attach_signature_code() ersetzt sie
+    ohnehin komplett durch den echten, aktuellen Dateiinhalt und prueft nur,
+    dass sich dadurch ueberhaupt etwas aendert — der Stub reicht dafuer."""
+    nodes = _v17_fixture_nodes()
+    p.patch_validate_request_bereich(nodes)
+    p.patch_build_log_line(nodes)
+    p.patch_attach_signature_onerror(nodes)
+    return nodes
+
+
+def _v18_fixture_connections():
+    return _v17_fixture_connections()
 
 
 class FuegeSignaturKnotenEinTest(unittest.TestCase):
@@ -420,50 +445,139 @@ class PatchValidateRequestBereichTest(unittest.TestCase):
         self.assertEqual(code.count("const bereich ="), 1)
 
 
-class BaueTest(unittest.TestCase):
-    """Der aktuelle Standardlauf: V17 -> V18 (Finding A + Finding B +
-    bereich-Durchreichung)."""
+class PatchAttachSignatureCodeTest(unittest.TestCase):
+    """V18->V19: 'Attach Signature' bekommt den aktuellen relay_signatur.js-
+    Stand (__signaturStatus-Marker) neu eingebettet."""
 
-    def test_applies_both_findings_and_leaves_node_count_and_wiring_unchanged(self):
-        nodes = _v17_fixture_nodes()
-        conns = _v17_fixture_connections()
+    def test_replaces_jscode_with_current_relay_signatur_js_and_keeps_onerror(self):
+        nodes = _v18_fixture_nodes()
+        knoten = next(n for n in nodes if n["name"] == p.NODE_NAME)
+        alter_code = knoten["parameters"]["jsCode"]
+
+        p.patch_attach_signature_code(nodes)
+
+        knoten = next(n for n in nodes if n["name"] == p.NODE_NAME)
+        self.assertNotEqual(knoten["parameters"]["jsCode"], alter_code)
+        self.assertIn("__signaturStatus", knoten["parameters"]["jsCode"])
+        self.assertIn("function signiere(json, leseDatei)", knoten["parameters"]["jsCode"])
+        # Node-Attribute ausserhalb von parameters.jsCode bleiben unberuehrt.
+        self.assertEqual(knoten["onError"], "continueRegularOutput")
+
+    def test_second_application_on_already_current_code_raises(self):
+        nodes = _v18_fixture_nodes()
+        p.patch_attach_signature_code(nodes)
+
+        with self.assertRaises(AssertionError):
+            p.patch_attach_signature_code(nodes)
+
+
+class PatchBuildLogLineStatusMarkerTest(unittest.TestCase):
+    """V18->V19: dritter Zweig in 'Build Log Line' fuer fehlenden
+    __signaturStatus (Aufrufrahmen-Abbruch)."""
+
+    def test_inserts_sigstatus_branch_on_top_of_v18_sigfehler_branch(self):
+        nodes = _v18_fixture_nodes()
+
+        p.patch_build_log_line_status_marker(nodes)
+
+        code = next(
+            n for n in nodes if n["name"] == p.BUILD_LOG_LINE_KNOTEN
+        )["parameters"]["jsCode"]
+        self.assertEqual(code.count("const sigStatus ="), 1)
+        self.assertEqual(code.count("const sigFehler ="), 1)
+        self.assertIn("SIGNATUR-MARKER FEHLT", code)
+        # Das bestehende Fehlersegment (V18) bleibt inhaltlich erhalten.
+        self.assertIn("SIGNATUR FEHLGESCHLAGEN", code)
+        self.assertIn("${messageId}\\`${sigPart}\\n`;", code)
+
+    def test_normal_case_format_is_byte_identical_when_status_signiert_and_no_error(self):
+        """sigStatus gesetzt (nicht undefined) und sigFehler leer -> sigPart
+        bleibt ''. Das ist eine String-Konstruktions-Pruefung (kein Node-
+        Interpreter involviert), analog zum V18-Test fuer patch_build_log_line."""
+        nodes = _v18_fixture_nodes()
+        alte_zeile_vorlage = p.BUILD_LOG_LINE_ZEILE_ANKER
+
+        p.patch_build_log_line_status_marker(nodes)
+
+        neue_zeile_vorlage = p.BUILD_LOG_LINE_ZEILE_NEU
+        self.assertEqual(
+            neue_zeile_vorlage.replace("${sigPart}", ""), alte_zeile_vorlage
+        )
+
+    def test_second_application_raises_instead_of_duplicating(self):
+        nodes = _v18_fixture_nodes()
+        p.patch_build_log_line_status_marker(nodes)
+
+        with self.assertRaises(AssertionError):
+            p.patch_build_log_line_status_marker(nodes)
+
+        code = next(
+            n for n in nodes if n["name"] == p.BUILD_LOG_LINE_KNOTEN
+        )["parameters"]["jsCode"]
+        self.assertEqual(code.count("const sigStatus ="), 1)
+
+    def test_assertion_fires_when_v18_branch_missing(self):
+        # Simuliert: der V18-Patch (patch_build_log_line) wurde nie
+        # angewendet, der Anker fuer diesen Patch existiert also nicht.
+        nodes = _v17_fixture_nodes()  # V17-Zustand, KEIN sigFehler-Zweig
+        with self.assertRaises(AssertionError):
+            p.patch_build_log_line_status_marker(nodes)
+
+
+class BaueTest(unittest.TestCase):
+    """Der aktuelle Standardlauf: V18 -> V19 (Attach-Signature-Code
+    aktualisieren + Marker-Fehlen-Zweig in Build Log Line)."""
+
+    def test_applies_both_patches_and_leaves_node_count_and_wiring_unchanged(self):
+        nodes = _v18_fixture_nodes()
+        conns = _v18_fixture_connections()
         namen_vorher = [n["name"] for n in nodes]
 
         neu, verb = p.baue(nodes, conns)
 
         self.assertEqual(len(neu), len(nodes))
         self.assertEqual([n["name"] for n in neu], namen_vorher)
-        self.assertEqual(verb, conns)  # baue() aendert fuer V18 keine Verdrahtung
+        self.assertEqual(verb, conns)  # baue() aendert fuer V19 keine Verdrahtung
+
+        sig_knoten = next(n for n in neu if n["name"] == p.NODE_NAME)
+        self.assertIn("__signaturStatus", sig_knoten["parameters"]["jsCode"])
+        # onError aus V18 bleibt erhalten, wird von diesem Patch nicht angefasst.
+        self.assertEqual(sig_knoten["onError"], "continueRegularOutput")
 
         log_code = next(
             n for n in neu if n["name"] == p.BUILD_LOG_LINE_KNOTEN
         )["parameters"]["jsCode"]
-        self.assertIn("const sigFehler =", log_code)
-
-        sig_knoten = next(n for n in neu if n["name"] == p.NODE_NAME)
-        self.assertEqual(sig_knoten["onError"], "continueRegularOutput")
-
-        vr_code = next(
-            n for n in neu if n["name"] == "Validate Request"
-        )["parameters"]["jsCode"]
-        self.assertIn("const bereich =", vr_code)
-        self.assertIn("    bereich,\n", vr_code)
+        self.assertIn("const sigStatus =", log_code)
+        self.assertIn("SIGNATUR-MARKER FEHLT", log_code)
 
     def test_does_not_mutate_input(self):
-        nodes = _v17_fixture_nodes()
-        conns = _v17_fixture_connections()
-        nodes_vorher = [dict(n) for n in nodes]
+        nodes = _v18_fixture_nodes()
+        conns = _v18_fixture_connections()
+        vorher_code = next(
+            n for n in nodes if n["name"] == p.NODE_NAME
+        )["parameters"]["jsCode"]
+        log_vorher_code = next(
+            n for n in nodes if n["name"] == p.BUILD_LOG_LINE_KNOTEN
+        )["parameters"]["jsCode"]
 
         p.baue(nodes, conns)
 
-        self.assertNotIn("onError", next(n for n in nodes if n["name"] == p.NODE_NAME))
-        self.assertEqual(len(nodes), len(nodes_vorher))
+        self.assertEqual(
+            next(n for n in nodes if n["name"] == p.NODE_NAME)["parameters"]["jsCode"],
+            vorher_code,
+        )
+        self.assertEqual(
+            next(
+                n for n in nodes if n["name"] == p.BUILD_LOG_LINE_KNOTEN
+            )["parameters"]["jsCode"],
+            log_vorher_code,
+        )
 
 
 class ArgParserTest(unittest.TestCase):
     """Finding C: Quelle/Ziel-ID/-Name sind Parameter, keine Konstanten."""
 
-    def test_defaults_point_at_v17_to_v18(self):
+    def test_defaults_point_at_v18_to_v19(self):
         args = p.build_arg_parser().parse_args(["--dry-run"])
         self.assertEqual(args.source_id, p.STANDARD_QUELL_ID)
         self.assertEqual(args.new_id, p.STANDARD_NEUE_ID)

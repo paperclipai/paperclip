@@ -17,10 +17,10 @@ Nutzung:
     python3 patch_relay.py --apply     # legt die neue Version an (noch nicht aktiv)
 
     # gegen eine andere Quelle/Ziel-Kombination, z.B. um denselben Weg noch
-    # einmal fuer V19 zu gehen:
+    # einmal fuer V20 zu gehen:
     python3 patch_relay.py --apply \
-        --source-id SMTPRelayV18LogGuard --new-id SMTPRelayV19xxx \
-        --new-name "SMTP Relay V19 — xxx"
+        --source-id SMTPRelayV19StatusMarker --new-id SMTPRelayV20xxx \
+        --new-name "SMTP Relay V20 — xxx"
 """
 from __future__ import annotations
 
@@ -34,12 +34,12 @@ import uuid
 HIER = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.expanduser("~/.n8n/database.sqlite")
 
-# Standardwerte fuer den naechsten Schritt: V17 (aktiv) -> V18. Wer eine
+# Standardwerte fuer den naechsten Schritt: V18 (aktiv) -> V19. Wer eine
 # andere Quelle/Ziel-Kombination braucht, uebergibt --source-id/--new-id/
 # --new-name explizit — siehe Docstring oben.
-STANDARD_QUELL_ID = "SMTPRelayV17Signat"
-STANDARD_NEUE_ID = "SMTPRelayV18LogGuard"
-STANDARD_NEUER_NAME = "SMTP Relay V18 — Log & Fail-Open"
+STANDARD_QUELL_ID = "SMTPRelayV18LogGuard"
+STANDARD_NEUE_ID = "SMTPRelayV19StatusMarker"
+STANDARD_NEUER_NAME = "SMTP Relay V19 — Signaturstatus sichtbar"
 
 # V16-ID nur noch als Kommentar/Referenz: fuege_signatur_knoten_ein() unten
 # wurde gegen diese ID gebaut (siehe Git-Historie fuer den V17-Lauf).
@@ -294,22 +294,129 @@ def patch_attach_signature_onerror(nodes):
     knoten["onError"] = "continueRegularOutput"
 
 
+# --- V18->V19: __signaturFehler allein reicht nicht — Abwesenheit von ------
+# Beweis muss selbst erkennbar werden.
+#
+# Der Reviewer hat n8n's Execution Engine gelesen
+# (n8n-core/dist/execution-engine/workflow-execute.js, continuesOnError):
+# faengt onError=continueRegularOutput eine Ausnahme im AUFRUFRAHMEN ab (z.B.
+# require('fs') schlaegt fehl — nicht signiere() selbst, das faengt schon
+# alles ab), ersetzt n8n den Node-Output durch die UNVERAENDERTE Eingabe.
+# __signaturFehler wird dann nie gesetzt, weil signiere() gar nicht erst
+# lief — "Build Log Line" liest ein leeres Feld und die Zeile sieht aus wie
+# ein normaler, signierter Versand. Genau der Fall, vor dem onError schuetzen
+# sollte, bleibt damit unsichtbar.
+#
+# Fix: relay_signatur.js setzt jetzt an JEDEM Rueckgabepunkt von signiere()
+# einen positiven Marker __signaturStatus (siehe dortige SIGNATUR_STATUS).
+# Zwei Aenderungen noetig, um das in den Workflow zu bekommen:
+#   1. "Attach Signature" bekommt den aktuellen relay_signatur.js-Stand neu
+#      eingebettet (der Node traegt seinen JS-Text als gefrorene Kopie —
+#      Aenderungen an der Datei propagieren sich NICHT von selbst in den
+#      Workflow, siehe node_code()).
+#   2. "Build Log Line" bekommt einen dritten Zweig: fehlt __signaturStatus
+#      komplett (Frame-Abbruch), erscheint ein eigenes, klar markiertes
+#      Warnsegment — unterscheidbar vom bekannten
+#      "SIGNATUR FEHLGESCHLAGEN"-Segment (__signaturStatus=fehler, Fehler in
+#      signiere() selbst). In allen anderen Faellen (signiert, bewusst
+#      uebersprungen) bleibt sigPart '' — die Zeile damit byte-identisch zum
+#      heutigen Normalformat.
+
+
+def patch_attach_signature_code(nodes):
+    """V18->V19: 'Attach Signature' bekommt den aktuellen relay_signatur.js-
+    Stand neu eingebettet (mit __signaturStatus-Marker).
+
+    Node-Attribute (Position, onError=continueRegularOutput aus dem V18-
+    Patch) bleiben unveraendert — nur parameters.jsCode wird ersetzt. Anders
+    als die anker-basierten String-Patches unten prueft dieser Schritt nicht
+    auf einen bestimmten Text im Node, sondern nur, dass sich durch die
+    Aktualisierung ueberhaupt etwas aendert — sonst haette relay_signatur.js
+    nicht wie erwartet einen __signaturStatus-Marker bekommen, oder der
+    Patch liefe zum zweiten Mal auf bereits aktualisiertem Code.
+    """
+    knoten = next(n for n in nodes if n["name"] == NODE_NAME)
+    alter_code = knoten["parameters"]["jsCode"]
+    neuer_code = node_code()
+    assert neuer_code != alter_code, (
+        NODE_NAME + ": neuer Code aus relay_signatur.js ist identisch zum "
+        "bisherigen Node-Code — entweder relay_signatur.js hat sich nicht "
+        "wie erwartet geaendert, oder der Patch wurde schon angewendet."
+    )
+    assert "__signaturStatus" in neuer_code, (
+        "relay_signatur.js auf der Platte enthaelt keinen __signaturStatus-"
+        "Marker — falscher Dateistand fuer den V19-Bau."
+    )
+    knoten["parameters"]["jsCode"] = neuer_code
+
+
+BUILD_LOG_LINE_SIGFEHLER_ANKER = (
+    "const sigFehler = (() => {\n"
+    "  try { return $('" + NODE_NAME + "').first().json.__signaturFehler || ''; }\n"
+    "  catch (e) { return ''; }\n"
+    "})();\n"
+    "const sigPart = sigFehler\n"
+    "  ? ` · ⚠️ SIGNATUR FEHLGESCHLAGEN: "
+    "${String(sigFehler).replace(/[\\r\\n]+/g, ' ').slice(0, 200)}`\n"
+    "  : '';\n"
+)
+BUILD_LOG_LINE_SIGSTATUS_EINFUEGUNG = (
+    "const sigStatus = (() => {\n"
+    "  try { return $('" + NODE_NAME + "').first().json.__signaturStatus; }\n"
+    "  catch (e) { return undefined; }\n"
+    "})();\n"
+    "const sigFehler = (() => {\n"
+    "  try { return $('" + NODE_NAME + "').first().json.__signaturFehler || ''; }\n"
+    "  catch (e) { return ''; }\n"
+    "})();\n"
+    "const sigPart = sigStatus === undefined\n"
+    "  ? ` · ⚠️ SIGNATUR-MARKER FEHLT (Aufrufrahmen vermutlich abgebrochen, "
+    "Mail unsigniert versendet)`\n"
+    "  : sigFehler\n"
+    "    ? ` · ⚠️ SIGNATUR FEHLGESCHLAGEN: "
+    "${String(sigFehler).replace(/[\\r\\n]+/g, ' ').slice(0, 200)}`\n"
+    "    : '';\n"
+)
+
+
+def patch_build_log_line_status_marker(nodes):
+    """V18->V19: dritter Zweig in 'Build Log Line' fuer den Fall, dass
+    __signaturStatus komplett fehlt (Aufrufrahmen-Abbruch, siehe oben).
+
+    Setzt auf dem V18-Zustand auf (sigFehler-Zweig aus patch_build_log_line()
+    bereits vorhanden). Zweiter Aufruf faellt mit AssertionError auf, weil
+    BUILD_LOG_LINE_SIGFEHLER_ANKER nach dem ersten Patch nicht mehr exakt
+    matcht (davor stehen dann schon die sigStatus-Zeilen) — analog zum Muster
+    in patch_build_log_line().
+    """
+    knoten = next(n for n in nodes if n["name"] == BUILD_LOG_LINE_KNOTEN)
+    code = knoten["parameters"]["jsCode"]
+    assert code.count(BUILD_LOG_LINE_SIGFEHLER_ANKER) == 1, (
+        BUILD_LOG_LINE_KNOTEN + ": sigFehler-Block nicht wie erwartet "
+        "gefunden — Node hat sich geaendert, der V18-Patch wurde noch nicht "
+        "angewendet, oder dieser Patch wurde schon angewendet."
+    )
+    code = code.replace(
+        BUILD_LOG_LINE_SIGFEHLER_ANKER, BUILD_LOG_LINE_SIGSTATUS_EINFUEGUNG, 1
+    )
+    knoten["parameters"]["jsCode"] = code
+
+
 def baue(nodes, connections):
     """Klont den Workflow und wendet den AKTUELL ausstehenden Patch an.
 
-    Heute (V17->V18): Finding A (Build Log Line liest __signaturFehler) +
-    Finding B (Attach Signature bekommt onError=continueRegularOutput) +
-    bereich-Durchreichung durch Validate Request (siehe oben — noetig,
-    damit die im Abnahmeprotokoll geforderte, auf "de" begrenzte
-    Fehlerprobe ueberhaupt isoliert moeglich ist). Aendert keine
-    Verdrahtung, darum bleibt connections unveraendert (nur tief kopiert).
+    Heute (V18->V19): 'Attach Signature' bekommt den aktuellen
+    relay_signatur.js-Stand neu eingebettet (__signaturStatus-Marker an
+    jedem Rueckgabepunkt), und 'Build Log Line' bekommt den dritten Zweig
+    fuer fehlenden Marker (Aufrufrahmen-Abbruch) — siehe Kommentarblock
+    oben. Aendert keine Verdrahtung, darum bleibt connections unveraendert
+    (nur tief kopiert).
     """
     neu = json.loads(json.dumps(nodes))
     verb = json.loads(json.dumps(connections))
 
-    patch_validate_request_bereich(neu)
-    patch_build_log_line(neu)
-    patch_attach_signature_onerror(neu)
+    patch_attach_signature_code(neu)
+    patch_build_log_line_status_marker(neu)
 
     return neu, verb
 
@@ -353,10 +460,10 @@ def main() -> int:
     nodes, verb = baue(json.loads(row[0]), json.loads(row[1]))
     print("Quelle: %s -> Ziel: %s (%r)" % (a.source_id, a.new_id, a.new_name))
     print("Nodes: %d -> %d (unveraendert)" % (len(json.loads(row[0])), len(nodes)))
-    print("Patch: 'Validate Request' reicht body.bereich jetzt durch")
-    print("Patch: '%s' liest __signaturFehler jetzt von '%s'"
-          % (BUILD_LOG_LINE_KNOTEN, NODE_NAME))
-    print("Patch: '%s' bekommt onError=continueRegularOutput" % NODE_NAME)
+    print("Patch: '%s' bekommt den aktuellen relay_signatur.js-Stand "
+          "(__signaturStatus-Marker)" % NODE_NAME)
+    print("Patch: '%s' bekommt einen dritten Zweig fuer fehlenden "
+          "__signaturStatus (Aufrufrahmen-Abbruch)" % BUILD_LOG_LINE_KNOTEN)
 
     if a.dry_run:
         print("(dry-run, nichts geschrieben)")
