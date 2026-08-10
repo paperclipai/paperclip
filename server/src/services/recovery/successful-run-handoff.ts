@@ -13,7 +13,11 @@ import {
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
-export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+// Local models run at 2-15 tok/s and frequently end a run before recording a
+// disposition; give the handoff several attempts to self-correct before the
+// issue is blocked on a recovery owner (was 1, which minted a block on the
+// first miss and drove the bulk of the warning/danger disposition-comment flood).
+export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 3;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =

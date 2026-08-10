@@ -85,8 +85,10 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+// Widened for slow local inference (2-15 tok/s): a healthy long run no longer
+// looks stalled and mints a harness_liveness_escalation issue too eagerly.
+export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 8 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;

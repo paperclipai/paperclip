@@ -5,7 +5,9 @@ import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
-export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
+// Rate backstop, not a permission decision. An orchestrator like Rhen fans out
+// across many issues per run, so the default of 20 is too low; make it tunable.
+export const CROSS_ISSUE_INFLUENCE_LIMIT = Number(process.env.CROSS_ISSUE_INFLUENCE_LIMIT) || 100;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";

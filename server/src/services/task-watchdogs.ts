@@ -37,7 +37,7 @@ const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed
 // treated as not-yet-stopped so the evaluation does not produce a
 // false-positive stopped-subtree review. The periodic watchdog reconciler
 // re-evaluates after the window, so a genuinely idle issue still triggers.
-const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
+const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 60_000;
 
 type ActorFields = {
   agentId?: string | null;
