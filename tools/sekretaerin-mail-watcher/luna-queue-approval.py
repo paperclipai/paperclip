@@ -39,7 +39,14 @@ def _send_approval_mail(token: str, to: str, subject: str, approval_subject: str
     # Inline-Logos auch in der Freigabe-Vorschau mitschicken, damit Walter sie sieht.
     payload = json.dumps({"from": FROM, "to": WALTER, "subject": approval_subject,
                           "text": f"Freigabe #{token}: Antwort an {to} zum Betreff: {subject}",
-                          "html": html, "attachments": attachments or []}).encode()
+                          "html": html, "attachments": attachments or [],
+                          # Luna rendert die Signatur fuer diese Vorschau bereits selbst
+                          # (render_customer_html). Ohne "none" haengt der Relay eine
+                          # zweite Signatur + zweites Logo an — Walters Freigabe-Vorschau
+                          # zeigt dann nicht mehr, was der Kunde wirklich bekommt
+                          # (Finding 1, Abschluss-Review; approval_send.py hat das Feld,
+                          # dieser Sender hatte es nie).
+                          "signatur": "none"}).encode()
     req = urllib.request.Request(WEBHOOK, data=payload, method="POST",
                                  headers={"Content-Type": "application/json",
                                           "X-Mailhub-Secret": SECRET})
