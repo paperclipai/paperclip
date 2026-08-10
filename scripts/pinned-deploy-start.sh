@@ -75,9 +75,23 @@ esac
 mkdir -p "$LOG_DIR" "$(dirname "$LOCK_DIR")"
 
 if [ "${PAPERCLIP_STARTUP_GATE:-1}" = "1" ]; then
-  log "startup gate: candidate source graph before supervisor handoff"
-  if ! node "$DEPLOY_ROOT/server/scripts/dev-watch-gate.mjs"; then
-    die "STARTUP_GATE_FAILURE: source graph/load smoke rejected; refusing boot"
+  RECEIPT_GATES_GREEN="$(
+    node -e '
+      const fs = require("fs");
+      const receipt = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const gates = receipt.gates && typeof receipt.gates === "object" ? receipt.gates : {};
+      const required = ["committed_sha", "worktree_env", "candidate_deps", "plist_lint", "uq_fixture", "source_gate", "server_typecheck"];
+      const passed = (value) => value === "pass" || (value && typeof value === "object" && value.status === "pass");
+      process.stdout.write(receipt.failedGateCount === 0 && required.every((key) => passed(gates[key])) ? "1" : "0");
+    ' "$RECEIPT_PATH" 2>/dev/null || true
+  )"
+  if [ "$RECEIPT_GATES_GREEN" = "1" ] && git diff --quiet --ignore-submodules -- && git diff --cached --quiet --ignore-submodules --; then
+    log "startup gate: reusing SHA-bound all-green promotion receipt"
+  else
+    log "startup gate: candidate source graph before supervisor handoff"
+    if ! node "$DEPLOY_ROOT/server/scripts/dev-watch-gate.mjs"; then
+      die "STARTUP_GATE_FAILURE: source graph/load smoke rejected; refusing boot"
+    fi
   fi
 fi
 
@@ -113,5 +127,9 @@ for RP in "$PORT" "$RUNTIME_PORT"; do
   fi
 done
 
-log "HEAD=$HEAD_SHA receipt=$RECEIPT_SHA port=$PORT; starting deploy server"
-exec pnpm dev
+log "HEAD=$HEAD_SHA receipt=$RECEIPT_SHA port=$PORT; starting pinned deploy server"
+# The deploy tree is immutable between receipt promotions, so a development
+# filesystem watcher adds no safety. Starting the server package directly
+# avoids a full source snapshot on every production restart while preserving
+# the startup typecheck/migration/issue-create gate above.
+exec pnpm --filter @paperclipai/server dev
