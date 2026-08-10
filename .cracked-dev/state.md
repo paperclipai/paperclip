@@ -15,6 +15,11 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   "already resolved" + 45s self-clear (46a0433d3); Decline now rejects inline instead of
   expanding the row (removed the `issue_thread_interaction && reject -> onOpen` special-case;
   reject reason is optional server-side) — symmetric with Confirm, +updated row test.
+  Then added an "Open task" escape hatch in the expanded (See more) view of simple/inline
+  decisions (sibling in CollapsibleContent, gated inline && href — no resolver surgery) so a
+  simple decision that turns out to be heavier has a one-click path to the full task; +2 tests,
+  updated 2 that pinned "no Open on inline". Model B (one-tap on card + See more + Open for
+  complex) was ALREADY implemented; the Decline fix completed it, this is the only net-new.
   - Deferred (RISKY): auto-tuck stale (>3d) decisions into the Aging curtain — `attentionIsAging`
     reads the SERVER-computed `item.shelf` (30d retention), so this is a server retention change
     affecting the whole queue, not a client tweak. Needs Trevor's go before touching retention.

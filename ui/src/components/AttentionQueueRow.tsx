@@ -435,6 +435,20 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                 toggle={toggle}
               />
             )}
+            {/* Escape hatch: a simple decision that turns out to need the full
+                task gets a clear "Open task" button here in the expanded view —
+                context + one-tap verbs live in "See more", and the heavier path
+                is one click away rather than only the small meta-band link. */}
+            {inline && href && (
+              <div className="flex justify-end border-t border-border/50 pt-3">
+                <Button asChild variant="outline" size="xs" className={ACTION_BTN}>
+                  <Link to={href}>
+                    Open task
+                    <ExternalLink className="h-3 w-3" />
+                  </Link>
+                </Button>
+              </div>
+            )}
           </div>
         </CollapsibleContent>
       </Collapsible>
