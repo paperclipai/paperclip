@@ -268,6 +268,73 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
     expect(typeof state.lastDeferredAt).toBe("string");
   });
 
+  it("excludes a fallback takeover while an invokable primary still owns an active execution lane", async () => {
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const sisterAgentId = randomUUID();
+    const issueId = randomUUID();
+    const primaryRunId = randomUUID();
+    const sisterRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: primaryAgentId,
+        companyId,
+        name: "Primary",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sisterAgentId,
+        companyId,
+        name: "Sister",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(agentFallbackSisters).values({ companyId, primaryAgentId, sisterAgentId, priority: 0 });
+    await db.insert(heartbeatRuns).values([
+      { id: primaryRunId, companyId, agentId: primaryAgentId, status: "running", invocationSource: "test" },
+      { id: sisterRunId, companyId, agentId: sisterAgentId, status: "running", invocationSource: "test" },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Exclusive execution",
+      identifier: "TST-EXCLUDE",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: primaryAgentId,
+      executionRunId: primaryRunId,
+      executionLockedAt: new Date(),
+    });
+
+    await expect(svc.fallbackReassign(
+      { id: issueId, companyId, assigneeAgentId: primaryAgentId },
+      { id: sisterAgentId },
+      "usage_limit",
+      null,
+      sisterRunId,
+    )).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({ code: "primary_execution_exclusion", primaryExecutionRunId: primaryRunId }),
+    });
+  });
+
   it("refuses a takeover by an agent that is not a registered sister of the live assignee", async () => {
     // The caller names the live assignee honestly, so nothing is misattributed —
     // but the target has no fallback relationship to it, so the handover itself
@@ -477,7 +544,7 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
     expect(storedIssue.assigneeAgentId).toBe(primaryAgentId);
   });
 
-  it("reassigns a recovery-owned stranded issue when the effective primary is supplied", async () => {
+  it("permits takeover of a recovery-owned active sister run when the effective primary is invokable", async () => {
     const companyId = randomUUID();
     const primaryAgentId = randomUUID();
     const recoveryOwnerAgentId = randomUUID();

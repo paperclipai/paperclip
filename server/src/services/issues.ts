@@ -146,6 +146,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -8765,9 +8766,11 @@ export function issueService(db: Db) {
             title: issues.title,
             description: issues.description,
             assigneeAgentId: issues.assigneeAgentId,
+            executionRunId: issues.executionRunId,
           })
           .from(issues)
           .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Issue not found");
         if (!current.assigneeAgentId) {
@@ -8798,6 +8801,59 @@ export function issueService(db: Db) {
           });
         }
         const primaryAgentId = issue.assigneeAgentId ?? current.assigneeAgentId;
+
+        // A sister may take over only after the current primary has relinquished
+        // its execution lane, or the primary is no longer invokable.  Merely
+        // being eligible for a fallback reason (for example a provider limit)
+        // is not a release: allowing that swap while the primary's run remains
+        // live creates two concurrent execution lanes for one issue.
+        const [primary, sisterAgent, executionRun] = await Promise.all([
+          tx
+            .select({
+              id: agents.id,
+              companyId: agents.companyId,
+              name: agents.name,
+              reportsTo: agents.reportsTo,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(and(eq(agents.id, primaryAgentId), eq(agents.companyId, current.companyId)))
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({ runtimeConfig: agents.runtimeConfig })
+            .from(agents)
+            .where(and(eq(agents.id, sister.id), eq(agents.companyId, current.companyId)))
+            .then((rows) => rows[0] ?? null),
+          current.executionRunId
+            ? tx
+              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, current.executionRunId))
+              .then((rows) => rows[0] ?? null)
+            : Promise.resolve(null),
+        ]);
+        const primaryInvokability = await evaluateAgentInvokabilityFromDb(tx as unknown as Db, primary);
+        const primaryOwnsActiveRun = !!current.executionRunId
+          && !!executionRun
+          && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
+          && executionRun.agentId === primaryAgentId;
+        // Safe by default. A company can deliberately relax the exclusion for a
+        // specific fallback agent through its persisted runtime config without
+        // changing shared runtime code:
+        // { executionExclusion: { allowConcurrentFallbackTakeover: true } }.
+        const sisterRuntimeConfig = sisterAgent?.runtimeConfig as Record<string, unknown> | undefined;
+        const exclusionConfig = sisterRuntimeConfig?.executionExclusion as Record<string, unknown> | undefined;
+        const allowConcurrentFallbackTakeover = exclusionConfig?.allowConcurrentFallbackTakeover === true;
+        if (!allowConcurrentFallbackTakeover && primaryInvokability.invokable && primaryOwnsActiveRun) {
+          throw conflict("Fallback takeover excluded while the primary execution lane is active", {
+            code: "primary_execution_exclusion",
+            issueId: current.id,
+            primaryAgentId,
+            primaryExecutionRunId: current.executionRunId,
+            primaryExecutionRunStatus: executionRun.status,
+          });
+        }
+
         // Capability routing is validated first so work that is merely misrouted
         // still gets its actionable 422 instead of a takeover conflict. Both this
         // and the authorization gate below are pure reads that run ahead of any
