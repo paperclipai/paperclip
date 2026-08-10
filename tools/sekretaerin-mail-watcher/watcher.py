@@ -478,7 +478,7 @@ ist abschliessend.
 2. **Antwort-Entwurf zur Freigabe** für jede `actionable`/`unklar`-Mail — genau
    ein Skript, das rendert, in die Freigabe-Queue legt und Walter EINE Freigabe-Mail
    schickt:
-   `bin/luna-queue-approval.py --area <AI|FILM|SORBART> --to <Absender-Adresse> \\
+   `bin/luna-queue-approval.py --area <AI|FILM> --to <Absender-Adresse> \\
      --subject "AW: <Original-Betreff>" --body /tmp/entwurf.md --original-file "<Dateiname>"`
    Du sendest **nie** selbst an Externe. Walters „Okay" auf die Freigabe-Mail löst
    den Versand aus (deterministisch, ohne dich). Bei Korrektur weckt dich ein
