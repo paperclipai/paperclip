@@ -62,3 +62,6 @@ tests/release-smoke/playwright-report/
 __pycache__/
 *.pyc
 tools/signatur/bereich-*.html
+
+# Superpowers SDD-Arbeitsbereich (Ledger, Briefs, Review-Pakete)
+.superpowers/
