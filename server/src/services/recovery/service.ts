@@ -3496,7 +3496,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueIds: [] as string[],
     };
 
-    for (const issue of candidates) {
+    for (const candidate of candidates) {
+      let issue = candidate;
       // Subject/company-bound CAS repair. Only currentParticipant changes;
       // decision and verdict history remain untouched.
       const repaired = await db.transaction(async (tx) => {
@@ -3564,6 +3565,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
         .limit(1))[0] ?? issue;
+      // All recovery decisions after the CAS must use one coherent live
+      // subject snapshot. In particular, do not combine a refreshed status or
+      // assignee with the pre-CAS execution state and history.
+      issue = effectiveIssue;
       const effectiveExecutionState = effectiveIssue.executionState;
       const executionState = effectiveIssue.status === "in_review"
         ? parseIssueExecutionState(effectiveExecutionState)
