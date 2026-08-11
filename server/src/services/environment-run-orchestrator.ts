@@ -429,11 +429,28 @@ export function environmentRunOrchestrator(
     // remote/sandbox environment, including the very first run. Treat non-worktree
     // strategies as always requiring provisioning, matching prior behavior for that
     // strategy, and only apply the reuse skip where "created" is well-defined.
+    //
+    // A reused local worktree says nothing about the remote environment/lease —
+    // those are independent facts. Non-local drivers acquire a brand new remote
+    // lease (and typically a brand new backing sandbox/SSH target) on every run
+    // unless that lease is explicitly using a reuse policy; "ephemeral" leases in
+    // particular are fresh every time by construction. When the driver's own
+    // realization result reports an explicit `isNew`/`created` flag for the
+    // remote side, trust it. Built-in realization records carry no such field,
+    // so fall back to `lease.leasePolicy`: only a reuse-style policy can mean the
+    // remote side might already be provisioned; anything else fails safe toward
+    // re-provisioning rather than silently skipping it.
+    const hasRemoteFreshnessSignal =
+      typeof workspaceRealization.isNew === "boolean" || typeof workspaceRealization.created === "boolean";
+    const isReusableLeasePolicy =
+      lease.leasePolicy === "reuse_by_environment" || lease.leasePolicy === "reuse_by_execution_workspace";
+    const remoteRealizationIsFresh = hasRemoteFreshnessSignal
+      ? workspaceRealization.isNew === true || workspaceRealization.created === true
+      : !isReusableLeasePolicy;
     const isNew =
       executionWorkspace.strategy !== "git_worktree" ||
       executionWorkspace.created === true ||
-      workspaceRealization.isNew === true ||
-      workspaceRealization.created === true;
+      remoteRealizationIsFresh;
     if (provisionCommand && environment.driver !== "local" && isNew) {
       try {
         const provisionResult = await environmentRuntime.execute({

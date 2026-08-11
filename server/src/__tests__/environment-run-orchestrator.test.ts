@@ -617,6 +617,73 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(runtime.execute).not.toHaveBeenCalled();
   });
 
+  it("still runs the remote provision command when a reused local worktree gets a fresh ephemeral remote lease", async () => {
+    // A reused local git worktree and a freshly acquired remote lease are independent
+    // facts. Built-in realization records carry no per-run isNew/created field for the
+    // remote side (unlike the plugin-sandbox test above, which reports `isNew: false`
+    // explicitly), so the gate must fall back to the lease policy: an "ephemeral" lease
+    // is fresh by construction and must not be skipped just because the local worktree
+    // was reused, or the sandbox/SSH target starts without required setup.
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "task_session",
+        localPath: "/workspace/worktrees/issue-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "ssh",
+            remote: { path: "/remote/workspace" },
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("ssh"),
+      lease: makeLease({ leasePolicy: "ephemeral" }),
+      executionWorkspace: makeExecutionWorkspace("/workspace/worktrees/issue-1", {
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+        created: false,
+      }),
+    }));
+
+    expect(runtime.execute).toHaveBeenCalledOnce();
+  });
+
   it("still runs the remote provision command for a shared project_primary workspace even though its local directory is never reported as freshly \"created\"", async () => {
     // `project_primary` (shared workspace) realizations always report `created: false` for the
     // local directory (see workspace-runtime.ts) because it is the project's long-lived primary
