@@ -12,8 +12,35 @@ LOG_DIR="${PAPERCLIP_POSTGRES_LOG_DIR:-$ROOT/.devlogs}"
 POSTGRES="$PGBIN_DIR/postgres"
 INITDB="$PGBIN_DIR/initdb"
 PGPIDFILE="$PGDATA/postmaster.pid"
+PS_COMMAND="${PAPERCLIP_POSTGRES_PS_COMMAND:-ps}"
 
 log() { echo "[paperclip-postgres $(date '+%H:%M:%S')] $*" >&2; }
+
+read_postmaster_pid() {
+  local raw
+  raw="$(head -1 "$PGPIDFILE" 2>/dev/null || true)"
+  case "$raw" in
+    ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "$raw" ;;
+  esac
+}
+
+process_matches_expected_postgres() {
+  local pid="$1" comm command_line
+  kill -0 "$pid" 2>/dev/null || return 1
+  comm="$($PS_COMMAND -p "$pid" -o comm= 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
+  [ "$(basename "$comm")" = "postgres" ] || return 1
+  command_line="$($PS_COMMAND -ww -p "$pid" -o command= 2>/dev/null || true)"
+  case " $command_line " in
+    *" -D $PGDATA "*) ;;
+    *) return 1 ;;
+  esac
+  case " $command_line " in
+    *" -p $PGPORT "*) ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
 
 if [ ! -x "$POSTGRES" ] || [ ! -x "$INITDB" ]; then
   log "missing embedded-postgres binaries in $PGBIN_DIR"
@@ -32,19 +59,27 @@ if [ ! -f "$PGDATA/PG_VERSION" ]; then
   trap - EXIT
 fi
 
-if [ -f "$PGPIDFILE" ]; then
-  pg_pid="$(head -1 "$PGPIDFILE" 2>/dev/null | tr -dc '0-9')"
-  if [ -n "$pg_pid" ] && kill -0 "$pg_pid" 2>/dev/null; then
-    log "postmaster already running at pid $pg_pid; waiting to take over after it exits"
-    while kill -0 "$pg_pid" 2>/dev/null; do
+while [ -f "$PGPIDFILE" ]; do
+  if ! pg_pid="$(read_postmaster_pid)"; then
+    log "removing malformed stale postmaster marker $PGPIDFILE"
+    rm -f "$PGPIDFILE"
+    break
+  fi
+
+  if process_matches_expected_postgres "$pg_pid"; then
+    log "expected postmaster already running at pid $pg_pid; waiting to take over after it exits"
+    while process_matches_expected_postgres "$pg_pid"; do
       sleep 2
     done
+    continue
   fi
-  pg_pid2="$(head -1 "$PGPIDFILE" 2>/dev/null | tr -dc '0-9')"
-  if [ -z "$pg_pid2" ] || ! kill -0 "$pg_pid2" 2>/dev/null; then
+
+  current_pid="$(read_postmaster_pid 2>/dev/null || true)"
+  if [ "$current_pid" = "$pg_pid" ]; then
+    log "removing stale postmaster marker for pid $pg_pid (process identity/data-dir/port mismatch)"
     rm -f "$PGPIDFILE"
   fi
-fi
+done
 
 log "starting postgres on port $PGPORT with data dir $PGDATA"
 exec "$POSTGRES" -D "$PGDATA" -p "$PGPORT" -c "shared_buffers=${PAPERCLIP_PG_SHARED_BUFFERS:-512MB}"
