@@ -1939,6 +1939,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             continue;
           }
           if (item.relatedIssue) coveredIssueIds.add(item.relatedIssue.id);
+          if (item.sourceKind === "blocker_attention") coveredIssueIds.add(item.subject.id);
           const metadataIssueId = item.subject.metadata?.issueId;
           if (typeof metadataIssueId === "string") coveredIssueIds.add(metadataIssueId);
         }
