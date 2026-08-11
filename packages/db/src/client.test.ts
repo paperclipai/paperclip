@@ -2097,6 +2097,112 @@ describeEmbeddedPostgres("reconcilePendingMigrationHistory", () => {
   );
 
   it(
+    "refuses to guess when a stale orphan and a fully-missing row both need reconciling in the same pass",
+    async () => {
+      // Reproduces a real ambiguity the single-migration "sole orphan"
+      // heuristic used to miss: 0208 has NO history row at all (deleted
+      // entirely, as if applied but never recorded), and 0212 has the exact
+      // stale pre-consolidation orphan row from the test above. Both are
+      // pending in the same reconciliation pass, and `state.pendingMigrations`
+      // processes 0208 first. A version of this code that repoints the sole
+      // remaining orphan as soon as it sees exactly one candidate -- without
+      // checking whether some OTHER migration in the same pass might
+      // legitimately need it too -- would let 0208 wrongly claim 0212's
+      // orphan, leaving 0212 to fall through to a fresh INSERT instead. The
+      // fix must recognize this as genuinely ambiguous (2 migrations, 1
+      // orphan) and refuse to guess, rather than silently repointing based on
+      // processing order alone.
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const preConsolidationBrokenAresContent = `${[
+        'CREATE TABLE "agent_ownership_grants" (',
+        '  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,',
+        '  "company_id" uuid NOT NULL,',
+        '  "agent_id" uuid NOT NULL,',
+        '  "principal_type" text NOT NULL,',
+        '  "principal_id" text NOT NULL,',
+        '  "role" text NOT NULL,',
+        '  "granted_by_user_id" text,',
+        '  "granted_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "revoked_at" timestamp with time zone,',
+        '  "revoked_by_user_id" text,',
+        '  "revoked_reason" text,',
+        '  "transition_from_grant_id" uuid,',
+        '  "is_instance_admin_override" boolean DEFAULT false NOT NULL,',
+        '  "source" text NOT NULL,',
+        '  "created_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  CONSTRAINT "agent_ownership_grants_principal_type_check" CHECK ("agent_ownership_grants"."principal_type" in (\'user\', \'agent\')),',
+        '  CONSTRAINT "agent_ownership_grants_role_check" CHECK ("agent_ownership_grants"."role" in (\'owner\', \'admin\', \'user\')),',
+        '  CONSTRAINT "agent_ownership_grants_source_check" CHECK ("agent_ownership_grants"."source" in (',
+        "        'agent_create',",
+        "        'agent_created_default',",
+        "        'agent_hire',",
+        "        'manual_grant',",
+        "        'transfer_accept',",
+        "        'instance_admin_override',",
+        "        'instance_admin_bootstrap'",
+        '      ))',
+        ');',
+        '--> statement-breakpoint',
+        'CREATE TABLE "agent_ownership_transfers" (',
+        '  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,',
+        '  "company_id" uuid NOT NULL,',
+        '  "agent_id" uuid NOT NULL,',
+        '  "from_user_id" text NOT NULL,',
+        '  "to_user_id" text NOT NULL,',
+        '  "status" text DEFAULT \'pending\' NOT NULL,',
+        '  "proposed_by_user_id" text NOT NULL,',
+        '  "proposed_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "responded_by_user_id" text,',
+        '  "responded_at" timestamp with time zone,',
+        '  "forced_by_instance_admin_user_id" text,',
+        '  "resulting_grant_id" uuid,',
+        '  "created_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,',
+        '  CONSTRAINT "agent_ownership_transfers_status_check" CHECK ("agent_ownership_transfers"."status" in (\'pending\', \'accepted\', \'declined\', \'cancelled\', \'forced\'))',
+        ');',
+      ].join("\n")}\n`;
+      const stalePreRewriteHash = createHash("sha256")
+        .update(preConsolidationBrokenAresContent)
+        .digest("hex");
+      const brokenAresHash = await migrationHash("0212_broken_ares.sql");
+      const keenSharonCarterHash = await migrationHash("0208_keen_sharon_carter.sql");
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${brokenAresHash}'`,
+        );
+        await sql.unsafe(
+          `
+            INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at")
+            VALUES ('${stalePreRewriteHash}', 1786223854510)
+          `,
+        );
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${keenSharonCarterHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0208_keen_sharon_carter.sql", "0212_broken_ares.sql"],
+        reason: "pending-migrations",
+      });
+
+      await expect(reconcilePendingMigrationHistory(connectionString)).rejects.toThrow(
+        /Cannot reconcile migration history/,
+      );
+    },
+    20_000,
+  );
+
+  it(
     "does not throw, double-insert, or double-count when two replicas race the same missing migration row",
     async () => {
       // Exercises the advisory-lock-guarded check-then-insert path's

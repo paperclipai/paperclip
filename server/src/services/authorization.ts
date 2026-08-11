@@ -116,6 +116,7 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_plugin_invoke"
     | "inbox_target_user_unresolved"
     | "inbox_management_disabled"
     | "inbox_agent_not_allowed"
@@ -2609,5 +2610,6 @@ export function authorizationService(db: Db) {
   return {
     decide,
     decidePrincipalGrant,
+    applyAgentOwnershipEnforcement,
   };
 }

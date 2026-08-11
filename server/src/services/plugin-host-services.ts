@@ -2772,6 +2772,29 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
+        // The public agents.invoke plugin capability carries no requesting
+        // user/agent identity to attribute a run to, so it cannot resolve an
+        // agent-ownership principal. Route it through the same central
+        // agent-ownership gate every other agent:wake path uses (a no-op
+        // when the company has not enabled companies.enforce_agent_ownership,
+        // per applyAgentOwnershipEnforcement's principal-required check when
+        // enabled) rather than letting it bypass ownership enforcement.
+        const ownershipDecision = await authorization.applyAgentOwnershipEnforcement(
+          {
+            actor: { type: "none" },
+            action: "agent:wake",
+            resource: { type: "agent", companyId, agentId: params.agentId },
+          },
+          {
+            allowed: true,
+            action: "agent:wake",
+            reason: "allow_plugin_invoke",
+            explanation: "Plugin invoked this agent via the agents.invoke capability.",
+          },
+        );
+        if (!ownershipDecision.allowed) {
+          throw new Error(ownershipDecision.explanation);
+        }
         const run = await heartbeat.wakeup(params.agentId, {
           source: "automation",
           triggerDetail: "system",

@@ -851,10 +851,9 @@ export async function reconcilePendingMigrationHistory(
       : new Map<string, string>();
     const validHashes = new Set(currentHashesToFiles.keys());
 
-    // Fetched once up front rather than re-querying inside the loop: there is
-    // typically at most one stale orphan row at a time, and the list is kept
-    // in sync in-memory (via splice, below) as rows get repointed during the
-    // loop, so a fresh DB read per pending migration would be redundant.
+    // Fetched once up front rather than re-querying per migration: the whole
+    // set of stale orphans is resolved against the whole set of unresolved
+    // migrations together, below, rather than one row at a time.
     const staleOrphanOrderClauses: string[] = [];
     if (columnNames.has("created_at")) staleOrphanOrderClauses.push("created_at ASC");
     if (columnNames.has("id")) staleOrphanOrderClauses.push("id ASC");
@@ -870,6 +869,18 @@ export async function reconcilePendingMigrationHistory(
         )
       : [];
 
+    // First pass: classify every already-applied pending migration as either
+    // already correctly recorded (bump its created_at if needed, below) or
+    // "unresolved" (needs an orphan repoint or a fresh insert). The full
+    // unresolved batch is collected before touching `staleOrphanRows` at all,
+    // so the ambiguity check in the second pass can reason about the whole
+    // batch at once instead of one migration at a time: resolving orphans
+    // one migration at a time as they were encountered let processing order
+    // decide which of several equally-plausible migrations claimed a shared
+    // orphan, which could repoint it at the wrong migration whenever more
+    // than one migration in the same pass lacked a history row.
+    type UnresolvedMigration = { migrationFile: string; hash: string; folderMillis: number };
+    const unresolvedMigrations: UnresolvedMigration[] = [];
     for (const migrationFile of state.pendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
       const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
@@ -908,44 +919,62 @@ export async function reconcilePendingMigrationHistory(
         continue;
       }
 
-      // No row already carries the correct hash/name for this migration.
-      // Before inserting a brand-new row, look for a stale orphan row left
-      // behind by a pre-rewrite hash. Repoint it at the current hash via
-      // UPDATE ... WHERE hash = <stale hash> rather than DELETE + INSERT so
-      // the operation is race-safe under concurrent ECS replicas: if two
-      // replicas race this UPDATE, only the first affects a row (it moves
-      // the row's hash away from the stale value); the second then matches
-      // zero rows and becomes a safe no-op instead of creating a duplicate.
-      // Only rows whose hash matches none of the migrations on disk are even
-      // candidates for repair. `__drizzle_migrations` has no `name` column
-      // here, so there is no way to confirm which specific migration a given
-      // orphan row "belongs" to - we can only reason about how many
-      // candidates exist:
-      //   - Exactly one candidate: the common, safe case. There is nothing
-      //     else it could be, so repoint it at the migration we are
-      //     currently reconciling.
-      //   - Zero candidates: there is no orphan for this migration at all -
-      //     leave `staleOrphanIndex` at its "no candidate" sentinel (-1) and
-      //     fall through to the advisory-lock-guarded INSERT path below.
-      //     (A prior version of this code threw here, which would have
-      //     blocked all subsequent migrations on any database carrying
-      //     orphan rows left behind by other, unrelated, previously
-      //     consolidated migrations - that must not happen.)
-      //   - More than one candidate: genuinely ambiguous - there is no way
-      //     to tell which one (if any) belongs to `migrationFile` without a
-      //     `name` column, so refuse to guess and throw instead.
-      const invalidHashIndexes = staleOrphanRows.reduce<number[]>((acc, row, index) => {
-        if (!validHashes.has(row.hash)) acc.push(index);
-        return acc;
-      }, []);
+      unresolvedMigrations.push({ migrationFile, hash, folderMillis });
+    }
 
-      if (invalidHashIndexes.length > 1) {
-        throw new Error(
-          `Cannot reconcile migration history for "${migrationFile}": found ${invalidHashIndexes.length} stale orphan rows in ${qualifiedTable} with hashes that match no migration on disk. There is no \`name\` column to determine which (if any) belongs to this migration - refusing to guess which one to repair. Resolve the ambiguity manually.`,
-        );
-      }
-      const staleOrphanIndex = invalidHashIndexes.length === 1 ? invalidHashIndexes[0] : -1;
-      const staleOrphan = staleOrphanIndex >= 0 ? staleOrphanRows[staleOrphanIndex] : undefined;
+    // Second pass: resolve the whole unresolved batch against the stale
+    // orphan rows together. Before inserting brand-new rows, look for stale
+    // orphan rows left behind by a pre-rewrite hash and repoint them at the
+    // current hash via UPDATE ... WHERE hash = <stale hash> rather than
+    // DELETE + INSERT so the operation is race-safe under concurrent ECS
+    // replicas: if two replicas race this UPDATE, only the first affects a
+    // row (it moves the row's hash away from the stale value); the second
+    // then matches zero rows and becomes a safe no-op instead of creating a
+    // duplicate. Only rows whose hash matches none of the migrations on disk
+    // are even candidates for repair. `__drizzle_migrations` has no `name`
+    // column here, so there is no way to confirm which specific migration a
+    // given orphan row "belongs" to - we can only reason about how the two
+    // counts line up:
+    //   - Zero orphans: nothing to repoint, every unresolved migration falls
+    //     through to the advisory-lock-guarded INSERT path below.
+    //     (A prior version of this code threw whenever any orphan existed at
+    //     all, which would have blocked all subsequent migrations on any
+    //     database carrying orphan rows left behind by other, unrelated,
+    //     previously consolidated migrations - that must not happen.)
+    //   - Orphan count equals unresolved-migration count (both nonzero): an
+    //     unambiguous 1:1 correspondence. Both lists are already in
+    //     chronological order (`staleOrphanRows` by created_at/id ASC,
+    //     `unresolvedMigrations` by migration/journal order), so pair them
+    //     positionally rather than letting whichever migration happens to be
+    //     processed first claim any single remaining orphan.
+    //   - Any other nonzero mismatch: genuinely ambiguous - there is no way
+    //     to tell which orphan (if any) belongs to which migration, so
+    //     refuse to guess and throw instead.
+    const invalidOrphanIndexes = staleOrphanRows.reduce<number[]>((acc, row, index) => {
+      if (!validHashes.has(row.hash)) acc.push(index);
+      return acc;
+    }, []);
+
+    // Only an issue when some migration actually needs an orphan: a stale
+    // orphan sitting alongside zero unresolved migrations is unrelated cruft
+    // (e.g. left behind by an entirely different, already-resolved
+    // consolidation) that nothing in this pass needs to claim, and must not
+    // block reconciliation of migrations that don't need it at all.
+    if (
+      unresolvedMigrations.length > 0 &&
+      invalidOrphanIndexes.length > 0 &&
+      invalidOrphanIndexes.length !== unresolvedMigrations.length
+    ) {
+      throw new Error(
+        `Cannot reconcile migration history: found ${invalidOrphanIndexes.length} stale orphan row(s) in ${qualifiedTable} with hashes that match no migration on disk, but ${unresolvedMigrations.length} pending migration(s) (${unresolvedMigrations.map((m) => m.migrationFile).join(", ")}) have no history row at all. There is no \`name\` column to determine which orphan (if any) belongs to which migration - refusing to guess. Resolve the ambiguity manually.`,
+      );
+    }
+
+    const orphansByPosition = invalidOrphanIndexes.map((index) => staleOrphanRows[index]);
+
+    for (const [position, unresolved] of unresolvedMigrations.entries()) {
+      const { migrationFile, hash, folderMillis } = unresolved;
+      const staleOrphan = orphansByPosition[position];
 
       if (staleOrphan) {
         const updateAssignments: string[] = [`hash = ${quoteLiteral(hash)}`];
@@ -956,12 +985,6 @@ export async function reconcilePendingMigrationHistory(
         const updatedRows = await sql.unsafe<{ hash: string }[]>(
           `UPDATE ${qualifiedTable} SET ${updateAssignments.join(", ")} WHERE hash = ${quoteLiteral(staleOrphan.hash)} RETURNING hash`,
         );
-        // Keep the in-memory candidate list in sync regardless of who won
-        // the race below: this row's hash is either now the current
-        // migration's hash (valid), or another replica already claimed it -
-        // either way it is no longer a stale orphan candidate for a later
-        // iteration of this loop.
-        staleOrphanRows.splice(staleOrphanIndex, 1);
         if (updatedRows.length > 0) {
           repairedMigrations.push(migrationFile);
           continue;
