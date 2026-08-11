@@ -153,10 +153,12 @@ describe("stdin file race (parent PAP-4037)", () => {
   });
 
   it("keeps polling after a malformed file and still delivers a later valid file", async () => {
-    const poller = await startPollerWrapper();
+    const poller = await startPollerWrapper({ maxRetries: 3 });
 
-    // A malformed file sorts before the valid file. A single bad file must not
-    // stop the loop, so the later valid file is still delivered.
+    // A malformed file sorts before the valid file. The poller keeps the send
+    // order: it holds the later file until it drops the malformed file after the
+    // retry limit, then it delivers the later valid file. So one bad file blocks
+    // the loop only until the retry limit, not forever.
     await poller.writeFileRaw("000000000001.json", "{ this is not valid json");
     await poller.writeFileAtomic("000000000002.json", stdinMessage("valid-after-bad"));
 
@@ -166,6 +168,33 @@ describe("stdin file race (parent PAP-4037)", () => {
     await poller.exited;
 
     expect(collectDelivered(poller.frames)).toBe("valid-after-bad");
+    expect(poller.frames.some((frame) => frame.type === "exit")).toBe(true);
+  });
+
+  it("does not close the stream on a later stdinEnd while an earlier file awaits retry", async () => {
+    const poller = await startPollerWrapper();
+
+    // An earlier stdin file is momentarily unreadable (the non-atomic-write
+    // window). A later stdinEnd file is already complete. The poller must keep
+    // the send order: it must not read the stdinEnd ahead of the earlier file
+    // and close the stream. It must hold the stream open until the earlier file
+    // is readable.
+    await poller.writeFileRaw("000000000001.json", "");
+    await poller.writeFileAtomic("000000000002.json", stdinEndMessage);
+
+    // Give the poller time to scan. The stream stays open, so the child does not
+    // exit and no exit frame appears yet.
+    await delay(300);
+    expect(poller.frames.some((frame) => frame.type === "exit")).toBe(false);
+
+    // The earlier file's content lands. The poller delivers it, then reads the
+    // stdinEnd and closes the stream.
+    await poller.writeFileAtomic("000000000001.json", stdinMessage("early-payload"));
+
+    await waitFor(() => collectDelivered(poller.frames).includes("early-payload"));
+    await poller.exited;
+
+    expect(collectDelivered(poller.frames)).toBe("early-payload");
     expect(poller.frames.some((frame) => frame.type === "exit")).toBe(true);
   });
 
