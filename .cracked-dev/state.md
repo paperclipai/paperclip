@@ -25,7 +25,10 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   Trevor — it's a permission write the classifier blocks; reversible). Until applied, the memory
   tools + all MCP/gateway tools are inert. Auto-recall injection (b) and semantic recall (c) are
   downstream of this and were NOT built (b needs a relevance/context-budget design decision +
-  touches the heartbeat run-assembly core; c needs pgvector).
+  touches the heartbeat run-assembly core; c needs pgvector). RESOLVED 2026-08-10: Trevor ran the
+  D1 grant (`INSERT 0 13`) → 13/13 agents now hold `tools:use`; graceful restart clean (db:check
+  0 pending, exit 0). Memory + all gateway tools reachable fleet-wide. New-agent durability =
+  candidate 3.
 - **Company memory table + remember/recall agent tools (foundational)** — new
   `company_memories` schema + migration `0213` + `paperclip-self:remember`/`recall` in
   tool-gateway. Greenfield (memlawb = dormant external-MCP template, not DB-backed; no
@@ -124,10 +127,11 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. **[BLOCKED ON TREVOR] Apply the D1 `tools:use` baseline grant** (0/13 agents have it → all
-   gateway tools inert). SQL surfaced; classifier-blocked write. Everything tool-facing waits on
-   this. Optional: bake into hire.mjs / an in-model `routes/access.ts` call so new agents get it.
-2. Auto-recall injection at run start — inject the top-N relevant company memories into the run
+1. Auto-recall injection at run start — inject the top-N relevant company memories into the run
    context (vs the pull-only recall tool). Needs a design call (relevance ranking + context
-   budget + which memories) and touches heartbeat.ts run assembly (M). Gated on candidate 1.
-3. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
+   budget + which memories) and touches heartbeat.ts run assembly (M). Awaiting Trevor's design
+   decision before building.
+2. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
+3. Make the D1 `tools:use` grant durable for NEW agents — bake into hire.mjs / apply on agent
+   activation via `routes/access.ts` so a freshly-hired agent isn't silently tool-less (S–M).
+   (Baseline grant applied to all 13 current agents 2026-08-10 via one-shot INSERT.)
