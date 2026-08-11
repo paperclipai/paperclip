@@ -389,14 +389,23 @@ export function environmentRoutes(
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
-    // Floor: on cloud-managed instances, platform-provisioned rows use one
-    // view for every reader — instance admins (including computed
-    // owner-admins) never see env vars or credential-shaped config keys, and
-    // restricted readers gain the structural fields the redacted view used to
-    // blank (the platform config carries no secrets by the managed-config
-    // contract).
+    // Floor: on cloud-managed instances, platform-provisioned rows use the
+    // floored view — credential-shaped config keys are never echoed to any
+    // reader, structural config stays visible, and tenant env vars on the
+    // managed sandbox row round-trip for full readers only. Restricted
+    // readers keep the structural floor fields (the platform config carries
+    // no secrets by the managed-config contract) but never env vars — the
+    // same envVars posture the restricted view applies to every other
+    // environment, since tenant env vars can carry pasted credentials.
     if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
-      return applyPlatformProvisionedEnvironmentFloor(environment);
+      const floored = applyPlatformProvisionedEnvironmentFloor(environment);
+      if (canReadFullInstanceEnvironment(req)) {
+        return floored;
+      }
+      return {
+        ...floored,
+        ...(Object.prototype.hasOwnProperty.call(floored, "envVars") ? { envVars: {} } : {}),
+      };
     }
     return canReadFullInstanceEnvironment(req)
       ? environment

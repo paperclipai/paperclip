@@ -480,6 +480,7 @@ describe("applyManagedEnvironments", () => {
   it("points an unset instance default at the managed sandbox environment", async () => {
     const instanceSettings = instanceSettingsSeam();
     const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 
@@ -499,6 +500,7 @@ describe("applyManagedEnvironments", () => {
       get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-local" }) as InstanceSettingsSeam["get"],
     });
     const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 
@@ -527,11 +529,31 @@ describe("applyManagedEnvironments", () => {
     expect(danglingDefault.update).toHaveBeenCalledWith({ defaultEnvironmentId: "env-1" });
   });
 
+  it("leaves the instance default alone while managed-sandbox-only is not declared", async () => {
+    // Without the mode, local execution is a legitimate default; provisioning
+    // the managed environment must not silently move runs into the sandbox.
+    const instanceSettings = instanceSettingsSeam();
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(instanceSettings.update).not.toHaveBeenCalled();
+  });
+
   it("never overrides a tenant-chosen custom default environment", async () => {
     const instanceSettings = instanceSettingsSeam({
       get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-ssh" }) as InstanceSettingsSeam["get"],
     });
     const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 

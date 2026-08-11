@@ -511,7 +511,9 @@ describe("environment routes", () => {
         image: "custom-image:latest",
         target: "us",
       });
-      expect(res.body[0].envVars).toEqual({ MY_AGENT_TOOL_SETTING: "tenant-env-value" });
+      // Tenant env vars can carry pasted credentials, so restricted readers
+      // get the same blank envVars posture as on every other environment.
+      expect(res.body[0].envVars).toEqual({});
       expect(res.body[0].metadata).toMatchObject({ managedByPaperclip: true });
     });
 

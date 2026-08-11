@@ -160,14 +160,20 @@ export async function applyManagedEnvironments(
   /**
    * Point the instance default at the managed sandbox row when no
    * deliberate choice stands in the way: an unset default, a default on
-   * the (hidden-on-cloud) local row, or a dangling reference all move to
-   * the managed environment, so pickers and run selection agree that
-   * "the default" is the platform sandbox. A tenant-chosen custom
-   * environment (ssh, their own sandbox) is never overridden. Idempotent
-   * and best-effort — a failure degrades to the run-time policy, which
-   * refuses local under managed-sandbox-only regardless.
+   * the (hidden-under-this-mode) local row, or a dangling reference all
+   * move to the managed environment, so pickers and run selection agree
+   * that "the default" is the platform sandbox. A tenant-chosen custom
+   * environment (ssh, their own sandbox) is never overridden.
+   *
+   * Gated on the document declaring `enableManagedSandboxOnly`: while the
+   * mode is off, local execution is a legitimate default, and stamping
+   * here would silently move agent runs into the sandbox on the next
+   * boot. Idempotent and best-effort — a failure degrades to the run-time
+   * policy, which refuses local under managed-sandbox-only regardless.
    */
+  const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
   const ensureManagedInstanceDefault = async (managedEnvironmentId: string): Promise<void> => {
+    if (!managedSandboxOnlyDeclared) return;
     try {
       const current = (await settings.get()).defaultEnvironmentId ?? null;
       if (current === managedEnvironmentId) return;
