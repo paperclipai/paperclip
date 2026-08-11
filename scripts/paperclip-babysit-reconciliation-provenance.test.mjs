@@ -145,12 +145,12 @@ describe("babysitter artifact provenance", () => {
     expect(manifest.artifactInstance.contentPath).toBe(retainedBuildOutputPath);
     expect(manifest.artifactInstance.contentLength).toBe(retainedBuildOutputBytes.length);
     expect(manifest.artifactInstance.retention).toEqual({
-      locator: "/api/attachments/0ce9c999-a8d7-484c-b51f-a8305ab1169e/content",
+      locator: "/api/attachments/b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7/content",
       mediaType: input.mediaType,
     });
     expect(manifest.retainedAttachments).toEqual([
       {
-        id: "86a6ed72-ab47-4ea3-8a31-af355404ead3",
+        id: "8f160181-e76a-4b74-a836-b98bc4203a75",
         role: "source-revision",
         path: reviewedSourcePath,
         mediaType: "application/javascript",
@@ -158,7 +158,7 @@ describe("babysitter artifact provenance", () => {
         buildExecutionId: manifest.buildExecution.id,
       },
       {
-        id: "0ce9c999-a8d7-484c-b51f-a8305ab1169e",
+        id: "b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7",
         role: "build-output",
         path: retainedBuildOutputPath,
         mediaType: input.mediaType,

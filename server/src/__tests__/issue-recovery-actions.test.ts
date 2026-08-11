@@ -428,7 +428,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       body: "protected review evidence",
     });
 
-    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
     const result = await recovery.reconcileStrandedAssignedIssues({
       beforeRepair: async (candidate) => {
         if (candidate.id !== sourceIssueId) return;
@@ -454,6 +455,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       currentParticipant: { type: "agent", agentId: reviewerId },
       ...protectedHistory,
     });
+    // The stale candidate must not wake the old executor. If this pending
+    // reviewer later qualifies for recovery, the only valid wake target is
+    // the exact restored reviewer participant, never returnAssignee.
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(managerId, expect.anything());
+    expect(after?.executionState && typeof after.executionState === "object"
+      ? (after.executionState as { currentParticipant?: { agentId?: string } }).currentParticipant?.agentId
+      : undefined).toBe(reviewerId);
     expect((await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, sourceIssueId)))
       .map((comment) => comment.body))
       .toEqual(["protected review evidence"]);
