@@ -135,6 +135,14 @@ const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
 const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+// Bounds exchangeOAuthToken's provider round-trip well under
+// OAUTH_REFRESH_LEASE_MS. Without this, a slow or hung token endpoint could
+// keep a refresh lease's holder "in flight" past the lease's own expiry,
+// letting another process reclaim it (see acquireGrantRefreshLease /
+// acquireOAuthRefreshLease) and submit the same rotating refresh token
+// concurrently -- exactly the race the lease exists to prevent. This timeout
+// caps the one thing that wasn't already bounded by the lease duration.
+const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -4553,6 +4561,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
+      signal: AbortSignal.timeout(OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS),
     });
     const payload = await response.json().catch(() => ({})) as unknown;
     const record = asRecord(payload);
