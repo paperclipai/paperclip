@@ -166,6 +166,28 @@ Users install betas with:
 npx paperclipai@beta onboard
 ```
 
+#### Beta fix path: candidate branches
+
+When one or two targeted fixes are needed before beta and waiting for the
+next nightly (or absorbing a whole day of `master`) is wrong, build the beta
+from a short-lived candidate branch:
+
+1. cut `candidate/beta-<target>` from the chosen nightly's source commit
+   (for example `candidate/beta-2026.811.0`)
+2. cherry-pick only the required fix commits onto it and push the branch
+3. dispatch `release.yml` with `channel: beta` and `candidate_branch:
+   candidate/beta-<target>`
+4. selection validates the branch name, rejects heads that already shipped
+   as a beta, records the cherry-picked commits in the job summary, and the
+   head runs **full verification** before publishing (it never went through
+   a canary or nightly)
+5. after the beta ships, land the fixes on `master` normally and delete the
+   candidate branch
+
+Use this sparingly: the happy path is promoting a nightly. A candidate build
+has its own `-beta.N` identity and is never pretended to be the nightly it
+was cut from.
+
 ### Stable
 
 Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
@@ -192,6 +214,14 @@ The stable preflight enforces the beta soak: the source commit must carry a
 `beta/v*` tag whose npm publish time is at least 3 days old. If it is not,
 the run fails unless `skip_soak_justification` is provided; the justification
 is echoed into the job summary. Dry runs report soak state without blocking.
+
+For a cherry-picked stable (the release fix path), cut
+`candidate/release-<target>` from the chosen beta's source commit,
+cherry-pick the required fixes, push the branch, and use it as
+`source_ref`. The candidate head carries no `beta/v*` tag, so the soak gate
+requires `skip_soak_justification` — that is deliberate: the exact bits were
+not soaked, and the justification is the recorded trade-off. Reconcile the
+fixes back to `master` and delete the branch after shipping.
 
 Before running stable:
 
@@ -429,5 +459,6 @@ Then fix forward with a new stable release.
 - [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
 - [`scripts/create-github-release.sh`](../scripts/create-github-release.sh)
 - [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh)
+- [`doc/RELEASE-CHECKLIST.md`](RELEASE-CHECKLIST.md)
 - [`doc/PUBLISHING.md`](PUBLISHING.md)
 - [`doc/RELEASE-AUTOMATION-SETUP.md`](RELEASE-AUTOMATION-SETUP.md)
