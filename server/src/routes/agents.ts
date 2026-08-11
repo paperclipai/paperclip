@@ -111,6 +111,7 @@ import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { logger } from "../middleware/logger.js";
+import { validateControlledAgentAdmission } from "../services/controlled-agent-admission.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -3697,6 +3698,23 @@ export function agentRoutes(
       });
       return;
     }
+    const controlledAdmission = validateControlledAgentAdmission(existing, req.body);
+    if (!controlledAdmission.ok) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "agent.resume_rejected_controlled_admission_required",
+        entityType: "agent",
+        entityId: existing.id,
+        details: { code: controlledAdmission.code },
+      });
+      res.status(409).json({
+        error: controlledAdmission.error,
+        code: controlledAdmission.code,
+      });
+      return;
+    }
     const agent = await svc.resume(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -3710,6 +3728,7 @@ export function agentRoutes(
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
+      details: controlledAdmission.admission ? { controlledAdmission: controlledAdmission.admission } : undefined,
     });
 
     // TSMC-19829: resume returns the lane to invokable idle — heal outage blocks.
