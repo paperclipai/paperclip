@@ -2,12 +2,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
   notes: string[];
   cleanup: () => Promise<void>;
 };
+
+export interface OpenCodeRuntimeMcpConfigEntry {
+  name: string;
+  connectionId: string;
+  url: string;
+}
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
@@ -92,23 +99,89 @@ function parseConfiguredModelRef(raw: unknown): { provider: string; model: strin
   return { provider: trimmed.slice(0, slash), model: trimmed.slice(slash + 1) };
 }
 
+function buildRuntimeMcpConfig(
+  servers: OpenCodeRuntimeMcpConfigEntry[],
+): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  const usedNames = new Set<string>();
+  for (const [index, server] of servers.entries()) {
+    const label = server.name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || `server_${index + 1}`;
+    const identity = server.connectionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
+    const baseName = `paperclip_${label}${identity ? `_${identity}` : ""}`;
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name)) name = `${baseName}_${suffix++}`;
+    usedNames.add(name);
+    config[name] = {
+      type: "remote",
+      url: server.url,
+      enabled: true,
+      oauth: false,
+    };
+  }
+  return config;
+}
+
+function parseJsoncObject(raw: string, source: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
+  const errors: ParseError[] = [];
+  const parsed = parseJsonc(raw, errors, { allowTrailingComma: true });
+  if (errors.length > 0 || !isPlainObject(parsed)) {
+    throw new Error(`Cannot safely inspect OpenCode config at ${source}.`);
+  }
+  return parsed;
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
-    const parsed = JSON.parse(raw);
-    return isPlainObject(parsed) ? parsed : {};
+    return parseJsoncObject(raw, filepath);
   } catch {
     return {};
+  }
+}
+
+function collectMcpNames(config: Record<string, unknown>, names: Set<string>): void {
+  if (!isPlainObject(config.mcp)) return;
+  for (const name of Object.keys(config.mcp)) names.add(name);
+}
+
+async function collectMcpNamesFromFile(filepath: string, names: Set<string>): Promise<void> {
+  try {
+    const raw = await fs.readFile(filepath, "utf8");
+    collectMcpNames(parseJsoncObject(raw, filepath), names);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error;
+  }
+}
+
+async function materializeCopiedConfigFile(filepath: string): Promise<void> {
+  try {
+    const stat = await fs.lstat(filepath);
+    if (!stat.isSymbolicLink()) return;
+    const raw = await fs.readFile(filepath);
+    await fs.rm(filepath, { force: true });
+    await fs.writeFile(filepath, raw);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") throw error;
   }
 }
 
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  cwd?: string;
   targetIsRemote?: boolean;
+  runtimeMcpServers?: OpenCodeRuntimeMcpConfigEntry[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const hasRuntimeMcpOverride = input.runtimeMcpServers !== undefined;
+  const runtimeMcpServers = input.runtimeMcpServers ?? [];
+  if (!skipPermissions && !hasRuntimeMcpOverride) {
     return {
       env: input.env,
       notes: [],
@@ -130,6 +203,36 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
+  const inheritedMcpNames = new Set<string>();
+  let inlineConfig: Record<string, unknown> = {};
+  if (hasRuntimeMcpOverride) {
+    const configuredHome = input.env.HOME?.trim() || process.env.HOME?.trim() || os.homedir();
+    const configuredFile = input.env.OPENCODE_CONFIG ?? process.env.OPENCODE_CONFIG;
+    const configuredDir = input.env.OPENCODE_CONFIG_DIR ?? process.env.OPENCODE_CONFIG_DIR;
+    const configPathBase = input.cwd ?? process.cwd();
+    const configFiles = new Set([
+      path.join(sourceConfigDir, "config.json"),
+      path.join(sourceConfigDir, "opencode.json"),
+      path.join(sourceConfigDir, "opencode.jsonc"),
+      path.join(configuredHome, ".opencode", "opencode.json"),
+      path.join(configuredHome, ".opencode", "opencode.jsonc"),
+      ...(configuredFile?.trim() ? [path.resolve(configPathBase, configuredFile)] : []),
+      ...(configuredDir?.trim()
+        ? [
+            path.resolve(configPathBase, configuredDir, "opencode.json"),
+            path.resolve(configPathBase, configuredDir, "opencode.jsonc"),
+          ]
+        : []),
+    ]);
+    await Promise.all(
+      [...configFiles].map((filepath) => collectMcpNamesFromFile(filepath, inheritedMcpNames)),
+    );
+    const inlineRaw = input.env.OPENCODE_CONFIG_CONTENT ?? process.env.OPENCODE_CONFIG_CONTENT;
+    if (inlineRaw?.trim()) {
+      inlineConfig = parseJsoncObject(inlineRaw, "OPENCODE_CONFIG_CONTENT");
+      collectMcpNames(inlineConfig, inheritedMcpNames);
+    }
+  }
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
@@ -147,14 +250,18 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       throw err;
     }
   }
+  if (hasRuntimeMcpOverride) {
+    await fs.rm(path.join(runtimeConfigDir, "config"), { force: true });
+  }
+  await materializeCopiedConfigFile(runtimeConfigPath);
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-  ];
+  const notes = skipPermissions
+    ? ["Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts."]
+    : [];
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -207,13 +314,31 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: {
+  };
+  if (skipPermissions) {
+    nextConfig.permission = {
       ...existingPermission,
       external_directory: "allow",
-    },
-  };
+    };
+  }
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
+  }
+  if (hasRuntimeMcpOverride) {
+    const managedMcp = buildRuntimeMcpConfig(runtimeMcpServers);
+    nextConfig.mcp = managedMcp;
+    inlineConfig = {
+      ...inlineConfig,
+      mcp: {
+        ...Object.fromEntries(
+          [...inheritedMcpNames].map((name) => [name, { enabled: false }]),
+        ),
+        ...managedMcp,
+      },
+    };
+    if (runtimeMcpServers.length > 0) {
+      notes.push(`Injected ${runtimeMcpServers.length} Paperclip runtime MCP relay(s).`);
+    }
   }
 
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
@@ -227,13 +352,19 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  const serializedConfig = JSON.stringify(nextConfig, null, 2);
+  await fs.writeFile(runtimeConfigPath, `${serializedConfig}\n`, "utf8");
+
+  const runtimeEnv: Record<string, string> = {
+    ...input.env,
+    XDG_CONFIG_HOME: runtimeConfigHome,
+  };
+  if (hasRuntimeMcpOverride) {
+    runtimeEnv.OPENCODE_CONFIG_CONTENT = JSON.stringify(inlineConfig);
+  }
 
   return {
-    env: {
-      ...input.env,
-      XDG_CONFIG_HOME: runtimeConfigHome,
-    },
+    env: runtimeEnv,
     notes,
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });

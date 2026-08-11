@@ -59,7 +59,10 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
 describe("buildInvocationEnvForLogs", () => {
   it("redacts inline secrets from resolved command metadata", () => {
     const loggedEnv = buildInvocationEnvForLogs(
-      { SAFE_VALUE: "visible" },
+      {
+        SAFE_VALUE: "visible",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { managed: { url: "http://127.0.0.1/capability" } } }),
+      },
       {
         resolvedCommand:
           "env OPENAI_API_KEY=sk-live-example PAPERCLIP_API_KEY='paperclip-quoted-secret' custom-acp --paperclip-api-key=paperclip-flag-secret --token ghp_example_secret",
@@ -67,6 +70,7 @@ describe("buildInvocationEnvForLogs", () => {
     );
 
     expect(loggedEnv.SAFE_VALUE).toBe("visible");
+    expect(loggedEnv.OPENCODE_CONFIG_CONTENT).toBe("***REDACTED***");
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );

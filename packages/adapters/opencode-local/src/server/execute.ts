@@ -54,6 +54,7 @@ import {
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { startOpenCodeRuntimeMcpRelays } from "./runtime-mcp-relay.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -214,6 +215,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  if (executionTargetIsRemote && ctx.runtimeMcp) {
+    throw new Error(
+      "OpenCode runtime MCP requires local execution; remote and sandbox execution targets are unsupported.",
+    );
+  }
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -308,10 +315,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
-  const localRuntimeConfigHome =
-    preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+  const runtimeMcpRelays = await startOpenCodeRuntimeMcpRelays(runtimeMcpServers);
+  let cleanupRuntimeConfig: Awaited<ReturnType<typeof prepareOpenCodeRuntimeConfig>> | null = null;
   try {
+    const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+      env,
+      config,
+      cwd,
+      runtimeMcpServers: ctx.runtimeMcp ? runtimeMcpRelays : undefined,
+    });
+    cleanupRuntimeConfig = preparedRuntimeConfig;
+    const localRuntimeConfigHome =
+      preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -715,6 +730,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ]);
     }
   } finally {
-    await preparedRuntimeConfig.cleanup();
+    await Promise.all([
+      cleanupRuntimeConfig?.cleanup() ?? Promise.resolve(),
+      ...runtimeMcpRelays.map((relay) => relay.stop()),
+    ]);
   }
 }

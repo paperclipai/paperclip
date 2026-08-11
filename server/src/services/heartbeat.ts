@@ -3330,8 +3330,9 @@ export async function buildPaperclipRuntimeMcpServers(input: {
 
 function createAdapterRuntimeMcpAccess(
   servers: AdapterRuntimeMcpServer[],
+  includeEmpty = false,
 ): AdapterRuntimeMcpAccess | undefined {
-  if (servers.length === 0) return undefined;
+  if (servers.length === 0 && !includeEmpty) return undefined;
   const snapshot = servers.map((server) => Object.freeze({ ...server }));
   return Object.freeze({
     getServers: () => snapshot.map((server) => ({ ...server })),
@@ -3339,25 +3340,96 @@ function createAdapterRuntimeMcpAccess(
 }
 
 const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+const CONFIDENTIAL_EXACT_ISSUE_MCP_LOCAL_ADAPTERS = new Set(["opencode_local"]);
 
 function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
   return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
+}
+
+function adapterSupportsConfidentialExactIssueMcp(adapterType: string): boolean {
+  return CONFIDENTIAL_EXACT_ISSUE_MCP_LOCAL_ADAPTERS.has(adapterType);
 }
 
 function gatewayAppliesToRun(input: {
   gateway: typeof toolMcpGateways.$inferSelect;
   agentId: string;
   projectId: string | null;
+  routineId: string | null;
   issueId: string | null;
 }): boolean {
-  const { gateway, agentId, projectId, issueId } = input;
+  const { gateway, agentId, projectId, routineId, issueId } = input;
   if (gateway.agentId && gateway.agentId !== agentId) return false;
   if (gateway.projectId && gateway.projectId !== projectId) return false;
   if (gateway.issueId && gateway.issueId !== issueId) return false;
-  if (gateway.contextScopeType === "agent" && gateway.contextScopeId && gateway.contextScopeId !== agentId) return false;
-  if (gateway.contextScopeType === "project" && gateway.contextScopeId && gateway.contextScopeId !== projectId) return false;
-  if (gateway.contextScopeType === "issue" && gateway.contextScopeId && gateway.contextScopeId !== issueId) return false;
-  return true;
+  if (gateway.contextScopeType === "none" || gateway.contextScopeType === "company") return true;
+  if (gateway.contextScopeType === "agent") return gateway.contextScopeId === agentId;
+  if (gateway.contextScopeType === "project") return gateway.contextScopeId === projectId;
+  if (gateway.contextScopeType === "routine") return gateway.contextScopeId === routineId;
+  if (gateway.contextScopeType === "issue") return gateway.contextScopeId === issueId;
+  return false;
+}
+
+export async function buildExactIssueManagedMcpServers(input: {
+  db: Db;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType">;
+  runId: string;
+  projectId: string | null;
+  routineId: string | null;
+  issueId: string | null;
+}): Promise<{ exactIssueMode: boolean; servers: AdapterRuntimeMcpServer[] }> {
+  if (!adapterSupportsConfidentialExactIssueMcp(input.agent.adapterType)) {
+    return { exactIssueMode: false, servers: [] };
+  }
+  if (!input.issueId) return { exactIssueMode: true, servers: [] };
+
+  const rows = await input.db
+    .select()
+    .from(toolMcpGateways)
+    .where(and(
+      eq(toolMcpGateways.companyId, input.agent.companyId),
+      eq(toolMcpGateways.status, "active"),
+      eq(toolMcpGateways.agentId, input.agent.id),
+      eq(toolMcpGateways.issueId, input.issueId),
+      isNull(toolMcpGateways.archivedAt),
+    ))
+    .orderBy(asc(toolMcpGateways.name));
+
+  if (rows.length === 0) return { exactIssueMode: true, servers: [] };
+
+  const gateways = rows.filter((gateway) => gatewayAppliesToRun({
+    gateway,
+    agentId: input.agent.id,
+    projectId: input.projectId,
+    routineId: input.routineId,
+    issueId: input.issueId,
+  }));
+  const service = createToolGatewayService(input.db);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  const servers: AdapterRuntimeMcpServer[] = [];
+  for (const gateway of gateways) {
+    const token = await service.createNamedGatewayToken({
+      companyId: input.agent.companyId,
+      gatewayId: gateway.id,
+      body: {
+        name: `Managed ${input.agent.name} ${input.runId.slice(0, 8)}`,
+        subjectType: "heartbeat_run",
+        subjectId: input.runId,
+        clientLabel: `${input.agent.name} managed local adapter`,
+        ownerNote: `Short-lived Paperclip-managed MCP token for heartbeat run ${input.runId}.`,
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt,
+      },
+      actor: { agentId: input.agent.id },
+    });
+    servers.push({
+      name: gateway.name,
+      url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      token: token.token,
+      connectionId: gateway.id,
+    });
+  }
+
+  return { exactIssueMode: true, servers };
 }
 
 async function createManagedMcpRunConfig(input: {
@@ -3366,6 +3438,7 @@ async function createManagedMcpRunConfig(input: {
   runId: string;
   config: Record<string, unknown>;
   projectId: string | null;
+  routineId: string | null;
   issueId: string | null;
 }): Promise<ManagedMcpGatewayRunConfig | null> {
   if (!adapterSupportsManagedMcpConfig(input.agent.adapterType)) return null;
@@ -3385,6 +3458,7 @@ async function createManagedMcpRunConfig(input: {
     gateway,
     agentId: input.agent.id,
     projectId: input.projectId,
+    routineId: input.routineId,
     issueId: input.issueId,
   }));
   if (gateways.length === 0) return null;
@@ -15544,18 +15618,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
         const adapterContext = { ...context };
-        const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
+        const exactIssueManagedMcp = await buildExactIssueManagedMcpServers({
           db,
           agent,
           runId: run.id,
+          projectId: issueRef?.projectId ?? null,
+          routineId: routineEnvContext.routineId,
+          issueId: issueRef?.id ?? null,
         });
-        const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
+        const runtimeMcpServers = exactIssueManagedMcp.exactIssueMode
+          ? exactIssueManagedMcp.servers
+          : await buildPaperclipRuntimeMcpServers({
+              db,
+              agent,
+              runId: run.id,
+            });
+        const runtimeMcp = createAdapterRuntimeMcpAccess(
+          runtimeMcpServers,
+          exactIssueManagedMcp.exactIssueMode,
+        );
         const managedMcpConfig = await createManagedMcpRunConfig({
           db,
           agent,
           runId: run.id,
           config: runtimeConfig,
           projectId: issueRef?.projectId ?? null,
+          routineId: routineEnvContext.routineId,
           issueId: issueRef?.id ?? null,
         });
         if (managedMcpConfig) {

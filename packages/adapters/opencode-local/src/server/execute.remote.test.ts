@@ -122,6 +122,101 @@ describe("opencode remote execution", () => {
     }
   });
 
+  it("fails closed before preparing or spawning a remote run with runtime MCP", async () => {
+    const token = "synthetic-remote-run-token";
+    let error: Error | null = null;
+    try {
+      await execute({
+        runId: "run-remote-mcp-denied",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Builder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: { command: "opencode", model: "opencode/gpt-5-nano" },
+        context: {},
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        runtimeMcp: {
+          getServers: () => [{
+            name: "Exact gateway",
+            connectionId: "gateway-1",
+            url: "https://paperclip.example.test/api/tool-gateway/gateways/gateway-1/mcp",
+            token,
+          }],
+        },
+        onLog: async () => {},
+      });
+    } catch (caught) {
+      error = caught as Error;
+    }
+
+    expect(error?.message).toContain("runtime MCP requires local execution");
+    expect(error?.message).not.toContain(token);
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(runChildProcess).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for an explicit empty managed MCP selection on a remote run", async () => {
+    await expect(execute({
+      runId: "run-remote-empty-mcp-denied",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "opencode", model: "opencode/gpt-5-nano" },
+      context: {},
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      runtimeMcp: { getServers: () => [] },
+      onLog: async () => {},
+    })).rejects.toThrow("runtime MCP requires local execution");
+
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(runChildProcess).not.toHaveBeenCalled();
+  });
+
   it("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-"));
     cleanupDirs.push(rootDir);

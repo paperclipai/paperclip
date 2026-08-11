@@ -310,6 +310,151 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("writes only tokenless loopback MCP relays and replaces inherited MCP config", async () => {
+    const inheritedToken = "synthetic-inherited-token";
+    const configHome = await makeConfigHome({
+      mcp: {
+        inherited: {
+          type: "remote",
+          url: "https://inherited.example.test/mcp",
+          headers: { authorization: `Bearer ${inheritedToken}` },
+        },
+      },
+    });
+    await fs.writeFile(
+      path.join(configHome, "opencode", "opencode.jsonc"),
+      `{ "theme": "dark", "mcp": { "jsonc_inherited": { "type": "remote", "url": "https://jsonc.example.test/mcp", "headers": { "authorization": "Bearer ${inheritedToken}" } } } }\n`,
+      "utf8",
+    );
+    const homeDir = path.join(configHome, "home");
+    await fs.mkdir(path.join(homeDir, ".opencode"), { recursive: true });
+    await fs.writeFile(
+      path.join(homeDir, ".opencode", "opencode.jsonc"),
+      `{ "mcp": { "home_inherited": { "type": "remote", "url": "https://home.example.test/mcp" } } }\n`,
+      "utf8",
+    );
+    const workspace = path.join(configHome, "workspace");
+    const relativeConfigDir = path.join(workspace, "relative-config");
+    await fs.mkdir(relativeConfigDir, { recursive: true });
+    await fs.writeFile(
+      path.join(relativeConfigDir, "opencode.json"),
+      `{ "mcp": { "relative_inherited": { "type": "remote", "url": "https://relative.example.test/mcp" } } }\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(configHome, "opencode", "config"), "legacy = true\n", "utf8");
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        HOME: homeDir,
+        OPENCODE_CONFIG_DIR: "relative-config",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          mcp: { inline_inherited: { headers: { authorization: `Bearer ${inheritedToken}` } } },
+        }),
+      },
+      config: { dangerouslySkipPermissions: false },
+      cwd: workspace,
+      runtimeMcpServers: [{
+        name: "Exact Gateway",
+        connectionId: "4d8f4c21-8b75-44e6-9172-f86b740cf32a",
+        url: "http://127.0.0.1:43123/mcp",
+      }],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const rawRuntimeConfig = await fs.readFile(
+      path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+      "utf8",
+    );
+    const runtimeConfig = JSON.parse(rawRuntimeConfig) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      mcp: {
+        paperclip_exact_gateway_4d8f4c21: {
+          type: "remote",
+          url: "http://127.0.0.1:43123/mcp",
+          enabled: true,
+          oauth: false,
+        },
+      },
+    });
+    expect(runtimeConfig.permission).toBeUndefined();
+    expect(rawRuntimeConfig).not.toContain(inheritedToken);
+    expect(rawRuntimeConfig).not.toContain("inherited.example.test");
+    expect(rawRuntimeConfig.toLowerCase()).not.toContain("authorization");
+    await expect(
+      fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.jsonc"), "utf8"),
+    ).resolves.toContain(`"theme": "dark"`);
+    expect(prepared.env.OPENCODE_CONFIG_CONTENT).not.toContain(inheritedToken);
+    expect(JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT)).toMatchObject({
+      mcp: {
+        inherited: { enabled: false },
+        jsonc_inherited: { enabled: false },
+        home_inherited: { enabled: false },
+        relative_inherited: { enabled: false },
+        inline_inherited: { enabled: false },
+        ...runtimeConfig.mcp as Record<string, unknown>,
+      },
+    });
+    await expect(
+      fs.access(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "config")),
+    ).rejects.toThrow();
+    await prepared.cleanup();
+  });
+
+  it("removes inherited MCP config for an explicit empty managed selection", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        inherited: {
+          type: "remote",
+          url: "https://inherited.example.test/mcp",
+        },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      runtimeMcpServers: [],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.mcp).toEqual({});
+    expect(runtimeConfig.permission).toBeUndefined();
+    await prepared.cleanup();
+  });
+
+  it("materializes a copied config symlink before writing runtime config", async () => {
+    const configHome = await makeConfigHome();
+    const sourceConfigPath = path.join(configHome, "managed-opencode.json");
+    const sourceConfig = `${JSON.stringify({ theme: "system" }, null, 2)}\n`;
+    await fs.writeFile(sourceConfigPath, sourceConfig, "utf8");
+    await fs.symlink(
+      sourceConfigPath,
+      path.join(configHome, "opencode", "opencode.json"),
+    );
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      runtimeMcpServers: [],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfigPath = path.join(
+      prepared.env.XDG_CONFIG_HOME,
+      "opencode",
+      "opencode.json",
+    );
+
+    await expect(fs.readFile(sourceConfigPath, "utf8")).resolves.toBe(sourceConfig);
+    expect((await fs.lstat(runtimeConfigPath)).isSymbolicLink()).toBe(false);
+    await expect(fs.readFile(runtimeConfigPath, "utf8")).resolves.toContain('"mcp": {}');
+    await prepared.cleanup();
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
