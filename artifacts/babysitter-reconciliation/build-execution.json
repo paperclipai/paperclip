@@ -2,13 +2,13 @@
   "canonicalEcoPmKey": "ECO-1123",
   "sourceRevision": {
     "repository": "paperclipai/paperclip",
-    "commit": "6a71fb6cbb36e890299652accc26c49eb2417a86",
+    "commit": "069dddf48abd45314124ef4fd4719163ff0a30c0",
     "path": "server/src/services/recovery/service.ts",
-    "contentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb"
+    "contentDigest": "sha256:cb35049c1e4976a601193be2048bd1427ad03f4b15d706af2d4cea6286b34289"
   },
-  "reviewedTree": "26d4e10f5f5afcbb16142c9ac7b91fc20cbeab72",
+  "reviewedTree": "1fc10e771995fa75a7da503e3fd41c7415d4e0de",
   "buildExecution": {
-    "id": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86",
+    "id": "build-eco-1123-069dddf48abd45314124ef4fd4719163ff0a30c0",
     "workflow": "paperclip-babysitter-reconciliation",
     "command": "pnpm --filter @paperclipai/server build",
     "tool": "pnpm",
@@ -20,14 +20,14 @@
       "server/package.json",
       "pnpm-lock.yaml"
     ],
-    "inputsDigest": "sha256:834685f4e6b1a7a2b554a07167f1b30a8b4041f39fc7f1925dbcbe7e83993aba",
+    "inputsDigest": "sha256:e5c4a307f1fc2f34f37cc23552d1bfb6e651392eeb4d83df0eb8711a134ab845",
     "environment": {
       "platform": "linux",
       "arch": "x64",
       "builder": "paperclip-local-build"
     },
-    "executionIdentity": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86",
-    "workflowRevision": "6a71fb6cbb36e890299652accc26c49eb2417a86",
+    "executionIdentity": "build-eco-1123-069dddf48abd45314124ef4fd4719163ff0a30c0",
+    "workflowRevision": "069dddf48abd45314124ef4fd4719163ff0a30c0",
     "dependencyLockDigest": "sha256:2df640a0f5ab88a296ec11996b2c871be165f26b15a5157543cc276f2f6cda2e",
     "builderProvenance": {
       "builder": "paperclip-local-build",
@@ -40,44 +40,44 @@
     "kind": "ArtifactInstance",
     "sourceRevision": {
       "repository": "paperclipai/paperclip",
-      "commit": "6a71fb6cbb36e890299652accc26c49eb2417a86",
+      "commit": "069dddf48abd45314124ef4fd4719163ff0a30c0",
       "path": "server/src/services/recovery/service.ts"
     },
     "build": {
       "tool": "pnpm --filter @paperclipai/server build",
       "version": "9.15.4",
-      "inputsDigest": "sha256:834685f4e6b1a7a2b554a07167f1b30a8b4041f39fc7f1925dbcbe7e83993aba"
+      "inputsDigest": "sha256:e5c4a307f1fc2f34f37cc23552d1bfb6e651392eeb4d83df0eb8711a134ab845"
     },
     "mediaType": "application/javascript",
-    "buildExecutionId": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86",
-    "sourceContentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb",
-    "contentDigest": "sha256:6c40e58a8af7fc05872b51a8b473089844d4d0b53504365a990aad4ba899219c",
-    "sourceRevisionDigest": "sha256:32046eebbaad530fc1e37b7db6b91a144838a449f84a63a42dabcb806cc5fb8e",
-    "buildDigest": "sha256:bcd49b8f08f03f9f5a9e8fa2579a0d72905fb2a0ba0597d617fb2510d1043b81",
+    "buildExecutionId": "build-eco-1123-069dddf48abd45314124ef4fd4719163ff0a30c0",
+    "sourceContentDigest": "sha256:cb35049c1e4976a601193be2048bd1427ad03f4b15d706af2d4cea6286b34289",
+    "contentDigest": "sha256:4c67984a6f6bc056a544290b31786eb684484c867117081c222f70242de05c2d",
+    "sourceRevisionDigest": "sha256:aa113a2c57e3d194b84ec6385176330e69dc6958b4c7556e6c7b477653df608a",
+    "buildDigest": "sha256:d426b6f73a0338ec07c62a838fa5fcdcc5256b537f4de65715eea27019466ab8",
     "contentPath": "server/dist/services/recovery/service.js",
-    "contentLength": 219472,
+    "contentLength": 219519,
     "retention": {
       "locator": "/api/attachments/0ce9c999-a8d7-484c-b51f-a8305ab1169e/content",
       "mediaType": "application/javascript"
     }
   },
-  "artifactInstanceDigest": "sha256:bac796da4097aaf021aef78c5cb02f0c6d841ce4325fd632e5104e4a43f02dde",
+  "artifactInstanceDigest": "sha256:bfe8c72d4f52c34116f9f94b480017d9c6bad4183e7fee363316cb15b26d8ef3",
   "retainedAttachments": [
     {
       "id": "86a6ed72-ab47-4ea3-8a31-af355404ead3",
       "role": "source-revision",
       "path": "server/src/services/recovery/service.ts",
       "mediaType": "application/javascript",
-      "contentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb",
-      "buildExecutionId": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86"
+      "contentDigest": "sha256:cb35049c1e4976a601193be2048bd1427ad03f4b15d706af2d4cea6286b34289",
+      "buildExecutionId": "build-eco-1123-069dddf48abd45314124ef4fd4719163ff0a30c0"
     },
     {
       "id": "0ce9c999-a8d7-484c-b51f-a8305ab1169e",
       "role": "build-output",
       "path": "server/dist/services/recovery/service.js",
       "mediaType": "application/javascript",
-      "contentDigest": "sha256:6c40e58a8af7fc05872b51a8b473089844d4d0b53504365a990aad4ba899219c",
-      "buildExecutionId": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86"
+      "contentDigest": "sha256:4c67984a6f6bc056a544290b31786eb684484c867117081c222f70242de05c2d",
+      "buildExecutionId": "build-eco-1123-069dddf48abd45314124ef4fd4719163ff0a30c0"
     }
   ]
 }

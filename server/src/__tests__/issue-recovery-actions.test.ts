@@ -250,6 +250,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         comments: [{ id: "protected-comment", body: "review evidence" }],
       },
     }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issueComments).values({
+      companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, sourceIssueId)))[0].companyId,
+      issueId: sourceIssueId,
+      authorType: "agent",
+      authorAgentId: coderId,
+      body: "protected review evidence",
+    });
 
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
@@ -433,11 +440,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(result.changesRequestedRepaired).toBe(0);
+    expect(after?.id).toBe(sourceIssueId);
     expect(after?.executionState).toMatchObject({
       status: "pending",
       currentParticipant: { type: "agent", agentId: reviewerId },
       ...protectedHistory,
     });
+    expect((await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, sourceIssueId)))
+      .map((comment) => comment.body)
+      .toEqual(["protected review evidence"]);
   });
 
   it("does not repair a same-shaped issue in another company", async () => {
