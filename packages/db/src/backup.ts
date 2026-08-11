@@ -79,6 +79,7 @@ async function main() {
     const result = await runDatabaseBackup({
       connectionString,
       backupDir,
+      maxBackups: 7,
       retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: "paperclip",
     });

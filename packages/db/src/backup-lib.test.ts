@@ -2,9 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedGzipTextFileWriter,
+  createBufferedTextFileWriter,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -74,7 +79,121 @@ describe("createBufferedTextFileWriter", () => {
   });
 });
 
+describe("createBufferedGzipTextFileWriter", () => {
+  it("writes gzipped content without creating a raw sql sidecar", async () => {
+    const tempDir = createTempDir("paperclip-gzip-writer-");
+    const outputPath = path.join(tempDir, "backup.sql.gz.partial");
+    const writer = createBufferedGzipTextFileWriter(outputPath, 16);
+    const lines = [
+      "-- header",
+      "BEGIN;",
+      "INSERT INTO test VALUES (1);",
+      "COMMIT;",
+    ];
+
+    for (const line of lines) {
+      writer.emit(line);
+    }
+
+    await writer.close();
+
+    expect(gunzipSync(fs.readFileSync(outputPath)).toString("utf8")).toBe(lines.join("\n"));
+    expect(fs.existsSync(path.join(tempDir, "backup.sql"))).toBe(false);
+  });
+});
+
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it("fails fast when free space is below 1.5x the latest completed backup", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-preflight-");
+    const latestBackup = path.join(backupDir, "paperclip-test-20260811-100000.sql.gz");
+    fs.writeFileSync(latestBackup, Buffer.alloc(1024));
+
+    const statfsSpy = vi.spyOn(fs, "statfsSync").mockReturnValue({
+      type: 0,
+      bsize: 1,
+      blocks: 0,
+      bfree: 0,
+      bavail: 1400,
+      files: 0,
+      ffree: 0,
+    } as ReturnType<typeof fs.statfsSync>);
+
+    try {
+      await expect(runDatabaseBackup({
+        connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-test",
+      })).rejects.toThrow(/Insufficient free space/);
+    } finally {
+      statfsSpy.mockRestore();
+    }
+  });
+
+  it(
+    "removes partial gzip files when pg_dump fails",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-pgdump-fail-");
+      const realPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "false";
+
+      try {
+        await expect(runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-test",
+          backupEngine: "pg_dump",
+        })).rejects.toThrow(/failed with exit code 1/);
+
+        expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".partial"))).toEqual([]);
+        expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql"))).toEqual([]);
+      } finally {
+        if (realPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = realPgDumpPath;
+        }
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "keeps only the newest seven completed backups when maxBackups is set",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-max-count-");
+
+      for (let index = 0; index < 7; index += 1) {
+        const filePath = path.join(backupDir, `paperclip-test-2026080${index + 1}-010101.sql.gz`);
+        fs.writeFileSync(filePath, `old-${index}`);
+        const mtime = new Date(Date.UTC(2026, 7, index + 1, 1, 1, 1));
+        fs.utimesSync(filePath, mtime, mtime);
+      }
+
+      const result = await runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        maxBackups: 7,
+        retention: { dailyDays: 30, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-test",
+        backupEngine: "javascript",
+      });
+
+      const backupFiles = fs.readdirSync(backupDir)
+        .filter((name) => name.endsWith(".sql.gz"))
+        .sort();
+
+      expect(result.prunedCount).toBe(1);
+      expect(backupFiles).toHaveLength(7);
+      expect(backupFiles).toContain(path.basename(result.backupFile));
+      expect(backupFiles).not.toContain("paperclip-test-20260801-010101.sql.gz");
+    },
+    30_000,
+  );
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {

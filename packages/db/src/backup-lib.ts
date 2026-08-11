@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import * as fs from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -17,6 +17,7 @@ export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
   retention: BackupRetentionPolicy;
+  maxBackups?: number;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
@@ -70,8 +71,16 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const DEFAULT_MAX_BACKUPS = 7;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
+
+type BackupEntry = {
+  name: string;
+  fullPath: string;
+  mtimeMs: number;
+  sizeBytes: number;
+};
 
 function sanitizeRestoreErrorMessage(error: unknown): string {
   if (error && typeof error === "object") {
@@ -113,6 +122,42 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
+function listBackupEntries(backupDir: string, filenamePrefix: string): BackupEntry[] {
+  if (!fs.existsSync(backupDir)) return [];
+
+  const entries: BackupEntry[] = [];
+  for (const name of fs.readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (name.endsWith(".partial")) continue;
+    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    const stat = fs.statSync(fullPath);
+    entries.push({
+      name,
+      fullPath,
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: stat.size,
+    });
+  }
+
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return entries;
+}
+
+function ensureSufficientBackupFreeSpace(backupDir: string, filenamePrefix: string): void {
+  const latestBackup = listBackupEntries(backupDir, filenamePrefix)[0];
+  if (!latestBackup || latestBackup.sizeBytes <= 0) return;
+
+  const requiredBytes = Math.ceil(latestBackup.sizeBytes * 1.5);
+  const stat = fs.statfsSync(backupDir);
+  const availableBytes = stat.bavail * stat.bsize;
+  if (availableBytes >= requiredBytes) return;
+
+  throw new Error(
+    `Insufficient free space in ${backupDir}: need at least ${formatBackupSize(requiredBytes)} free (1.5x latest backup ${latestBackup.name}, ${formatBackupSize(latestBackup.sizeBytes)}), but only ${formatBackupSize(availableBytes)} available.`,
+  );
+}
+
 /**
  * Tiered backup pruning:
  * - Daily tier: keep ALL backups from the last `dailyDays` days
@@ -120,27 +165,28 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
-  if (!existsSync(backupDir)) return 0;
+function pruneOldBackups(
+  backupDir: string,
+  retention: BackupRetentionPolicy,
+  filenamePrefix: string,
+  maxBackups?: number,
+): number {
+  const entries = listBackupEntries(backupDir, filenamePrefix);
+  if (entries.length === 0) return 0;
+
+  if (typeof maxBackups === "number") {
+    const keepCount = Math.max(1, Math.trunc(maxBackups));
+    const toDelete = entries.slice(keepCount);
+    for (const entry of toDelete) {
+      fs.unlinkSync(entry.fullPath);
+    }
+    return toDelete.length;
+  }
 
   const now = Date.now();
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
-
-  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
-  const entries: BackupEntry[] = [];
-
-  for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`)) continue;
-    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
-    const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
-  }
-
-  // Sort newest first so the first entry per week/month bucket is the one we keep
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
@@ -179,7 +225,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   }
 
   for (const filePath of toDelete) {
-    unlinkSync(filePath);
+    fs.unlinkSync(filePath);
   }
 
   return toDelete.length;
@@ -319,7 +365,7 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
 
 async function runPgDumpBackup(opts: {
   connectionString: string;
-  backupFile: string;
+  partialBackupFile: string;
   connectTimeout: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
@@ -347,7 +393,7 @@ async function runPgDumpBackup(opts: {
   }
 
   await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+    pipeline(child.stdout, createGzip(), fs.createWriteStream(opts.partialBackupFile, { flags: "wx" })),
     waitForChildExit(child, pgDumpBin),
   ]);
 }
@@ -376,8 +422,8 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
   }
 
   const input = opts.backupFile.endsWith(".gz")
-    ? createReadStream(opts.backupFile).pipe(createGunzip())
-    : createReadStream(opts.backupFile);
+    ? fs.createReadStream(opts.backupFile).pipe(createGunzip())
+    : fs.createReadStream(opts.backupFile);
 
   await Promise.all([
     pipeline(input, child.stdin),
@@ -386,7 +432,7 @@ async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: 
 }
 
 async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
-  const raw = createReadStream(backupFile);
+  const raw = fs.createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   let text = "";
 
@@ -404,7 +450,7 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
 }
 
 async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
-  const raw = createReadStream(backupFile);
+  const raw = fs.createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
   const reader = createInterface({
@@ -513,9 +559,95 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
       await filePromise.then((file) => file.close()).catch(() => {});
-      if (existsSync(filePath)) {
+      if (fs.existsSync(filePath)) {
         try {
-          unlinkSync(filePath);
+          fs.unlinkSync(filePath);
+        } catch {
+          // Preserve the original backup failure if temporary file cleanup also fails.
+        }
+      }
+    },
+  };
+}
+
+export function createBufferedGzipTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+  const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
+  const gzip = createGzip();
+  const output = fs.createWriteStream(filePath, { flags: "wx" });
+  const completion = pipeline(gzip, output);
+  let bufferedLines: string[] = [];
+  let bufferedBytes = 0;
+  let firstChunk = true;
+  let closed = false;
+  let pendingWrite = Promise.resolve();
+
+  const writeChunk = async (chunk: string | Buffer): Promise<void> => {
+    if (!gzip.write(chunk)) {
+      await new Promise<void>((resolve, reject) => {
+        gzip.once("drain", resolve);
+        gzip.once("error", reject);
+      });
+    }
+  };
+
+  const flushBufferedLines = () => {
+    if (bufferedLines.length === 0) return;
+    const linesToWrite = bufferedLines;
+    bufferedLines = [];
+    bufferedBytes = 0;
+    const chunkBody = linesToWrite.join("\n");
+    const chunk = firstChunk ? chunkBody : `\n${chunkBody}`;
+    firstChunk = false;
+    pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+  };
+
+  return {
+    emit(line: string) {
+      if (closed) {
+        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+      }
+      bufferedLines.push(line);
+      bufferedBytes += Buffer.byteLength(line, "utf8") + 1;
+      if (bufferedBytes >= flushThreshold) {
+        flushBufferedLines();
+      }
+    },
+    async drain() {
+      if (closed) {
+        throw new Error(`Cannot drain closed backup file: ${filePath}`);
+      }
+      flushBufferedLines();
+      await pendingWrite;
+    },
+    async writeRaw(chunk: string | Buffer) {
+      if (closed) {
+        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+      }
+      flushBufferedLines();
+      firstChunk = false;
+      pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+      await pendingWrite;
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      flushBufferedLines();
+      await pendingWrite;
+      gzip.end();
+      await completion;
+    },
+    async abort() {
+      if (closed) return;
+      closed = true;
+      bufferedLines = [];
+      bufferedBytes = 0;
+      await pendingWrite.catch(() => {});
+      gzip.destroy();
+      output.destroy();
+      await completion.catch(() => {});
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
         } catch {
           // Preserve the original backup failure if temporary file cleanup also fails.
         }
@@ -527,11 +659,18 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
+  const maxBackups = Math.max(1, Math.trunc(opts.maxBackups ?? DEFAULT_MAX_BACKUPS));
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
+  fs.mkdirSync(opts.backupDir, { recursive: true });
+  ensureSufficientBackupFreeSpace(opts.backupDir, filenamePrefix);
+  const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
+  const partialBackupFile = `${backupBase}.partial`;
+  const backupFile = backupBase;
+  const writer = createBufferedGzipTextFileWriter(partialBackupFile);
   let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   let sqlClosed = false;
   const closeSql = async () => {
@@ -539,10 +678,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     sqlClosed = true;
     await sql.end();
   };
-  mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -551,20 +686,24 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          partialBackupFile,
           connectTimeout,
         });
         await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        fs.renameSync(partialBackupFile, backupFile);
+        const sizeBytes = fs.statSync(backupFile).size;
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, maxBackups);
         return {
           backupFile,
           sizeBytes,
           prunedCount,
         };
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        if (fs.existsSync(partialBackupFile)) {
+          try { fs.unlinkSync(partialBackupFile); } catch { /* ignore */ }
+        }
+        if (fs.existsSync(backupFile)) {
+          try { fs.unlinkSync(backupFile); } catch { /* ignore */ }
         }
         if (backupEngine === "pg_dump") {
           throw error;
@@ -960,15 +1099,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emit("");
 
     await writer.close();
+    fs.renameSync(partialBackupFile, backupFile);
 
-    // Compress the SQL file with gzip
-    const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
-
-    const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const sizeBytes = fs.statSync(backupFile).size;
+    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, maxBackups);
 
     return {
       backupFile,
@@ -977,11 +1111,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     };
   } catch (error) {
     await writer.abort();
-    if (existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
+    if (fs.existsSync(partialBackupFile)) {
+      try { fs.unlinkSync(partialBackupFile); } catch { /* ignore */ }
     }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
+    if (fs.existsSync(backupFile)) {
+      try { fs.unlinkSync(backupFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {
