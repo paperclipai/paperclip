@@ -120,6 +120,7 @@ import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { ChatModelSelector } from "./ChatModelSelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import {
@@ -599,6 +600,8 @@ interface IssueChatComposerProps {
   issueStatus?: string;
   issueWorkMode?: IssueWorkMode;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
+  modelOptions?: InlineEntityOption[];
+  defaultModel?: string | null;
 }
 
 interface IssueChatThreadProps {
@@ -658,7 +661,12 @@ interface IssueChatThreadProps {
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    modelOverride?: string,
+  ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
   stopRunLabel?: string;
@@ -676,6 +684,9 @@ interface IssueChatThreadProps {
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
+  /** One-message model choices for the current assignee's supported adapter. */
+  modelOptions?: InlineEntityOption[];
+  defaultModel?: string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
@@ -4423,6 +4434,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   issueStatus,
   issueWorkMode,
   onWorkModeChange,
+  modelOptions = [],
+  defaultModel = null,
 }, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
@@ -4437,7 +4450,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(null);
   const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
   const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
+  const [modelOverride, setModelOverride] = useState("");
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
+  const hasPendingReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
   const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const reassignTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -4491,6 +4506,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setPendingWorkMode(resolvedIssueWorkMode);
   }, [resolvedIssueWorkMode]);
 
+  useEffect(() => {
+    if (hasPendingReassignment) setModelOverride("");
+  }, [hasPendingReassignment]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -4525,7 +4544,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const submittedBody = buildComposerSubmittedBody(trimmed, composerAttachments);
     if (!submittedBody.trim() || submitting) return;
 
-    const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
+    const hasReassignment = hasPendingReassignment;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
     const reopen = shouldImplicitlyReopenComment(
       issueStatus,
@@ -4549,6 +4568,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           custom: {
             ...(reopen ? { reopen: true } : {}),
             ...(reassignment ? { reassignment } : {}),
+            ...(modelOverride && !reassignment ? { modelOverride } : {}),
           },
         },
       });
@@ -4557,6 +4577,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       if (draftKey) clearDraft(draftKey);
       setComposerAttachments([]);
       setReassignTarget(effectiveSuggestedAssigneeValue);
+      // This control deliberately applies to one chat-triggered run only.
+      // Returning to Default prevents a high-cost analysis model becoming the
+      // accidental setting for every later reply.
+      setModelOverride("");
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -4978,6 +5002,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               </PopoverContent>
             </Popover>
           ) : null}
+          {modelOptions.length > 0 && !hasPendingReassignment ? (
+            <ChatModelSelector
+              value={modelOverride}
+              options={modelOptions}
+              defaultModel={defaultModel}
+              onChange={setModelOverride}
+              className="h-8 max-w-56 text-xs"
+            />
+          ) : null}
         </div>
 
         {enableReassign && reassignOptions.length > 0 ? (
@@ -5148,6 +5181,8 @@ export function IssueChatThread({
   composerAccessory,
   issueWorkMode,
   onWorkModeChange,
+  modelOptions = [],
+  defaultModel = null,
   onRefreshLatestComments,
   initialScrollToLatestKey = null,
   assigneeUserId = null,
@@ -5365,9 +5400,9 @@ export function IssueChatThread({
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => {
+    onSend: ({ body, reopen, reassignment, modelOverride }) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment);
+      return onAdd(body, reopen, reassignment, modelOverride);
     },
     onCancel: onCancelRun,
   });
@@ -6004,6 +6039,8 @@ export function IssueChatThread({
               issueStatus={issueStatus}
               issueWorkMode={issueWorkMode}
               onWorkModeChange={onWorkModeChange}
+              modelOptions={modelOptions}
+              defaultModel={defaultModel}
             />
           </div>
         ) : null}

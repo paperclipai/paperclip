@@ -7,6 +7,7 @@ import {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
+  resolveRunScopedChatModelOverride,
   isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
 
@@ -148,6 +149,29 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("limits a chat model override to the assigned agent and supported adapters", () => {
+    expect(resolveRunScopedChatModelOverride({
+      adapterType: "codex_local",
+      agentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatModelOverride: "gpt-5.3-codex" },
+    })).toBe("gpt-5.3-codex");
+
+    expect(resolveRunScopedChatModelOverride({
+      adapterType: "codex_local",
+      agentId: "agent-2",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatModelOverride: "gpt-5.3-codex" },
+    })).toBeNull();
+
+    expect(resolveRunScopedChatModelOverride({
+      adapterType: "cursor",
+      agentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatModelOverride: "gpt-5.3-codex" },
+    })).toBeNull();
   });
 
   it("treats model resolution failures as non-retryable configuration failures", () => {

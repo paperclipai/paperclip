@@ -3,7 +3,10 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "codex_local";
 export const label = "Codex";
 
-export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex@0.144.1";
+// Keep sandbox bootstraps aligned with the currently supported Codex CLI. The
+// adapter still allows a custom command for operators who pin a different
+// version deliberately.
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex@0.147.0";
 
 // Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
@@ -63,6 +66,10 @@ export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+  // OpenAI's current agentic coding model. Dynamic discovery can add newer
+  // models for API-key deployments; this fallback also covers Codex-login
+  // deployments where no OPENAI_API_KEY is intentionally exposed to Paperclip.
+  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },

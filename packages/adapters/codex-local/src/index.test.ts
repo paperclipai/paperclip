@@ -20,7 +20,7 @@ describe("codex local adapter metadata", () => {
     ]);
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
-    expect(modelIds).not.toContain("gpt-5.3-codex");
+    expect(modelIds).toContain("gpt-5.3-codex");
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
   });
 

@@ -896,6 +896,10 @@ export const addIssueCommentSchema = z.object({
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
+  // A board-selected, one-run override. It is deliberately separate from the
+  // issue-level assigneeAdapterOverrides so a chat reply never changes the
+  // agent's saved/default model or the rest of the task's runs.
+  modelOverride: z.string().trim().min(1).max(200).optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

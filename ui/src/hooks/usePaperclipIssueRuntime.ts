@@ -15,6 +15,7 @@ export interface PaperclipIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
   reassignment?: PaperclipIssueRuntimeReassignment;
+  modelOverride?: string;
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -78,6 +79,9 @@ export function usePaperclipIssueRuntime({
         body,
         reopen: custom?.reopen === true ? true : undefined,
         reassignment,
+        modelOverride: typeof custom?.modelOverride === "string" && custom.modelOverride.trim()
+          ? custom.modelOverride.trim()
+          : undefined,
       });
     },
     ...(onCancel ? {

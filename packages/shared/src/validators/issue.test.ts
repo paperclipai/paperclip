@@ -397,6 +397,18 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
+  it("accepts a bounded per-message model override", () => {
+    expect(addIssueCommentSchema.parse({
+      body: "Use the higher reasoning model for this analysis.",
+      modelOverride: "  gpt-5.3-codex  ",
+    }).modelOverride).toBe("gpt-5.3-codex");
+
+    expect(addIssueCommentSchema.safeParse({
+      body: "No oversized model value",
+      modelOverride: "x".repeat(201),
+    }).success).toBe(false);
+  });
+
   it("accepts structured issue comment presentation and metadata", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Paperclip needs a disposition before this issue can continue.",

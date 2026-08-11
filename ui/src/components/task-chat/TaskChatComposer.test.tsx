@@ -271,6 +271,42 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined);
   });
 
+  it("applies a selected model to one reply, then returns the control to Default", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        defaultModel="gpt-5.6-luna"
+        modelOptions={[{ id: "gpt-5.3-codex", label: "GPT-5.3-Codex" }]}
+      />,
+    );
+
+    const selector = container.querySelector('[data-testid="chat-model-selector"]')!;
+    expect(selector.textContent).toContain("Default · gpt-5.6-luna");
+    const trigger = selector.querySelector<HTMLButtonElement>("button")!;
+    flushSync(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const modelOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
+      .find((node) => node.textContent?.includes("GPT-5.3-Codex"));
+    expect(modelOption).toBeTruthy();
+    flushSync(() => {
+      modelOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    typeText("use the stronger model");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+
+    expect(onAdd).toHaveBeenCalledWith("use the stronger model", undefined, undefined, "gpt-5.3-codex");
+    expect(selector.textContent).toContain("Default · gpt-5.6-luna");
+  });
+
   it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);

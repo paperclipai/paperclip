@@ -17,6 +17,11 @@ export const models = [
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  // Claude Code resolves these aliases to the latest available model in each
+  // family. They remain useful for Claude App/Max logins, where Paperclip does
+  // not receive an ANTHROPIC_API_KEY with which to enumerate the API catalog.
+  { id: "opus", label: "Claude Opus (latest)" },
+  { id: "sonnet", label: "Claude Sonnet (latest)" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -25,7 +30,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
     adapterConfig: {
-      model: "claude-sonnet-5",
+      model: "sonnet",
       effort: "low",
     },
     source: "adapter_default",

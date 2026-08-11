@@ -93,6 +93,7 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+import type { InlineEntityOption } from "../components/InlineEntitySelector";
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
@@ -1416,7 +1417,12 @@ type IssueDetailChatTabProps = {
     vote: "up" | "down",
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    modelOverride?: string,
+  ) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
@@ -1533,6 +1539,36 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   // UI. Both components share one prop type, so no cast is needed.
   const { enabled: taskChatRedesignEnabled } = useTaskChatRedesignEnabled();
   const ThreadComponent = taskChatRedesignEnabled ? TaskChatThread : IssueChatThread;
+  const assigneeAgent = issueAssigneeAgentId ? agentMap.get(issueAssigneeAgentId) ?? null : null;
+  const chatModelAdapterType = assigneeAgent?.adapterType ?? null;
+  const chatModelOverrideSupported =
+    chatModelAdapterType === "codex_local" ||
+    chatModelAdapterType === "claude_local" ||
+    chatModelAdapterType === "opencode_local";
+  const chatDefaultModel = typeof assigneeAgent?.adapterConfig?.model === "string"
+    ? assigneeAgent.adapterConfig.model
+    : null;
+  const { data: chatAdapterModels } = useQuery({
+    queryKey: chatModelAdapterType && chatModelOverrideSupported
+      ? queryKeys.agents.adapterModels(companyId, chatModelAdapterType)
+      : ["agents", "none", "adapter-models", chatModelAdapterType ?? "none"],
+    queryFn: () => agentsApi.adapterModels(companyId, chatModelAdapterType!),
+    enabled: chatModelOverrideSupported,
+    staleTime: 60_000,
+  });
+  const chatModelOptions = useMemo<InlineEntityOption[]>(() => {
+    const byId = new Map((chatAdapterModels ?? []).map((model) => [model.id, model]));
+    if (chatDefaultModel && !byId.has(chatDefaultModel)) {
+      byId.set(chatDefaultModel, { id: chatDefaultModel, label: chatDefaultModel });
+    }
+    return [...byId.values()]
+      .sort((left, right) => left.label.localeCompare(right.label, "en", { numeric: true, sensitivity: "base" }))
+      .map((model) => ({
+        id: model.id,
+        label: model.label,
+        searchText: `${model.id} ${model.label}`,
+      }));
+  }, [chatAdapterModels, chatDefaultModel]);
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1711,9 +1747,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     setCommentPageFromLatest((page) => Math.max(0, page - 1));
   }, []);
   const handleAddVisibleComment = useCallback(
-    async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
+    async (
+      body: string,
+      reopen?: boolean,
+      reassignment?: CommentReassignment,
+      modelOverride?: string,
+    ) => {
       setCommentPageFromLatest(0);
-      await onAdd(body, reopen, reassignment);
+      await onAdd(body, reopen, reassignment, modelOverride);
     },
     [onAdd],
   );
@@ -1917,6 +1958,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         mentions={mentions}
         composerDisabledReason={composerDisabledReason}
         composerHint={composerHint}
+        modelOptions={chatModelOptions}
+        defaultModel={chatDefaultModel}
         onVote={onVote}
         onAdd={handleAddVisibleComment}
         imageUploadHandler={onImageUpload}
@@ -3282,8 +3325,17 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen, interrupt),
+    mutationFn: ({
+      body,
+      reopen,
+      interrupt,
+      modelOverride,
+    }: {
+      body: string;
+      reopen?: boolean;
+      interrupt?: boolean;
+      modelOverride?: string;
+    }) => issuesApi.addComment(issueId!, body, reopen, interrupt, modelOverride),
     onMutate: async ({ body, reopen, interrupt }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -4445,12 +4497,17 @@ export function IssueDetail() {
       sharingPreferenceAtSubmit: feedbackDataSharingPreference,
     });
   }, [feedbackDataSharingPreference, feedbackVoteMutation]);
-  const handleChatAdd = useCallback(async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
+  const handleChatAdd = useCallback(async (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    modelOverride?: string,
+  ) => {
     if (reassignment) {
       await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
       return;
     }
-    await addComment.mutateAsync({ body, reopen });
+    await addComment.mutateAsync({ body, reopen, modelOverride });
   }, [addComment, addCommentAndReassign]);
   const handleCommentImageUpload = useCallback(async (file: File) => {
     const attachment = await uploadAttachment.mutateAsync(file);

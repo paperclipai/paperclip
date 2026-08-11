@@ -29,6 +29,7 @@ import { fileKindForName, formatFileSize } from "./task-chat-attachments";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/MarkdownEditor";
 import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode-meta";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
+import { ChatModelSelector } from "@/components/ChatModelSelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 
@@ -39,7 +40,12 @@ interface CommentReassignment {
 }
 
 interface TaskChatComposerProps {
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void> | void;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    modelOverride?: string,
+  ) => Promise<void> | void;
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
   disabled?: boolean;
@@ -59,6 +65,8 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
+  modelOptions?: InlineEntityOption[];
+  defaultModel?: string | null;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -151,16 +159,21 @@ export function TaskChatComposer({
   issueStatus,
   mobile = false,
   draftKey,
+  modelOptions = [],
+  defaultModel = null,
 }: TaskChatComposerProps) {
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
+  const [modelOverride, setModelOverride] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const pendingAssigneeRef = useRef(pendingAssignee);
   pendingAssigneeRef.current = pendingAssignee;
+  const modelOverrideRef = useRef(modelOverride);
+  modelOverrideRef.current = modelOverride;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
@@ -198,10 +211,15 @@ export function TaskChatComposer({
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
   const showAssignee = Boolean(enableReassign && reassignOptions && reassignOptions.length > 0);
   const assigneeValue = pendingAssignee ?? currentAssigneeValue;
+  const hasPendingReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName = assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = placeholder ?? modePlaceholder(pendingMode, assigneeName);
+
+  useEffect(() => {
+    if (hasPendingReassignment) setModelOverride("");
+  }, [hasPendingReassignment]);
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
@@ -318,6 +336,7 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
+    const submittedModelOverride = modelOverrideRef.current;
     const trimmed = submittedBody.trim();
     if (
       (!trimmed && attachedRefs.length === 0) ||
@@ -332,8 +351,7 @@ export function TaskChatComposer({
       .map((item) => `[${escapeMarkdownLabel(item.name)}](${item.contentPath})`)
       .join("\n");
     const fullBody = [trimmed, refLines].filter(Boolean).join("\n\n");
-    const hasReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
-    const reassignment = hasReassignment ? parseAssigneeValue(assigneeValue) : undefined;
+    const reassignment = hasPendingReassignment ? parseAssigneeValue(assigneeValue) : undefined;
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
 
     setSubmitting(true);
@@ -341,7 +359,11 @@ export function TaskChatComposer({
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
-      await onAdd(fullBody, reopen, reassignment);
+      if (reassignment || !submittedModelOverride) {
+        await onAdd(fullBody, reopen, reassignment);
+      } else {
+        await onAdd(fullBody, reopen, reassignment, submittedModelOverride);
+      }
       if (bodyRef.current === submittedBody) {
         bodyRef.current = "";
         if (draftTimer.current) {
@@ -360,6 +382,9 @@ export function TaskChatComposer({
       }
       if (pendingAssigneeRef.current === submittedAssignee) {
         setPendingAssignee(null);
+      }
+      if (modelOverrideRef.current === submittedModelOverride) {
+        setModelOverride("");
       }
     } catch {
       // Keep the body and its draft available for retry.
@@ -519,6 +544,16 @@ export function TaskChatComposer({
             })}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {modelOptions.length > 0 && !hasPendingReassignment ? (
+          <ChatModelSelector
+            value={modelOverride}
+            options={modelOptions}
+            defaultModel={defaultModel}
+            onChange={setModelOverride}
+            className="h-8 max-w-56 text-xs"
+          />
+        ) : null}
 
         <div className="flex-1" />
 

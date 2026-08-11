@@ -103,6 +103,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     currentAssigneeValue,
     issueStatus,
     issueAssigneeAgentId = null,
+    modelOptions,
+    defaultModel,
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
@@ -529,6 +531,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             issueStatus={issueStatus}
             mobile={isMobile}
             draftKey={draftKey}
+            modelOptions={modelOptions}
+            defaultModel={defaultModel}
           />
           {footer}
         </div>
