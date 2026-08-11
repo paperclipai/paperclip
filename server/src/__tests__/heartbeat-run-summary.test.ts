@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
 
 describe("summarizeHeartbeatRunResultJson", () => {
@@ -14,6 +15,10 @@ describe("summarizeHeartbeatRunResultJson", () => {
       total_cost_usd: 1.23,
       cost_usd: 0.45,
       costUsd: 0.67,
+      stopReason: "timeout",
+      effectiveTimeoutSec: 30,
+      timeoutConfigured: true,
+      timeoutFired: true,
       nested: { ignored: true },
     });
 
@@ -25,6 +30,10 @@ describe("summarizeHeartbeatRunResultJson", () => {
       total_cost_usd: 1.23,
       cost_usd: 0.45,
       costUsd: 0.67,
+      stopReason: "timeout",
+      effectiveTimeoutSec: 30,
+      timeoutConfigured: true,
+      timeoutFired: true,
     });
   });
 
@@ -53,5 +62,37 @@ describe("buildHeartbeatRunIssueComment", () => {
 
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
+  });
+});
+
+describe("mergeHeartbeatRunResultJson", () => {
+  it("adds adapter summaries into stored result json for comment posting", () => {
+    const merged = mergeHeartbeatRunResultJson(
+      { stdout: "raw stdout", stderr: "" },
+      "## Summary\n\n1. first thing\n2. second thing",
+    );
+
+    expect(merged).toEqual({
+      stdout: "raw stdout",
+      stderr: "",
+      summary: "## Summary\n\n1. first thing\n2. second thing",
+    });
+    expect(buildHeartbeatRunIssueComment(merged)).toBe("## Summary\n\n1. first thing\n2. second thing");
+  });
+
+  it("creates a result payload when only a summary exists", () => {
+    expect(mergeHeartbeatRunResultJson(null, "done")).toEqual({ summary: "done" });
+  });
+
+  it("does not overwrite an explicit summary already returned by the adapter", () => {
+    expect(
+      mergeHeartbeatRunResultJson(
+        { summary: "adapter result", stdout: "raw stdout" },
+        "fallback summary",
+      ),
+    ).toEqual({
+      summary: "adapter result",
+      stdout: "raw stdout",
+    });
   });
 });

@@ -1,3 +1,5 @@
+import type { Issue } from "@paperclipai/shared";
+
 type IssueDetailSource = "issues" | "inbox";
 
 type IssueDetailBreadcrumb = {
@@ -5,10 +7,35 @@ type IssueDetailBreadcrumb = {
   href: string;
 };
 
+export type IssueDetailHeaderSeed = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  blockerAttention?: Issue["blockerAttention"];
+  priority: string;
+  projectId: string | null;
+  projectName: string | null;
+  originKind?: string;
+  originId?: string | null;
+};
+
+type IssueDetailHeaderSeedSource = Pick<Issue, "id" | "title"> & {
+  identifier?: string | null;
+  status: string;
+  blockerAttention?: Issue["blockerAttention"];
+  priority: string;
+  projectId?: string | null;
+  project?: { name?: string | null } | null;
+  originKind?: string;
+  originId?: string | null;
+};
+
 type IssueDetailLocationState = {
   issueDetailBreadcrumb?: IssueDetailBreadcrumb;
   issueDetailSource?: IssueDetailSource;
   issueDetailInboxQuickArchiveArmed?: boolean;
+  issueDetailHeaderSeed?: IssueDetailHeaderSeed;
 };
 
 const ISSUE_DETAIL_SOURCE_QUERY_PARAM = "from";
@@ -23,6 +50,63 @@ function isIssueDetailBreadcrumb(value: unknown): value is IssueDetailBreadcrumb
 
 function isIssueDetailSource(value: unknown): value is IssueDetailSource {
   return value === "issues" || value === "inbox";
+}
+
+function isIssueDetailHeaderSeed(value: unknown): value is IssueDetailHeaderSeed {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<IssueDetailHeaderSeed>;
+  const hasOriginKind =
+    candidate.originKind === undefined || typeof candidate.originKind === "string";
+  const hasOriginId =
+    candidate.originId === undefined || candidate.originId === null || typeof candidate.originId === "string";
+  const hasBlockerAttention =
+    candidate.blockerAttention === undefined
+    || (typeof candidate.blockerAttention === "object" && candidate.blockerAttention !== null);
+  return (
+    typeof candidate.id === "string"
+    && (candidate.identifier === null || typeof candidate.identifier === "string")
+    && typeof candidate.title === "string"
+    && typeof candidate.status === "string"
+    && hasBlockerAttention
+    && typeof candidate.priority === "string"
+    && (candidate.projectId === null || typeof candidate.projectId === "string")
+    && (candidate.projectName === null || typeof candidate.projectName === "string")
+    && hasOriginKind
+    && hasOriginId
+  );
+}
+
+function createIssueDetailHeaderSeed(issue: IssueDetailHeaderSeedSource): IssueDetailHeaderSeed {
+  return {
+    id: issue.id,
+    identifier: issue.identifier ?? null,
+    title: issue.title,
+    status: issue.status,
+    blockerAttention: issue.blockerAttention,
+    priority: issue.priority,
+    projectId: issue.projectId ?? null,
+    projectName: issue.project?.name ?? null,
+    originKind: issue.originKind,
+    originId: issue.originId ?? null,
+  };
+}
+
+export function withIssueDetailHeaderSeed(state: unknown, issue: IssueDetailHeaderSeedSource): IssueDetailLocationState {
+  const headerSeed = createIssueDetailHeaderSeed(issue);
+  if (typeof state !== "object" || state === null) {
+    return { issueDetailHeaderSeed: headerSeed };
+  }
+
+  return {
+    ...(state as IssueDetailLocationState),
+    issueDetailHeaderSeed: headerSeed,
+  };
+}
+
+export function readIssueDetailHeaderSeed(state: unknown): IssueDetailHeaderSeed | null {
+  if (typeof state !== "object" || state === null) return null;
+  const candidate = (state as IssueDetailLocationState).issueDetailHeaderSeed;
+  return isIssueDetailHeaderSeed(candidate) ? candidate : null;
 }
 
 function readIssueDetailSource(state: unknown): IssueDetailSource | null {
@@ -52,13 +136,13 @@ function inferIssueDetailSource(
   if (isIssueDetailSource(state?.issueDetailSource)) return state.issueDetailSource;
   if (!breadcrumb) return null;
   if (breadcrumb.label === "Inbox" || breadcrumb.href.includes("/inbox")) return "inbox";
-  if (breadcrumb.label === "Issues" || breadcrumb.href.includes("/issues")) return "issues";
+  if (breadcrumb.label === "Tasks" || breadcrumb.href.includes("/issues")) return "issues";
   return null;
 }
 
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
   if (source === "inbox") return { label: "Inbox", href: "/inbox" };
-  return { label: "Issues", href: "/issues" };
+  return { label: "Tasks", href: "/issues" };
 }
 
 export function createIssueDetailLocationState(
@@ -96,10 +180,14 @@ function readStoredIssueDetailLocationState(issuePathId: string): IssueDetailLoc
       : null;
     const source = inferIssueDetailSource(parsed, breadcrumb);
     if (!breadcrumb || !source) return null;
+    const headerSeed = isIssueDetailHeaderSeed(parsed.issueDetailHeaderSeed)
+      ? parsed.issueDetailHeaderSeed
+      : undefined;
     return {
       issueDetailBreadcrumb: breadcrumb,
       issueDetailSource: source,
       issueDetailInboxQuickArchiveArmed: parsed.issueDetailInboxQuickArchiveArmed === true,
+      issueDetailHeaderSeed: headerSeed,
     };
   } catch {
     return null;
@@ -115,11 +203,13 @@ function normalizeIssueDetailLocationState(
     if (isIssueDetailBreadcrumb(candidate)) {
       const source = inferIssueDetailSource(state as Partial<IssueDetailLocationState>, candidate);
       if (!source) return null;
+      const headerSeed = readIssueDetailHeaderSeed(state) ?? undefined;
       return {
         issueDetailBreadcrumb: candidate,
         issueDetailSource: source,
         issueDetailInboxQuickArchiveArmed:
           (state as IssueDetailLocationState).issueDetailInboxQuickArchiveArmed === true,
+        issueDetailHeaderSeed: headerSeed,
       };
     }
   }

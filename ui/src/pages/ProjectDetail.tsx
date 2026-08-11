@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -12,31 +12,43 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
-import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
-import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
+import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { SummarySlotCard } from "../components/SummarySlotCard";
+import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
-import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { projectRouteRef } from "../lib/utils";
+import { PROJECT_ICONS } from "../lib/project-icons";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
-import { IssuesQuicklook } from "../components/IssuesQuicklook";
+import {
+  isStarred,
+  resourceMembershipState,
+  useResourceMembershipMutation,
+  useResourceMemberships,
+} from "../hooks/useResourceMemberships";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -53,6 +65,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
+  if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
   return null;
 }
@@ -99,60 +112,116 @@ function OverviewContent({
   );
 }
 
-/* ── Color picker popover ── */
+/* ── Combined icon + color picker popover (PAP-72 / PAP-68 part 4) ── */
 
-function ColorPicker({
-  currentColor,
-  onSelect,
+const DEFAULT_PROJECT_ICON = "folder";
+
+function ProjectTilePicker({
+  color,
+  icon,
+  onSelectIcon,
+  onSelectColor,
 }: {
-  currentColor: string;
-  onSelect: (color: string) => void;
+  color: string | null;
+  icon: string | null;
+  onSelectIcon: (icon: string) => void;
+  onSelectColor: (color: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
+  const filteredIcons = useMemo(() => {
+    const entries = PROJECT_ICON_NAMES.map((name) => [name, PROJECT_ICONS[name]] as const);
+    if (!search) return entries;
+    const q = search.toLowerCase();
+    return entries.filter(([name]) => name.includes(q));
+  }, [search]);
 
+  // Keep the popover open across selections so the user can pick both an icon
+  // and a color in one pass; reset the search when it closes.
   return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
-        style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
-      />
-      {open && (
-        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setSearch("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-(--tp-box-shadow)"
+          aria-label="Change project icon and color"
+        >
+          <ProjectTile color={color} icon={icon} size="md" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-3" align="start">
+        {/* Icon search + grid */}
+        <p className="text-xs font-medium text-muted-foreground mb-2">Icon</p>
+        <Input
+          placeholder="Search icons..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="mb-2 h-8 text-sm"
+          autoFocus
+        />
+        <div className="grid grid-cols-7 gap-1 max-h-40 overflow-y-auto">
+          {filteredIcons.map(([name, Icon]) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => onSelectIcon(name)}
+              className={cn(
+                "flex items-center justify-center h-8 w-8 rounded hover:bg-accent transition-colors",
+                (icon ?? DEFAULT_PROJECT_ICON) === name && "bg-accent ring-1 ring-primary",
+              )}
+              title={name}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          ))}
+          {filteredIcons.length === 0 && (
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+          )}
+        </div>
+
+        {/* Color swatches */}
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="text-xs font-medium text-muted-foreground mb-2">Color</p>
           <div className="grid grid-cols-5 gap-1.5">
-            {PROJECT_COLORS.map((color) => (
+            {/* Neutral / reset-to-gray option */}
+            <button
+              type="button"
+              onClick={() => onSelectColor(null)}
+              className={`h-6 w-6 cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
+                color === null
+                  ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
+                  : ""
+              }`}
+              aria-label="Reset to neutral gray"
+              title="Neutral (default)"
+            >
+              <ProjectTile color={null} size="sm" />
+            </button>
+            {PROJECT_COLORS.map((swatch) => (
               <button
-                key={color}
-                onClick={() => {
-                  onSelect(color);
-                  setOpen(false);
-                }}
-                className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
-                  color === currentColor
+                key={swatch}
+                type="button"
+                onClick={() => onSelectColor(swatch)}
+                className={`h-6 w-6 rounded-md cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
+                  swatch === color
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
-                style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                style={{ backgroundColor: swatch }}
+                aria-label={`Select color ${swatch}`}
               />
             ))}
           </div>
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -167,26 +236,35 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
   });
-
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -203,238 +281,83 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-view:${projectId}`}
+      viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
 }
 
-function ProjectWorkspacesContent({
-  companyId,
+function ProjectPluginOperationsList({
   projectId,
-  projectRef,
-  summaries,
+  companyId,
+  pluginKey,
 }: {
-  companyId: string;
   projectId: string;
-  projectRef: string;
-  summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
+  companyId: string;
+  pluginKey: string;
 }) {
   const queryClient = useQueryClient();
-  const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
-  const [closingWorkspace, setClosingWorkspace] = useState<{
-    id: string;
-    name: string;
-    status: ExecutionWorkspace["status"];
-  } | null>(null);
-  const controlWorkspaceRuntime = useMutation({
-    mutationFn: async (input: {
-      key: string;
-      kind: "project_workspace" | "execution_workspace";
-      workspaceId: string;
-      action: "start" | "stop" | "restart";
-    }) => {
-      setRuntimeActionKey(`${input.key}:${input.action}`);
-      if (input.kind === "project_workspace") {
-        return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
-      }
-      return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
-    },
-    onSettled: () => {
-      setRuntimeActionKey(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+  const originKindPrefix = `plugin:${pluginKey}`;
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
+    enabled: !!companyId,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
+  });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+    queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
+    enabled: !!companyId && !!projectId,
+  });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     },
   });
 
-  if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
-  }
-
-  const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
-  const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
-
-  const renderSummaryRow = (summary: ReturnType<typeof buildProjectWorkspaceSummaries>[number]) => {
-    const visibleIssues = summary.issues.slice(0, 5);
-    const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
-    const workspaceHref =
-      summary.kind === "project_workspace"
-        ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
-        : `/execution-workspaces/${summary.workspaceId}`;
-    const hasRunningServices = summary.runningServiceCount > 0;
-
-    const truncatePath = (path: string) => {
-      const parts = path.split("/").filter(Boolean);
-      if (parts.length <= 3) return path;
-      return `…/${parts.slice(-2).join("/")}`;
-    };
-
-    return (
-      <div
-        key={summary.key}
-        className="border-b border-border px-4 py-3 last:border-b-0"
-      >
-        {/* Header row: name + actions */}
-        <div className="flex items-center gap-3">
-          <Link
-            to={workspaceHref}
-            className="min-w-0 shrink truncate text-sm font-medium hover:underline"
-          >
-            {summary.workspaceName}
-          </Link>
-
-          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-            {summary.serviceCount > 0 ? (
-              <span className={`inline-flex items-center gap-1 ${hasRunningServices ? "text-emerald-500" : ""}`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                {summary.runningServiceCount}/{summary.serviceCount}
-              </span>
-            ) : null}
-            {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
-              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
-            ) : null}
-          </div>
-
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">{timeAgo(summary.lastUpdatedAt)}</span>
-            {summary.hasRuntimeConfig ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 px-2 text-xs"
-                disabled={controlWorkspaceRuntime.isPending}
-                onClick={() =>
-                  controlWorkspaceRuntime.mutate({
-                    key: summary.key,
-                    kind: summary.kind,
-                    workspaceId: summary.workspaceId,
-                    action: hasRunningServices ? "stop" : "start",
-                  })
-                }
-              >
-                {runtimeActionKey === `${summary.key}:start` || runtimeActionKey === `${summary.key}:stop` ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : hasRunningServices ? (
-                  <Square className="h-3 w-3" />
-                ) : (
-                  <Play className="h-3 w-3" />
-                )}
-                {hasRunningServices ? "Stop" : "Start"}
-              </Button>
-            ) : null}
-            {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground"
-                onClick={() => setClosingWorkspace({
-                  id: summary.executionWorkspaceId!,
-                  name: summary.workspaceName,
-                  status: summary.executionWorkspaceStatus!,
-                })}
-              >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-
-        {/* Metadata lines: branch, folder */}
-        <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
-          {summary.branchName ? (
-            <div className="flex items-center gap-1.5">
-              <GitBranch className="h-3 w-3 shrink-0" />
-              <span className="font-mono">{summary.branchName}</span>
-            </div>
-          ) : null}
-          {summary.cwd ? (
-            <div className="flex items-center gap-1.5">
-              <FolderOpen className="h-3 w-3 shrink-0" />
-              <span className="truncate font-mono" title={summary.cwd}>
-                {truncatePath(summary.cwd)}
-              </span>
-              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
-                <Copy className="h-3 w-3" />
-              </CopyText>
-            </div>
-          ) : null}
-          {summary.primaryServiceUrl ? (
-            <div className="flex items-center gap-1.5">
-              <a
-                href={summary.primaryServiceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono hover:text-foreground hover:underline"
-              >
-                {summary.primaryServiceUrl}
-              </a>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Issues */}
-        {summary.issues.length > 0 ? (
-          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-medium text-muted-foreground/70">Issues</span>
-            {visibleIssues.map((issue) => (
-              <IssuesQuicklook key={issue.id} issue={issue}>
-                <Link
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="font-mono hover:text-foreground hover:underline"
-                >
-                  {issue.identifier ?? issue.id.slice(0, 8)}
-                </Link>
-              </IssuesQuicklook>
-            ))}
-            {hiddenIssueCount > 0 ? (
-              <Link to={workspaceHref} className="hover:text-foreground hover:underline">
-                +{hiddenIssueCount} more
-              </Link>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
   return (
-    <>
-      <div className="space-y-4">
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {activeSummaries.map(renderSummaryRow)}
-        </div>
-        {cleanupFailedSummaries.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
-            </div>
-            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
-              {cleanupFailedSummaries.map(renderSummaryRow)}
-            </div>
-          </div>
-        ) : null}
-      </div>
-      {closingWorkspace ? (
-        <ExecutionWorkspaceCloseDialog
-          workspaceId={closingWorkspace.id}
-          workspaceName={closingWorkspace.name}
-          currentStatus={closingWorkspace.status}
-          open
-          onOpenChange={(open) => {
-            if (!open) setClosingWorkspace(null);
-          }}
-          onClosed={() => {
-            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-            setClosingWorkspace(null);
-          }}
-        />
-      ) : null}
-    </>
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error as Error | null}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={liveIssueIds}
+      projectId={projectId}
+      viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
   );
 }
 
@@ -449,11 +372,12 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [dismissedLeftProjectIds, setDismissedLeftProjectIds] = useState<Set<string>>(() => new Set());
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
@@ -479,10 +403,14 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const membershipsQuery = useResourceMemberships(resolvedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
+  const projectMembershipState = project?.id
+    ? resourceMembershipState(membershipsQuery.data, "project", project.id)
+    : "joined";
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const {
     slots: pluginDetailSlots,
@@ -545,7 +473,7 @@ export function ProjectDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
     }
   };
 
@@ -621,6 +549,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`, { replace: true });
+      return;
+    }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
@@ -640,6 +572,16 @@ export function ProjectDetail() {
     closePanel();
     return () => closePanel();
   }, [closePanel]);
+
+  useEffect(() => {
+    if (!project?.id || projectMembershipState !== "joined") return;
+    setDismissedLeftProjectIds((current) => {
+      if (!current.has(project.id)) return current;
+      const next = new Set(current);
+      next.delete(project.id);
+      return next;
+    });
+  }, [project?.id, projectMembershipState]);
 
   useEffect(() => {
     return () => {
@@ -726,7 +668,7 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
@@ -754,6 +696,9 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "plugin-operations" && project?.managedByPlugin) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/plugin-operations`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -769,6 +714,15 @@ export function ProjectDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!project) return null;
+  const showLeftProjectNotice =
+    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+  const projectMembershipPending =
+    membershipMutation.isPending &&
+    membershipMutation.variables?.resourceType === "project" &&
+    membershipMutation.variables.resourceId === project.id;
+  const projectStarred = isStarred(membershipsQuery.data, "project", project.id);
+  const projectStarPending = projectMembershipPending && membershipMutation.variables?.starred !== undefined;
+  const projectJoinLeavePending = projectMembershipPending && membershipMutation.variables?.starred === undefined;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -785,6 +739,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
+    } else if (tab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -794,11 +750,47 @@ export function ProjectDetail() {
 
   return (
     <div className="space-y-6">
+      {showLeftProjectNotice ? (
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
+          <p className="min-w-0 flex-1">
+            You left this project. It no longer appears in your sidebar.
+          </p>
+          <MembershipAction
+            compact
+            state="left"
+            pending={projectJoinLeavePending}
+            pendingState={projectJoinLeavePending ? membershipMutation.variables?.state : null}
+            resourceName={project.name}
+            onJoin={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "joined",
+            })}
+            onLeave={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "left",
+            })}
+          />
+          <button
+            type="button"
+            className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
+            aria-label="Dismiss project membership notice"
+            onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-start gap-3">
         <div className="h-7 flex items-center">
-          <ColorPicker
-            currentColor={project.color ?? "#6366f1"}
-            onSelect={(color) => updateProject.mutate({ color })}
+          <ProjectTilePicker
+            color={project.color ?? null}
+            icon={project.icon ?? null}
+            onSelectIcon={(icon) => updateProject.mutate({ icon })}
+            onSelectColor={(color) => updateProject.mutate({ color })}
           />
         </div>
         <div className="min-w-0 space-y-2">
@@ -809,13 +801,41 @@ export function ProjectDetail() {
             className="text-xl font-bold"
           />
           {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               Paused by budget hard stop
             </div>
           ) : null}
+          {project.managedByPlugin ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-(length:--text-micro) font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "var(--project-seed)" }} />
+              Managed by {project.managedByPlugin.pluginDisplayName}
+            </div>
+          ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <StarToggle
+            size="button"
+            starred={projectStarred}
+            pending={projectStarPending}
+            resourceName={project.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              starred: next,
+            })}
+          />
         </div>
       </div>
+
+      <SummarySlotCard
+        companyId={resolvedCompanyId}
+        scopeKind="project"
+        scopeId={project.id}
+        title="Project summary"
+        description="Summarizer keeps the latest project status, next step, and operator-needed items here."
+      />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
@@ -851,8 +871,9 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
+            { value: "list", label: "Tasks" },
             { value: "overview", label: "Overview" },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
@@ -880,6 +901,14 @@ export function ProjectDetail() {
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "plugin-operations" && project?.id && resolvedCompanyId && project.managedByPlugin && (
+        <ProjectPluginOperationsList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          pluginKey={project.managedByPlugin.pluginKey}
+        />
       )}
 
       {activeTab === "workspaces" ? (

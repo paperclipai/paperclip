@@ -1,3 +1,7 @@
+// token-extraction: allowlisted — intentional one-off decoration (DECISION-SHEET.md B1
+// user ruling). The bg-[...gradient...] / shadow-[...] literals in this demo/UX-lab page
+// are deliberate one-off decoration, reverted from --gradient-extract-*/--shadow-extract-*
+// tokens; the file is on the check-token-gates allowlist in ui/src/index.css.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,10 +18,11 @@ import {
   issueChatUxReassignOptions,
   issueChatUxReviewComments,
   issueChatUxReviewEvents,
+  issueChatUxSubmittingComments,
   issueChatUxTranscriptsByRunId,
 } from "../fixtures/issueChatUxFixtures";
 import { cn } from "../lib/utils";
-import { Bot, Brain, FlaskConical, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
+import { Bot, Brain, FlaskConical, Loader2, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
 
 const noop = async () => {};
 
@@ -25,6 +30,7 @@ const highlights = [
   "Running assistant replies with streamed text, reasoning, tool cards, and background status notes",
   "Historical issue events and linked runs rendered inline with the chat timeline",
   "Queued user messages, settled assistant comments, and feedback controls",
+  "Submitting (pending) message bubble with Sending... label and reduced opacity",
   "Empty and disabled-composer states without relying on live backend data",
 ];
 
@@ -47,13 +53,13 @@ function LabSection({
     <section
       id={id}
       className={cn(
-        "rounded-[28px] border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
+        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
         accentClassName,
       )}
     >
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             {eyebrow}
           </div>
           <h2 className="mt-1 text-xl font-semibold tracking-tight">{title}</h2>
@@ -84,6 +90,11 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
   }>({ key: 0, current: DEMO_REASONING_LINES[0], exiting: null });
 
   useEffect(() => {
+    // Respect reduced motion (also makes the visual suite deterministic —
+    // it captures with reducedMotion: "reduce").
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
     const timer = setInterval(() => {
       setIndex((i) => (i + 1) % DEMO_REASONING_LINES.length);
     }, intervalMs);
@@ -109,7 +120,7 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -118,7 +129,7 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -134,10 +145,10 @@ export function IssueChatUxLab() {
 
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
+      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-39)">
           <div className="p-6 sm:p-7">
-            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700 dark:text-cyan-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-cyan-700 dark:text-cyan-300">
               <FlaskConical className="h-3.5 w-3.5" />
               Chat UX Lab
             </div>
@@ -149,13 +160,13 @@ export function IssueChatUxLab() {
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 /tests/ux/chat
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 assistant-ui thread
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
                 fixture-backed live run
               </Badge>
             </div>
@@ -175,7 +186,7 @@ export function IssueChatUxLab() {
           </div>
 
           <aside className="border-t border-border/60 bg-background/70 p-6 lg:border-l lg:border-t-0">
-            <div className="mb-4 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            <div className="mb-4 flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               <WandSparkles className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
               Covered states
             </div>
@@ -202,16 +213,53 @@ export function IssueChatUxLab() {
       >
         <div className="space-y-4">
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="mb-2 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               Default interval (2.2s)
             </div>
             <RotatingReasoningDemo />
           </div>
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="mb-2 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               Fast interval (1s) — stress test
             </div>
             <RotatingReasoningDemo intervalMs={1000} />
+          </div>
+        </div>
+      </LabSection>
+
+      <LabSection
+        id="working-tokens"
+        eyebrow="Status tokens"
+        title="Working / Worked header verb"
+        description='The "Working" token uses the shimmer-text gradient sweep to signal an active run. Once the run completes it becomes the static "Worked" token.'
+        accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-3 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
+              Active run — shimmer
+            </div>
+            <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                <span className="shimmer-text">Working</span>
+              </span>
+              <span className="text-xs text-muted-foreground/60">for 12s</span>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
+            <div className="mb-3 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
+              Completed run — static
+            </div>
+            <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                </span>
+                Worked
+              </span>
+              <span className="text-xs text-muted-foreground/60">for 1 min 24s</span>
+            </div>
           </div>
         </div>
       </LabSection>
@@ -245,6 +293,26 @@ export function IssueChatUxLab() {
           enableLiveTranscriptPolling={false}
           transcriptsByRunId={issueChatUxTranscriptsByRunId}
           hasOutputForRun={(runId) => issueChatUxTranscriptsByRunId.has(runId)}
+        />
+      </LabSection>
+
+      <LabSection
+        eyebrow="Submitting state"
+        title="Pending message bubble"
+        description='When a user sends a message, the bubble briefly shows a "Sending..." label at reduced opacity until the server confirms receipt. This preview renders that transient state.'
+        accentClassName="bg-[linear-gradient(180deg,rgba(59,130,246,0.06),transparent_28%),var(--background)]"
+      >
+        <IssueChatThread
+          comments={issueChatUxSubmittingComments}
+          linkedRuns={[]}
+          timelineEvents={[]}
+          issueStatus="in_progress"
+          agentMap={issueChatUxAgentMap}
+          currentUserId="user-1"
+          onAdd={noop}
+          draftKey="issue-chat-ux-lab-submitting"
+          showComposer={false}
+          enableLiveTranscriptPolling={false}
         />
       </LabSection>
 
@@ -295,7 +363,7 @@ export function IssueChatUxLab() {
 
           <Card className="gap-4 border-border/70 bg-background/85 py-0">
             <CardHeader className="px-5 pt-5 pb-0">
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              <div className="flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                 <MessagesSquare className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                 Review checklist
               </div>

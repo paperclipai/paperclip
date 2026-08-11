@@ -45,8 +45,72 @@ export type MigrationState =
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
-export function createDb(url: string) {
-  const sql = postgres(url);
+export interface DatabaseClientOptions {
+  /**
+   * postgres.js `prepare`. Set false when connecting through a
+   * transaction-mode pooler (pgbouncer / Neon `-pooler` endpoints /
+   * Supabase Supavisor transaction ports) so the client does not rely on
+   * session-scoped prepared statements. Defaults to the driver default
+   * (enabled), preserving existing behavior on direct connections.
+   */
+  prepare?: boolean;
+  /** postgres.js `max` — connection pool size (driver default: 10). */
+  maxConnections?: number;
+  /** postgres.js `idle_timeout` in seconds (driver default: disabled). */
+  idleTimeoutSeconds?: number;
+  /** postgres.js `connect_timeout` in seconds (driver default: 30). */
+  connectTimeoutSeconds?: number;
+}
+
+function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
+  const value = env[name]?.trim().toLowerCase();
+  if (value === undefined || value === "") return undefined;
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  throw new Error(`${name} must be "true" or "false", got: ${env[name]}`);
+}
+
+function envPositiveInteger(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") return undefined;
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error(`${name} must be a positive integer, got: ${env[name]}`);
+  }
+  return Number.parseInt(value, 10);
+}
+
+/**
+ * Database client tuning from the environment, so hosted deployments can
+ * adapt to their connection topology (pooled endpoints, network latency)
+ * without editing source. Every variable is optional; when unset the
+ * driver defaults apply and behavior is identical to a bare
+ * `postgres(url)` — self-hosted setups need none of these.
+ */
+export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): DatabaseClientOptions {
+  const options: DatabaseClientOptions = {};
+  const prepare = envBoolean(env, "DATABASE_PREPARED_STATEMENTS");
+  if (prepare !== undefined) options.prepare = prepare;
+  const maxConnections = envPositiveInteger(env, "DATABASE_POOL_MAX");
+  if (maxConnections !== undefined) options.maxConnections = maxConnections;
+  const idleTimeoutSeconds = envPositiveInteger(env, "DATABASE_IDLE_TIMEOUT_SECONDS");
+  if (idleTimeoutSeconds !== undefined) options.idleTimeoutSeconds = idleTimeoutSeconds;
+  const connectTimeoutSeconds = envPositiveInteger(env, "DATABASE_CONNECT_TIMEOUT_SECONDS");
+  if (connectTimeoutSeconds !== undefined) options.connectTimeoutSeconds = connectTimeoutSeconds;
+  return options;
+}
+
+export function postgresJsOptions(options: DatabaseClientOptions): Record<string, unknown> {
+  const driverOptions: Record<string, unknown> = {};
+  if (options.prepare !== undefined) driverOptions.prepare = options.prepare;
+  if (options.maxConnections !== undefined) driverOptions.max = options.maxConnections;
+  if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
+  if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
+  return driverOptions;
+}
+
+export function createDb(url: string, options?: DatabaseClientOptions) {
+  const resolved = options ?? databaseClientOptionsFromEnv();
+  const sql = postgres(url, postgresJsOptions(resolved));
   return drizzlePg(sql, { schema });
 }
 
@@ -771,6 +835,27 @@ export async function ensurePostgresDatabase(
 
     await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
     return "created";
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function resetPostgresDatabase(
+  url: string,
+  databaseName: string,
+): Promise<"reset"> {
+  const quotedDatabaseName = quoteIdentifier(databaseName);
+  const sql = createUtilitySql(url);
+  try {
+    await sql`
+      select pg_terminate_backend(pid)
+      from pg_stat_activity
+      where datname = ${databaseName}
+        and pid <> pg_backend_pid()
+    `;
+    await sql.unsafe(`drop database if exists ${quotedDatabaseName}`);
+    await sql.unsafe(`create database ${quotedDatabaseName} encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+    return "reset";
   } finally {
     await sql.end();
   }

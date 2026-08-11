@@ -67,6 +67,27 @@ Why:
 - the single `release.yml` workflow handles both canary and stable publishing
 - GitHub environments `npm-canary` and `npm-stable` still enforce different approval rules on the GitHub side
 
+### 2.2.1. Newly added public packages need a bootstrap phase
+
+Trusted publishing is configured on the npm package itself, not at the repo scope.
+That means a brand-new public package must not be auto-enrolled into CI publishing until its npm package exists and its trusted publisher has been configured.
+
+Repo policy:
+
+1. add every non-private package to [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json)
+2. set `"publishFromCi": true` only when CI is expected to publish that package
+3. if the package is not ready for CI publishing yet, keep `"publishFromCi": false`
+4. complete the package bootstrap before merging any PR that changes a release-enabled new package
+
+Bootstrap sequence for a new package:
+
+1. publish the package once from a trusted maintainer machine using normal npm auth
+2. open that package on npm and add the `paperclipai/paperclip` trusted publisher for `.github/workflows/release.yml`
+3. rerun or dry-run the release flow as needed to confirm CI publishing now works
+4. only then enable `"publishFromCi": true`
+
+PR CI enforces this by checking changed release-enabled package manifests against npm. That keeps `master` canary publishing healthy while preserving the no-long-lived-token model for normal CI releases.
+
 ### 2.3. Verify trusted publishing before removing old auth
 
 After the workflows are live:
@@ -92,9 +113,10 @@ Goal:
 
 ## 4. Create GitHub Environments
 
-Create two environments in the GitHub repository:
+Create three environments in the GitHub repository:
 
 - `npm-canary`
+- `npm-beta`
 - `npm-stable`
 
 Path:
@@ -119,6 +141,35 @@ Reasoning:
 
 - every push to `master` should be able to publish a canary automatically
 - no human approval should be required for canaries
+
+The scheduled nightly lane also publishes under `npm-canary`: it is the same
+trust level (fully automated, no human gate), its runs execute on `master` so
+the branch rule is satisfied, and reusing the environment means the nightly
+lane required no new environments and no npm trusted-publisher changes
+(publishing still happens from `release.yml`, see section 2.2).
+
+## 5.1. Configure `npm-beta`
+
+Recommended settings for `npm-beta`:
+
+- environment name: `npm-beta`
+- required reviewers: at least one maintainer
+- prevent self-review: enabled when your team size allows it
+- wait timer: none
+- deployment branches and tags:
+  - selected branches only
+  - allow `master`
+
+Reasoning:
+
+- beta promotions are deliberate human decisions; the required reviewer on
+  this environment is the promotion gate
+- create this environment before the first `channel: beta` dispatch. If the
+  workflow runs first, GitHub auto-creates the environment with no
+  protection rules, and that first beta would publish without approval
+
+Like nightly, beta publishing lives in `release.yml`, so no npm
+trusted-publisher changes are needed (see section 2.2).
 
 ## 6. Configure `npm-stable`
 
@@ -211,8 +262,12 @@ After setup:
 Install-path check:
 
 ```bash
-npx paperclipai@canary onboard
+npm install --prefix "$(mktemp -d)" paperclipai@canary --no-audit --no-fund
 ```
+
+The release script runs this clean-prefix install after publishing every workspace
+package dependency-first and publishing `paperclipai` last. A package that is not
+yet registry-visible stops the train before the channel entrypoint can advance.
 
 ## 12. Verify the Stable Workflow
 

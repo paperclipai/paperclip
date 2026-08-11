@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -41,6 +42,10 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
   }
 
   const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type.startsWith("acpx.")) {
+    return parseAcpxStdoutLine(line, ts);
+  }
+
   if (type === "system" && parsed.subtype === "init") {
     return [
       {

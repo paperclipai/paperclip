@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
+import { useVisibilityRefetchInterval } from "@/lib/polling";
+import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime } from "../lib/utils";
 import { ExternalLink, Square } from "lucide-react";
@@ -13,8 +14,6 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 interface LiveRunWidgetProps {
   issueId: string;
   companyId?: string | null;
-  liveRunsData?: LiveRunForIssue[];
-  activeRunData?: ActiveRunForIssue | null;
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -26,33 +25,27 @@ function isRunActive(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
-export function LiveRunWidget({
-  issueId,
-  companyId,
-  liveRunsData,
-  activeRunData,
-}: LiveRunWidgetProps) {
+export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
-  const shouldFetchLiveRuns = liveRunsData === undefined;
-  const shouldFetchActiveRun = activeRunData === undefined;
 
-  const { data: fetchedLiveRuns } = useQuery({
+  // Live-run polling slows/stops for hidden tabs so a restored window doesn't
+  // hammer the live-run endpoints (PAP-12556).
+  const liveRunRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 3000 });
+
+  const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
-    enabled: !!issueId && shouldFetchLiveRuns,
-    refetchInterval: 3000,
+    enabled: !!issueId,
+    refetchInterval: liveRunRefetchInterval,
   });
 
-  const { data: fetchedActiveRun } = useQuery({
+  const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
-    enabled: !!issueId && shouldFetchActiveRun,
-    refetchInterval: 3000,
+    enabled: !!issueId,
+    refetchInterval: liveRunRefetchInterval,
   });
-
-  const liveRuns = liveRunsData ?? fetchedLiveRuns;
-  const activeRun = activeRunData ?? fetchedActiveRun;
 
   const runs = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -71,6 +64,8 @@ export function LiveRunWidget({
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logBytes: activeRun.logBytes,
+        lastOutputBytes: activeRun.lastOutputBytes,
         issueId,
       });
     }
@@ -99,13 +94,13 @@ export function LiveRunWidget({
   if (runs.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/80 shadow-[0_18px_50px_rgba(6,182,212,0.08)]">
-      <div className="border-b border-border/60 bg-cyan-500/[0.04] px-4 py-3">
-        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">
+    <div className="overflow-hidden rounded-xl border border-blue-500/25 bg-background/80 shadow-(--shadow-extract-11)">
+      <div className="border-b border-border/60 bg-blue-500/[0.04] px-4 py-3">
+        <div className="text-xs font-semibold uppercase tracking-(--tracking-caps) text-blue-700 dark:text-blue-300">
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Uses the shared chat-style run surface from issue activity.
+          Uses the shared chat-style run surface from task activity.
         </div>
       </div>
 
@@ -123,7 +118,7 @@ export function LiveRunWidget({
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Link
                       to={`/agents/${run.agentId}/runs/${run.id}`}
-                      className="inline-flex items-center rounded-full border border-border/70 bg-background/70 px-2 py-1 font-mono hover:border-cyan-500/30 hover:text-foreground"
+                      className="inline-flex items-center rounded-full border border-border/70 bg-background/70 px-2 py-1 font-mono hover:border-blue-500/30 hover:text-foreground"
                     >
                       {run.id.slice(0, 8)}
                     </Link>
@@ -137,7 +132,7 @@ export function LiveRunWidget({
                     <button
                       onClick={() => handleCancelRun(run.id)}
                       disabled={cancellingRunIds.has(run.id)}
-                      className="inline-flex items-center gap-1 rounded-full border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-500/[0.12] dark:text-red-300 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-full border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1 text-(length:--text-micro) font-medium text-red-700 transition-colors hover:bg-red-500/[0.12] dark:text-red-300 disabled:opacity-50"
                     >
                       <Square className="h-2.5 w-2.5" fill="currentColor" />
                       {cancellingRunIds.has(run.id) ? "Stopping…" : "Stop"}
@@ -145,7 +140,7 @@ export function LiveRunWidget({
                   )}
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.id}`}
-                    className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-[11px] font-medium text-cyan-700 transition-colors hover:border-cyan-500/30 hover:text-cyan-600 dark:text-cyan-300"
+                    className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-(length:--text-micro) font-medium text-blue-700 transition-colors hover:border-blue-500/30 hover:text-blue-600 dark:text-blue-300"
                   >
                     Open run
                     <ExternalLink className="h-3 w-3" />
@@ -153,7 +148,7 @@ export function LiveRunWidget({
                 </div>
               </div>
 
-              <div className="max-h-[320px] overflow-y-auto pr-1">
+              <div className="max-h-(--sz-320px) overflow-y-auto pr-1">
                 <RunChatSurface
                   run={run}
                   transcript={transcript}

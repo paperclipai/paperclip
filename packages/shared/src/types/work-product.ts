@@ -49,7 +49,18 @@ export interface IssueWorkProduct {
   healthStatus: "unknown" | "healthy" | "unhealthy";
   summary: string | null;
   metadata: Record<string, unknown> | null;
+  sourceTrust?: import("../trust-policy.js").SourceTrustMetadata | null;
   createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AttachmentArtifactWorkProductMetadata {
+  attachmentId: string;
+  contentType: string;
+  byteSize: number;
+  contentPath: string;
+  openPath: string;
+  downloadPath: string;
+  originalFilename?: string | null;
 }

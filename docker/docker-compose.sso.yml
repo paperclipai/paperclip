@@ -16,7 +16,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.2.0
+    image: quay.io/keycloak/keycloak:26.2.5
     command: start-dev --import-realm
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin

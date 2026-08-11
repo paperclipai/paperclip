@@ -1,0 +1,126 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
+import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useLocation } from "@/lib/router";
+import { IssuePlanConfirmationActionBar } from "./IssuePlanConfirmationActionBar";
+
+interface IssuePropertiesPlansTabProps {
+  issue: Issue;
+  /** True when hosted outside the properties panel (mobile sheet) — the plan
+   * confirmation bar then renders in place instead of the pane footer slot. */
+  inline?: boolean;
+}
+
+function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | undefined): boolean {
+  return (interactions ?? []).some(
+    (interaction) =>
+      interaction.kind === "request_confirmation"
+      && interaction.status === "pending"
+      && interaction.payload.target?.type === "issue_document"
+      && interaction.payload.target.key === "plan",
+  );
+}
+
+/**
+ * Plans tab of the redesigned properties pane (flag: enableTaskChatRedesign).
+ *
+ * Owns the plan surface with the flag ON: the `plan` document itself (formerly
+ * pinned above the tabs via IssueDocumentsSection, which the chat shell gates
+ * off) rendered above the accepted-plan decomposition history. Structured live
+ * PlanEntry/todo streaming is a flagged protocol dependency (demonstrated in
+ * the /dev/task-chat-lab harness).
+ */
+export function IssuePropertiesPlansTab({ issue, inline }: IssuePropertiesPlansTabProps) {
+  const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
+  const location = useLocation();
+  const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
+  const { data } = useQuery({
+    queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
+    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+  });
+  const { data: interactions } = useQuery({
+    queryKey: queryKeys.issues.interactions(issue.id),
+    queryFn: () => issuesApi.listInteractions(issue.id),
+  });
+  const hasPlans = (data?.length ?? 0) > 0;
+  const pendingPlanConfirmation = hasPendingPlanConfirmation(interactions);
+
+  if (!planDocument && !hasPlans) {
+    return (
+      <>
+        {/* This is deliberately outside the plan-document gate: an interaction
+            can arrive before its plan document query resolves or persists. */}
+        <IssuePlanConfirmationActionBar issue={issue} inline={inline} />
+        <div className="px-1 py-6 text-sm text-muted-foreground">
+          {planDocumentLoading ? (
+            "Loading plan…"
+          ) : issue.workMode === "planning" ? (
+            <div className="space-y-2">
+              <p>This task is in plan mode but no plan document has been written yet.</p>
+              {pendingPlanConfirmation ? (
+                <p className="text-amber-foreground">
+                  A plan confirmation is pending, but the plan document it should confirm is missing.
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            "No plan yet. The plan document, accepted plans, and their revisions will appear here."
+          )}
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="space-y-4 py-2">
+      {/* Pending plan confirmation: its CTAs pin to the pane's footer slot so
+          they stay visible while the plan scrolls. */}
+      <IssuePlanConfirmationActionBar issue={issue} inline={inline} />
+      {planDocument ? (
+        <section data-testid="issue-plan-document" className="space-y-2">
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            {`Revision ${planDocument.latestRevisionNumber ?? 1} · updated ${new Date(planDocument.updatedAt).toLocaleString([], {
+              month: "short",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })}`}
+            <DocumentAnnotationsCountChip
+              issueId={issue.id}
+              docKey="plan"
+              panelOpen={annotationPanelOpen}
+              onToggle={() => setAnnotationPanelOpen((open) => !open)}
+            />
+          </div>
+          <IssueDocumentAnnotations
+            issueId={issue.id}
+            doc={{
+              key: "plan",
+              latestRevisionId: planDocument.latestRevisionId,
+              latestRevisionNumber: planDocument.latestRevisionNumber,
+            }}
+            bodyMarkdown={planDocument.body}
+            draftDirty={false}
+            draftConflicted={false}
+            historicalPreview={false}
+            locationHash={location.hash}
+            panelOpen={annotationPanelOpen}
+            onPanelOpenChange={setAnnotationPanelOpen}
+            panelPlacement="inline"
+          >
+            <MarkdownBody>{planDocument.body}</MarkdownBody>
+          </IssueDocumentAnnotations>
+        </section>
+      ) : null}
+      {hasPlans ? (
+        <IssuePlanDecompositionsSection issueId={issue.id} issueIdentifier={issue.identifier} />
+      ) : null}
+    </div>
+  );
+}

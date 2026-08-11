@@ -43,17 +43,21 @@ function createAgent(
 }
 
 function createComment(overrides: Partial<IssueChatComment>): IssueChatComment {
-  return {
+  const merged: IssueChatComment = {
     id: "comment-default",
     companyId: "company-ux",
     issueId: "issue-ux",
+    authorType: overrides.authorAgentId ? "agent" : "user",
     authorAgentId: null,
     authorUserId: "user-1",
     body: "",
+    presentation: null,
+    metadata: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
   };
+  return merged;
 }
 
 const primaryAgent = createAgent("agent-1", "CodexCoder", "code", "codexcoder");
@@ -272,6 +276,23 @@ export const issueChatUxTranscriptsByRunId = new Map<string, readonly IssueChatT
     ],
   ],
 ]);
+
+export const issueChatUxSubmittingComments: IssueChatComment[] = [
+  createComment({
+    id: "comment-submitting-user-settled",
+    body: "Let me know once the thread layout is locked down.",
+    createdAt: new Date("2026-04-06T12:40:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:40:00.000Z"),
+  }),
+  createComment({
+    id: "comment-submitting-pending",
+    body: "Looks good — go ahead and ship it when you're ready.",
+    createdAt: new Date("2026-04-06T12:42:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:42:00.000Z"),
+    clientId: "client-pending-1",
+    clientStatus: "pending",
+  }),
+];
 
 export const issueChatUxReviewComments: IssueChatComment[] = [
   createComment({
