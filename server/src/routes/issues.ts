@@ -3681,6 +3681,21 @@ export function issueRoutes(
       return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
     }
 
+    // A durable blocked disposition supersedes recovery work even when the
+    // relation/descriptor predates recovery revalidation. Read projection is
+    // intentionally allowed to fold this strong current-state signal, just as
+    // it already does for terminal issues; otherwise old recovery records stay
+    // active forever and keep presenting a false retry path.
+    if (issue.status === "blocked") {
+      const readiness = await svc.getDependencyReadiness(issue.id);
+      if (readiness.unresolvedBlockerCount > 0) {
+        return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
+      }
+      if (issue.unblockDescriptor && readNonEmptyString(issue.unblockDescriptor.action)) {
+        return "Recovery action became stale because the source issue now has a structured unblock owner and action.";
+      }
+    }
+
     if (input.trigger === "read_projection") return null;
     if (
       input.trigger === "comment" &&
@@ -3703,13 +3718,7 @@ export function issueRoutes(
       input.reopened === true;
     if (!durableSourceChange) return null;
 
-    if (issue.status === "blocked") {
-      const readiness = await svc.getDependencyReadiness(issue.id);
-      if (readiness.unresolvedBlockerCount > 0) {
-        return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
-      }
-      return null;
-    }
+    if (issue.status === "blocked") return null;
 
     if (issue.assigneeUserId && issue.status !== "done" && issue.status !== "cancelled") {
       return "Recovery action became stale because the source issue now has a human owner.";

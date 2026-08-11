@@ -1975,6 +1975,93 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("folds stale recovery during read projection when the source has a live first-class blocker", async () => {
+    const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Repair the dependency",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:blocked-read-projection",
+      evidence: { latestIssueStatus: "todo" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+
+    expect(detail.body.activeRecoveryAction).toBeNull();
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue now has unresolved first-class blockers.",
+    });
+  });
+
+  it("folds stale recovery during read projection when the source has a structured unblock disposition", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Approve the recorded external gate." },
+      })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:descriptor-read-projection",
+      evidence: { latestIssueStatus: "todo" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+
+    expect(detail.body.activeRecoveryAction).toBeNull();
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue now has a structured unblock owner and action.",
+    });
+  });
+
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
