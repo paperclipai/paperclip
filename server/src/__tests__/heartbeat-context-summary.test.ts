@@ -7,6 +7,40 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("surfaces the immediate parent's description so a delegated assignee sees the authoritative spec (HELA-7803)", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "child-1",
+        identifier: "PAP-9001",
+        title: "Implement widget",
+        description: "Do the child work.",
+      },
+      ancestors: [
+        {
+          id: "parent-1",
+          identifier: "PAP-9000",
+          title: "Widget umbrella",
+          status: "in_progress",
+          priority: "high",
+          description: "AUTHORITATIVE DoR: build the widget with REQ-01..REQ-05.",
+        },
+        {
+          id: "grandparent-1",
+          identifier: "PAP-8000",
+          title: "Program epic",
+          description: "Deep ancestor description that must NOT be fully inlined verbatim-at-length.",
+        },
+      ],
+    });
+
+    expect(markdown).toContain("Authoritative parent / ancestor context:");
+    // Immediate parent description is inlined (retires the hand-copied-DoR workaround).
+    expect(markdown).toContain("AUTHORITATIVE DoR: build the widget with REQ-01..REQ-05.");
+    // Deeper ancestor still gets a (bounded) excerpt but the nearest parent is prioritized.
+    expect(markdown).toContain("- Parent: PAP-9000 Widget umbrella (in_progress) [high]");
+    expect(markdown).toContain("- Ancestor 2: PAP-8000 Program epic");
+  });
+
   it("adds planning directives for assignment and comment task context", () => {
     const assignment = buildPaperclipTaskMarkdown({
       issue: {

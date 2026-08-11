@@ -4543,6 +4543,7 @@ export function buildPaperclipTaskMarkdown(input: {
     title?: string | null;
     status?: string | null;
     priority?: string | null;
+    description?: string | null;
   }> | null;
   wakeComment?: {
     id: string;
@@ -4625,6 +4626,21 @@ export function buildPaperclipTaskMarkdown(input: {
       const priority = ancestor.priority ? ` [${ancestor.priority}]` : "";
       const title = ancestor.title ? ` ${ancestor.title}` : "";
       lines.push(`- ${index === 0 ? "Parent" : `Ancestor ${index + 1}`}: ${label}${title}${status}${priority}`);
+      // The immediate parent/umbrella issue carries the authoritative spec/DoR.
+      // getAncestors already loads its description, but it was historically
+      // dropped here, so a delegated assignee never saw the parent's spec — the
+      // exact reason "ПОЛНЫЙ DoR в description" had to be hand-copied. Emit a
+      // bounded excerpt for the nearest ancestors (parent gets the most room)
+      // while keeping deeper ancestors title-only to cap token cost. (HELA-7803)
+      const ancestorDescription = ancestor.description?.trim();
+      if (ancestorDescription && index < 2) {
+        const budget = index === 0 ? 1_200 : 500;
+        const excerpt =
+          ancestorDescription.length > budget
+            ? `${ancestorDescription.slice(0, budget)}\n… [truncated]`
+            : ancestorDescription;
+        lines.push(fenceTaskText(excerpt));
+      }
     }
     if ((input.ancestors ?? []).length > ancestors.length) {
       lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
@@ -6216,7 +6232,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       `- Rotation reason: ${reason}`,
       latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
       input.continuationSummaryBody
-        ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
+        ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 8_000)}`
         : "",
       "Continue from the current task state. Rebuild only the minimum context you need.",
     ]
