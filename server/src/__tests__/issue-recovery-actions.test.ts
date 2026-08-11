@@ -395,6 +395,28 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       currentParticipant: { type: "agent", agentId: managerId },
       returnAssignee: { type: "agent", agentId: managerId },
     });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "review process exited unexpectedly",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const firstPostRestore = await recovery.reconcileStrandedAssignedIssues();
+    expect(firstPostRestore.changesRequestedRepaired).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(managerId, expect.anything());
+    const wakeCount = enqueueWakeup.mock.calls.length;
+
+    const secondPostRestore = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondPostRestore.reviewParticipantRequeued).toBe(0);
+    expect(secondPostRestore.changesRequestedRepaired).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(wakeCount);
   });
 
   it("rejects a stale repair candidate restored to a pending reviewer before CAS", async () => {

@@ -29,6 +29,9 @@ export function createBabysitterArtifactInstance(input) {
     ["inputsDigest", input.build.inputsDigest],
     ["mediaType", input.mediaType],
     ["buildExecutionId", input.buildExecutionId],
+    ["contentPath", input.contentPath],
+    ["retention.locator", input.retention?.locator],
+    ["retention.mediaType", input.retention?.mediaType],
   ]) {
     if (typeof value !== "string" || value.trim() === "") {
       throw new TypeError(`${name} provenance must be a non-empty string`);
@@ -55,6 +58,12 @@ export function createBabysitterArtifactInstance(input) {
     // the source bytes. This prevents a source-only digest from masquerading
     // as deployable artifact provenance.
     contentDigest: `sha256:${createHash("sha256").update(buildOutputBytes).digest("hex")}`,
+    contentPath: input.contentPath,
+    contentLength: buildOutputBytes.length,
+    retention: {
+      locator: input.retention.locator,
+      mediaType: input.retention.mediaType,
+    },
   };
   return {
     ...artifact,

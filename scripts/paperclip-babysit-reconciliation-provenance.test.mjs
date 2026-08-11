@@ -39,6 +39,11 @@ const input = {
   sourceBytes: reviewedSourceBytes,
   buildOutputBytes: retainedBuildOutputBytes,
   mediaType: "application/javascript",
+  contentPath: retainedBuildOutputPath,
+  retention: {
+    locator: "/api/attachments/b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7/content",
+    mediaType: "application/javascript",
+  },
   buildExecutionId: `build-eco-1123-${manifest.sourceRevision.commit}`,
 };
 
@@ -137,6 +142,9 @@ describe("babysitter artifact provenance", () => {
       buildExecutionId: result.buildExecutionId,
       sourceContentDigest: result.sourceContentDigest,
       contentDigest: result.contentDigest,
+      contentPath: result.contentPath,
+      contentLength: result.contentLength,
+      retention: result.retention,
       sourceRevisionDigest: result.sourceRevisionDigest,
       buildDigest: result.buildDigest,
     });
