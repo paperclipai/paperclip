@@ -135,8 +135,8 @@ import {
   projectService,
   routineService,
   workProductService,
-  deliveryAttestationService,
 } from "../services/index.js";
+import { deliveryAttestationService } from "../services/delivery-attestations.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
