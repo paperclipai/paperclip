@@ -3916,7 +3916,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "monitor_only",
           reason: recoveryCause,
         }
-        : recoveryCause === "configuration_incomplete"
+        : recoveryCause === "configuration_incomplete" || recoveryCause === "workspace_validation_failed"
         ? {
           type: "manual_repair_required",
           reason: recoveryCause,
@@ -4615,7 +4615,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
   }) {
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
-    if (input.recoveryCause === "configuration_incomplete") return;
+    if (
+      input.recoveryCause === "configuration_incomplete" ||
+      input.recoveryCause === "workspace_validation_failed"
+    ) return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -5063,7 +5066,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // A capped action is already linked to the single board-visible root
     // escalation. Do not create a per-source wrapper that would reintroduce
     // the very noise the cap exists to stop.
-    if (!recoveryAction.recoveryIssueId) {
+    const requiresDeterministicManualRepair =
+      recoveryCause === "workspace_validation_failed";
+    if (!recoveryAction.recoveryIssueId && !requiresDeterministicManualRepair) {
       await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
         latestRun: input.latestRun,
@@ -5108,7 +5113,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let lastCapabilityError: unknown = null;
     let preservedCurrentAssignee = false;
 
-    while (queuedAssigneeIds.length > 0) {
+    if (requiresDeterministicManualRepair) {
+      updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+        assigneeAgentId: input.issue.assigneeAgentId,
+        ...strandedBlockedGate,
+      });
+      selectedAssigneeAgentId = input.issue.assigneeAgentId;
+      preservedCurrentAssignee = true;
+    }
+
+    while (!requiresDeterministicManualRepair && queuedAssigneeIds.length > 0) {
       const nextAssigneeAgentId = queuedAssigneeIds.shift() ?? null;
       if (!nextAssigneeAgentId) continue;
       attemptedAssigneeIds.add(nextAssigneeAgentId);

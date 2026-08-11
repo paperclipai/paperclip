@@ -679,8 +679,8 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "wake_owner",
-      reason: "source_scoped_recovery_action",
+      type: "manual_repair_required",
+      reason: "workspace_validation_failed",
       ownerAgentId: expect.any(String),
     }),
   });

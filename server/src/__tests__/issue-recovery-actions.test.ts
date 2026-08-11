@@ -528,15 +528,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
       expect(action?.ownerAgentId).toBe(expectedOwnerId);
-      expect(enqueueWakeup).toHaveBeenCalledWith(
-        expectedOwnerId,
-        expect.objectContaining({
-          reason: "source_scoped_recovery_action",
-          payload: expect.objectContaining({
-            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+      if (errorCode === "workspace_validation_failed") {
+        expect(action?.wakePolicy).toMatchObject({
+          type: "manual_repair_required",
+          reason: "workspace_validation_failed",
+        });
+        expect(enqueueWakeup).not.toHaveBeenCalled();
+      } else {
+        expect(enqueueWakeup).toHaveBeenCalledWith(
+          expectedOwnerId,
+          expect.objectContaining({
+            reason: "source_scoped_recovery_action",
+            payload: expect.objectContaining({
+              recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+            }),
           }),
-        }),
-      );
+        );
+      }
     },
   );
 
@@ -1295,11 +1303,19 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }),
       nextAction: expect.stringContaining("git worktree branch incoherence"),
       wakePolicy: expect.objectContaining({
-        type: "wake_owner",
-        reason: "source_scoped_recovery_action",
+        type: "manual_repair_required",
+        reason: "workspace_validation_failed",
         ownerAgentId: expect.any(String),
       }),
     });
+    const recoveryWrappers = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.originKind, "stranded_issue_recovery"),
+        eq(issues.originId, sourceIssue.id),
+      ));
+    expect(recoveryWrappers).toHaveLength(0);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
@@ -1318,14 +1334,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         ]),
       })],
     });
-    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(2);
-    expect(enqueueWakeup).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
-      }),
-    );
+    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(0);
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
