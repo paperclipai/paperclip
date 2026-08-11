@@ -25,7 +25,7 @@ function providerIdFromType(type: SsoProviderType): string {
   return type.replace(/_/g, "-");
 }
 
-interface ProviderFormState {
+export interface ProviderFormState {
   type: SsoProviderType;
   providerId: string;
   clientId: string;
@@ -55,6 +55,17 @@ function emptyForm(): ProviderFormState {
     claimPath: "",
     roles: "",
   };
+}
+
+/**
+ * An enabled role restriction with a blank claim path or an empty role list
+ * would serialize to a provider WITHOUT `requiredRoles` — a silent security
+ * downgrade. Save is blocked while this returns true.
+ */
+export function hasIncompleteRoleRestriction(form: ProviderFormState): boolean {
+  if (!form.rolesEnabled) return false;
+  const roles = form.roles.split(",").map((r) => r.trim()).filter(Boolean);
+  return !form.claimPath.trim() || roles.length === 0;
 }
 
 function formToEntry(form: ProviderFormState): InstanceSsoProviderEntry {
@@ -384,10 +395,13 @@ export function InstanceSsoSettings() {
   const providerIds = forms.map((f) => f.providerId.trim() || providerIdFromType(f.type));
   const duplicateProviderId = providerIds.find((id, index) => providerIds.indexOf(id) !== index);
 
+  const hasIncompleteRoles = forms.some(hasIncompleteRoleRestriction);
+
   const canSave =
     !saveMutation.isPending &&
     dirty &&
     !duplicateProviderId &&
+    !hasIncompleteRoles &&
     forms.every((f) => f.clientId.trim() && f.clientSecret.trim());
 
   if (ssoQuery.isLoading) {
@@ -474,7 +488,12 @@ export function InstanceSsoSettings() {
             Provider ID &quot;{duplicateProviderId}&quot; is used more than once — provider IDs must be unique.
           </span>
         )}
-        {dirty && !duplicateProviderId && (
+        {hasIncompleteRoles && !duplicateProviderId && (
+          <span className="text-xs text-destructive">
+            Role restriction is enabled but Claim Path or Required Roles is empty — fill both or disable the restriction.
+          </span>
+        )}
+        {dirty && !duplicateProviderId && !hasIncompleteRoles && (
           <span className="text-xs text-muted-foreground">Unsaved changes</span>
         )}
         {!dirty && saveMutation.isSuccess && (
