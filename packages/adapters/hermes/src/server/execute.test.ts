@@ -174,6 +174,42 @@ describe("hermes execute", () => {
     expect(call[2]).not.toContain("-Q");
   });
 
+  it("uses the Paperclip execution workspace ahead of a legacy configured cwd", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const projectWorkspace = path.join(root, "project-primary");
+    await fs.mkdir(projectWorkspace, { recursive: true });
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-workspace\nOK",
+      stderr: "",
+    });
+
+    await execute({
+      runId: "run-workspace",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        cwd: path.join(root, "legacy-agent-home"),
+        workspaceDir: projectWorkspace,
+        model: "grok-4.5",
+      },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    const call = runChildProcessMock.mock.calls[0] as [string, string, string[], { cwd: string }];
+    expect(call[3].cwd).toBe(projectWorkspace);
+  });
+
   it("isolates host rules and persistent Hermes memory by default, with an explicit opt-out", async () => {
     const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
     runChildProcessMock.mockResolvedValue({

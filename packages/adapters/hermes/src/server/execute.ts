@@ -632,8 +632,11 @@ export async function execute(
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   // ── Resolve working directory ──────────────────────────────────────────
+  // The execution workspace selected by Paperclip is authoritative. Older
+  // Hermes agents often retain an agent-home `cwd`; letting that value win
+  // silently writes task artifacts outside the issue's project workspace.
   const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+    cfgString(ctx.config?.workspaceDir) || cfgString(config.cwd) || ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {

@@ -284,4 +284,36 @@ describe("enqueueWakeup dormancy guard", () => {
     expect(await countRuns(db, agentId)).toHaveLength(1);
     expect(await skippedRequest(db, agentId, "outside_activity_window")).toBeNull();
   });
+
+  it("suppresses automatic wakes for a manual-only admission lane but permits an explicit board wake", async () => {
+    const heartbeat = heartbeatService(db);
+    const companyId = await seedCompany(db, null);
+    const agentId = await seedAgent(db, companyId, {
+      runtimeConfig: {
+        manualOnlyAdmission: true,
+        heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+    });
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assignment_recovery",
+      requestedByActorType: "system",
+      requestedByActorId: "recovery",
+    })).resolves.toBeNull();
+    expect(await countRuns(db, agentId)).toHaveLength(0);
+    expect(await skippedRequest(db, agentId, "heartbeat.manual_only_admission")).not.toBeNull();
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "board_scoped_smoke",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(run).not.toBeNull();
+    expect(await countRuns(db, agentId)).toHaveLength(1);
+  });
 });

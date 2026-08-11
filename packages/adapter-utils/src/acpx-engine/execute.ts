@@ -2644,6 +2644,20 @@ function resolveMaxTokensPerRun(config: Record<string, unknown>): number {
   return configured > 0 ? configured : 0;
 }
 
+function resolveLiveUsagePollIntervalMs(config: Record<string, unknown>): number {
+  const configured = Math.floor(asNumber(config.liveUsagePollIntervalMs, 250));
+  return Math.max(5, Math.min(5_000, configured));
+}
+
+function usageSummaryTotalTokens(usage: UsageSummary | null | undefined): number {
+  if (!usage) return 0;
+  return Math.max(0, Math.floor(
+    asNumber(usage.inputTokens, 0) +
+    asNumber(usage.cachedInputTokens, 0) +
+    asNumber(usage.outputTokens, 0),
+  ));
+}
+
 async function readRuntimeStatus(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
@@ -3500,6 +3514,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
     const maxTokensPerRun = resolveMaxTokensPerRun(ctx.config);
+    const liveUsagePollIntervalMs = resolveLiveUsagePollIntervalMs(ctx.config);
     let tokenBudgetExhausted = false;
     let tokenBudgetObserved = 0;
     const textParts: string[] = [];
@@ -3529,29 +3544,53 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       cancelActiveTurn = async (reason: string) => {
         await turn.cancel({ reason });
       };
+      const enforceTokenBudget = async (observed: number) => {
+        if (tokenBudgetExhausted || maxTokensPerRun <= 0 || observed < maxTokensPerRun) return;
+        tokenBudgetExhausted = true;
+        tokenBudgetObserved = observed;
+        await cancelActiveTurn?.(
+          `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}).`,
+        );
+      };
+      let stopLiveUsagePolling = false;
+      const liveUsagePolling = maxTokensPerRun > 0 && runtime.getStatus
+        ? (async () => {
+            while (!stopLiveUsagePolling && !tokenBudgetExhausted) {
+              await new Promise<void>((resolve) => setTimeout(resolve, liveUsagePollIntervalMs));
+              if (stopLiveUsagePolling || tokenBudgetExhausted) break;
+              const liveStatus = await readRuntimeStatus(runtime, sessionHandle);
+              const liveUsage = summarizeAcpxTurnUsage({
+                preStatus: preTurnStatus,
+                postStatus: liveStatus,
+                eventBreakdown,
+                eventCostUsd,
+              }).usage;
+              await enforceTokenBudget(usageSummaryTotalTokens(liveUsage));
+            }
+          })()
+        : Promise.resolve();
       const toolTitles = new Map<string, string>();
-      for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
-        if (event.type === "status" && event.tag === "usage_update") {
-          eventBreakdown = event.breakdown ?? eventBreakdown;
-          eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-          // Codex ACP reports the live context total as `used`/`size` but does not
-          // currently include a provider breakdown. Other ACP runtimes provide the
-          // breakdown instead. Enforce the cap from the strongest signal available
-          // so a missing optional breakdown cannot silently disable cancellation.
-          const observed = Math.max(
-            usageBreakdownTotalTokens(event.breakdown),
-            Math.max(0, Math.floor(asNumber(event.used, 0))),
-          );
-          if (!tokenBudgetExhausted && maxTokensPerRun > 0 && observed >= maxTokensPerRun) {
-            tokenBudgetExhausted = true;
-            tokenBudgetObserved = observed;
-            await cancelActiveTurn?.(
-              `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}).`,
+      try {
+        for await (const event of turn.events) {
+          if (event.type === "text_delta") textParts.push(event.text);
+          if (event.type === "status" && event.tag === "usage_update") {
+            eventBreakdown = event.breakdown ?? eventBreakdown;
+            eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            // Codex ACP reports the live context total as `used`/`size` but does not
+            // currently include a provider breakdown. Other ACP runtimes provide the
+            // breakdown instead. Enforce the cap from the strongest signal available
+            // so a missing optional breakdown cannot silently disable cancellation.
+            const observed = Math.max(
+              usageBreakdownTotalTokens(event.breakdown),
+              Math.max(0, Math.floor(asNumber(event.used, 0))),
             );
+            await enforceTokenBudget(observed);
           }
+          await emitRuntimeEvent(ctx, event, toolTitles);
         }
-        await emitRuntimeEvent(ctx, event, toolTitles);
+      } finally {
+        stopLiveUsagePolling = true;
+        await liveUsagePolling;
       }
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);

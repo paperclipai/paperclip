@@ -20467,6 +20467,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    const manualOnlyAdmission = runtimeConfig.manualOnlyAdmission === true;
+    const explicitManualUserWake =
+      opts.requestedByActorType === "user" &&
+      (source === "on_demand" || triggerDetail === "manual");
+
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
@@ -20494,6 +20500,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    // A staged lane must be safe to unpause without Paperclip immediately
+    // replaying every old assignment, continuation, or recovery wake attached
+    // to that agent. While manualOnlyAdmission is set, only an explicit user
+    // wake may cross the dispatch boundary. The skipped request remains
+    // auditable and ordinary fleet behaviour is unchanged when the flag is
+    // absent.
+    if (manualOnlyAdmission && !explicitManualUserWake) {
+      await writeSkippedHeartbeatRequest("heartbeat.manual_only_admission", {
+        reason: "Agent is in manual-only admission mode; automatic wake was suppressed before dispatch.",
+        wakeReason: reason,
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+      });
+      return null;
+    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {

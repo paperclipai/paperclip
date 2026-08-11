@@ -947,6 +947,77 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.usage).toEqual({ inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: 0 });
   });
 
+  it("polls runtime status and cancels when an ACP agent omits live usage events", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    let statusCalls = 0;
+    let releaseEvents!: () => void;
+    const eventsReleased = new Promise<void>((resolve) => {
+      releaseEvents = resolve;
+    });
+    cancel.mockImplementation(async () => {
+      releaseEvents();
+    });
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        getStatus: async () => {
+          statusCalls += 1;
+          if (statusCalls === 1) return { usage: { cumulative: { inputTokens: 0 } } };
+          return {
+            usage: {
+              cumulative: {
+                inputTokens: 30_000,
+                outputTokens: 5_000,
+                cachedReadTokens: 65_000,
+              },
+            },
+          };
+        },
+        startTurn: () => ({
+          events: (async function* () {
+            await eventsReleased;
+            yield { type: "done", stopReason: "cancelled" };
+          })(),
+          result: Promise.resolve({ status: "cancelled", stopReason: "cancelled" }),
+          cancel,
+        }),
+        close,
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-polled-token-budget",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        maxTokensPerRun: 100_000,
+        liveUsagePollIntervalMs: 5,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(result.errorCode).toBe("token_budget_exhausted");
+    expect(result.resultJson).toMatchObject({
+      stopReason: "token_budget_exhausted",
+      maxTokensPerRun: 100_000,
+      observedTokens: 100_000,
+    });
+    expect(result.usage).toEqual({ inputTokens: 30_000, outputTokens: 5_000, cachedInputTokens: 65_000 });
+  });
+
   it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
