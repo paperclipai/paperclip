@@ -708,7 +708,7 @@ export type {
 export type { Goal } from "./goal.js";
 export type {
   GoalMapStatusCounts,
-  GoalMapRootIssue,
+  GoalMapIssueNode,
   GoalMapDecompositionSummary,
   GoalMapNode,
   GoalMapEdge,

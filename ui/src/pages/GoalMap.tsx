@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "@/lib/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@/lib/router";
 import { List, Lock, Maximize2, Minus, Plus, Target } from "lucide-react";
-import type { Agent, GoalMapNode, GoalMapRootIssue, GoalMapStatusCounts } from "@paperclipai/shared";
+import type { Agent, GoalMapIssueNode, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
+import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -15,19 +16,23 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueStatusBadge, StatusBadge } from "../components/StatusBadge";
 import { StatusGlyph } from "../components/StatusGlyph";
+import { StatusIcon } from "../components/StatusIcon";
 
-// Layout constants (left-to-right layered tree, transposed from OrgChart)
-const NODE_W = 248;
-const NODE_H = 116;
-const ISSUE_W = 224;
-const ISSUE_H = 64;
-const ISSUE_GAP = 12;
-const GAP_X = 72;
-const GAP_Y = 20;
-const ROOT_GAP = 40;
+// Layout constants (left-to-right layered tree; task pills match the approved
+// grouping preview: slim leaves, two-row parents with subtree progress).
+const GOAL_W = 240;
+const GOAL_H = 66;
+const TASK_W = 260;
+const LEAF_H = 30;
+const PARENT_H = 46;
+const VGAP = 8;
+const GAP_X = 60;
+const COL_STEP = TASK_W + 40;
+const GOAL_GAP = 34;
 const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
+const DRAG_THRESHOLD = 5;
 
 interface PlacedGoal {
   node: GoalMapNode;
@@ -36,10 +41,19 @@ interface PlacedGoal {
 }
 
 interface PlacedIssue {
-  issue: GoalMapRootIssue;
-  goalId: string;
+  issue: GoalMapIssueNode;
   x: number;
   y: number;
+  h: number;
+}
+
+interface IssueTreeInfo {
+  /** Same-goal parent used for tree layout (differs from raw parentId when the parent sits in another goal). */
+  layoutParentById: Map<string, string>;
+  childrenById: Map<string, GoalMapIssueNode[]>;
+  rootsByGoalId: Map<string, GoalMapIssueNode[]>;
+  subtreeStatsById: Map<string, { done: number; denom: number }>;
+  maxDepthByGoalId: Map<string, number>;
 }
 
 interface GoalMapLayout {
@@ -51,72 +65,175 @@ interface GoalMapLayout {
   height: number;
 }
 
-function layoutGoalMap(nodes: GoalMapNode[]): GoalMapLayout {
+function buildIssueTrees(issues: GoalMapIssueNode[]): IssueTreeInfo {
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const layoutParentById = new Map<string, string>();
+  const childrenById = new Map<string, GoalMapIssueNode[]>();
+  const rootsByGoalId = new Map<string, GoalMapIssueNode[]>();
+  for (const issue of issues) {
+    const parent = issue.parentId ? issueById.get(issue.parentId) : undefined;
+    if (parent && parent.goalId === issue.goalId) {
+      layoutParentById.set(issue.id, parent.id);
+      const siblings = childrenById.get(parent.id) ?? [];
+      siblings.push(issue);
+      childrenById.set(parent.id, siblings);
+    } else {
+      const roots = rootsByGoalId.get(issue.goalId) ?? [];
+      roots.push(issue);
+      rootsByGoalId.set(issue.goalId, roots);
+    }
+  }
+  // Orphan guard: a same-goal parentId cycle would leave nodes unrooted; the
+  // layout only walks from roots, so promote any cycle member to a root.
+  const reachable = new Set<string>();
+  const walk = (issue: GoalMapIssueNode) => {
+    if (reachable.has(issue.id)) return;
+    reachable.add(issue.id);
+    for (const child of childrenById.get(issue.id) ?? []) walk(child);
+  };
+  for (const roots of rootsByGoalId.values()) roots.forEach(walk);
+  for (const issue of issues) {
+    if (reachable.has(issue.id)) continue;
+    layoutParentById.delete(issue.id);
+    const roots = rootsByGoalId.get(issue.goalId) ?? [];
+    roots.push(issue);
+    rootsByGoalId.set(issue.goalId, roots);
+    walk(issue);
+  }
+
+  const subtreeStatsById = new Map<string, { done: number; denom: number }>();
+  const collectStats = (issue: GoalMapIssueNode): { done: number; denom: number } => {
+    const memoized = subtreeStatsById.get(issue.id);
+    if (memoized) return memoized;
+    const stats = { done: 0, denom: 0 };
+    for (const child of childrenById.get(issue.id) ?? []) {
+      if (child.status === "done") stats.done += 1;
+      if (child.status !== "cancelled") stats.denom += 1;
+      const childStats = collectStats(child);
+      stats.done += childStats.done;
+      stats.denom += childStats.denom;
+    }
+    subtreeStatsById.set(issue.id, stats);
+    return stats;
+  };
+  const maxDepthByGoalId = new Map<string, number>();
+  for (const [goalId, roots] of rootsByGoalId) {
+    let maxDepth = 0;
+    const measure = (issue: GoalMapIssueNode, depth: number) => {
+      if (depth > maxDepth) maxDepth = depth;
+      collectStats(issue);
+      for (const child of childrenById.get(issue.id) ?? []) measure(child, depth + 1);
+    };
+    roots.forEach((root) => measure(root, 1));
+    maxDepthByGoalId.set(goalId, maxDepth);
+  }
+  return { layoutParentById, childrenById, rootsByGoalId, subtreeStatsById, maxDepthByGoalId };
+}
+
+function isLayoutAncestor(trees: IssueTreeInfo, ancestorId: string, issueId: string): boolean {
+  const seen = new Set<string>();
+  let current = trees.layoutParentById.get(issueId);
+  while (current && !seen.has(current)) {
+    if (current === ancestorId) return true;
+    seen.add(current);
+    current = trees.layoutParentById.get(current);
+  }
+  return false;
+}
+
+function issueNodeHeight(trees: IssueTreeInfo, issue: GoalMapIssueNode): number {
+  return (trees.childrenById.get(issue.id)?.length ?? 0) > 0 ? PARENT_H : LEAF_H;
+}
+
+function layoutGoalMap(nodes: GoalMapNode[], trees: IssueTreeInfo): GoalMapLayout {
   const nodeIds = new Set(nodes.map((n) => n.goal.id));
-  const childrenByParentId = new Map<string, GoalMapNode[]>();
+  const goalChildren = new Map<string, GoalMapNode[]>();
   for (const node of nodes) {
     const parentId = node.goal.parentId;
     if (!parentId || !nodeIds.has(parentId)) continue;
-    const siblings = childrenByParentId.get(parentId) ?? [];
+    const siblings = goalChildren.get(parentId) ?? [];
     siblings.push(node);
-    childrenByParentId.set(parentId, siblings);
+    goalChildren.set(parentId, siblings);
   }
-  const roots = nodes.filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId));
+  const goalRoots = nodes.filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId));
 
-  const heightMemo = new Map<string, number>();
-  function issueStackHeight(node: GoalMapNode): number {
-    const count = node.rootIssues.length;
-    return count > 0 ? count * (ISSUE_H + ISSUE_GAP) - ISSUE_GAP : 0;
-  }
-  function subtreeHeight(node: GoalMapNode, stack: Set<string>): number {
-    const memoized = heightMemo.get(node.goal.id);
+  const issueHeightMemo = new Map<string, number>();
+  function issueSubH(issue: GoalMapIssueNode): number {
+    const memoized = issueHeightMemo.get(issue.id);
     if (memoized !== undefined) return memoized;
-    if (stack.has(node.goal.id)) return NODE_H;
+    let h = issueNodeHeight(trees, issue) + VGAP;
+    const children = trees.childrenById.get(issue.id) ?? [];
+    if (children.length > 0) {
+      let sum = 0;
+      for (const child of children) sum += issueSubH(child);
+      h = Math.max(h, sum);
+    }
+    issueHeightMemo.set(issue.id, h);
+    return h;
+  }
+  function goalIssuesHeight(goalId: string): number {
+    let h = 0;
+    for (const root of trees.rootsByGoalId.get(goalId) ?? []) h += issueSubH(root);
+    return h;
+  }
+  const goalHeightMemo = new Map<string, number>();
+  function goalSubH(node: GoalMapNode, stack: Set<string>): number {
+    const memoized = goalHeightMemo.get(node.goal.id);
+    if (memoized !== undefined) return memoized;
+    if (stack.has(node.goal.id)) return GOAL_H + VGAP;
     stack.add(node.goal.id);
-    const children = childrenByParentId.get(node.goal.id) ?? [];
-    const issuesHeight = issueStackHeight(node);
+    const issuesHeight = goalIssuesHeight(node.goal.id);
+    const children = goalChildren.get(node.goal.id) ?? [];
     const childrenHeight = children.length > 0
-      ? children.reduce((sum, child) => sum + subtreeHeight(child, stack), 0) + (children.length - 1) * GAP_Y
+      ? children.reduce((sum, child) => sum + goalSubH(child, stack), 0) + (children.length - 1) * GOAL_GAP
       : 0;
-    const separator = issuesHeight > 0 && childrenHeight > 0 ? GAP_Y : 0;
-    const height = Math.max(NODE_H, issuesHeight + separator + childrenHeight);
+    const separator = issuesHeight > 0 && childrenHeight > 0 ? GOAL_GAP : 0;
+    const height = Math.max(GOAL_H + VGAP, issuesHeight + separator + childrenHeight);
     stack.delete(node.goal.id);
-    heightMemo.set(node.goal.id, height);
+    goalHeightMemo.set(node.goal.id, height);
     return height;
   }
 
   const placedGoalById = new Map<string, PlacedGoal>();
   const placedIssueById = new Map<string, PlacedIssue>();
-  function place(node: GoalMapNode, x: number, y: number) {
-    if (placedGoalById.has(node.goal.id)) return;
-    const totalHeight = subtreeHeight(node, new Set());
-    placedGoalById.set(node.goal.id, { node, x, y: y + (totalHeight - NODE_H) / 2 });
-    const childX = x + NODE_W + GAP_X;
-    let childY = y;
-    for (const issue of node.rootIssues) {
-      if (!placedIssueById.has(issue.id)) {
-        placedIssueById.set(issue.id, { issue, goalId: node.goal.id, x: childX, y: childY });
-      }
-      childY += ISSUE_H + ISSUE_GAP;
+  function placeIssue(issue: GoalMapIssueNode, x: number, y: number) {
+    const h = issueSubH(issue);
+    const nodeH = issueNodeHeight(trees, issue);
+    placedIssueById.set(issue.id, { issue, x, y: y + (h - VGAP - nodeH) / 2, h: nodeH });
+    let cy = y;
+    for (const child of trees.childrenById.get(issue.id) ?? []) {
+      placeIssue(child, x + COL_STEP, cy);
+      cy += issueSubH(child);
     }
-    const children = childrenByParentId.get(node.goal.id) ?? [];
-    if (node.rootIssues.length > 0 && children.length > 0) childY += GAP_Y - ISSUE_GAP;
+  }
+  function placeGoal(node: GoalMapNode, x: number, y: number) {
+    if (placedGoalById.has(node.goal.id)) return;
+    const totalHeight = goalSubH(node, new Set());
+    placedGoalById.set(node.goal.id, { node, x, y: y + (totalHeight - VGAP - GOAL_H) / 2 });
+    const childX = x + GOAL_W + GAP_X;
+    let cy = y;
+    const roots = trees.rootsByGoalId.get(node.goal.id) ?? [];
+    for (const root of roots) {
+      placeIssue(root, childX, cy);
+      cy += issueSubH(root);
+    }
+    const children = goalChildren.get(node.goal.id) ?? [];
+    if (roots.length > 0 && children.length > 0) cy += GOAL_GAP - VGAP;
     for (const child of children) {
-      place(child, childX, childY);
-      childY += subtreeHeight(child, new Set()) + GAP_Y;
+      placeGoal(child, childX, cy);
+      cy += goalSubH(child, new Set()) + GOAL_GAP;
     }
   }
 
   let yCursor = PADDING;
-  for (const root of roots) {
-    place(root, PADDING, yCursor);
-    yCursor += subtreeHeight(root, new Set()) + ROOT_GAP;
+  for (const root of goalRoots) {
+    placeGoal(root, PADDING, yCursor);
+    yCursor += goalSubH(root, new Set()) + GOAL_GAP;
   }
-  // Nodes unreachable from any root (parentId cycles): stack them below.
   for (const node of nodes) {
     if (placedGoalById.has(node.goal.id)) continue;
     placedGoalById.set(node.goal.id, { node, x: PADDING, y: yCursor });
-    yCursor += NODE_H + GAP_Y;
+    yCursor += GOAL_H + VGAP;
   }
 
   const placedGoals = [...placedGoalById.values()];
@@ -124,12 +241,12 @@ function layoutGoalMap(nodes: GoalMapNode[]): GoalMapLayout {
   let width = 800;
   let height = 600;
   for (const p of placedGoals) {
-    width = Math.max(width, p.x + NODE_W + PADDING);
-    height = Math.max(height, p.y + NODE_H + PADDING);
+    width = Math.max(width, p.x + GOAL_W + PADDING);
+    height = Math.max(height, p.y + GOAL_H + PADDING);
   }
   for (const p of placedIssues) {
-    width = Math.max(width, p.x + ISSUE_W + PADDING);
-    height = Math.max(height, p.y + ISSUE_H + PADDING);
+    width = Math.max(width, p.x + TASK_W + PADDING);
+    height = Math.max(height, p.y + p.h + PADDING);
   }
   return { placedGoals, placedGoalById, placedIssues, placedIssueById, width, height };
 }
@@ -139,7 +256,7 @@ function progressDenominator(counts: GoalMapStatusCounts): number {
 }
 
 function curve(x1: number, y1: number, x2: number, y2: number): string {
-  const dx = Math.max(28, Math.abs(x2 - x1) * 0.5);
+  const dx = Math.max(24, Math.abs(x2 - x1) * 0.45);
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
 
@@ -149,19 +266,18 @@ function sideBracket(x1: number, y1: number, x2: number, y2: number): string {
   return `M ${x1} ${y1} C ${x1 + bulge} ${y1}, ${x2 + bulge} ${y2}, ${x2} ${y2}`;
 }
 
-function isOpenIssueStatus(status: string): boolean {
-  return status !== "done" && status !== "cancelled";
-}
-
 function clampZoom(value: number): number {
   return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
 }
 
 type Selection = { kind: "goal"; id: string } | { kind: "issue"; id: string } | null;
+type DropTarget = { kind: "goal"; id: string } | { kind: "issue"; id: string } | null;
 
 export function GoalMap() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Goals", href: "/goals" }, { label: "Map" }]);
@@ -189,33 +305,23 @@ export function GoalMap() {
     [agentById],
   );
 
-  const [showCompleted, setShowCompleted] = useState(true);
-  // Focus mode (toggle off): open tasks plus the completed blockers that
-  // unlocked them, so the "done → next" arrows keep their context.
-  const displayNodes = useMemo(() => {
-    const nodes = goalMap?.nodes ?? [];
-    if (showCompleted) return nodes;
-    const openIssueIds = new Set<string>();
-    for (const node of nodes) {
-      for (const issue of node.rootIssues) {
-        if (isOpenIssueStatus(issue.status)) openIssueIds.add(issue.id);
+  const updateIssue = useMutation({
+    mutationFn: ({ issueId, data }: { issueId: string; data: Record<string, unknown> }) =>
+      issuesApi.update(issueId, data),
+    onSettled: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       }
-    }
-    const clearedBlockerIds = new Set<string>();
-    for (const edge of goalMap?.issueEdges ?? []) {
-      if (openIssueIds.has(edge.toIssueId) && !openIssueIds.has(edge.fromIssueId)) {
-        clearedBlockerIds.add(edge.fromIssueId);
-      }
-    }
-    return nodes.map((node) => ({
-      ...node,
-      rootIssues: node.rootIssues.filter(
-        (issue) => openIssueIds.has(issue.id) || clearedBlockerIds.has(issue.id),
-      ),
-    }));
-  }, [goalMap, showCompleted]);
+    },
+  });
 
-  const layout = useMemo(() => layoutGoalMap(displayNodes), [displayNodes]);
+  const trees = useMemo(() => buildIssueTrees(goalMap?.issues ?? []), [goalMap]);
+  const layout = useMemo(() => layoutGoalMap(goalMap?.nodes ?? [], trees), [goalMap, trees]);
+  const issueById = useMemo(
+    () => new Map((goalMap?.issues ?? []).map((issue) => [issue.id, issue])),
+    [goalMap],
+  );
   const gateEdges = useMemo(
     () => (goalMap?.edges ?? []).filter((e) => e.kind === "gates"),
     [goalMap],
@@ -224,7 +330,14 @@ export function GoalMap() {
     () => (goalMap?.edges ?? []).filter((e) => e.kind === "parent"),
     [goalMap],
   );
-  const issueEdges = useMemo(() => goalMap?.issueEdges ?? [], [goalMap]);
+  // Blocks arrows: only cross-branch — a task gating its own layout ancestor
+  // (blockParentUntilDone) is already expressed by containment.
+  const crossBranchIssueEdges = useMemo(
+    () => (goalMap?.issueEdges ?? []).filter((edge) =>
+      !isLayoutAncestor(trees, edge.fromIssueId, edge.toIssueId) &&
+      !isLayoutAncestor(trees, edge.toIssueId, edge.fromIssueId)),
+    [goalMap, trees],
+  );
 
   const [selection, setSelection] = useState<Selection>(null);
   useEffect(() => {
@@ -234,28 +347,42 @@ export function GoalMap() {
   }, [layout, selection]);
 
   const selectedGoal = selection?.kind === "goal" ? layout.placedGoalById.get(selection.id)?.node ?? null : null;
-  const selectedIssue = selection?.kind === "issue" ? layout.placedIssueById.get(selection.id) ?? null : null;
+  const selectedIssue = selection?.kind === "issue" ? layout.placedIssueById.get(selection.id)?.issue ?? null : null;
 
-  const nodeById = useMemo(
+  const nodeByGoalId = useMemo(
     () => new Map((goalMap?.nodes ?? []).map((n) => [n.goal.id, n])),
     [goalMap],
   );
   const goalChainFor = useCallback((goalId: string): GoalMapNode[] => {
     const chain: GoalMapNode[] = [];
     const seen = new Set<string>();
-    let current = nodeById.get(goalId);
+    let current = nodeByGoalId.get(goalId);
     while (current && !seen.has(current.goal.id)) {
       seen.add(current.goal.id);
       chain.unshift(current);
-      current = current.goal.parentId ? nodeById.get(current.goal.parentId) : undefined;
+      current = current.goal.parentId ? nodeByGoalId.get(current.goal.parentId) : undefined;
     }
     return chain;
-  }, [nodeById]);
+  }, [nodeByGoalId]);
   const whyChain = useMemo(() => {
     if (selectedGoal) return goalChainFor(selectedGoal.goal.id);
     if (selectedIssue) return goalChainFor(selectedIssue.goalId);
     return [];
   }, [selectedGoal, selectedIssue, goalChainFor]);
+  const issueAncestors = useMemo(() => {
+    if (!selectedIssue) return [];
+    const chain: GoalMapIssueNode[] = [];
+    const seen = new Set<string>();
+    let currentId = trees.layoutParentById.get(selectedIssue.id);
+    while (currentId && !seen.has(currentId)) {
+      seen.add(currentId);
+      const ancestor = issueById.get(currentId);
+      if (!ancestor) break;
+      chain.unshift(ancestor);
+      currentId = trees.layoutParentById.get(currentId);
+    }
+    return chain;
+  }, [selectedIssue, trees, issueById]);
 
   const inboundGates = useMemo(
     () => (selectedGoal ? gateEdges.filter((e) => e.toGoalId === selectedGoal.goal.id) : []),
@@ -266,51 +393,129 @@ export function GoalMap() {
     [gateEdges, selectedGoal],
   );
   const issueBlockedBy = useMemo(
-    () => (selectedIssue ? issueEdges.filter((e) => e.toIssueId === selectedIssue.issue.id) : []),
-    [issueEdges, selectedIssue],
+    () => (selectedIssue ? crossBranchIssueEdges.filter((e) => e.toIssueId === selectedIssue.id) : []),
+    [crossBranchIssueEdges, selectedIssue],
   );
   const issueBlocks = useMemo(
-    () => (selectedIssue ? issueEdges.filter((e) => e.fromIssueId === selectedIssue.issue.id) : []),
-    [issueEdges, selectedIssue],
+    () => (selectedIssue ? crossBranchIssueEdges.filter((e) => e.fromIssueId === selectedIssue.id) : []),
+    [crossBranchIssueEdges, selectedIssue],
   );
 
-  // Pan & zoom (same interaction model as OrgChart)
+  // Pan & zoom + drag-to-move
   const containerRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const [dragging, setDragging] = useState(false);
-  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const [panning, setPanning] = useState(false);
+  const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const dragState = useRef<{ issueId: string; startX: number; startY: number; moved: boolean } | null>(null);
+  const [draggingIssueId, setDraggingIssueId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget>(null);
+  const suppressNextClick = useRef(false);
 
-  const hasInitialized = useRef(false);
-  useEffect(() => {
-    if (hasInitialized.current || layout.placedGoals.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
+  const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
     const container = containerRef.current;
-    const scaleX = (container.clientWidth - 40) / layout.width;
-    const scaleY = (container.clientHeight - 40) / layout.height;
-    const fitZoom = Math.min(scaleX, scaleY, 1);
-    setZoom(fitZoom);
-    setPan({
-      x: (container.clientWidth - layout.width * fitZoom) / 2,
-      y: (container.clientHeight - layout.height * fitZoom) / 2,
-    });
-  }, [layout]);
+    if (!container) return { x: 0, y: 0 };
+    const rect = container.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom,
+    };
+  }, [pan, zoom]);
+
+  const hitTest = useCallback((clientX: number, clientY: number, excludeIssueId: string): DropTarget => {
+    const point = toCanvasPoint(clientX, clientY);
+    for (const placed of layout.placedIssues) {
+      if (placed.issue.id === excludeIssueId) continue;
+      if (point.x >= placed.x && point.x <= placed.x + TASK_W &&
+          point.y >= placed.y && point.y <= placed.y + placed.h) {
+        return { kind: "issue", id: placed.issue.id };
+      }
+    }
+    for (const placed of layout.placedGoals) {
+      if (point.x >= placed.x && point.x <= placed.x + GOAL_W &&
+          point.y >= placed.y && point.y <= placed.y + GOAL_H) {
+        return { kind: "goal", id: placed.node.goal.id };
+      }
+    }
+    return null;
+  }, [layout, toCanvasPoint]);
+
+  const isValidDropTarget = useCallback((issueId: string, target: DropTarget): boolean => {
+    if (!target) return false;
+    if (target.kind === "issue") {
+      if (target.id === issueId) return false;
+      // No dropping a task into its own subtree.
+      if (isLayoutAncestor(trees, issueId, target.id)) return false;
+      const current = issueById.get(issueId);
+      return current?.parentId !== target.id;
+    }
+    const current = issueById.get(issueId);
+    if (!current) return false;
+    // Goal drop makes the task a root of that goal.
+    return current.goalId !== target.id || trees.layoutParentById.has(issueId);
+  }, [trees, issueById]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
+    const issueCard = target.closest<HTMLElement>("[data-map-issue-id]");
+    if (issueCard) {
+      dragState.current = {
+        issueId: issueCard.dataset.mapIssueId!,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
+      return;
+    }
     if (target.closest("[data-goal-map-card]")) return;
-    setDragging(true);
-    dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+    setPanning(true);
+    panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
   }, [pan]);
+
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragging) return;
+    const drag = dragState.current;
+    if (drag) {
+      if (!drag.moved &&
+          Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) {
+        return;
+      }
+      drag.moved = true;
+      setDraggingIssueId(drag.issueId);
+      const target = hitTest(e.clientX, e.clientY, drag.issueId);
+      setDropTarget(isValidDropTarget(drag.issueId, target) ? target : null);
+      return;
+    }
+    if (!panning) return;
     setPan({
-      x: dragStart.current.panX + e.clientX - dragStart.current.x,
-      y: dragStart.current.panY + e.clientY - dragStart.current.y,
+      x: panStart.current.panX + e.clientX - panStart.current.x,
+      y: panStart.current.panY + e.clientY - panStart.current.y,
     });
-  }, [dragging]);
-  const handleMouseUp = useCallback(() => setDragging(false), []);
+  }, [panning, hitTest, isValidDropTarget]);
+
+  const handleMouseUp = useCallback(() => {
+    const drag = dragState.current;
+    dragState.current = null;
+    setPanning(false);
+    if (drag?.moved) {
+      suppressNextClick.current = true;
+      window.setTimeout(() => { suppressNextClick.current = false; }, 300);
+      if (dropTarget) {
+        if (dropTarget.kind === "issue") {
+          const targetIssue = issueById.get(dropTarget.id);
+          updateIssue.mutate({
+            issueId: drag.issueId,
+            data: { parentId: dropTarget.id, ...(targetIssue ? { goalId: targetIssue.goalId } : {}) },
+          });
+        } else {
+          updateIssue.mutate({ issueId: drag.issueId, data: { parentId: null, goalId: dropTarget.id } });
+        }
+        setSelection({ kind: "issue", id: drag.issueId });
+      }
+    }
+    setDraggingIssueId(null);
+    setDropTarget(null);
+  }, [dropTarget, issueById, updateIssue]);
 
   const zoomTowardPoint = useCallback((newZoom: number, point: { x: number; y: number }) => {
     const clamped = clampZoom(newZoom);
@@ -346,6 +551,18 @@ export function GoalMap() {
     });
   }, [layout]);
 
+  const hasInitialized = useRef(false);
+  useEffect(() => {
+    if (hasInitialized.current || layout.placedGoals.length === 0 || !containerRef.current) return;
+    hasInitialized.current = true;
+    fitToScreen();
+  }, [layout, fitToScreen]);
+
+  const selectIssue = useCallback((issueId: string) => {
+    if (suppressNextClick.current) return;
+    setSelection({ kind: "issue", id: issueId });
+  }, []);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Target} message="Select a company to view the goal map." />;
   }
@@ -368,14 +585,9 @@ export function GoalMap() {
             Tree view
           </Button>
         </Link>
-        <Button
-          variant={showCompleted ? "secondary" : "outline"}
-          size="sm"
-          aria-pressed={showCompleted}
-          onClick={() => setShowCompleted((value) => !value)}
-        >
-          Show completed
-        </Button>
+        {goalMap.issuesTruncated && (
+          <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
+        )}
         <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--border)" strokeWidth="1.5" /></svg>
@@ -397,7 +609,11 @@ export function GoalMap() {
           ref={containerRef}
           data-testid="goal-map-viewport"
           className="relative min-h-(--sz-280px) flex-1 overflow-hidden bg-muted/20"
-          style={{ cursor: dragging ? "grabbing" : "grab", touchAction: "none", overscrollBehavior: "contain" }}
+          style={{
+            cursor: draggingIssueId ? "grabbing" : panning ? "grabbing" : "grab",
+            touchAction: "none",
+            overscrollBehavior: "contain",
+          }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -463,7 +679,7 @@ export function GoalMap() {
                 return (
                   <path
                     key={`parent-${edge.fromGoalId}-${edge.toGoalId}`}
-                    d={curve(from.x + NODE_W, from.y + NODE_H / 2, to.x, to.y + NODE_H / 2)}
+                    d={curve(from.x + GOAL_W, from.y + GOAL_H / 2, to.x, to.y + GOAL_H / 2)}
                     fill="none"
                     stroke="var(--border)"
                     strokeWidth={1.5}
@@ -472,16 +688,31 @@ export function GoalMap() {
                 );
               })}
               {layout.placedIssues.map((placed) => {
-                const goal = layout.placedGoalById.get(placed.goalId);
+                const layoutParentId = trees.layoutParentById.get(placed.issue.id);
+                if (layoutParentId) {
+                  const parent = layout.placedIssueById.get(layoutParentId);
+                  if (!parent) return null;
+                  return (
+                    <path
+                      key={`tree-${placed.issue.id}`}
+                      d={curve(parent.x + TASK_W, parent.y + parent.h / 2, placed.x, placed.y + placed.h / 2)}
+                      fill="none"
+                      stroke="var(--border)"
+                      strokeOpacity={0.55}
+                      strokeWidth={1.2}
+                    />
+                  );
+                }
+                const goal = layout.placedGoalById.get(placed.issue.goalId);
                 if (!goal) return null;
                 return (
                   <path
-                    key={`goal-issue-${placed.issue.id}`}
-                    d={curve(goal.x + NODE_W, goal.y + NODE_H / 2, placed.x, placed.y + ISSUE_H / 2)}
+                    key={`tree-${placed.issue.id}`}
+                    d={curve(goal.x + GOAL_W, goal.y + GOAL_H / 2, placed.x, placed.y + placed.h / 2)}
                     fill="none"
                     stroke="var(--border)"
                     strokeOpacity={0.7}
-                    strokeWidth={1}
+                    strokeWidth={1.2}
                   />
                 );
               })}
@@ -493,7 +724,7 @@ export function GoalMap() {
                 return (
                   <path
                     key={`gates-${edge.fromGoalId}-${edge.toGoalId}`}
-                    d={curve(from.x + NODE_W, from.y + NODE_H / 2, to.x, to.y + NODE_H / 2)}
+                    d={curve(from.x + GOAL_W, from.y + GOAL_H / 2, to.x, to.y + GOAL_H / 2)}
                     fill="none"
                     stroke={open ? "var(--hex-facc15)" : "var(--hex-4ade80)"}
                     strokeOpacity={open ? 0.9 : 0.55}
@@ -503,7 +734,7 @@ export function GoalMap() {
                   />
                 );
               })}
-              {issueEdges.map((edge) => {
+              {crossBranchIssueEdges.map((edge) => {
                 const from = layout.placedIssueById.get(edge.fromIssueId);
                 const to = layout.placedIssueById.get(edge.toIssueId);
                 if (!from || !to) return null;
@@ -512,8 +743,8 @@ export function GoalMap() {
                   <path
                     key={`blocks-${edge.fromIssueId}-${edge.toIssueId}`}
                     d={sameColumn
-                      ? sideBracket(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x + ISSUE_W, to.y + ISSUE_H / 2)
-                      : curve(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x, to.y + ISSUE_H / 2)}
+                      ? sideBracket(from.x + TASK_W, from.y + from.h / 2, to.x + TASK_W, to.y + to.h / 2)
+                      : curve(from.x + TASK_W, from.y + from.h / 2, to.x, to.y + to.h / 2)}
                     fill="none"
                     stroke={edge.open ? "var(--hex-facc15)" : "var(--hex-4ade80)"}
                     strokeOpacity={edge.open ? 0.9 : 0.55}
@@ -536,6 +767,8 @@ export function GoalMap() {
               const denom = progressDenominator(node.subtreeCounts);
               const pct = denom > 0 ? Math.round((node.subtreeCounts.done / denom) * 100) : 0;
               const isSelected = selection?.kind === "goal" && selection.id === node.goal.id;
+              const isDropTarget = dropTarget?.kind === "goal" && dropTarget.id === node.goal.id;
+              const depth = trees.maxDepthByGoalId.get(node.goal.id) ?? 0;
               return (
                 <Card
                   key={node.goal.id}
@@ -546,10 +779,12 @@ export function GoalMap() {
                   className={cn(
                     "absolute block cursor-pointer overflow-hidden py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
                     isSelected && "border-ring ring-2 ring-ring/40",
-                    node.gated && !isSelected && "opacity-80",
+                    isDropTarget && "border-ring ring-2 ring-ring",
                   )}
-                  style={{ left: x, top: y, width: NODE_W, height: NODE_H }}
-                  onClick={() => setSelection({ kind: "goal", id: node.goal.id })}
+                  style={{ left: x, top: y, width: GOAL_W, height: GOAL_H }}
+                  onClick={() => {
+                    if (!suppressNextClick.current) setSelection({ kind: "goal", id: node.goal.id });
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -557,51 +792,51 @@ export function GoalMap() {
                     }
                   }}
                 >
-                  <div className="flex h-full flex-col gap-1.5 px-3 py-2.5">
+                  <div className="flex h-full flex-col justify-center gap-1 px-3 py-2">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs capitalize text-muted-foreground">{node.goal.level}</span>
-                      {node.gated && <Lock aria-label="Gated by open blockers" className="h-3 w-3 text-(--hex-facc15)" />}
-                      <span className="ml-auto">
-                        <StatusBadge status={node.goal.status} />
-                      </span>
+                      <span className="truncate text-sm font-semibold">{node.goal.title}</span>
+                      {node.gated && <Lock aria-label="Gated by open blockers" className="h-3 w-3 shrink-0 text-(--hex-facc15)" />}
                     </div>
-                    <span className="line-clamp-2 text-sm font-medium leading-snug">{node.goal.title}</span>
-                    <div className="mt-auto flex items-center gap-2">
-                      {denom > 0 ? (
-                        <>
-                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                            <div className="h-full rounded-full bg-green-400" style={{ width: `${pct}%` }} />
-                          </div>
-                          <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                            {node.subtreeCounts.done}/{denom}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">No tasks yet</span>
-                      )}
+                    <div className="flex items-center gap-2">
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className="h-full rounded-full bg-green-400" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                        {node.subtreeCounts.done}/{denom}{depth > 0 ? ` · d${depth}` : ""}
+                      </span>
                     </div>
                   </div>
                 </Card>
               );
             })}
-            {layout.placedIssues.map(({ issue, x, y }) => {
+            {layout.placedIssues.map(({ issue, x, y, h }) => {
               const isSelected = selection?.kind === "issue" && selection.id === issue.id;
-              const childPct = issue.childTotalCount > 0
-                ? Math.round((issue.childDoneCount / issue.childTotalCount) * 100)
-                : 0;
+              const isDropTarget = dropTarget?.kind === "issue" && dropTarget.id === issue.id;
+              const isDragging = draggingIssueId === issue.id;
+              const stats = trees.subtreeStatsById.get(issue.id);
+              const hasKids = (trees.childrenById.get(issue.id)?.length ?? 0) > 0;
+              const pct = stats && stats.denom > 0 ? Math.round((stats.done / stats.denom) * 100) : 0;
               return (
                 <Card
                   key={issue.id}
                   data-goal-map-card
+                  data-map-issue-id={issue.id}
                   role="button"
                   tabIndex={0}
                   aria-label={`Task ${issue.title}`}
+                  title={issue.title}
                   className={cn(
-                    "absolute block cursor-pointer overflow-hidden py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
+                    "absolute block cursor-pointer overflow-hidden rounded-lg py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
+                    issue.status === "done" && "border-green-700/30 bg-green-500/10",
+                    issue.status === "blocked" && "bg-yellow-500/10",
+                    issue.status === "cancelled" && "opacity-60",
                     isSelected && "border-ring ring-2 ring-ring/40",
+                    isDropTarget && "border-ring ring-2 ring-ring",
+                    isDragging && "opacity-50",
                   )}
-                  style={{ left: x, top: y, width: ISSUE_W, height: ISSUE_H }}
-                  onClick={() => setSelection({ kind: "issue", id: issue.id })}
+                  style={{ left: x, top: y, width: TASK_W, height: h }}
+                  onClick={() => selectIssue(issue.id)}
+                  onDoubleClick={() => navigate(`/issues/${issue.id}`)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -609,21 +844,23 @@ export function GoalMap() {
                     }
                   }}
                 >
-                  <div className="flex h-full flex-col justify-center gap-1 px-2.5 py-1.5">
+                  <div className={cn("flex h-full flex-col justify-center gap-0.5 px-2 py-1", issue.status === "in_progress" && "border-l-2 border-(--status-task-icon-in_progress)", issue.status === "in_review" && "border-l-2 border-(--status-task-icon-in_review)")}>
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="shrink-0"><StatusGlyph status={issue.status} size="sm" /></span>
                       {issue.identifier && (
                         <span className="shrink-0 font-mono text-(length:--text-nano) text-muted-foreground">{issue.identifier}</span>
                       )}
-                      <span className="truncate text-xs font-medium">{issue.title}</span>
+                      <span className={cn("truncate text-xs font-medium", issue.status === "cancelled" && "text-muted-foreground line-through")}>
+                        {issue.title}
+                      </span>
                     </div>
-                    {issue.childTotalCount > 0 && (
+                    {hasKids && stats && (
                       <div className="flex items-center gap-1.5 pl-5">
-                        <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
-                          <div className="h-full rounded-full bg-green-400" style={{ width: `${childPct}%` }} />
+                        <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                          <div className="h-full rounded-full bg-green-400" style={{ width: `${pct}%` }} />
                         </div>
-                        <span className="font-mono text-(length:--text-nano) tabular-nums text-muted-foreground">
-                          {issue.childDoneCount}/{issue.childTotalCount}
+                        <span className="shrink-0 font-mono text-(length:--text-nano) tabular-nums text-muted-foreground">
+                          {stats.done}/{stats.denom}
                         </span>
                       </div>
                     )}
@@ -632,12 +869,18 @@ export function GoalMap() {
               );
             })}
           </div>
+
+          {draggingIssueId && (
+            <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+              Drop on a task to nest under it, or on a goal to move it there.
+            </div>
+          )}
         </div>
 
         {/* Inspector */}
         <aside className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-background p-4 md:w-80 md:border-t-0 md:border-l">
           {!selectedGoal && !selectedIssue && (
-            <p className="text-sm text-muted-foreground">Select a goal or task to see why it exists and what it unlocks.</p>
+            <p className="text-sm text-muted-foreground">Select a goal or task. Drag a task onto another task or goal to move it; double-click to open it.</p>
           )}
 
           {selectedGoal && (
@@ -657,10 +900,7 @@ export function GoalMap() {
               </div>
 
               <InspectorSection title="Why this exists">
-                <WhyChain
-                  chain={whyChain}
-                  onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })}
-                />
+                <WhyChain chain={whyChain} onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })} />
                 {selectedGoal.goal.description && (
                   <p className="mt-2 text-sm text-muted-foreground">{selectedGoal.goal.description}</p>
                 )}
@@ -750,38 +990,6 @@ export function GoalMap() {
                 </InspectorSection>
               )}
 
-              {selectedGoal.rootIssues.length > 0 && (
-                <InspectorSection title="Tasks">
-                  <div className="space-y-0.5">
-                    {selectedGoal.rootIssues.map((issue) => (
-                      <button
-                        key={issue.id}
-                        className="-mx-1 flex w-full items-start gap-2 rounded px-1 py-1 text-left hover:bg-accent/50"
-                        onClick={() => setSelection({ kind: "issue", id: issue.id })}
-                      >
-                        <span className="mt-0.5 shrink-0">
-                          <StatusGlyph status={issue.status} size="sm" />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-baseline gap-1.5">
-                            {issue.identifier && (
-                              <span className="shrink-0 font-mono text-xs text-muted-foreground">{issue.identifier}</span>
-                            )}
-                            <span className="truncate text-sm">{issue.title}</span>
-                          </span>
-                          {issue.rationale && (
-                            <span className="line-clamp-2 text-xs text-muted-foreground">{issue.rationale}</span>
-                          )}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  {selectedGoal.rootIssuesTruncated && (
-                    <p className="mt-1 text-xs text-muted-foreground">Showing the first {selectedGoal.rootIssues.length} — open the goal for all tasks.</p>
-                  )}
-                </InspectorSection>
-              )}
-
               <div className="mt-auto pt-2">
                 <Link to={`/goals/${selectedGoal.goal.id}`}>
                   <Button variant="outline" size="sm">Open goal</Button>
@@ -794,39 +1002,67 @@ export function GoalMap() {
             <>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  {selectedIssue.issue.identifier && (
-                    <span className="font-mono text-xs text-muted-foreground">{selectedIssue.issue.identifier}</span>
+                  {selectedIssue.identifier && (
+                    <span className="font-mono text-xs text-muted-foreground">{selectedIssue.identifier}</span>
                   )}
-                  <IssueStatusBadge status={selectedIssue.issue.status} />
+                  <IssueStatusBadge status={selectedIssue.status} />
                 </div>
-                <h2 className="text-lg font-semibold leading-snug">{selectedIssue.issue.title}</h2>
+                <h2 className="text-lg font-semibold leading-snug">{selectedIssue.title}</h2>
               </div>
 
+              <InspectorSection title="Actions">
+                <div className="flex items-center gap-3">
+                  <StatusIcon
+                    status={selectedIssue.status}
+                    showLabel
+                    onChange={(status) => updateIssue.mutate({ issueId: selectedIssue.id, data: { status } })}
+                  />
+                  <Link to={`/issues/${selectedIssue.id}`} className="ml-auto">
+                    <Button variant="outline" size="sm">Open task</Button>
+                  </Link>
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Drag the card to move it under another task or goal. Double-click opens the full task.
+                </p>
+              </InspectorSection>
+
               <InspectorSection title="Why this exists">
-                {selectedIssue.issue.rationale ? (
-                  <p className="text-sm text-muted-foreground">{selectedIssue.issue.rationale}</p>
+                {selectedIssue.rationale ? (
+                  <p className="text-sm text-muted-foreground">{selectedIssue.rationale}</p>
                 ) : (
                   <p className="text-sm italic text-muted-foreground">No rationale recorded yet.</p>
                 )}
                 <div className="mt-2">
-                  <WhyChain
-                    chain={whyChain}
-                    onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })}
-                  />
+                  <WhyChain chain={whyChain} onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })} />
                 </div>
-                {agentName(selectedIssue.issue.assigneeAgentId) && (
+                {issueAncestors.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <span className="text-xs text-muted-foreground">Inside</span>
+                    {issueAncestors.map((ancestor) => (
+                      <button
+                        key={ancestor.id}
+                        className="flex w-full items-baseline gap-1.5 text-left text-sm text-muted-foreground hover:text-foreground hover:underline"
+                        onClick={() => setSelection({ kind: "issue", id: ancestor.id })}
+                      >
+                        {ancestor.identifier && <span className="font-mono text-xs">{ancestor.identifier}</span>}
+                        <span className="truncate">{ancestor.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {agentName(selectedIssue.assigneeAgentId) && (
                   <div className="mt-2 flex items-center justify-between py-1.5">
                     <span className="text-xs text-muted-foreground">Assignee</span>
-                    <span className="text-sm">{agentName(selectedIssue.issue.assigneeAgentId)}</span>
+                    <span className="text-sm">{agentName(selectedIssue.assigneeAgentId)}</span>
                   </div>
                 )}
               </InspectorSection>
 
-              {selectedIssue.issue.childTotalCount > 0 && (
+              {(trees.subtreeStatsById.get(selectedIssue.id)?.denom ?? 0) > 0 && (
                 <InspectorSection title="Sub-tasks">
                   <div className="space-y-1">
-                    <CountRow label="Done" value={selectedIssue.issue.childDoneCount} />
-                    <CountRow label="Total" value={selectedIssue.issue.childTotalCount} />
+                    <CountRow label="Done" value={trees.subtreeStatsById.get(selectedIssue.id)!.done} />
+                    <CountRow label="Total" value={trees.subtreeStatsById.get(selectedIssue.id)!.denom} />
                   </div>
                 </InspectorSection>
               )}
@@ -835,13 +1071,13 @@ export function GoalMap() {
                 <InspectorSection title="Blocking">
                   <div className="space-y-1">
                     {issueBlockedBy.map((edge) => {
-                      const from = layout.placedIssueById.get(edge.fromIssueId);
+                      const from = issueById.get(edge.fromIssueId);
                       if (!from) return null;
                       return (
                         <GateRow
                           key={`in-${edge.fromIssueId}`}
                           direction="Waits on"
-                          title={from.issue.title}
+                          title={from.title}
                           openCount={edge.open ? 1 : 0}
                           totalCount={1}
                           onSelect={() => setSelection({ kind: "issue", id: edge.fromIssueId })}
@@ -849,13 +1085,13 @@ export function GoalMap() {
                       );
                     })}
                     {issueBlocks.map((edge) => {
-                      const to = layout.placedIssueById.get(edge.toIssueId);
+                      const to = issueById.get(edge.toIssueId);
                       if (!to) return null;
                       return (
                         <GateRow
                           key={`out-${edge.toIssueId}`}
                           direction="Unlocks"
-                          title={to.issue.title}
+                          title={to.title}
                           openCount={edge.open ? 1 : 0}
                           totalCount={1}
                           onSelect={() => setSelection({ kind: "issue", id: edge.toIssueId })}
@@ -865,12 +1101,6 @@ export function GoalMap() {
                   </div>
                 </InspectorSection>
               )}
-
-              <div className="mt-auto pt-2">
-                <Link to={`/issues/${selectedIssue.issue.id}`}>
-                  <Button variant="outline" size="sm">Open task</Button>
-                </Link>
-              </div>
             </>
           )}
         </aside>

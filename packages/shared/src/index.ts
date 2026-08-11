@@ -1051,7 +1051,7 @@ export type {
   IssueTreePreviewWarning,
   Goal,
   GoalMapStatusCounts,
-  GoalMapRootIssue,
+  GoalMapIssueNode,
   GoalMapDecompositionSummary,
   GoalMapNode,
   GoalMapEdge,

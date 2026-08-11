@@ -192,13 +192,17 @@ describeEmbeddedPostgres("goal map routes", () => {
 
     const nodeA = nodeById(body, seeded.goalAId);
     expect(nodeA.counts).toMatchObject({ total: 3, done: 1, todo: 1, backlog: 1 });
-    const rootIssueIds = nodeA.rootIssues.map((issue) => issue.id);
-    // Open issues rank before completed ones so the display cap never hides live work.
-    expect(rootIssueIds).toEqual([seeded.a2Id, seeded.a1Id]);
-    const a2 = nodeA.rootIssues.find((issue) => issue.id === seeded.a2Id);
+    // Full task list (hidden issues excluded) so the client can render whole trees.
+    expect(body.issuesTruncated).toBe(false);
+    expect(body.issues).toHaveLength(4);
+    expect(body.issues.map((issue) => issue.id)).toEqual(
+      expect.arrayContaining([seeded.a1Id, seeded.a2Id, seeded.a2ChildId, seeded.b1Id]),
+    );
+    const a2 = body.issues.find((issue) => issue.id === seeded.a2Id);
     expect(a2?.rationale).toBe("Verify tick data so strategies can trust the lake");
-    expect(a2?.childTotalCount).toBe(1);
-    expect(a2?.childDoneCount).toBe(0);
+    const a2Child = body.issues.find((issue) => issue.id === seeded.a2ChildId);
+    expect(a2Child?.parentId).toBe(seeded.a2Id);
+    expect(a2Child?.goalId).toBe(seeded.goalAId);
     expect(nodeA.gated).toBe(false);
     expect(nodeA.decompositions).toHaveLength(1);
     expect(nodeA.decompositions[0]).toMatchObject({
@@ -229,8 +233,8 @@ describeEmbeddedPostgres("goal map routes", () => {
     expect(body.issueEdges).toHaveLength(2);
     expect(body.issueEdges).toEqual(expect.arrayContaining([
       { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.b1Id, open: true },
-      // a2Child blocks a1: rolled up to the root task containing the blocker.
-      { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.a1Id, open: true },
+      // Raw edge: both endpoints render on the map now, no roll-up needed.
+      { kind: "blocks", fromIssueId: seeded.a2ChildId, toIssueId: seeded.a1Id, open: true },
     ]));
   });
 
@@ -255,8 +259,8 @@ describeEmbeddedPostgres("goal map routes", () => {
     expect(nodeB.inboundOpenGateCount).toBe(0);
     expect(body.issueEdges).toEqual(expect.arrayContaining([
       { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.b1Id, open: false },
-      // The subtask blocker (backlog) keeps the rolled-up a2 -> a1 edge open.
-      { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.a1Id, open: true },
+      // The subtask blocker (backlog) stays open.
+      { kind: "blocks", fromIssueId: seeded.a2ChildId, toIssueId: seeded.a1Id, open: true },
     ]));
   });
 

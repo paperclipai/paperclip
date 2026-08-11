@@ -13,17 +13,17 @@ export interface GoalMapStatusCounts {
   cancelled: number;
 }
 
-export interface GoalMapRootIssue {
+/** One task on the map; the client assembles trees from parentId + goalId. */
+export interface GoalMapIssueNode {
   id: string;
   identifier: string | null;
   title: string;
   status: IssueStatus;
   priority: IssuePriority;
+  parentId: string | null;
+  goalId: string;
   assigneeAgentId: string | null;
   rationale: string | null;
-  /** Direct, non-hidden, non-cancelled children of this issue. */
-  childTotalCount: number;
-  childDoneCount: number;
   updatedAt: Date | string;
 }
 
@@ -43,9 +43,6 @@ export interface GoalMapNode {
   counts: GoalMapStatusCounts;
   /** Direct counts plus all descendant goals' counts. */
   subtreeCounts: GoalMapStatusCounts;
-  /** Issues in this goal whose parent is absent or belongs to another goal. */
-  rootIssues: GoalMapRootIssue[];
-  rootIssuesTruncated: boolean;
   /** Accepted-plan decompositions whose source issue belongs to this goal. */
   decompositions: GoalMapDecompositionSummary[];
   /** Open blocker issues in other goals that gate work in this goal. */
@@ -67,7 +64,7 @@ export type GoalMapEdge =
     totalIssueCount: number;
   };
 
-/** Blocks relation between two root issues that both appear on the map. */
+/** Blocks relation between two issues that both appear on the map. */
 export interface GoalMapIssueEdge {
   kind: "blocks";
   fromIssueId: string;
@@ -79,5 +76,7 @@ export interface GoalMapIssueEdge {
 export interface GoalMapResponse {
   nodes: GoalMapNode[];
   edges: GoalMapEdge[];
+  issues: GoalMapIssueNode[];
+  issuesTruncated: boolean;
   issueEdges: GoalMapIssueEdge[];
 }

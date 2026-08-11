@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { goals, issuePlanDecompositions, issueRelations, issues } from "@paperclipai/db";
@@ -7,13 +7,13 @@ import type {
   GoalMapDecompositionSummary,
   GoalMapEdge,
   GoalMapIssueEdge,
+  GoalMapIssueNode,
   GoalMapNode,
   GoalMapResponse,
-  GoalMapRootIssue,
   GoalMapStatusCounts,
 } from "@paperclipai/shared";
 
-const MAX_ROOT_ISSUES_PER_GOAL = 100;
+const MAX_MAP_ISSUES = 2000;
 const MAX_DECOMPOSITIONS_PER_GOAL = 5;
 
 function emptyStatusCounts(): GoalMapStatusCounts {
@@ -59,7 +59,9 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     .from(goals)
     .where(eq(goals.companyId, companyId))
     .orderBy(asc(goals.createdAt), asc(goals.id));
-  if (goalRows.length === 0) return { nodes: [], edges: [], issueEdges: [] };
+  if (goalRows.length === 0) {
+    return { nodes: [], edges: [], issues: [], issuesTruncated: false, issueEdges: [] };
+  }
   const goalIds = new Set(goalRows.map((goal) => goal.id));
 
   const statusCountRows = await db
@@ -76,50 +78,30 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     ))
     .groupBy(issues.goalId, issues.status);
 
-  const parentIssue = alias(issues, "goal_map_parent_issue");
-  const rankedRootIssues = db
+  const issueRows = await db
     .select({
       id: issues.id,
-      goalId: issues.goalId,
       identifier: issues.identifier,
       title: issues.title,
       status: issues.status,
       priority: issues.priority,
+      parentId: issues.parentId,
+      goalId: issues.goalId,
       assigneeAgentId: issues.assigneeAgentId,
       rationale: issues.rationale,
       updatedAt: issues.updatedAt,
-      rowNumber: sql<number>`row_number() over (
-        partition by ${issues.goalId}
-        order by
-          case when ${issues.status} in ('done', 'cancelled') then 1 else 0 end,
-          ${issues.createdAt} asc,
-          ${issues.id} asc
-      )`.as("goal_map_row_number"),
     })
     .from(issues)
-    .leftJoin(parentIssue, eq(issues.parentId, parentIssue.id))
     .where(and(
       eq(issues.companyId, companyId),
       isNull(issues.hiddenAt),
       sql`${issues.goalId} is not null`,
-      sql`(${issues.parentId} is null or ${parentIssue.goalId} is distinct from ${issues.goalId})`,
     ))
-    .as("goal_map_root_issues");
-  const rootIssueRows = await db
-    .select({
-      id: rankedRootIssues.id,
-      goalId: rankedRootIssues.goalId,
-      identifier: rankedRootIssues.identifier,
-      title: rankedRootIssues.title,
-      status: rankedRootIssues.status,
-      priority: rankedRootIssues.priority,
-      assigneeAgentId: rankedRootIssues.assigneeAgentId,
-      rationale: rankedRootIssues.rationale,
-      updatedAt: rankedRootIssues.updatedAt,
-    })
-    .from(rankedRootIssues)
-    .where(lte(rankedRootIssues.rowNumber, MAX_ROOT_ISSUES_PER_GOAL + 1))
-    .orderBy(asc(rankedRootIssues.rowNumber));
+    .orderBy(asc(issues.createdAt), asc(issues.id))
+    .limit(MAX_MAP_ISSUES + 1);
+  const issuesTruncated = issueRows.length > MAX_MAP_ISSUES;
+  const mapIssueRows = issueRows.slice(0, MAX_MAP_ISSUES);
+  const issueById = new Map(mapIssueRows.map((row) => [row.id, row]));
 
   const blockerIssue = alias(issues, "goal_map_blocker_issue");
   const blockedIssue = alias(issues, "goal_map_blocked_issue");
@@ -145,6 +127,28 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       sql`${blockerIssue.goalId} is distinct from ${blockedIssue.goalId}`,
     ))
     .groupBy(blockerIssue.goalId, blockedIssue.goalId);
+
+  const relationRows = await db
+    .select({
+      fromIssueId: issueRelations.issueId,
+      toIssueId: issueRelations.relatedIssueId,
+    })
+    .from(issueRelations)
+    .where(and(
+      eq(issueRelations.companyId, companyId),
+      eq(issueRelations.type, "blocks"),
+    ));
+  const issueEdges: GoalMapIssueEdge[] = [];
+  for (const row of relationRows) {
+    const blocker = issueById.get(row.fromIssueId);
+    if (!blocker || !issueById.has(row.toIssueId)) continue;
+    issueEdges.push({
+      kind: "blocks",
+      fromIssueId: row.fromIssueId,
+      toIssueId: row.toIssueId,
+      open: blocker.status !== "done" && blocker.status !== "cancelled",
+    });
+  }
 
   const decompositionSourceIssue = alias(issues, "goal_map_decomposition_source");
   const decompositionRows = await db
@@ -172,125 +176,6 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     const counts = countsByGoalId.get(row.goalId) ?? emptyStatusCounts();
     addStatusCount(counts, row.status, row.count);
     countsByGoalId.set(row.goalId, counts);
-  }
-
-  const rootIssueRowsByGoalId = new Map<string, typeof rootIssueRows>();
-  const truncatedRootIssueGoalIds = new Set<string>();
-  for (const row of rootIssueRows) {
-    if (!row.goalId || !goalIds.has(row.goalId)) continue;
-    const list = rootIssueRowsByGoalId.get(row.goalId) ?? [];
-    if (list.length >= MAX_ROOT_ISSUES_PER_GOAL) {
-      truncatedRootIssueGoalIds.add(row.goalId);
-      continue;
-    }
-    list.push(row);
-    rootIssueRowsByGoalId.set(row.goalId, list);
-  }
-  const keptRootIssueIds = [...rootIssueRowsByGoalId.values()].flat().map((row) => row.id);
-
-  const childCountRows = keptRootIssueIds.length > 0
-    ? await db
-      .select({
-        parentId: issues.parentId,
-        status: issues.status,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
-        inArray(issues.parentId, keptRootIssueIds),
-      ))
-      .groupBy(issues.parentId, issues.status)
-    : [];
-  const childCountsByIssueId = new Map<string, { total: number; done: number }>();
-  for (const row of childCountRows) {
-    if (!row.parentId) continue;
-    const counts = childCountsByIssueId.get(row.parentId) ?? { total: 0, done: 0 };
-    if (row.status !== "cancelled") counts.total += row.count;
-    if (row.status === "done") counts.done += row.count;
-    childCountsByIssueId.set(row.parentId, counts);
-  }
-
-  // Blocks relations anywhere in the issue trees, rolled up to the displayed
-  // root tasks that contain each endpoint — a subtask dependency still draws
-  // an arrow between the two work streams it connects.
-  const issueEdges: GoalMapIssueEdge[] = [];
-  if (keptRootIssueIds.length > 0) {
-    const keptRootIssueIdSet = new Set(keptRootIssueIds);
-    const lineageRows = await db
-      .select({
-        id: issues.id,
-        parentId: issues.parentId,
-        goalId: issues.goalId,
-        status: issues.status,
-      })
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
-    const lineageById = new Map(lineageRows.map((row) => [row.id, row]));
-    const rootMemo = new Map<string, string | null>();
-    const rootIssueIdOf = (issueId: string): string | null => {
-      const memoized = rootMemo.get(issueId);
-      if (memoized !== undefined) return memoized;
-      const seen = new Set<string>();
-      let current = lineageById.get(issueId);
-      if (!current) return null;
-      while (
-        current.parentId &&
-        !seen.has(current.id) &&
-        lineageById.get(current.parentId)?.goalId === current.goalId
-      ) {
-        seen.add(current.id);
-        current = lineageById.get(current.parentId)!;
-      }
-      rootMemo.set(issueId, current.id);
-      return current.id;
-    };
-
-    const relationRows = await db
-      .select({
-        fromIssueId: issueRelations.issueId,
-        toIssueId: issueRelations.relatedIssueId,
-      })
-      .from(issueRelations)
-      .where(and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-      ));
-    const edgeByKey = new Map<string, GoalMapIssueEdge>();
-    for (const row of relationRows) {
-      const blocker = lineageById.get(row.fromIssueId);
-      if (!blocker) continue;
-      const fromRootId = rootIssueIdOf(row.fromIssueId);
-      const toRootId = rootIssueIdOf(row.toIssueId);
-      if (!fromRootId || !toRootId || fromRootId === toRootId) continue;
-      if (!keptRootIssueIdSet.has(fromRootId) || !keptRootIssueIdSet.has(toRootId)) continue;
-      const open = blocker.status !== "done" && blocker.status !== "cancelled";
-      const key = `${fromRootId}->${toRootId}`;
-      const existing = edgeByKey.get(key);
-      if (existing) {
-        existing.open = existing.open || open;
-      } else {
-        edgeByKey.set(key, { kind: "blocks", fromIssueId: fromRootId, toIssueId: toRootId, open });
-      }
-    }
-    issueEdges.push(...edgeByKey.values());
-  }
-
-  const rootIssuesByGoalId = new Map<string, GoalMapRootIssue[]>();
-  for (const [goalId, rows] of rootIssueRowsByGoalId) {
-    rootIssuesByGoalId.set(goalId, rows.map((row) => ({
-      id: row.id,
-      identifier: row.identifier,
-      title: row.title,
-      status: row.status as GoalMapRootIssue["status"],
-      priority: row.priority as GoalMapRootIssue["priority"],
-      assigneeAgentId: row.assigneeAgentId,
-      rationale: row.rationale,
-      childTotalCount: childCountsByIssueId.get(row.id)?.total ?? 0,
-      childDoneCount: childCountsByIssueId.get(row.id)?.done ?? 0,
-      updatedAt: row.updatedAt,
-    })));
   }
 
   const decompositionsByGoalId = new Map<string, GoalMapDecompositionSummary[]>();
@@ -359,13 +244,26 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       goal: goal as Goal,
       counts: countsByGoalId.get(goal.id) ?? emptyStatusCounts(),
       subtreeCounts: subtreeCountsByGoalId.get(goal.id) ?? emptyStatusCounts(),
-      rootIssues: rootIssuesByGoalId.get(goal.id) ?? [],
-      rootIssuesTruncated: truncatedRootIssueGoalIds.has(goal.id),
       decompositions: decompositionsByGoalId.get(goal.id) ?? [],
       inboundOpenGateCount,
       gated: inboundOpenGateCount > 0,
     };
   });
 
-  return { nodes, edges, issueEdges };
+  const mapIssues: GoalMapIssueNode[] = mapIssueRows
+    .filter((row) => row.goalId && goalIds.has(row.goalId))
+    .map((row) => ({
+      id: row.id,
+      identifier: row.identifier,
+      title: row.title,
+      status: row.status as GoalMapIssueNode["status"],
+      priority: row.priority as GoalMapIssueNode["priority"],
+      parentId: row.parentId,
+      goalId: row.goalId!,
+      assigneeAgentId: row.assigneeAgentId,
+      rationale: row.rationale,
+      updatedAt: row.updatedAt,
+    }));
+
+  return { nodes, edges, issues: mapIssues, issuesTruncated, issueEdges };
 }
