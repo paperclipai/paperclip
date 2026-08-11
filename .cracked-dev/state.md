@@ -4,6 +4,28 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **run-liveness lifecycle golden corpus (ratchet)** — `run-liveness.test.ts`. The existing
+  adversarial matrix covers the text/actionability axis only; added a systematic lifecycle
+  corpus pinning all 7 RunLivenessStates via the run-status/issue-status/evidence axis
+  (interrupted→needs_followup, failed, timeout→failed, done/cancelled→completed, empty_response,
+  advanced via concrete+plan-doc, needs_followup). Test-only, runs in CI with vitest. 42/42
+  green; every expectation matched the classifier (no surprises). Commit `239ccd5bb`. SAFE.
+- **`db:check` deploy preflight (structural fix for the 08-10 incident)** — new
+  `scripts/check-pending-migrations.ts` + `pnpm db:check`. Finds pending migrations by sha256
+  hash membership vs `drizzle.__drizzle_migrations` (verified drizzle's hash IS sha256 of the
+  .sql — offset-proof vs the journal count, which drifts 213 applied / 212 journal here), scans
+  each for non-idempotent CREATE TABLE / ADD COLUMN / CREATE INDEX, checks the live schema, exit
+  1 on collision. New deploy incantation: `pnpm build && pnpm db:check && restart`. Pure
+  `extractDdl`/`findConflicts` covered by `--self-test` which replays the exact actionability
+  incident. Read-only. Commit `73ad66f57`. SAFE.
+- **[FINDING] Company memory unreachable — D1 grant missing (0/13 agents)** — verified via the
+  detection query: ALL 13 active Twenty Four agents lack the `tools:use` grant, so EVERY gateway
+  tool (not just remember/recall) is deny_default-blocked. Core agent work bypasses the gateway
+  (internal ops) so the fleet looks healthy. Fix = the plan's D1 baseline grant (surfaced to
+  Trevor — it's a permission write the classifier blocks; reversible). Until applied, the memory
+  tools + all MCP/gateway tools are inert. Auto-recall injection (b) and semantic recall (c) are
+  downstream of this and were NOT built (b needs a relevance/context-budget design decision +
+  touches the heartbeat run-assembly core; c needs pgvector).
 - **Company memory table + remember/recall agent tools (foundational)** — new
   `company_memories` schema + migration `0213` + `paperclip-self:remember`/`recall` in
   tool-gateway. Greenfield (memlawb = dormant external-MCP template, not DB-backed; no
@@ -102,10 +124,10 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. Evals in CI + run-liveness golden corpus (M).
-2. Deploy-preflight `db:check` — diff pending migrations vs live schema before a restart, so a
-   hand-applied/out-of-band schema change can't crash-loop the boot migrator again (S–M; the
-   2026-08-10 incident's structural fix).
-3. Company-memory follow-ups: verify the 25 Twenty Four agents actually hold the `tools:use`
-   grant (D1) so remember/recall are reachable; auto-recall injection at run start (vs pull);
-   semantic/vector recall once a company outgrows trigram ILIKE (S/M/L).
+1. **[BLOCKED ON TREVOR] Apply the D1 `tools:use` baseline grant** (0/13 agents have it → all
+   gateway tools inert). SQL surfaced; classifier-blocked write. Everything tool-facing waits on
+   this. Optional: bake into hire.mjs / an in-model `routes/access.ts` call so new agents get it.
+2. Auto-recall injection at run start — inject the top-N relevant company memories into the run
+   context (vs the pull-only recall tool). Needs a design call (relevance ranking + context
+   budget + which memories) and touches heartbeat.ts run assembly (M). Gated on candidate 1.
+3. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
