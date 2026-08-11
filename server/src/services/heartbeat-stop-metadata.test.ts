@@ -3,6 +3,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   resolveHeartbeatRunTimeoutPolicy,
+  selectHeartbeatRunStopAdapterConfig,
 } from "./heartbeat-stop-metadata.js";
 
 describe("heartbeat stop metadata", () => {
@@ -39,6 +40,25 @@ describe("heartbeat stop metadata", () => {
       timeoutSource: "config",
       stopReason: "timeout",
       timeoutFired: true,
+    });
+  });
+
+  it("uses an issue-resolved timeout for final run metadata over the agent-home fallback", () => {
+    const effective = selectHeartbeatRunStopAdapterConfig(
+      {},
+      { timeoutSec: 180 },
+    );
+    expect(
+      buildHeartbeatRunStopMetadata({
+        adapterType: "hermes_local",
+        adapterConfig: effective,
+        outcome: "succeeded",
+      }),
+    ).toMatchObject({
+      effectiveTimeoutSec: 180,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+      timeoutFired: false,
     });
   });
 

@@ -24,6 +24,18 @@ export interface HeartbeatRunStopMetadata extends HeartbeatRunTimeoutPolicy {
   timeoutFired: boolean;
 }
 
+/**
+ * Final run telemetry must describe the configuration that reached the
+ * adapter. Issue-level overrides are resolved after the agent row is loaded,
+ * so the stored agent configuration is only a fallback for early failures.
+ */
+export function selectHeartbeatRunStopAdapterConfig(
+  agentAdapterConfig: Record<string, unknown> | null | undefined,
+  effectiveAdapterConfig?: Record<string, unknown> | null,
+) {
+  return effectiveAdapterConfig ?? agentAdapterConfig;
+}
+
 function readFiniteNumber(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : null;

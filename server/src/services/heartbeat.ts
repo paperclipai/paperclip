@@ -127,6 +127,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  selectHeartbeatRunStopAdapterConfig,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -14311,11 +14312,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resultJson?: Record<string, unknown> | null;
       errorCode?: string | null;
       errorMessage?: string | null;
+      effectiveAdapterConfig?: Record<string, unknown> | null;
     },
   ) {
     const stopMetadata = buildHeartbeatRunStopMetadata({
       adapterType: agent.adapterType,
-      adapterConfig: parseObject(agent.adapterConfig),
+      adapterConfig: selectHeartbeatRunStopAdapterConfig(
+        parseObject(agent.adapterConfig),
+        options?.effectiveAdapterConfig,
+      ),
       outcome,
       errorCode: options?.errorCode ?? null,
       errorMessage: options?.errorMessage ?? null,
@@ -18600,6 +18605,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
+          effectiveAdapterConfig: runtimeConfig,
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
