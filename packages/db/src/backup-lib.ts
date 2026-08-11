@@ -461,18 +461,21 @@ async function runPgDumpBackup(opts: {
   }
 
   const childResult = waitForChildExit(child, pgDumpBin);
+  const handledChildResult = childResult.catch((error) => {
+    throw error;
+  });
   const output = fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
   try {
     await waitForWriteStreamOpen(output);
   } catch (error) {
     output.destroy();
     child.kill();
-    await Promise.allSettled([childResult]);
+    await Promise.allSettled([handledChildResult]);
     throw error;
   }
 
   const pipelineResult = pipeline(child.stdout, createGzip(), output);
-  const [pipelineState, childState] = await Promise.allSettled([pipelineResult, childResult]);
+  const [pipelineState, childState] = await Promise.allSettled([pipelineResult, handledChildResult]);
 
   if (childState.status === "rejected") {
     throw childState.reason;
