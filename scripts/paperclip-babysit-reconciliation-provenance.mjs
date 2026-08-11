@@ -65,10 +65,27 @@ export function createBabysitterArtifactInstance(input) {
       mediaType: input.retention.mediaType,
     },
   };
+  const sourceRevisionDigest = digest(sourceRevision);
+  const buildDigest = digest(build);
+  // Hash the complete persisted ArtifactInstance, including its lineage
+  // anchors. The manifest stores this exact object, so hashing the partial
+  // pre-anchor shape would permit a declared digest mismatch.
+  const persistedArtifact = {
+    kind: artifact.kind,
+    sourceRevision: artifact.sourceRevision,
+    build: artifact.build,
+    mediaType: artifact.mediaType,
+    buildExecutionId: artifact.buildExecutionId,
+    sourceContentDigest: artifact.sourceContentDigest,
+    contentDigest: artifact.contentDigest,
+    sourceRevisionDigest,
+    buildDigest,
+    contentPath: artifact.contentPath,
+    contentLength: artifact.contentLength,
+    retention: artifact.retention,
+  };
   return {
-    ...artifact,
-    sourceRevisionDigest: digest(sourceRevision),
-    buildDigest: digest(build),
-    artifactInstanceDigest: digest(artifact),
+    ...persistedArtifact,
+    artifactInstanceDigest: digest(persistedArtifact),
   };
 }

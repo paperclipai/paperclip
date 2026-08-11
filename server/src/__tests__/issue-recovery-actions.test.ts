@@ -1679,6 +1679,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "resolved",
       outcome: "handed_back",
     });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(
       coderId,
       expect.objectContaining({
