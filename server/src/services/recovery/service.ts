@@ -3479,6 +3479,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
 
     const result = {
+      changesRequestedRepaired: 0,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -3496,6 +3497,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      // Subject/company-bound CAS repair. Only currentParticipant changes;
+      // decision and verdict history remain untouched.
+      const repaired = await db
+        .update(issues)
+        .set({
+          executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${issues.executionState}->'returnAssignee')`,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(issues.id, issue.id),
+          eq(issues.companyId, issue.companyId),
+          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          isNull(issues.hiddenAt),
+          sql`${issues.executionState}->>'status' = 'changes_requested'`,
+          sql`${issues.executionState}->>'lastDecisionOutcome' = 'changes_requested'`,
+          sql`${issues.executionState}->'returnAssignee'->>'type' = 'agent'`,
+          sql`EXISTS (SELECT 1 FROM ${agents} AS return_agent
+            WHERE return_agent.id::text = ${issues.executionState}->'returnAssignee'->>'agentId'
+              AND return_agent.company_id = ${issues.companyId})`,
+          sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
+        ))
+        .returning({ id: issues.id });
+      if (repaired.length > 0) result.changesRequestedRepaired += repaired.length;
+
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;

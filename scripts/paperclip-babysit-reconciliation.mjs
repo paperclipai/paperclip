@@ -13,12 +13,17 @@ export function changesRequestedRepairSql() {
       UPDATE issues SET
         execution_state = jsonb_set(execution_state, '{currentParticipant}', execution_state->'returnAssignee'),
         updated_at = now()
-      WHERE status IN ('todo','in_progress') AND hidden_at IS NULL
+      FROM agents AS return_agent
+      WHERE issues.company_id = $1
+        AND issues.id = $2
+        AND issues.status IN ('todo','in_progress','in_review') AND issues.hidden_at IS NULL
         AND execution_state->>'lastDecisionOutcome' = 'changes_requested'
-        AND execution_state->'returnAssignee'->>'agentId' IS NOT NULL
+        AND execution_state->'returnAssignee'->>'type' = 'agent'
+        AND execution_state->'returnAssignee'->>'agentId' = return_agent.id::text
+        AND return_agent.company_id = issues.company_id
         AND execution_state->>'status' = 'changes_requested'
         AND (execution_state->'currentParticipant'->>'agentId') IS DISTINCT FROM (execution_state->'returnAssignee'->>'agentId')
-      RETURNING identifier
+      RETURNING issues.identifier
     ) SELECT coalesce(string_agg(identifier, ','), '') FROM updated;
   `;
 }

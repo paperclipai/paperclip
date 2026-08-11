@@ -22,7 +22,20 @@ describe("changes-requested reconciliation", () => {
 
   it("uses a compare-and-set predicate in the reviewed SQL", () => {
     const sql = changesRequestedRepairSql();
+    expect(sql).toContain("issues.company_id = $1");
+    expect(sql).toContain("issues.id = $2");
+    expect(sql).toContain("returnAssignee'->>'type' = 'agent'");
+    expect(sql).toContain("return_agent.company_id = issues.company_id");
     expect(sql).toContain("execution_state->>'status' = 'changes_requested'");
     expect(sql).toContain("IS DISTINCT FROM");
+  });
+
+  it("rejects non-agent return principals", () => {
+    expect(shouldRepairChangesRequested({
+      status: "changes_requested",
+      lastDecisionOutcome: "changes_requested",
+      currentParticipant: { type: "agent", agentId: "lead-engineer" },
+      returnAssignee: { type: "user", userId: "qa-user" },
+    })).toBe(false);
   });
 });
