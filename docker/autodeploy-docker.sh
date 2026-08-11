@@ -1169,15 +1169,29 @@ rearm_bootstrap_secrets() {
   fi
   pass="$(printf '%s-%s-%s-%s' "${pass:0:6}" "${pass:6:6}" "${pass:12:6}" "${pass:18:6}")"
 
+  dotenv_escape() {
+    local value="$1"
+    local dollar='$$'
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$/$dollar}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    printf '%s' "$value"
+  }
+  write_dotenv_kv() {
+    local key="$1"
+    local value="$2"
+    printf '%s="%s"\n' "$key" "$(dotenv_escape "$value")"
+  }
   {
     cat <<'ENVBOOT'
 # Re-armed after ./manage.sh reset — used only by the bootstrap container.
 AUTOMATED_AUTO_ADMIN=true
 ENVBOOT
-    # Quote values; double `$` is unnecessary here because we generate hex only.
-    printf 'AUTOMATED_ADMIN_EMAIL="%s"\n' "$email"
-    printf 'AUTOMATED_ADMIN_PASSWORD="%s"\n' "$pass"
-    printf 'AUTOMATED_ADMIN_NAME="%s"\n' "$name"
+    write_dotenv_kv AUTOMATED_ADMIN_EMAIL "$email"
+    write_dotenv_kv AUTOMATED_ADMIN_PASSWORD "$pass"
+    write_dotenv_kv AUTOMATED_ADMIN_NAME "$name"
   } > .env.bootstrap
   chmod 600 .env.bootstrap
   log "Re-armed bootstrap admin secrets for the next start (email: $email)"
