@@ -6,6 +6,7 @@
     "path": "server/src/services/recovery/service.ts",
     "contentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb"
   },
+  "reviewedTree": "26d4e10f5f5afcbb16142c9ac7b91fc20cbeab72",
   "buildExecution": {
     "id": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86",
     "workflow": "paperclip-babysitter-reconciliation",
@@ -26,6 +27,13 @@
       "builder": "paperclip-local-build"
     },
     "executionIdentity": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86",
+    "workflowRevision": "6a71fb6cbb36e890299652accc26c49eb2417a86",
+    "dependencyLockDigest": "sha256:2df640a0f5ab88a296ec11996b2c871be165f26b15a5157543cc276f2f6cda2e",
+    "builderProvenance": {
+      "builder": "paperclip-local-build",
+      "nodeVersion": "v22.22.2",
+      "pnpmVersion": "9.15.4"
+    },
     "completedAt": "2026-08-11T05:45:22.665Z"
   },
   "artifactInstance": {
@@ -49,22 +57,22 @@
     "contentPath": "server/dist/services/recovery/service.js",
     "contentLength": 219472,
     "retention": {
-      "locator": "server/dist/services/recovery/service.js",
+      "locator": "/api/attachments/0ce9c999-a8d7-484c-b51f-a8305ab1169e/content",
       "mediaType": "application/javascript"
     }
   },
   "artifactInstanceDigest": "sha256:bac796da4097aaf021aef78c5cb02f0c6d841ce4325fd632e5104e4a43f02dde",
   "retainedAttachments": [
     {
-      "id": "attachment-source-6a71fb6cbb36e890299652accc26c49eb2417a86",
+      "id": "86a6ed72-ab47-4ea3-8a31-af355404ead3",
       "role": "source-revision",
       "path": "server/src/services/recovery/service.ts",
-      "mediaType": "text/typescript",
+      "mediaType": "application/javascript",
       "contentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb",
       "buildExecutionId": "build-eco-1123-6a71fb6cbb36e890299652accc26c49eb2417a86"
     },
     {
-      "id": "attachment-build-output-6a71fb6cbb36e890299652accc26c49eb2417a86",
+      "id": "0ce9c999-a8d7-484c-b51f-a8305ab1169e",
       "role": "build-output",
       "path": "server/dist/services/recovery/service.js",
       "mediaType": "application/javascript",

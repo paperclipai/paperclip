@@ -10,6 +10,9 @@ const manifestPath = "artifacts/babysitter-reconciliation/build-execution.json";
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 execFileSync("pnpm", ["--filter", "@paperclipai/server", "build"], { stdio: "inherit" });
 const reviewedSourceBytes = readFileSync(reviewedSourcePath);
+const reviewedCommit = execFileSync("git", ["rev-parse", manifest.sourceRevision.commit], { encoding: "utf8" }).trim();
+const reviewedTree = execFileSync("git", ["rev-parse", `${reviewedCommit}^{tree}`], { encoding: "utf8" }).trim();
+const committedSourceBytes = execFileSync("git", ["show", `${reviewedCommit}:${reviewedSourcePath}`]);
 // Read the retained output emitted by the real server BuildExecution. The
 // ArtifactInstance must describe deployable runtime bytes, not synthetic data
 // derived from a source file or a test-only script.
@@ -41,6 +44,7 @@ const input = {
 
 describe("babysitter artifact provenance", () => {
   it("records source, build, and immutable ArtifactInstance digests", () => {
+    expect(reviewedSourceBytes).toEqual(committedSourceBytes);
     const result = createBabysitterArtifactInstance(input);
     expect(result).toMatchObject({
       kind: "ArtifactInstance",
@@ -104,6 +108,11 @@ describe("babysitter artifact provenance", () => {
   it("verifies the checked-in manifest and links BuildExecution to retained attachments", () => {
     const result = createBabysitterArtifactInstance(input);
     expect(manifest.sourceRevision.commit).toBe(input.sourceRevision.commit);
+    expect(manifest.reviewedTree).toBe(reviewedTree);
+    expect(manifest.buildExecution.workflowRevision).toBe(reviewedCommit);
+    expect(manifest.buildExecution.dependencyLockDigest).toBe(
+      `sha256:${createHash("sha256").update(readFileSync("pnpm-lock.yaml")).digest("hex")}`,
+    );
     expect(manifest.sourceRevision.contentDigest).toBe(result.sourceContentDigest);
     expect(manifest.buildExecution.id).toBe(`build-eco-1123-${input.sourceRevision.commit}`);
     expect(manifest.buildExecution.inputsDigest).toBe(input.build.inputsDigest);
@@ -136,20 +145,20 @@ describe("babysitter artifact provenance", () => {
     expect(manifest.artifactInstance.contentPath).toBe(retainedBuildOutputPath);
     expect(manifest.artifactInstance.contentLength).toBe(retainedBuildOutputBytes.length);
     expect(manifest.artifactInstance.retention).toEqual({
-      locator: retainedBuildOutputPath,
+      locator: "/api/attachments/0ce9c999-a8d7-484c-b51f-a8305ab1169e/content",
       mediaType: input.mediaType,
     });
     expect(manifest.retainedAttachments).toEqual([
       {
-        id: `attachment-source-${input.sourceRevision.commit}`,
+        id: "86a6ed72-ab47-4ea3-8a31-af355404ead3",
         role: "source-revision",
         path: reviewedSourcePath,
-        mediaType: "text/typescript",
+        mediaType: "application/javascript",
         contentDigest: result.sourceContentDigest,
         buildExecutionId: manifest.buildExecution.id,
       },
       {
-        id: `attachment-build-output-${input.sourceRevision.commit}`,
+        id: "0ce9c999-a8d7-484c-b51f-a8305ab1169e",
         role: "build-output",
         path: retainedBuildOutputPath,
         mediaType: input.mediaType,
