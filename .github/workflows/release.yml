@@ -793,7 +793,7 @@ jobs:
               echo "git tag ${tag} ${sha}"
               echo "git push origin refs/tags/${tag}"
               echo "gh workflow run docker.yml --ref refs/tags/${tag}"
-            echo "./scripts/create-github-release.sh <version>"
+            echo "./scripts/create-github-release.sh ${tag#v}"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::Tag push rejected; see the job summary for recovery commands." >&2
