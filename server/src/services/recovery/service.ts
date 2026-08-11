@@ -3555,14 +3555,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // restored review participant, rather than the original assignee, owns
       // any follow-up wake. A concurrent restoration that wins the CAS leaves
       // `repaired` null and the candidate is handled from its original state.
-      const effectiveIssue = repaired
-        ? issue
-        : (await db
-            .select({ status: issues.status, executionState: issues.executionState })
-            .from(issues)
-            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-            .limit(1))[0] ?? issue;
-      const effectiveExecutionState = repaired ?? effectiveIssue.executionState;
+      // Always refresh the complete subject after the CAS. A winning repair
+      // has a newer participant, while a lost CAS may have a newer status,
+      // assignee, or execution history; none may be mixed with the snapshot
+      // read before reconciliation.
+      const effectiveIssue = (await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+        .limit(1))[0] ?? issue;
+      const effectiveExecutionState = effectiveIssue.executionState;
       const executionState = effectiveIssue.status === "in_review"
         ? parseIssueExecutionState(effectiveExecutionState)
         : null;

@@ -153,6 +153,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
+    const reviewerId = randomUUID();
     const sourceIssueId = randomUUID();
     const prefix = `RA${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -185,6 +186,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         runtimeConfig: {},
         permissions: {},
       },
+      {
+        id: reviewerId,
+        companyId,
+        name: "Independent reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
     ]);
     await db.insert(issues).values({
       id: sourceIssueId,
@@ -197,7 +209,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       identifier: `${prefix}-1`,
     });
     const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
-    return { companyId, managerId, coderId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
+    return { companyId, managerId, coderId, reviewerId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
   }
 
   async function seedHeartbeatRun(input: {
@@ -308,7 +320,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("does not overwrite a restored pending reviewer on a later reconciliation", async () => {
-    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const { companyId, managerId, coderId, reviewerId, sourceIssueId, prefix } = await seedCompany();
     const unrelatedIssueId = randomUUID();
     await db.insert(issues).values({
       id: unrelatedIssueId,
@@ -357,7 +369,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         currentStageId: stageId,
         currentStageIndex: 0,
         currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: managerId },
+        currentParticipant: { type: "agent", agentId: reviewerId },
         returnAssignee: { type: "agent", agentId: managerId },
         ...protectedHistory,
       },
@@ -367,7 +379,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(after?.executionState).toMatchObject({
       status: "pending",
-      currentParticipant: { type: "agent", agentId: managerId },
+      currentParticipant: { type: "agent", agentId: reviewerId },
       ...protectedHistory,
     });
     const [unrelated] = await db.select().from(issues).where(eq(issues.id, unrelatedIssueId));
@@ -375,6 +387,61 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "changes_requested",
       currentParticipant: { type: "agent", agentId: managerId },
       returnAssignee: { type: "agent", agentId: managerId },
+    });
+  });
+
+  it("does not repair a same-shaped issue in another company", async () => {
+    const first = await seedCompany();
+    await db.update(issues).set({
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: first.coderId },
+        returnAssignee: { type: "agent", agentId: first.managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, first.sourceIssueId));
+    const foreignCompanyId = randomUUID();
+    const foreignAgentId = randomUUID();
+    const foreignIssueId = randomUUID();
+    const foreignPrefix = `RA${foreignCompanyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Other Recovery Co",
+      issuePrefix: foreignPrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: foreignCompanyId,
+      name: "Other manager",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId: foreignCompanyId,
+      title: "Other subject",
+      status: "in_review",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: `${foreignPrefix}-1`,
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: first.coderId },
+        // A foreign-company return principal must fail closed.
+        returnAssignee: { type: "agent", agentId: first.managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(1);
+    const [foreign] = await db.select().from(issues).where(eq(issues.id, foreignIssueId));
+    expect(foreign?.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: first.coderId },
     });
   });
 
