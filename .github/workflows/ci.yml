@@ -1,6 +1,13 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      provision_dokploy_ci_runner:
+        description: Provision or repair the private Dokploy GitHub Actions runner
+        required: true
+        default: false
+        type: boolean
   pull_request:
     branches:
       - master
@@ -15,6 +22,7 @@ concurrency:
 
 jobs:
   verify:
+    if: github.event_name != 'workflow_dispatch' || inputs.provision_dokploy_ci_runner != true
     runs-on: ubuntu-latest
     # The upstream-resync candidate expands the workspace test surface. Keep
     # the complete typecheck → test → build gate intact instead of letting the
@@ -48,6 +56,24 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  provision-dokploy-ci-runner:
+    # Bootstrap stays GitHub-hosted: it creates the self-hosted runner used by
+    # later trusted-branch validation jobs. It is never part of a push or PR.
+    if: github.event_name == 'workflow_dispatch' && inputs.provision_dokploy_ci_runner == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision private trusted-branch runner
+        env:
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/provision-dokploy-ci-runner.sh
 
   deploy-dev:
     needs: verify
