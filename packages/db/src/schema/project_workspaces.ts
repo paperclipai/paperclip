@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
+import { repositories } from "./repositories.js";
 
 export const projectWorkspaces = pgTable(
   "project_workspaces",
@@ -17,6 +18,7 @@ export const projectWorkspaces = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    repositoryId: uuid("repository_id").references(() => repositories.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     sourceType: text("source_type").notNull().default("local_path"),
     cwd: text("cwd"),
@@ -36,6 +38,7 @@ export const projectWorkspaces = pgTable(
   },
   (table) => ({
     companyProjectIdx: index("project_workspaces_company_project_idx").on(table.companyId, table.projectId),
+    companyRepositoryIdx: index("project_workspaces_company_repository_idx").on(table.companyId, table.repositoryId),
     projectPrimaryIdx: index("project_workspaces_project_primary_idx").on(table.projectId, table.isPrimary),
     projectSourceTypeIdx: index("project_workspaces_project_source_type_idx").on(table.projectId, table.sourceType),
     companySharedKeyIdx: index("project_workspaces_company_shared_key_idx").on(table.companyId, table.sharedWorkspaceKey),

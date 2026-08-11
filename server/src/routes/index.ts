@@ -10,6 +10,7 @@ export { statusCardRoutes } from "./status-cards.js";
 export { teamsCatalogRoutes } from "./teams-catalog.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
+export { repositoryRoutes } from "./repositories.js";
 export { issueRoutes } from "./issues.js";
 export { issueTreeControlRoutes } from "./issue-tree-control.js";
 export {

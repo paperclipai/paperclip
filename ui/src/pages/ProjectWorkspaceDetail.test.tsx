@@ -99,6 +99,7 @@ function projectWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWor
     id: "workspace-1",
     companyId: "company-1",
     projectId: "project-1",
+    repositoryId: null,
     name: "Primary checkout",
     sourceType: "local_path",
     cwd: "/tmp/paperclip",

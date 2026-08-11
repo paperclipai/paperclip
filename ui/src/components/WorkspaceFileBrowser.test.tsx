@@ -116,6 +116,7 @@ function createWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWork
     id: "workspace-content",
     companyId: "company-1",
     projectId: "project-content",
+    repositoryId: null,
     name: "Paperclip Content",
     sourceType: "local_path",
     cwd: "/srv/paperclip/home/paperclipai/paperclip-content",

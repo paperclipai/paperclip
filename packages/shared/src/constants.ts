@@ -520,6 +520,12 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const REPOSITORY_PROVIDERS = ["manual", "github"] as const;
+export const REPOSITORY_STATES = ["active", "unavailable", "archived"] as const;
+export const REPOSITORY_VISIBILITIES = ["public", "private", "internal", "unknown"] as const;
+export const REPOSITORY_CONNECTION_STATUSES = ["active", "error", "disconnected"] as const;
+export const REPOSITORY_SYNC_STATUSES = ["idle", "syncing", "succeeded", "failed"] as const;
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 

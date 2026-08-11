@@ -158,6 +158,11 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    const actor = getActorInfo(req);
+    projectData.repositoryAttribution = {
+      createdByAgentId: actor.actorType === "agent" ? actor.agentId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -196,7 +201,6 @@ export function projectRoutes(db: Db) {
     }
     const hydratedProject = workspace ? await svc.getById(project.id) : project;
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -208,6 +212,7 @@ export function projectRoutes(db: Db) {
       details: {
         name: project.name,
         workspaceId: createdWorkspaceId,
+        repositoryCount: projectData.repositoryIds?.length ?? 0,
         envKeys: project.env ? Object.keys(project.env).sort() : [],
       },
     });
@@ -240,6 +245,11 @@ export function projectRoutes(db: Db) {
         fieldPath: "env",
       });
     }
+    const actor = getActorInfo(req);
+    body.repositoryAttribution = {
+      createdByAgentId: actor.actorType === "agent" ? actor.agentId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
     const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -253,7 +263,6 @@ export function projectRoutes(db: Db) {
       );
     }
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: project.companyId,
       actorType: actor.actorType,
@@ -307,6 +316,7 @@ export function projectRoutes(db: Db) {
       entityId: id,
       details: {
         workspaceId: workspace.id,
+        repositoryId: workspace.repositoryId,
         name: workspace.name,
         cwd: workspace.cwd,
         isPrimary: workspace.isPrimary,

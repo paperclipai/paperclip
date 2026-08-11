@@ -921,3 +921,4 @@ export {
 } from "./tool-access.js";
 export * from "./skill-policy.js";
 export * from "./app-definition.js";
+export * from "./repository.js";

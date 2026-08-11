@@ -44,6 +44,7 @@ const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
 
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
+  repositoryId: z.string().uuid().optional().nullable(),
   sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
   repoUrl: z.string().url().optional().nullable(),
@@ -63,23 +64,24 @@ function validateProjectWorkspace(value: Record<string, unknown>, ctx: z.Refinem
   const sourceType = value.sourceType ?? "local_path";
   const hasCwd = typeof value.cwd === "string" && value.cwd.trim().length > 0;
   const hasRepo = typeof value.repoUrl === "string" && value.repoUrl.trim().length > 0;
+  const hasRepository = typeof value.repositoryId === "string" && value.repositoryId.trim().length > 0;
   const hasRemoteRef = typeof value.remoteWorkspaceRef === "string" && value.remoteWorkspaceRef.trim().length > 0;
 
   if (sourceType === "remote_managed") {
-    if (!hasRemoteRef && !hasRepo) {
+    if (!hasRemoteRef && !hasRepo && !hasRepository) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Remote-managed workspace requires remoteWorkspaceRef or repoUrl.",
+        message: "Remote-managed workspace requires remoteWorkspaceRef, repositoryId, or repoUrl.",
         path: ["remoteWorkspaceRef"],
       });
     }
     return;
   }
 
-  if (!hasCwd && !hasRepo) {
+  if (!hasCwd && !hasRepo && !hasRepository) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "Workspace requires at least one of cwd or repoUrl.",
+      message: "Workspace requires at least one of cwd, repositoryId, or repoUrl.",
       path: ["cwd"],
     });
   }
@@ -112,6 +114,7 @@ const projectFields = {
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  repositoryIds: z.array(z.string().uuid()).max(1_000).optional(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 

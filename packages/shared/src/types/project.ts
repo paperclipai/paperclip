@@ -29,6 +29,7 @@ export interface ProjectWorkspace {
   id: string;
   companyId: string;
   projectId: string;
+  repositoryId: string | null;
   name: string;
   sourceType: ProjectWorkspaceSourceType;
   cwd: string | null;

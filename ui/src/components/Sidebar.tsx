@@ -13,6 +13,7 @@ import {
   Repeat,
   Layers,
   GitBranch,
+  FolderGit2,
   Package,
   Settings,
   FolderOpen,
@@ -247,6 +248,7 @@ export function Sidebar() {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/repositories" label="Repositories" icon={FolderGit2} />
           {streamlined ? (
             <>
               <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />

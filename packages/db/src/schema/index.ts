@@ -26,6 +26,12 @@ export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
+export {
+  repositories,
+  repositoryConnections,
+  projectRepositories,
+  agentRepositoryGrants,
+} from "./repositories.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";

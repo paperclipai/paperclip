@@ -328,6 +328,11 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  REPOSITORY_PROVIDERS,
+  REPOSITORY_STATES,
+  REPOSITORY_VISIBILITIES,
+  REPOSITORY_CONNECTION_STATUSES,
+  REPOSITORY_SYNC_STATUSES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -2372,6 +2377,28 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export * from "./validators/repository.js";
+export type {
+  RepositoryProvider,
+  RepositoryState,
+  RepositoryVisibility,
+  Repository,
+  RepositoryCatalogItem,
+  RepositoryConnectionStatus,
+  RepositoryConnectionSyncStatus,
+  RepositoryConnection,
+  ProjectRepositoryLink,
+  ProjectRepositoryEntry,
+  AgentRepositoryGrant,
+  AgentRepositoryGrantEntry,
+  EffectiveRepositoryProjectSource,
+  EffectiveRepositoryAccess,
+  RepositoryDiscoveryItem,
+  RepositoryDiscoveryPage,
+  BeginRepositoryConnectionResult,
+  CompleteRepositoryConnectionResult,
+  ImportRepositoriesResult,
+} from "./types/repository.js";
 export {
   FEATURE_TIERS,
   INSTANCE_FEATURE_CATALOG,
