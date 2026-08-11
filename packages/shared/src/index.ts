@@ -1055,6 +1055,7 @@ export type {
   GoalMapDecompositionSummary,
   GoalMapNode,
   GoalMapEdge,
+  GoalMapIssueEdge,
   GoalMapResponse,
   Approval,
   ApprovalComment,

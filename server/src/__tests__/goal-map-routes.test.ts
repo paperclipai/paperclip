@@ -197,6 +197,8 @@ describeEmbeddedPostgres("goal map routes", () => {
     expect(rootIssueIds).toEqual([seeded.a1Id, seeded.a2Id].sort());
     const a2 = nodeA.rootIssues.find((issue) => issue.id === seeded.a2Id);
     expect(a2?.rationale).toBe("Verify tick data so strategies can trust the lake");
+    expect(a2?.childTotalCount).toBe(1);
+    expect(a2?.childDoneCount).toBe(0);
     expect(nodeA.gated).toBe(false);
     expect(nodeA.decompositions).toHaveLength(1);
     expect(nodeA.decompositions[0]).toMatchObject({
@@ -223,6 +225,10 @@ describeEmbeddedPostgres("goal map routes", () => {
 
     const gate = gateEdge(body, seeded.goalAId, seeded.goalBId);
     expect(gate).toMatchObject({ kind: "gates", openIssueCount: 1, totalIssueCount: 1 });
+
+    expect(body.issueEdges).toEqual([
+      { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.b1Id, open: true },
+    ]);
   });
 
   it("clears the gate once the blocker issue is done", async () => {
@@ -244,6 +250,9 @@ describeEmbeddedPostgres("goal map routes", () => {
     const nodeB = nodeById(body, seeded.goalBId);
     expect(nodeB.gated).toBe(false);
     expect(nodeB.inboundOpenGateCount).toBe(0);
+    expect(body.issueEdges).toEqual([
+      { kind: "blocks", fromIssueId: seeded.a2Id, toIssueId: seeded.b1Id, open: false },
+    ]);
   });
 
   it("persists rationale through issue create and createChild", async () => {

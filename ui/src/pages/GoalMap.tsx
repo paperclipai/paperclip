@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { List, Lock, Maximize2, Minus, Plus, Target } from "lucide-react";
-import type { Agent, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
+import type { Agent, GoalMapNode, GoalMapRootIssue, GoalMapStatusCounts } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -13,12 +13,15 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { StatusBadge } from "../components/StatusBadge";
+import { IssueStatusBadge, StatusBadge } from "../components/StatusBadge";
 import { StatusGlyph } from "../components/StatusGlyph";
 
 // Layout constants (left-to-right layered tree, transposed from OrgChart)
 const NODE_W = 248;
 const NODE_H = 116;
+const ISSUE_W = 224;
+const ISSUE_H = 64;
+const ISSUE_GAP = 12;
 const GAP_X = 72;
 const GAP_Y = 20;
 const ROOT_GAP = 40;
@@ -26,15 +29,24 @@ const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
 
-interface PlacedNode {
+interface PlacedGoal {
   node: GoalMapNode;
   x: number;
   y: number;
 }
 
+interface PlacedIssue {
+  issue: GoalMapRootIssue;
+  goalId: string;
+  x: number;
+  y: number;
+}
+
 interface GoalMapLayout {
-  placed: PlacedNode[];
-  placedById: Map<string, PlacedNode>;
+  placedGoals: PlacedGoal[];
+  placedGoalById: Map<string, PlacedGoal>;
+  placedIssues: PlacedIssue[];
+  placedIssueById: Map<string, PlacedIssue>;
   width: number;
   height: number;
 }
@@ -52,30 +64,45 @@ function layoutGoalMap(nodes: GoalMapNode[]): GoalMapLayout {
   const roots = nodes.filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId));
 
   const heightMemo = new Map<string, number>();
+  function issueStackHeight(node: GoalMapNode): number {
+    const count = node.rootIssues.length;
+    return count > 0 ? count * (ISSUE_H + ISSUE_GAP) - ISSUE_GAP : 0;
+  }
   function subtreeHeight(node: GoalMapNode, stack: Set<string>): number {
     const memoized = heightMemo.get(node.goal.id);
     if (memoized !== undefined) return memoized;
     if (stack.has(node.goal.id)) return NODE_H;
     stack.add(node.goal.id);
     const children = childrenByParentId.get(node.goal.id) ?? [];
-    let height = NODE_H;
-    if (children.length > 0) {
-      const childrenHeight = children.reduce((sum, child) => sum + subtreeHeight(child, stack), 0);
-      height = Math.max(NODE_H, childrenHeight + (children.length - 1) * GAP_Y);
-    }
+    const issuesHeight = issueStackHeight(node);
+    const childrenHeight = children.length > 0
+      ? children.reduce((sum, child) => sum + subtreeHeight(child, stack), 0) + (children.length - 1) * GAP_Y
+      : 0;
+    const separator = issuesHeight > 0 && childrenHeight > 0 ? GAP_Y : 0;
+    const height = Math.max(NODE_H, issuesHeight + separator + childrenHeight);
     stack.delete(node.goal.id);
     heightMemo.set(node.goal.id, height);
     return height;
   }
 
-  const placedById = new Map<string, PlacedNode>();
+  const placedGoalById = new Map<string, PlacedGoal>();
+  const placedIssueById = new Map<string, PlacedIssue>();
   function place(node: GoalMapNode, x: number, y: number) {
-    if (placedById.has(node.goal.id)) return;
+    if (placedGoalById.has(node.goal.id)) return;
     const totalHeight = subtreeHeight(node, new Set());
-    placedById.set(node.goal.id, { node, x, y: y + (totalHeight - NODE_H) / 2 });
+    placedGoalById.set(node.goal.id, { node, x, y: y + (totalHeight - NODE_H) / 2 });
+    const childX = x + NODE_W + GAP_X;
     let childY = y;
-    for (const child of childrenByParentId.get(node.goal.id) ?? []) {
-      place(child, x + NODE_W + GAP_X, childY);
+    for (const issue of node.rootIssues) {
+      if (!placedIssueById.has(issue.id)) {
+        placedIssueById.set(issue.id, { issue, goalId: node.goal.id, x: childX, y: childY });
+      }
+      childY += ISSUE_H + ISSUE_GAP;
+    }
+    const children = childrenByParentId.get(node.goal.id) ?? [];
+    if (node.rootIssues.length > 0 && children.length > 0) childY += GAP_Y - ISSUE_GAP;
+    for (const child of children) {
+      place(child, childX, childY);
       childY += subtreeHeight(child, new Set()) + GAP_Y;
     }
   }
@@ -87,30 +114,31 @@ function layoutGoalMap(nodes: GoalMapNode[]): GoalMapLayout {
   }
   // Nodes unreachable from any root (parentId cycles): stack them below.
   for (const node of nodes) {
-    if (placedById.has(node.goal.id)) continue;
-    placedById.set(node.goal.id, { node, x: PADDING, y: yCursor });
+    if (placedGoalById.has(node.goal.id)) continue;
+    placedGoalById.set(node.goal.id, { node, x: PADDING, y: yCursor });
     yCursor += NODE_H + GAP_Y;
   }
 
-  const placed = [...placedById.values()];
+  const placedGoals = [...placedGoalById.values()];
+  const placedIssues = [...placedIssueById.values()];
   let width = 800;
   let height = 600;
-  for (const p of placed) {
+  for (const p of placedGoals) {
     width = Math.max(width, p.x + NODE_W + PADDING);
     height = Math.max(height, p.y + NODE_H + PADDING);
   }
-  return { placed, placedById, width, height };
+  for (const p of placedIssues) {
+    width = Math.max(width, p.x + ISSUE_W + PADDING);
+    height = Math.max(height, p.y + ISSUE_H + PADDING);
+  }
+  return { placedGoals, placedGoalById, placedIssues, placedIssueById, width, height };
 }
 
 function progressDenominator(counts: GoalMapStatusCounts): number {
   return Math.max(0, counts.total - counts.cancelled);
 }
 
-function edgePath(from: PlacedNode, to: PlacedNode): string {
-  const x1 = from.x + NODE_W;
-  const y1 = from.y + NODE_H / 2;
-  const x2 = to.x;
-  const y2 = to.y + NODE_H / 2;
+function curve(x1: number, y1: number, x2: number, y2: number): string {
   const dx = Math.max(28, Math.abs(x2 - x1) * 0.5);
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
@@ -118,6 +146,8 @@ function edgePath(from: PlacedNode, to: PlacedNode): string {
 function clampZoom(value: number): number {
   return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
 }
+
+type Selection = { kind: "goal"; id: string } | { kind: "issue"; id: string } | null;
 
 export function GoalMap() {
   const { selectedCompanyId } = useCompany();
@@ -158,36 +188,54 @@ export function GoalMap() {
     () => (goalMap?.edges ?? []).filter((e) => e.kind === "parent"),
     [goalMap],
   );
+  const issueEdges = useMemo(() => goalMap?.issueEdges ?? [], [goalMap]);
 
-  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
   useEffect(() => {
-    if (selectedGoalId && layout.placedById.has(selectedGoalId)) return;
-    setSelectedGoalId(layout.placed[0]?.node.goal.id ?? null);
-  }, [layout, selectedGoalId]);
-  const selected = selectedGoalId ? layout.placedById.get(selectedGoalId)?.node ?? null : null;
+    if (selection?.kind === "goal" && layout.placedGoalById.has(selection.id)) return;
+    if (selection?.kind === "issue" && layout.placedIssueById.has(selection.id)) return;
+    setSelection(layout.placedGoals[0] ? { kind: "goal", id: layout.placedGoals[0].node.goal.id } : null);
+  }, [layout, selection]);
 
-  // Why-chain: goal ancestry from the root down to the selected goal.
-  const whyChain = useMemo(() => {
-    if (!selected || !goalMap) return [];
-    const byId = new Map(goalMap.nodes.map((n) => [n.goal.id, n]));
+  const selectedGoal = selection?.kind === "goal" ? layout.placedGoalById.get(selection.id)?.node ?? null : null;
+  const selectedIssue = selection?.kind === "issue" ? layout.placedIssueById.get(selection.id) ?? null : null;
+
+  const nodeById = useMemo(
+    () => new Map((goalMap?.nodes ?? []).map((n) => [n.goal.id, n])),
+    [goalMap],
+  );
+  const goalChainFor = useCallback((goalId: string): GoalMapNode[] => {
     const chain: GoalMapNode[] = [];
     const seen = new Set<string>();
-    let current: GoalMapNode | undefined = selected;
+    let current = nodeById.get(goalId);
     while (current && !seen.has(current.goal.id)) {
       seen.add(current.goal.id);
       chain.unshift(current);
-      current = current.goal.parentId ? byId.get(current.goal.parentId) : undefined;
+      current = current.goal.parentId ? nodeById.get(current.goal.parentId) : undefined;
     }
     return chain;
-  }, [selected, goalMap]);
+  }, [nodeById]);
+  const whyChain = useMemo(() => {
+    if (selectedGoal) return goalChainFor(selectedGoal.goal.id);
+    if (selectedIssue) return goalChainFor(selectedIssue.goalId);
+    return [];
+  }, [selectedGoal, selectedIssue, goalChainFor]);
 
   const inboundGates = useMemo(
-    () => (selected ? gateEdges.filter((e) => e.toGoalId === selected.goal.id) : []),
-    [gateEdges, selected],
+    () => (selectedGoal ? gateEdges.filter((e) => e.toGoalId === selectedGoal.goal.id) : []),
+    [gateEdges, selectedGoal],
   );
   const outboundGates = useMemo(
-    () => (selected ? gateEdges.filter((e) => e.fromGoalId === selected.goal.id) : []),
-    [gateEdges, selected],
+    () => (selectedGoal ? gateEdges.filter((e) => e.fromGoalId === selectedGoal.goal.id) : []),
+    [gateEdges, selectedGoal],
+  );
+  const issueBlockedBy = useMemo(
+    () => (selectedIssue ? issueEdges.filter((e) => e.toIssueId === selectedIssue.issue.id) : []),
+    [issueEdges, selectedIssue],
+  );
+  const issueBlocks = useMemo(
+    () => (selectedIssue ? issueEdges.filter((e) => e.fromIssueId === selectedIssue.issue.id) : []),
+    [issueEdges, selectedIssue],
   );
 
   // Pan & zoom (same interaction model as OrgChart)
@@ -199,7 +247,7 @@ export function GoalMap() {
 
   const hasInitialized = useRef(false);
   useEffect(() => {
-    if (hasInitialized.current || layout.placed.length === 0 || !containerRef.current) return;
+    if (hasInitialized.current || layout.placedGoals.length === 0 || !containerRef.current) return;
     hasInitialized.current = true;
     const container = containerRef.current;
     const scaleX = (container.clientWidth - 40) / layout.width;
@@ -287,15 +335,15 @@ export function GoalMap() {
         <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--border)" strokeWidth="1.5" /></svg>
-            sub-goal
+            breakdown
           </span>
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--hex-facc15)" strokeWidth="1.5" strokeDasharray="5 4" /></svg>
-            gates (open blockers)
+            blocks (open)
           </span>
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--hex-4ade80)" strokeWidth="1.5" strokeDasharray="5 4" /></svg>
-            gate cleared
+            blocker done
           </span>
         </div>
       </div>
@@ -365,13 +413,13 @@ export function GoalMap() {
             </defs>
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
               {parentEdges.map((edge) => {
-                const from = layout.placedById.get(edge.fromGoalId);
-                const to = layout.placedById.get(edge.toGoalId);
+                const from = layout.placedGoalById.get(edge.fromGoalId);
+                const to = layout.placedGoalById.get(edge.toGoalId);
                 if (!from || !to) return null;
                 return (
                   <path
                     key={`parent-${edge.fromGoalId}-${edge.toGoalId}`}
-                    d={edgePath(from, to)}
+                    d={curve(from.x + NODE_W, from.y + NODE_H / 2, to.x, to.y + NODE_H / 2)}
                     fill="none"
                     stroke="var(--border)"
                     strokeWidth={1.5}
@@ -379,21 +427,52 @@ export function GoalMap() {
                   />
                 );
               })}
+              {layout.placedIssues.map((placed) => {
+                const goal = layout.placedGoalById.get(placed.goalId);
+                if (!goal) return null;
+                return (
+                  <path
+                    key={`goal-issue-${placed.issue.id}`}
+                    d={curve(goal.x + NODE_W, goal.y + NODE_H / 2, placed.x, placed.y + ISSUE_H / 2)}
+                    fill="none"
+                    stroke="var(--border)"
+                    strokeOpacity={0.7}
+                    strokeWidth={1}
+                  />
+                );
+              })}
               {gateEdges.map((edge) => {
-                const from = layout.placedById.get(edge.fromGoalId);
-                const to = layout.placedById.get(edge.toGoalId);
+                const from = layout.placedGoalById.get(edge.fromGoalId);
+                const to = layout.placedGoalById.get(edge.toGoalId);
                 if (!from || !to) return null;
                 const open = edge.kind === "gates" && edge.openIssueCount > 0;
                 return (
                   <path
                     key={`gates-${edge.fromGoalId}-${edge.toGoalId}`}
-                    d={edgePath(from, to)}
+                    d={curve(from.x + NODE_W, from.y + NODE_H / 2, to.x, to.y + NODE_H / 2)}
                     fill="none"
                     stroke={open ? "var(--hex-facc15)" : "var(--hex-4ade80)"}
                     strokeOpacity={open ? 0.9 : 0.55}
                     strokeWidth={1.5}
                     strokeDasharray="6 5"
                     markerEnd={`url(#goal-map-arrow-gate-${open ? "open" : "cleared"})`}
+                  />
+                );
+              })}
+              {issueEdges.map((edge) => {
+                const from = layout.placedIssueById.get(edge.fromIssueId);
+                const to = layout.placedIssueById.get(edge.toIssueId);
+                if (!from || !to) return null;
+                return (
+                  <path
+                    key={`blocks-${edge.fromIssueId}-${edge.toIssueId}`}
+                    d={curve(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x, to.y + ISSUE_H / 2)}
+                    fill="none"
+                    stroke={edge.open ? "var(--hex-facc15)" : "var(--hex-4ade80)"}
+                    strokeOpacity={edge.open ? 0.9 : 0.55}
+                    strokeWidth={1.5}
+                    strokeDasharray="6 5"
+                    markerEnd={`url(#goal-map-arrow-gate-${edge.open ? "open" : "cleared"})`}
                   />
                 );
               })}
@@ -406,10 +485,10 @@ export function GoalMap() {
             className="absolute inset-0"
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
           >
-            {layout.placed.map(({ node, x, y }) => {
+            {layout.placedGoals.map(({ node, x, y }) => {
               const denom = progressDenominator(node.subtreeCounts);
               const pct = denom > 0 ? Math.round((node.subtreeCounts.done / denom) * 100) : 0;
-              const isSelected = node.goal.id === selectedGoalId;
+              const isSelected = selection?.kind === "goal" && selection.id === node.goal.id;
               return (
                 <Card
                   key={node.goal.id}
@@ -423,11 +502,11 @@ export function GoalMap() {
                     node.gated && !isSelected && "opacity-80",
                   )}
                   style={{ left: x, top: y, width: NODE_W, height: NODE_H }}
-                  onClick={() => setSelectedGoalId(node.goal.id)}
+                  onClick={() => setSelection({ kind: "goal", id: node.goal.id })}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      setSelectedGoalId(node.goal.id);
+                      setSelection({ kind: "goal", id: node.goal.id });
                     }
                   }}
                 >
@@ -458,75 +537,106 @@ export function GoalMap() {
                 </Card>
               );
             })}
+            {layout.placedIssues.map(({ issue, x, y }) => {
+              const isSelected = selection?.kind === "issue" && selection.id === issue.id;
+              const childPct = issue.childTotalCount > 0
+                ? Math.round((issue.childDoneCount / issue.childTotalCount) * 100)
+                : 0;
+              return (
+                <Card
+                  key={issue.id}
+                  data-goal-map-card
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Task ${issue.title}`}
+                  className={cn(
+                    "absolute block cursor-pointer overflow-hidden py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
+                    isSelected && "border-ring ring-2 ring-ring/40",
+                  )}
+                  style={{ left: x, top: y, width: ISSUE_W, height: ISSUE_H }}
+                  onClick={() => setSelection({ kind: "issue", id: issue.id })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelection({ kind: "issue", id: issue.id });
+                    }
+                  }}
+                >
+                  <div className="flex h-full flex-col justify-center gap-1 px-2.5 py-1.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="shrink-0"><StatusGlyph status={issue.status} size="sm" /></span>
+                      {issue.identifier && (
+                        <span className="shrink-0 font-mono text-(length:--text-nano) text-muted-foreground">{issue.identifier}</span>
+                      )}
+                      <span className="truncate text-xs font-medium">{issue.title}</span>
+                    </div>
+                    {issue.childTotalCount > 0 && (
+                      <div className="flex items-center gap-1.5 pl-5">
+                        <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
+                          <div className="h-full rounded-full bg-green-400" style={{ width: `${childPct}%` }} />
+                        </div>
+                        <span className="font-mono text-(length:--text-nano) tabular-nums text-muted-foreground">
+                          {issue.childDoneCount}/{issue.childTotalCount}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
           </div>
         </div>
 
         {/* Inspector */}
         <aside className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-background p-4 md:w-80 md:border-t-0 md:border-l">
-          {!selected ? (
-            <p className="text-sm text-muted-foreground">Select a goal to see why it exists and what it unlocks.</p>
-          ) : (
+          {!selectedGoal && !selectedIssue && (
+            <p className="text-sm text-muted-foreground">Select a goal or task to see why it exists and what it unlocks.</p>
+          )}
+
+          {selectedGoal && (
             <>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs capitalize text-muted-foreground">{selected.goal.level} goal</span>
-                  <StatusBadge status={selected.goal.status} />
-                  {selected.gated && (
+                  <span className="text-xs capitalize text-muted-foreground">{selectedGoal.goal.level} goal</span>
+                  <StatusBadge status={selectedGoal.goal.status} />
+                  {selectedGoal.gated && (
                     <span className="flex items-center gap-1 text-xs text-(--hex-facc15)">
                       <Lock className="h-3 w-3" />
-                      {selected.inboundOpenGateCount} open blocker{selected.inboundOpenGateCount === 1 ? "" : "s"}
+                      {selectedGoal.inboundOpenGateCount} open blocker{selectedGoal.inboundOpenGateCount === 1 ? "" : "s"}
                     </span>
                   )}
                 </div>
-                <h2 className="text-lg font-semibold leading-snug">{selected.goal.title}</h2>
+                <h2 className="text-lg font-semibold leading-snug">{selectedGoal.goal.title}</h2>
               </div>
 
               <InspectorSection title="Why this exists">
-                <div className="space-y-1">
-                  {whyChain.map((entry, index) => {
-                    const isLast = index === whyChain.length - 1;
-                    return (
-                      <div key={entry.goal.id} className="flex items-start gap-2">
-                        <span className="w-16 shrink-0 pt-0.5 text-xs capitalize text-muted-foreground">
-                          {entry.goal.level}
-                        </span>
-                        {isLast ? (
-                          <span className="text-sm font-medium">{entry.goal.title}</span>
-                        ) : (
-                          <button
-                            className="text-left text-sm text-muted-foreground hover:text-foreground hover:underline"
-                            onClick={() => setSelectedGoalId(entry.goal.id)}
-                          >
-                            {entry.goal.title}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                {selected.goal.description && (
-                  <p className="mt-2 text-sm text-muted-foreground">{selected.goal.description}</p>
+                <WhyChain
+                  chain={whyChain}
+                  onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })}
+                />
+                {selectedGoal.goal.description && (
+                  <p className="mt-2 text-sm text-muted-foreground">{selectedGoal.goal.description}</p>
                 )}
-                {agentName(selected.goal.ownerAgentId) && (
+                {agentName(selectedGoal.goal.ownerAgentId) && (
                   <div className="mt-2 flex items-center justify-between py-1.5">
                     <span className="text-xs text-muted-foreground">Owner</span>
-                    <span className="text-sm">{agentName(selected.goal.ownerAgentId)}</span>
+                    <span className="text-sm">{agentName(selectedGoal.goal.ownerAgentId)}</span>
                   </div>
                 )}
               </InspectorSection>
 
               <InspectorSection title="Progress">
                 <div className="space-y-1">
-                  <CountRow label="Done" value={selected.subtreeCounts.done} />
-                  <CountRow label="In progress" value={selected.subtreeCounts.inProgress} />
-                  <CountRow label="In review" value={selected.subtreeCounts.inReview} />
-                  <CountRow label="Blocked" value={selected.subtreeCounts.blocked} />
-                  <CountRow label="Backlog + todo" value={selected.subtreeCounts.backlog + selected.subtreeCounts.todo} />
-                  <CountRow label="Total" value={progressDenominator(selected.subtreeCounts)} />
+                  <CountRow label="Done" value={selectedGoal.subtreeCounts.done} />
+                  <CountRow label="In progress" value={selectedGoal.subtreeCounts.inProgress} />
+                  <CountRow label="In review" value={selectedGoal.subtreeCounts.inReview} />
+                  <CountRow label="Blocked" value={selectedGoal.subtreeCounts.blocked} />
+                  <CountRow label="Backlog + todo" value={selectedGoal.subtreeCounts.backlog + selectedGoal.subtreeCounts.todo} />
+                  <CountRow label="Total" value={progressDenominator(selectedGoal.subtreeCounts)} />
                 </div>
-                {selected.subtreeCounts.total !== selected.counts.total && (
+                {selectedGoal.subtreeCounts.total !== selectedGoal.counts.total && (
                   <p className="mt-1.5 text-xs text-muted-foreground">
-                    Includes sub-goals; {progressDenominator(selected.counts)} directly on this goal.
+                    Includes sub-goals; {progressDenominator(selectedGoal.counts)} directly on this goal.
                   </p>
                 )}
               </InspectorSection>
@@ -535,7 +645,7 @@ export function GoalMap() {
                 <InspectorSection title="Gates">
                   <div className="space-y-1">
                     {inboundGates.map((edge) => {
-                      const from = layout.placedById.get(edge.fromGoalId);
+                      const from = layout.placedGoalById.get(edge.fromGoalId);
                       if (!from || edge.kind !== "gates") return null;
                       return (
                         <GateRow
@@ -544,12 +654,12 @@ export function GoalMap() {
                           title={from.node.goal.title}
                           openCount={edge.openIssueCount}
                           totalCount={edge.totalIssueCount}
-                          onSelect={() => setSelectedGoalId(edge.fromGoalId)}
+                          onSelect={() => setSelection({ kind: "goal", id: edge.fromGoalId })}
                         />
                       );
                     })}
                     {outboundGates.map((edge) => {
-                      const to = layout.placedById.get(edge.toGoalId);
+                      const to = layout.placedGoalById.get(edge.toGoalId);
                       if (!to || edge.kind !== "gates") return null;
                       return (
                         <GateRow
@@ -558,7 +668,7 @@ export function GoalMap() {
                           title={to.node.goal.title}
                           openCount={edge.openIssueCount}
                           totalCount={edge.totalIssueCount}
-                          onSelect={() => setSelectedGoalId(edge.toGoalId)}
+                          onSelect={() => setSelection({ kind: "goal", id: edge.toGoalId })}
                         />
                       );
                     })}
@@ -566,10 +676,10 @@ export function GoalMap() {
                 </InspectorSection>
               )}
 
-              {selected.decompositions.length > 0 && (
+              {selectedGoal.decompositions.length > 0 && (
                 <InspectorSection title="Plans decomposed here">
                   <div className="space-y-2">
-                    {selected.decompositions.map((decomposition) => (
+                    {selectedGoal.decompositions.map((decomposition) => (
                       <div key={`${decomposition.sourceIssueId}-${decomposition.createdAt}`} className="min-w-0">
                         <Link
                           to={`/issues/${decomposition.sourceIssueId}`}
@@ -593,14 +703,14 @@ export function GoalMap() {
                 </InspectorSection>
               )}
 
-              {selected.rootIssues.length > 0 && (
+              {selectedGoal.rootIssues.length > 0 && (
                 <InspectorSection title="Tasks">
                   <div className="space-y-0.5">
-                    {selected.rootIssues.map((issue) => (
-                      <Link
+                    {selectedGoal.rootIssues.map((issue) => (
+                      <button
                         key={issue.id}
-                        to={`/issues/${issue.id}`}
-                        className="-mx-1 flex items-start gap-2 rounded px-1 py-1 hover:bg-accent/50"
+                        className="-mx-1 flex w-full items-start gap-2 rounded px-1 py-1 text-left hover:bg-accent/50"
+                        onClick={() => setSelection({ kind: "issue", id: issue.id })}
                       >
                         <span className="mt-0.5 shrink-0">
                           <StatusGlyph status={issue.status} size="sm" />
@@ -616,18 +726,102 @@ export function GoalMap() {
                             <span className="line-clamp-2 text-xs text-muted-foreground">{issue.rationale}</span>
                           )}
                         </span>
-                      </Link>
+                      </button>
                     ))}
                   </div>
-                  {selected.rootIssuesTruncated && (
-                    <p className="mt-1 text-xs text-muted-foreground">Showing the most recent — open the goal for all tasks.</p>
+                  {selectedGoal.rootIssuesTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground">Showing the first {selectedGoal.rootIssues.length} — open the goal for all tasks.</p>
                   )}
                 </InspectorSection>
               )}
 
               <div className="mt-auto pt-2">
-                <Link to={`/goals/${selected.goal.id}`}>
+                <Link to={`/goals/${selectedGoal.goal.id}`}>
                   <Button variant="outline" size="sm">Open goal</Button>
+                </Link>
+              </div>
+            </>
+          )}
+
+          {selectedIssue && (
+            <>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  {selectedIssue.issue.identifier && (
+                    <span className="font-mono text-xs text-muted-foreground">{selectedIssue.issue.identifier}</span>
+                  )}
+                  <IssueStatusBadge status={selectedIssue.issue.status} />
+                </div>
+                <h2 className="text-lg font-semibold leading-snug">{selectedIssue.issue.title}</h2>
+              </div>
+
+              <InspectorSection title="Why this exists">
+                {selectedIssue.issue.rationale ? (
+                  <p className="text-sm text-muted-foreground">{selectedIssue.issue.rationale}</p>
+                ) : (
+                  <p className="text-sm italic text-muted-foreground">No rationale recorded yet.</p>
+                )}
+                <div className="mt-2">
+                  <WhyChain
+                    chain={whyChain}
+                    onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })}
+                  />
+                </div>
+                {agentName(selectedIssue.issue.assigneeAgentId) && (
+                  <div className="mt-2 flex items-center justify-between py-1.5">
+                    <span className="text-xs text-muted-foreground">Assignee</span>
+                    <span className="text-sm">{agentName(selectedIssue.issue.assigneeAgentId)}</span>
+                  </div>
+                )}
+              </InspectorSection>
+
+              {selectedIssue.issue.childTotalCount > 0 && (
+                <InspectorSection title="Sub-tasks">
+                  <div className="space-y-1">
+                    <CountRow label="Done" value={selectedIssue.issue.childDoneCount} />
+                    <CountRow label="Total" value={selectedIssue.issue.childTotalCount} />
+                  </div>
+                </InspectorSection>
+              )}
+
+              {(issueBlockedBy.length > 0 || issueBlocks.length > 0) && (
+                <InspectorSection title="Blocking">
+                  <div className="space-y-1">
+                    {issueBlockedBy.map((edge) => {
+                      const from = layout.placedIssueById.get(edge.fromIssueId);
+                      if (!from) return null;
+                      return (
+                        <GateRow
+                          key={`in-${edge.fromIssueId}`}
+                          direction="Waits on"
+                          title={from.issue.title}
+                          openCount={edge.open ? 1 : 0}
+                          totalCount={1}
+                          onSelect={() => setSelection({ kind: "issue", id: edge.fromIssueId })}
+                        />
+                      );
+                    })}
+                    {issueBlocks.map((edge) => {
+                      const to = layout.placedIssueById.get(edge.toIssueId);
+                      if (!to) return null;
+                      return (
+                        <GateRow
+                          key={`out-${edge.toIssueId}`}
+                          direction="Unlocks"
+                          title={to.issue.title}
+                          openCount={edge.open ? 1 : 0}
+                          totalCount={1}
+                          onSelect={() => setSelection({ kind: "issue", id: edge.toIssueId })}
+                        />
+                      );
+                    })}
+                  </div>
+                </InspectorSection>
+              )}
+
+              <div className="mt-auto pt-2">
+                <Link to={`/issues/${selectedIssue.issue.id}`}>
+                  <Button variant="outline" size="sm">Open task</Button>
                 </Link>
               </div>
             </>
@@ -643,6 +837,40 @@ function InspectorSection({ title, children }: { title: string; children: React.
     <div>
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
       {children}
+    </div>
+  );
+}
+
+function WhyChain({
+  chain,
+  onSelectGoal,
+}: {
+  chain: GoalMapNode[];
+  onSelectGoal: (goalId: string) => void;
+}) {
+  if (chain.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      {chain.map((entry, index) => {
+        const isLast = index === chain.length - 1;
+        return (
+          <div key={entry.goal.id} className="flex items-start gap-2">
+            <span className="w-16 shrink-0 pt-0.5 text-xs capitalize text-muted-foreground">
+              {entry.goal.level}
+            </span>
+            {isLast ? (
+              <span className="text-sm font-medium">{entry.goal.title}</span>
+            ) : (
+              <button
+                className="text-left text-sm text-muted-foreground hover:text-foreground hover:underline"
+                onClick={() => onSelectGoal(entry.goal.id)}
+              >
+                {entry.goal.title}
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

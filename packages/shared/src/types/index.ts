@@ -712,6 +712,7 @@ export type {
   GoalMapDecompositionSummary,
   GoalMapNode,
   GoalMapEdge,
+  GoalMapIssueEdge,
   GoalMapResponse,
 } from "./goal-map.js";
 export type { Approval, ApprovalComment } from "./approval.js";

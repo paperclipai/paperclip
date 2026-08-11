@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { goals, issuePlanDecompositions, issueRelations, issues } from "@paperclipai/db";
@@ -6,13 +6,14 @@ import type {
   Goal,
   GoalMapDecompositionSummary,
   GoalMapEdge,
+  GoalMapIssueEdge,
   GoalMapNode,
   GoalMapResponse,
   GoalMapRootIssue,
   GoalMapStatusCounts,
 } from "@paperclipai/shared";
 
-const MAX_ROOT_ISSUES_PER_GOAL = 12;
+const MAX_ROOT_ISSUES_PER_GOAL = 30;
 const MAX_DECOMPOSITIONS_PER_GOAL = 5;
 
 function emptyStatusCounts(): GoalMapStatusCounts {
@@ -58,7 +59,7 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     .from(goals)
     .where(eq(goals.companyId, companyId))
     .orderBy(asc(goals.createdAt), asc(goals.id));
-  if (goalRows.length === 0) return { nodes: [], edges: [] };
+  if (goalRows.length === 0) return { nodes: [], edges: [], issueEdges: [] };
   const goalIds = new Set(goalRows.map((goal) => goal.id));
 
   const statusCountRows = await db
@@ -89,7 +90,7 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       updatedAt: issues.updatedAt,
       rowNumber: sql<number>`row_number() over (
         partition by ${issues.goalId}
-        order by ${issues.updatedAt} desc, ${issues.id} desc
+        order by ${issues.createdAt} asc, ${issues.id} asc
       )`.as("goal_map_row_number"),
     })
     .from(issues)
@@ -114,7 +115,8 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       updatedAt: rankedRootIssues.updatedAt,
     })
     .from(rankedRootIssues)
-    .where(lte(rankedRootIssues.rowNumber, MAX_ROOT_ISSUES_PER_GOAL + 1));
+    .where(lte(rankedRootIssues.rowNumber, MAX_ROOT_ISSUES_PER_GOAL + 1))
+    .orderBy(asc(rankedRootIssues.rowNumber));
 
   const blockerIssue = alias(issues, "goal_map_blocker_issue");
   const blockedIssue = alias(issues, "goal_map_blocked_issue");
@@ -169,11 +171,73 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     countsByGoalId.set(row.goalId, counts);
   }
 
-  const rootIssuesByGoalId = new Map<string, GoalMapRootIssue[]>();
+  const rootIssueRowsByGoalId = new Map<string, typeof rootIssueRows>();
+  const truncatedRootIssueGoalIds = new Set<string>();
   for (const row of rootIssueRows) {
     if (!row.goalId || !goalIds.has(row.goalId)) continue;
-    const list = rootIssuesByGoalId.get(row.goalId) ?? [];
-    list.push({
+    const list = rootIssueRowsByGoalId.get(row.goalId) ?? [];
+    if (list.length >= MAX_ROOT_ISSUES_PER_GOAL) {
+      truncatedRootIssueGoalIds.add(row.goalId);
+      continue;
+    }
+    list.push(row);
+    rootIssueRowsByGoalId.set(row.goalId, list);
+  }
+  const keptRootIssueIds = [...rootIssueRowsByGoalId.values()].flat().map((row) => row.id);
+
+  const childCountRows = keptRootIssueIds.length > 0
+    ? await db
+      .select({
+        parentId: issues.parentId,
+        status: issues.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        inArray(issues.parentId, keptRootIssueIds),
+      ))
+      .groupBy(issues.parentId, issues.status)
+    : [];
+  const childCountsByIssueId = new Map<string, { total: number; done: number }>();
+  for (const row of childCountRows) {
+    if (!row.parentId) continue;
+    const counts = childCountsByIssueId.get(row.parentId) ?? { total: 0, done: 0 };
+    if (row.status !== "cancelled") counts.total += row.count;
+    if (row.status === "done") counts.done += row.count;
+    childCountsByIssueId.set(row.parentId, counts);
+  }
+
+  const issueEdges: GoalMapIssueEdge[] = [];
+  if (keptRootIssueIds.length > 0) {
+    const issueEdgeRows = await db
+      .select({
+        fromIssueId: issueRelations.issueId,
+        toIssueId: issueRelations.relatedIssueId,
+        blockerStatus: blockerIssue.status,
+      })
+      .from(issueRelations)
+      .innerJoin(blockerIssue, eq(issueRelations.issueId, blockerIssue.id))
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issueRelations.issueId, keptRootIssueIds),
+        inArray(issueRelations.relatedIssueId, keptRootIssueIds),
+      ));
+    for (const row of issueEdgeRows) {
+      issueEdges.push({
+        kind: "blocks",
+        fromIssueId: row.fromIssueId,
+        toIssueId: row.toIssueId,
+        open: row.blockerStatus !== "done" && row.blockerStatus !== "cancelled",
+      });
+    }
+  }
+
+  const rootIssuesByGoalId = new Map<string, GoalMapRootIssue[]>();
+  for (const [goalId, rows] of rootIssueRowsByGoalId) {
+    rootIssuesByGoalId.set(goalId, rows.map((row) => ({
       id: row.id,
       identifier: row.identifier,
       title: row.title,
@@ -181,9 +245,10 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       priority: row.priority as GoalMapRootIssue["priority"],
       assigneeAgentId: row.assigneeAgentId,
       rationale: row.rationale,
+      childTotalCount: childCountsByIssueId.get(row.id)?.total ?? 0,
+      childDoneCount: childCountsByIssueId.get(row.id)?.done ?? 0,
       updatedAt: row.updatedAt,
-    });
-    rootIssuesByGoalId.set(row.goalId, list);
+    })));
   }
 
   const decompositionsByGoalId = new Map<string, GoalMapDecompositionSummary[]>();
@@ -247,19 +312,18 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
   }
 
   const nodes: GoalMapNode[] = goalRows.map((goal) => {
-    const rootIssues = rootIssuesByGoalId.get(goal.id) ?? [];
     const inboundOpenGateCount = inboundOpenGatesByGoalId.get(goal.id) ?? 0;
     return {
       goal: goal as Goal,
       counts: countsByGoalId.get(goal.id) ?? emptyStatusCounts(),
       subtreeCounts: subtreeCountsByGoalId.get(goal.id) ?? emptyStatusCounts(),
-      rootIssues: rootIssues.slice(0, MAX_ROOT_ISSUES_PER_GOAL),
-      rootIssuesTruncated: rootIssues.length > MAX_ROOT_ISSUES_PER_GOAL,
+      rootIssues: rootIssuesByGoalId.get(goal.id) ?? [],
+      rootIssuesTruncated: truncatedRootIssueGoalIds.has(goal.id),
       decompositions: decompositionsByGoalId.get(goal.id) ?? [],
       inboundOpenGateCount,
       gated: inboundOpenGateCount > 0,
     };
   });
 
-  return { nodes, edges };
+  return { nodes, edges, issueEdges };
 }

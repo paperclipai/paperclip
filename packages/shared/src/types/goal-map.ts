@@ -21,6 +21,9 @@ export interface GoalMapRootIssue {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   rationale: string | null;
+  /** Direct, non-hidden, non-cancelled children of this issue. */
+  childTotalCount: number;
+  childDoneCount: number;
   updatedAt: Date | string;
 }
 
@@ -64,7 +67,17 @@ export type GoalMapEdge =
     totalIssueCount: number;
   };
 
+/** Blocks relation between two root issues that both appear on the map. */
+export interface GoalMapIssueEdge {
+  kind: "blocks";
+  fromIssueId: string;
+  toIssueId: string;
+  /** True while the blocker issue is not done/cancelled. */
+  open: boolean;
+}
+
 export interface GoalMapResponse {
   nodes: GoalMapNode[];
   edges: GoalMapEdge[];
+  issueEdges: GoalMapIssueEdge[];
 }
