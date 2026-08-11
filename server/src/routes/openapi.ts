@@ -2018,6 +2018,98 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/ownership",
+  tags: ["agents"],
+  summary: "List agent ownership grants",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers",
+  tags: ["agents"],
+  summary: "Propose an agent ownership transfer",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ toUserId: z.string().min(1) })),
+  },
+  responses: { 201: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/accept",
+  tags: ["agents"],
+  summary: "Accept a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+// registerOwnershipTransferResolutionRoute() in agents.ts registers this
+// path with a literal, un-interpolated `${action}` template placeholder in
+// the router call itself (the loop variable is bound at call time via two
+// separate invocations for "decline"/"cancel", but the route string is
+// still written as one shared template literal) -- openapi-routes.test.ts's
+// static source-text scan of `router.post(...)` calls captures that raw
+// literal text, not the two resolved runtime paths, so the spec must
+// document this exact placeholder string rather than "decline"/"cancel".
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/${action}",
+  tags: ["agents"],
+  summary: "Decline or cancel a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/agents/{id}/ownership/roles/{principalType}/{principalId}",
+  tags: ["agents"],
+  summary: "Set an agent ownership role for a principal",
+  request: {
+    params: z.object({ id: z.string(), principalType: z.string(), principalId: z.string() }),
+    body: jsonBody(z.object({ role: z.enum(["admin", "user"]) })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/agents/{id}/ownership/roles/{principalType}/{principalId}",
+  tags: ["agents"],
+  summary: "Revoke an agent ownership role from a principal",
+  request: { params: z.object({ id: z.string(), principalType: z.string(), principalId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/bootstrap",
+  tags: ["agents"],
+  summary: "Instance-admin: bootstrap the first owner grant for a pre-existing agent",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ ownerUserId: z.string().min(1) })),
+  },
+  responses: { 201: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/force-transfer",
+  tags: ["agents"],
+  summary: "Instance-admin: force an agent ownership transfer without acceptance",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ toUserId: z.string().min(1), reason: z.string().optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/agents/{id}/wakeup",
   tags: ["agents"],
