@@ -677,6 +677,28 @@ export function parseForeignKeyError(error: unknown): { message: string } | null
   return { message: "Foreign key constraint violation" };
 }
 
+async function isIssueDescendantOf(
+  dbOrTx: DbReader,
+  companyId: string,
+  candidateId: string,
+  ancestorId: string,
+): Promise<boolean> {
+  let currentId: string | null = candidateId;
+  const visited = new Set<string>();
+  while (currentId) {
+    if (currentId === ancestorId) return true;
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const row = await dbOrTx
+      .select({ parentId: issues.parentId })
+      .from(issues)
+      .where(and(eq(issues.id, currentId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    currentId = row?.parentId ?? null;
+  }
+  return false;
+}
+
 export async function assertParentIssueExists(
   dbOrTx: DbReader,
   companyId: string,
@@ -693,6 +715,9 @@ export async function assertParentIssueExists(
     .then((rows) => rows[0] ?? null);
   if (!parent) {
     throw unprocessable("Parent issue not found");
+  }
+  if (currentIssueId && (await isIssueDescendantOf(dbOrTx, companyId, parentId, currentIssueId))) {
+    throw unprocessable("Parent issue cannot be a descendant of this issue");
   }
 }
 

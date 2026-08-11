@@ -204,6 +204,36 @@ describe("issue FK validation (#7656)", () => {
         return err instanceof HttpError && err.status === 422 && err.message === "Parent issue not found";
       });
     });
+
+    it("throws unprocessable 422 if the proposed parentId is a descendant of the issue", async () => {
+      // issue-1 -> child-1 -> child-2; attempting to set issue-1's parent to child-2 is a cycle.
+      const where = vi.fn();
+      where.mockResolvedValueOnce([{ id: "child-2" }]); // parent existence check
+      where.mockResolvedValueOnce([{ parentId: "child-1" }]); // child-2's parent
+      where.mockResolvedValueOnce([{ parentId: "issue-1" }]); // child-1's parent
+      const dbReader: any = { select: () => ({ from: () => ({ where }) }) };
+
+      await expect(
+        assertParentIssueExists(dbReader, "company-1", "child-2", "issue-1"),
+      ).rejects.toSatisfy((err: unknown) => {
+        return (
+          err instanceof HttpError &&
+          err.status === 422 &&
+          err.message === "Parent issue cannot be a descendant of this issue"
+        );
+      });
+    });
+
+    it("does not throw when the proposed parentId is unrelated to the issue", async () => {
+      const where = vi.fn();
+      where.mockResolvedValueOnce([{ id: "other-issue" }]); // parent existence check
+      where.mockResolvedValueOnce([{ parentId: null }]); // other-issue has no parent, chain ends
+      const dbReader: any = { select: () => ({ from: () => ({ where }) }) };
+
+      await expect(
+        assertParentIssueExists(dbReader, "company-1", "other-issue", "issue-1"),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe("assertGoalExists", () => {
@@ -240,7 +270,17 @@ describe("issue FK validation (#7656)", () => {
 
     it("returns 422 when PATCH /api/issues/:id is sent a non-existent parentId", async () => {
       mockIssueService.getById.mockResolvedValue(existingIssue);
-      mockIssueService.update.mockRejectedValue(unprocessable("Parent issue not found"));
+      // Exercise the real assertParentIssueExists validation instead of a canned rejection,
+      // so a regression in the conversion to a 422 would actually be caught here.
+      const dbReader: any = { select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) };
+      mockIssueService.update.mockImplementation(async () => {
+        await assertParentIssueExists(
+          dbReader,
+          existingIssue.companyId,
+          "00000000-0000-0000-0000-000000000000",
+          existingIssue.id,
+        );
+      });
 
       const res = await request(createApp())
         .patch(`/api/issues/${existingIssue.id}`)
@@ -248,6 +288,25 @@ describe("issue FK validation (#7656)", () => {
 
       expect(res.status).toBe(422);
       expect(res.body.error).toBe("Parent issue not found");
+    });
+
+    it("returns 422 when PATCH /api/issues/:id is sent a parentId that is a descendant of the issue", async () => {
+      const childId = "22222222-2222-4222-8222-222222222222";
+      mockIssueService.getById.mockResolvedValue(existingIssue);
+      const where = vi.fn();
+      where.mockResolvedValueOnce([{ id: childId }]); // parent existence check
+      where.mockResolvedValueOnce([{ parentId: existingIssue.id }]); // child's parent is the issue itself
+      const dbReader: any = { select: () => ({ from: () => ({ where }) }) };
+      mockIssueService.update.mockImplementation(async () => {
+        await assertParentIssueExists(dbReader, existingIssue.companyId, childId, existingIssue.id);
+      });
+
+      const res = await request(createApp())
+        .patch(`/api/issues/${existingIssue.id}`)
+        .send({ parentId: childId });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toBe("Parent issue cannot be a descendant of this issue");
     });
 
     it("returns 422 when PATCH /api/issues/:id is sent a non-existent goalId", async () => {
