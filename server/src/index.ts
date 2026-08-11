@@ -937,7 +937,22 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
+    // Reentrancy guard: on a slow/memory-bound box a tick's recovery chain
+    // (reap → promote → resume → reconcile …) can outlast the interval. Every
+    // piece of tick work is tracked in heartbeatSchedulerInFlight and, since
+    // startupHeartbeatRecovery is awaited before we start here and nothing else
+    // feeds that set, a non-empty set at fire time means the previous tick is
+    // still draining — skip this one rather than overlap and double-promote.
+    heartbeatSchedulerInterval = setInterval(() => {
+      if (heartbeatSchedulerInFlight.size > 0) {
+        logger.debug(
+          { inFlight: heartbeatSchedulerInFlight.size },
+          "heartbeat scheduler tick skipped — previous tick still in flight",
+        );
+        return;
+      }
+      callback();
+    }, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
   const externalObjects = externalObjectService(db as any, {
