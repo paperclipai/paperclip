@@ -6166,17 +6166,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   // Cross-process serialization for refreshUserGrant, mirroring
   // acquireOAuthRefreshLease/clearOAuthRefreshLease above -- those guard the
   // connection-level refresh; userGrantRefreshFlights only stops one process
-  // from racing itself. Simpler than the connection-level lease in one way:
-  // connectionGrants.refreshLease is its own column, not a field nested in a
-  // shared config blob, so the claim only needs to guard that one column
-  // (no full-row snapshot compare is needed to avoid clobbering unrelated
-  // fields). A present-but-expired lease is never auto-reclaimed here --
-  // same reasoning as the connection-level "stuck lease" case: a crashed
-  // holder might have already rotated secrets before dying, and blindly
-  // reclaiming could race a slow-finishing holder. Unlike that path, this
-  // function's contract is "never throw," so a stuck or contended lease
-  // just waits out OAUTH_REFRESH_LEASE_WAIT_MS and then reports itself
-  // unavailable, same as a missing grant, rather than throwing.
+  // from racing itself. Simpler than the connection-level lease in two ways:
+  //
+  // 1. connectionGrants.refreshLease is its own column, not a field nested
+  //    in a shared config blob, so the claim only needs to guard that one
+  //    column (no full-row snapshot compare is needed to avoid clobbering
+  //    unrelated fields).
+  // 2. An expired lease IS auto-reclaimed here, unlike the connection-level
+  //    path's conservative "throw and require reconnect" for a stuck lease.
+  //    That conservatism doesn't apply to grants: every grant secret ref is
+  //    stored with versionSelector "latest" and never repinned (see
+  //    refreshUserGrant), so a crashed holder that already rotated secrets
+  //    before dying leaves "latest" pointing at its result regardless --
+  //    reclaiming and retrying just resolves the already-current secret and
+  //    performs one more (idempotent-in-effect) refresh. Without this, an
+  //    abandoned lease would block every future refresh forever: this
+  //    function never throws, so there's no equivalent of the connection
+  //    path's explicit "reconnect this app" surfaced to break the deadlock.
   //
   // On every poll iteration, this also re-checks the access token's own
   // expiresAt (not just the lease) -- same as acquireOAuthRefreshLease's
@@ -6203,7 +6209,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         return { grant: latest, leaseId: null };
       }
 
-      if (!latest.refreshLease) {
+      const currentLeaseExpiresAtMs = latest.refreshLease?.expiresAt ? Date.parse(latest.refreshLease.expiresAt) : Number.NaN;
+      const leaseIsActive = Boolean(latest.refreshLease) && Number.isFinite(currentLeaseExpiresAtMs) && currentLeaseExpiresAtMs > Date.now();
+      if (!leaseIsActive) {
         const leaseId = randomUUID();
         const [claimed] = await db
           .update(connectionGrants)
@@ -6215,7 +6223,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             eq(connectionGrants.id, grantId),
             eq(connectionGrants.companyId, companyId),
             eq(connectionGrants.status, "active"),
-            sql`${connectionGrants.refreshLease} is null`,
+            latest.refreshLease
+              ? sql`${connectionGrants.refreshLease} ->> 'id' = ${latest.refreshLease.id}`
+              : sql`${connectionGrants.refreshLease} is null`,
           ))
           .returning();
         if (claimed) return { grant: claimed, leaseId };
@@ -6366,10 +6376,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // token until something else intervened. Now, if rotation fails,
         // the metadata write below never runs, so the grant's expiresAt
         // still (accurately) says expired and the next call retries.
-        await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
+        //
+        // Refresh token rotates first, access token second -- same order as
+        // refreshOAuthCredentials, and for the same reason: a rotating
+        // provider invalidates the submitted refresh token as soon as the
+        // exchange above succeeds, whether or not we ever persist its
+        // replacement. Rotating access first and having refresh-rotation
+        // fail afterward would leave the access secret on a newer
+        // generation than the refresh secret, which the provider has
+        // already invalidated -- the next refresh attempt would resolve
+        // that stale refresh token via "latest" and get `invalid_grant`,
+        // forcing reauthorization despite this exchange having succeeded.
+        // Rotating refresh first means a failure there leaves both secrets
+        // on their old (still-matching) generation, and the access-token
+        // rotation below never runs.
         if (token.refreshToken) {
           await secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {});
         }
+        await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
 
         const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
         const updatedRefs = grant.credentialSecretRefs.map((ref) =>

@@ -3252,6 +3252,85 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(accessTokenVersions).toHaveLength(2);
   });
 
+  it("reclaims an abandoned refresh lease left by a crashed process instead of blocking every future refresh", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack stuck lease" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const refreshing = body.get("grant_type") === "refresh_token";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: refreshing ? "rotated-access-token" : "user-access-token",
+            refresh_token: refreshing ? "rotated-refresh-token" : "user-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    // Simulate a process that claimed the lease and then crashed before
+    // clearing it -- its expiresAt is already in the past.
+    await db.update(connectionGrants).set({
+      refreshLease: { id: randomUUID(), expiresAt: new Date(Date.now() - 60_000).toISOString() },
+    }).where(eq(connectionGrants.id, grant.id));
+
+    const result = await service.refreshUserGrant({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      subjectUserId: "user-for-run",
+    });
+
+    expect(result).toMatchObject({ accessToken: "rotated-access-token" });
+    const [refreshed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.refreshLease).toBeNull();
+  });
+
   it("starts agent-initiated user authorization from the typed responsibleUserId column with no JSONB value", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
