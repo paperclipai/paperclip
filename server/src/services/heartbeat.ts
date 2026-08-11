@@ -3153,6 +3153,44 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+const STALE_EXECUTOR_REVIEW_WAKE_REASON =
+  "Dropped stale executor wake because the issue entered in_review before adapter spawn";
+const ISSUE_EXECUTION_LOCK_CONFLICT_REASON =
+  "Cancelled queued issue wake because the issue execution lock is owned by another run";
+
+function shouldDropExecutorWakeForReview(input: {
+  issueStatus: string | null | undefined;
+  issueAssigneeAgentId: string | null | undefined;
+  issueExecutionState: unknown;
+  wakeAgentId: string;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}) {
+  if (input.issueStatus !== "in_review") return false;
+
+  const executionStage = parseObject(input.contextSnapshot?.executionStage);
+  const wakeRole = readNonEmptyString(executionStage.wakeRole);
+  if (wakeRole === "reviewer" || wakeRole === "approver") return false;
+  if (wakeRole === "executor") return true;
+
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  if (wakeReason !== "issue_assigned" && wakeReason !== "execution_changes_requested") return false;
+
+  const executionState = parseIssueExecutionState(input.issueExecutionState);
+  const currentParticipantAgentId =
+    executionState?.currentParticipant?.type === "agent"
+      ? executionState.currentParticipant.agentId
+      : null;
+  if (currentParticipantAgentId === input.wakeAgentId) return false;
+
+  const returnExecutorAgentId =
+    executionState?.returnAssignee?.type === "agent"
+      ? executionState.returnAssignee.agentId
+      : null;
+  if (returnExecutorAgentId === input.wakeAgentId) return true;
+
+  return input.issueAssigneeAgentId !== input.wakeAgentId;
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -12469,18 +12507,216 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+
+    const claimedWakeReason = readNonEmptyString(context.wakeReason);
+    const claimOutcome = await db.transaction(async (tx) => {
+      // Serialize the review transition and queued-run claim on the same Issue row.
+      // The earlier staleness read is intentionally not trusted as the final gate.
+      const lockedIssue = issueId
+        ? await tx
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              executionRunId: issues.executionRunId,
+              executionState: issues.executionState,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+
+      // Lock the run after the Issue so a second scheduler cannot clear an Issue
+      // lock that the first scheduler acquired for this same run.
+      const lockedRun = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+
+      if (!lockedRun || lockedRun.status !== "queued") {
+        return { kind: "none" as const };
+      }
+
+      const cancelQueuedRunInTransaction = async (input: {
+        errorCode: string;
+        reason: string;
+        details: Record<string, unknown>;
+      }) => {
+        const now = new Date();
+        const cancelled = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            updatedAt: now,
+            error: input.reason,
+            errorCode: input.errorCode,
+            resultJson: {
+              ...parseObject(lockedRun.resultJson),
+              stopReason: input.errorCode,
+              effectiveTimeoutSec: 0,
+              timeoutConfigured: false,
+              timeoutSource: "atomic_queued_run_gate",
+              timeoutFired: false,
+            },
+          })
+          .where(and(eq(heartbeatRuns.id, lockedRun.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (!cancelled) return { kind: "none" as const };
+
+        if (cancelled.wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: now,
+              error: input.reason,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+        }
+
+        if (issueId) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, lockedRun.id)));
+        }
+
+        return {
+          kind: "cancelled" as const,
+          run: cancelled,
+          errorCode: input.errorCode,
+          reason: input.reason,
+          details: input.details,
+        };
+      };
+
+      if (issueId && !lockedIssue) {
+        return cancelQueuedRunInTransaction({
+          errorCode: "issue_not_found",
+          reason: "Cancelled because the target issue no longer exists",
+          details: { issueId },
+        });
+      }
+
+      if (lockedIssue && shouldDropExecutorWakeForReview({
+        issueStatus: lockedIssue.status,
+        issueAssigneeAgentId: lockedIssue.assigneeAgentId,
+        issueExecutionState: lockedIssue.executionState,
+        wakeAgentId: lockedRun.agentId,
+        contextSnapshot: context,
+      })) {
+        return cancelQueuedRunInTransaction({
+          errorCode: "issue_review_participant_changed",
+          reason: STALE_EXECUTOR_REVIEW_WAKE_REASON,
+          details: {
+            issueId,
+            currentStatus: lockedIssue.status,
+            wakeRole: readNonEmptyString(parseObject(context.executionStage).wakeRole),
+          },
+        });
+      }
+
+      if (
+        lockedIssue
+        && issueId
+        && claimedWakeReason !== "source_scoped_recovery_action"
+        // Mention/context wakes are allowed to touch an Issue without owning
+        // its execution lock. Only the current assignee is required to claim
+        // that lock, so an assignee mismatch must remain dispatchable.
+        && lockedIssue.assigneeAgentId === lockedRun.agentId
+      ) {
+        const issueLock = await tx
+          .update(issues)
+          .set({
+            executionRunId: lockedRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, lockedRun.companyId),
+            // Mention/context runs can touch an issue, but only the current assignee
+            // owns the issue execution lock shown as the active run.
+            eq(issues.assigneeAgentId, lockedRun.agentId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, lockedRun.id)),
+          ))
+          .returning({ id: issues.id });
+
+        if (issueLock.length === 0) {
+          return cancelQueuedRunInTransaction({
+            errorCode: "issue_execution_lock_conflict",
+            reason: ISSUE_EXECUTION_LOCK_CONFLICT_REASON,
+            details: {
+              issueId,
+              currentExecutionRunId: lockedIssue.executionRunId,
+              queuedRunId: lockedRun.id,
+            },
+          });
+        }
+      }
+
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: lockedRun.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, lockedRun.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) return { kind: "none" as const };
+
+      if (claimed.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({ status: "claimed", claimedAt, updatedAt: claimedAt })
+          .where(eq(agentWakeupRequests.id, claimed.wakeupRequestId));
+      }
+
+      return { kind: "claimed" as const, run: claimed };
+    });
+
+    if (claimOutcome.kind === "none") return null;
+
+    if (claimOutcome.kind === "cancelled") {
+      const cancelled = await setRunStatus(claimOutcome.run.id, "cancelled", {
+        finishedAt: claimOutcome.run.finishedAt ?? new Date(),
+        error: claimOutcome.reason,
+        errorCode: claimOutcome.errorCode,
+        resultJson: claimOutcome.run.resultJson,
+      });
+      if (cancelled) {
+        await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: claimOutcome.reason,
+          payload: claimOutcome.details,
+        });
+      }
+      logger.info(
+        { runId: claimOutcome.run.id, issueId, errorCode: claimOutcome.errorCode },
+        "claimQueuedRun: cancelled atomically gated queued run",
+      );
+      return null;
+    }
+
+    const claimed = claimOutcome.run;
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -12498,35 +12734,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
     publishRunLifecyclePluginEvent(claimed);
-
-    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }

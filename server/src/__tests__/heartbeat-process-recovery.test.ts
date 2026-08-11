@@ -609,6 +609,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { environmentId, leaseId };
   }
 
+  it("does not claim an executor wake while a concurrent review transition owns the issue lock", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+        executionStage: { wakeRole: "executor" },
+      },
+    });
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "queued", claimedAt: null, finishedAt: null, error: null })
+      .where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        executionState: null,
+      })
+      .where(eq(issues.id, fixture.issueId));
+
+    let reviewLockReady!: () => void;
+    const reviewLockAcquired = new Promise<void>((resolve) => {
+      reviewLockReady = resolve;
+    });
+    const reviewTransition = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, fixture.issueId))
+        .for("update");
+      await tx
+        .update(issues)
+        .set({
+          status: "in_review",
+          executionState: {
+            status: "pending",
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: randomUUID() },
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, fixture.issueId));
+      reviewLockReady();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+
+    await reviewLockAcquired;
+    const heartbeat = heartbeatService(db);
+    const resumePromise = heartbeat.resumeQueuedRuns();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("queued");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    await reviewTransition;
+    await resumePromise;
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_review_participant_changed");
+    expect(run?.error).toContain("entered in_review");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({ status: "in_review", executionRunId: null });
+  }, 20_000);
+
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
     let releaseAdapter: (() => void) | null = null;
     const adapterStarted = new Promise<void>((resolve) => {

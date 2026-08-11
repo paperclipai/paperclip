@@ -33,6 +33,16 @@ describe("detectClaudeLoginRequired", () => {
       }).requiresLogin,
     ).toBe(false);
   });
+
+  it("does not classify parsed-null assistant stdout as auth evidence", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "The assistant summarized that the source text says authentication required.",
+        stderr: "",
+      }),
+    ).toEqual({ requiresLogin: false, loginUrl: null });
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {

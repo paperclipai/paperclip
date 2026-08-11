@@ -1515,6 +1515,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   let socket: net.Socket | null = null;
   let stopping = false;
   let stdinSeq = 0;
+  let stdinWriteChain: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
     type?: string;
@@ -1557,6 +1558,27 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       const event = pendingRemoteEvents.shift();
       if (event) writeRemoteEventToSocket(event);
     }
+  };
+
+  // Each stdin message is written through a separate remote execution. Those
+  // executions are asynchronous, so issuing them concurrently can let the
+  // stdinEnd marker land before the data file even though its sequence number
+  // is larger. Keep the bridge's filesystem queue ordered at the host boundary
+  // so the remote poller always observes stdin data before stdinEnd.
+  const queueStdinWrite = (stdinPayload: { type: string; data?: string }) => {
+    stdinSeq += 1;
+    const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+    const write = stdinWriteChain
+      .catch(() => undefined)
+      .then(() =>
+        runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+          client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
+        ),
+      );
+    // Keep the chain usable after one failed write; the caller still receives
+    // the rejection and reports the bridge error to the connected proxy.
+    stdinWriteChain = write.catch(() => undefined);
+    return write;
   };
 
   const liveSockets = new Set<net.Socket>();
@@ -1623,11 +1645,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
               ? { type: "stdinEnd" }
               : null;
         if (stdinPayload) {
-          stdinSeq += 1;
-          const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-          void runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-            client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
-          ).catch((error) => {
+          void queueStdinWrite(stdinPayload).catch((error) => {
             nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
             nextSocket.destroy();
           });
@@ -1786,6 +1804,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       if (pollTimer) clearTimeout(pollTimer);
       for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+      await stdinWriteChain;
       await client.writeTextFile(
         path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
         jsonLine({ type: "stdinEnd" }),

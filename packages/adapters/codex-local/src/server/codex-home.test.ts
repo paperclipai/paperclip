@@ -10,6 +10,7 @@ import {
   mergeManagedCodexMcpGateways,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
+  remediateManagedCodexHomePermissions,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
   stageCodexHomeForSync,
@@ -1124,6 +1125,61 @@ describe("stageCodexHomeForSync", () => {
       expect(stagedSkillEntries).not.toContain("up");
     } finally {
       if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("audits and repairs managed runtime directory permissions without following symlinks", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-permissions-"));
+    try {
+      const paperclipHome = path.join(root, "paperclip-home");
+      const env = {
+        PAPERCLIP_HOME: paperclipHome,
+        PAPERCLIP_INSTANCE_ID: "default",
+      } satisfies NodeJS.ProcessEnv;
+      const companyId = "company-1";
+      const managedHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        companyId,
+        "codex-home",
+      );
+      await fs.mkdir(path.join(managedHome, "sessions", "nested"), { recursive: true, mode: 0o755 });
+      await fs.mkdir(path.join(managedHome, "shell_snapshots"), { recursive: true, mode: 0o755 });
+      await fs.writeFile(path.join(managedHome, "sessions", "nested", "run.json"), "{}", { mode: 0o644 });
+      await fs.writeFile(path.join(managedHome, "config.toml"), "model = \"gpt-5\"\n", { mode: 0o644 });
+
+      const changes = await remediateManagedCodexHomePermissions(env, companyId);
+      expect(changes.map((change) => change.requiredMode)).toContain(0o700);
+      expect(changes.map((change) => change.requiredMode)).toContain(0o600);
+      expect((await fs.stat(path.join(managedHome, "sessions", "nested", "run.json"))).mode & 0o777).toBe(0o644);
+
+      await remediateManagedCodexHomePermissions(env, companyId, {
+        apply: true,
+        postDrainConfirmed: true,
+      });
+      expect((await fs.stat(managedHome)).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(managedHome, "sessions"))).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(managedHome, "sessions", "nested", "run.json"))).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.join(managedHome, "config.toml"))).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires post-drain confirmation before changing managed permissions", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-permissions-guard-"));
+    try {
+      const env = {
+        PAPERCLIP_HOME: root,
+        PAPERCLIP_INSTANCE_ID: "default",
+      } satisfies NodeJS.ProcessEnv;
+      await expect(
+        remediateManagedCodexHomePermissions(env, "company-1", { apply: true }),
+      ).rejects.toThrow("post-drain confirmation");
+    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });

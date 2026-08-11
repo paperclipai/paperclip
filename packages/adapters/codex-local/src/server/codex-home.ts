@@ -9,6 +9,9 @@ const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
+const MANAGED_PRIVATE_DIRECTORIES = ["skills", "shell_snapshots", "sessions"] as const;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 /**
  * The allowlist of managed `CODEX_HOME` entries that the codex-local adapter
@@ -170,7 +173,7 @@ async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Pro
 }
 
 async function ensureParentDir(target: string): Promise<void> {
-  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.mkdir(path.dirname(target), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
 }
 
 async function isExpectedSymlink(target: string, source: string): Promise<boolean> {
@@ -226,9 +229,12 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
-  if (existing) return;
-  await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  if (!existing) {
+    await ensureParentDir(target);
+    await fs.copyFile(source, target);
+  }
+  const copied = await fs.lstat(target).catch(() => null);
+  if (copied?.isFile()) await fs.chmod(target, PRIVATE_FILE_MODE);
 }
 
 function tomlString(value: string): string {
@@ -331,10 +337,12 @@ export async function writeManagedCodexMcpConfig(input: {
  * environment variable and only reads credentials from `$CODEX_HOME/auth.json`.
  */
 export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise<void> {
-  await fs.mkdir(home, { recursive: true });
+  await fs.mkdir(home, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  await fs.chmod(home, PRIVATE_DIRECTORY_MODE);
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: PRIVATE_FILE_MODE });
+  await fs.chmod(target, PRIVATE_FILE_MODE);
 }
 
 export interface StageCodexHomeForSyncOptions {
@@ -586,7 +594,8 @@ export async function seedManagedCodexHome(
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
-  await fs.mkdir(targetHome, { recursive: true });
+  await fs.mkdir(targetHome, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  await fs.chmod(targetHome, PRIVATE_DIRECTORY_MODE);
 
   // If a previous run wrote an apikey-mode auth.json (regular file) and this
   // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
@@ -637,6 +646,85 @@ export async function prepareManagedCodexHome(
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
   await seedManagedCodexHome(targetHome, env, onLog, options);
   return targetHome;
+}
+
+export type CodexHomePermissionChange = {
+  path: string;
+  currentMode: number;
+  requiredMode: number;
+};
+
+async function collectPermissionChanges(
+  target: string,
+  requiredMode: number,
+  options: { recurse: boolean },
+): Promise<CodexHomePermissionChange[]> {
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat || stat.isSymbolicLink()) return [];
+
+  const currentMode = stat.mode & 0o777;
+  const changes: CodexHomePermissionChange[] = currentMode === requiredMode
+    ? []
+    : [{ path: target, currentMode, requiredMode }];
+  if (!options.recurse || !stat.isDirectory()) return changes;
+
+  const entries = await fs.readdir(target, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const child = path.join(target, entry.name);
+    changes.push(...await collectPermissionChanges(
+      child,
+      entry.isDirectory() ? PRIVATE_DIRECTORY_MODE : PRIVATE_FILE_MODE,
+      { recurse: entry.isDirectory() },
+    ));
+  }
+  return changes;
+}
+
+/**
+ * Audits or repairs permissions in the Paperclip-managed company Codex home.
+ * It never follows symlinks, never touches the shared/external CODEX_HOME, and
+ * requires an explicit post-drain confirmation before changing session files.
+ */
+export async function remediateManagedCodexHomePermissions(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  options: { apply?: boolean; postDrainConfirmed?: boolean } = {},
+): Promise<CodexHomePermissionChange[]> {
+  if (!companyId.trim()) throw new Error("companyId is required");
+  if (options.apply && !options.postDrainConfirmed) {
+    throw new Error("Refusing to change Codex session permissions without post-drain confirmation");
+  }
+
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const homeStat = await fs.lstat(targetHome).catch(() => null);
+  if (!homeStat) return [];
+  if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) {
+    throw new Error(`Refusing to remediate an invalid managed Codex home: ${targetHome}`);
+  }
+
+  const changes = await collectPermissionChanges(targetHome, PRIVATE_DIRECTORY_MODE, { recurse: false });
+  for (const name of MANAGED_PRIVATE_DIRECTORIES) {
+    changes.push(...await collectPermissionChanges(
+      path.join(targetHome, name),
+      PRIVATE_DIRECTORY_MODE,
+      { recurse: name === "shell_snapshots" || name === "sessions" },
+    ));
+  }
+  for (const name of COPIED_SHARED_FILES) {
+    changes.push(...await collectPermissionChanges(
+      path.join(targetHome, name),
+      PRIVATE_FILE_MODE,
+      { recurse: false },
+    ));
+  }
+
+  if (options.apply) {
+    for (const change of changes) {
+      await fs.chmod(change.path, change.requiredMode);
+    }
+  }
+  return changes;
 }
 
 export type ReconcileManagedCodexHomeStatus =

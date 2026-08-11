@@ -97,6 +97,26 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizedConfigString(config: Record<string, unknown>, key: string): string | null {
+  const value = config[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function adapterSessionIdentity(config: unknown): {
+  model: string | null;
+  modelReasoningEffort: string | null;
+} {
+  const record = isPlainRecord(config) ? config : {};
+  return {
+    model: normalizedConfigString(record, "model"),
+    modelReasoningEffort:
+      normalizedConfigString(record, "modelReasoningEffort")
+      ?? normalizedConfigString(record, "reasoningEffort"),
+  };
+}
+
 function buildConfigSnapshot(
   row: Pick<typeof agents.$inferSelect, ConfigRevisionField>,
 ): AgentConfigSnapshot {
@@ -529,6 +549,25 @@ export function agentService(db: Db) {
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const changingAdapterType =
+      typeof normalizedPatch.adapterType === "string"
+      && normalizedPatch.adapterType !== existing.adapterType;
+    const beforeSessionIdentity = adapterSessionIdentity(existing.adapterConfig);
+    const effectiveAdapterConfig = normalizedPatch.adapterConfig ?? existing.adapterConfig;
+    const afterSessionIdentity = adapterSessionIdentity(effectiveAdapterConfig);
+    const changingModel = beforeSessionIdentity.model !== afterSessionIdentity.model;
+    const changingModelReasoningEffort =
+      beforeSessionIdentity.modelReasoningEffort !== afterSessionIdentity.modelReasoningEffort;
+    const invalidatesSessions = changingAdapterType || changingModel || changingModelReasoningEffort;
+    const revisionActor = options?.recordRevision;
+    const actorType: "agent" | "user" | "system" = revisionActor?.createdByAgentId
+      ? "agent"
+      : revisionActor?.createdByUserId
+        ? "user"
+        : "system";
+    const actorId = revisionActor?.createdByAgentId
+      ?? revisionActor?.createdByUserId
+      ?? "system";
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
@@ -547,6 +586,83 @@ export function agentService(db: Db) {
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
       if (!normalizedUpdated) {
         throw notFound("Agent not found");
+      }
+
+      if (invalidatesSessions) {
+        const deletedTaskSessions = await txDb
+          .delete(agentTaskSessions)
+          .where(and(
+            eq(agentTaskSessions.companyId, existing.companyId),
+            eq(agentTaskSessions.agentId, id),
+          ))
+          .returning({ id: agentTaskSessions.id });
+        await txDb
+          .update(agentRuntimeState)
+          .set({
+            adapterType: normalizedUpdated.adapterType,
+            sessionId: null,
+            stateJson: {},
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agentRuntimeState.companyId, existing.companyId),
+            eq(agentRuntimeState.agentId, id),
+          ));
+        await txDb.insert(activityLog).values({
+          companyId: existing.companyId,
+          actorType,
+          actorId,
+          agentId: revisionActor?.createdByAgentId ?? null,
+          action: "agent.task_sessions_invalidated",
+          entityType: "agent",
+          entityId: id,
+          details: {
+            changedFields: [
+              ...(changingAdapterType ? ["adapterType"] : []),
+              ...(changingModel ? ["adapterConfig.model"] : []),
+              ...(changingModelReasoningEffort ? ["adapterConfig.modelReasoningEffort"] : []),
+            ],
+            taskSessionsCleared: deletedTaskSessions.length,
+          },
+        });
+      }
+
+      if (changingAdapterType) {
+        const migratedIssues = await txDb
+          .update(issues)
+          .set({
+            assigneeAdapterOverrides: sql`
+              coalesce(${issues.assigneeAdapterOverrides}, '{}'::jsonb)
+              #- '{adapterConfig,model}'
+            `,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.companyId, existing.companyId),
+            eq(issues.assigneeAgentId, id),
+            sql`${issues.assigneeAdapterOverrides} -> 'adapterConfig' ? 'model'`,
+          ))
+          .returning({ id: issues.id, identifier: issues.identifier });
+
+        if (migratedIssues.length > 0) {
+          await txDb.insert(activityLog).values(migratedIssues.map((issue) => ({
+            companyId: existing.companyId,
+            actorType,
+            actorId,
+            agentId: revisionActor?.createdByAgentId ?? null,
+            action: "issue.assignee_adapter_override_migrated",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              issueIdentifier: issue.identifier,
+              agentId: id,
+              fromAdapterType: existing.adapterType,
+              toAdapterType: normalizedUpdated.adapterType,
+              removedFields: ["adapterConfig.model"],
+            },
+          })));
+        }
       }
 
       if (shouldRecordRevision && beforeConfig) {

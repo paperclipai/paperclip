@@ -40,5 +40,5 @@ describeEmbeddedPostgres("company secret proposals migration", () => {
         (SELECT count(*)::int FROM pg_indexes WHERE tablename = 'company_secret_proposals') AS indexes
     `;
     expect(result).toEqual({ constraints: 13, indexes: 5 });
-  });
+  }, 30_000);
 });

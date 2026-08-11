@@ -85,7 +85,15 @@ afterEach(async () => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  // A remote process-session wrapper can flush one trailing event file after
+  // the run has returned. Retry the recursive temp-root removal across that
+  // bounded window instead of turning an otherwise passing test into an
+  // ENOTEMPTY teardown failure under CI load.
+  await Promise.all(
+    tempRoots.splice(0).map((root) =>
+      fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
+    ),
+  );
 });
 
 class FakeRuntime {
