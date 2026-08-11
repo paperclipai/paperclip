@@ -3519,7 +3519,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
         ))
         .returning({ id: issues.id });
-      if (repaired.length > 0) result.changesRequestedRepaired += repaired.length;
+      if (repaired.length > 0) {
+        result.changesRequestedRepaired += repaired.length;
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "recovery.changes_requested_participant_repaired",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            source: "recovery.reconcile_stranded_assigned_issues",
+            canonicalPmKey: "ECO-1123",
+            repairedIssueId: issue.id,
+            returnAssignee: issue.executionState && typeof issue.executionState === "object"
+              ? (issue.executionState as Record<string, unknown>).returnAssignee ?? null
+              : null,
+            invariant: "currentParticipant only; decision and verdict history preserved",
+          },
+        });
+      }
 
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
