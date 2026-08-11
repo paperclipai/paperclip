@@ -5399,6 +5399,8 @@ export function issueService(db: Db) {
       })
       .returning();
     return row;
+  }
+
   /**
    * Terminal `done`-transition gate for `workspace_delivery` issues
    * (doc/execution-semantics.md, "Terminal transition contract"). Requires a
