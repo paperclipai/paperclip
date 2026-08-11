@@ -1,0 +1,26 @@
+{
+  "canonicalEcoPmKey": "ECO-1123",
+  "sourceRevision": {
+    "repository": "paperclipai/paperclip",
+    "commit": "a2898cb70e9fbd9b01c3e1b19bc540afef7f0d74",
+    "path": "server/src/services/recovery/service.ts",
+    "contentDigest": "sha256:32e1378587436c5464619017d1bac79e75064b92a41c215444b73c44a58987cb"
+  },
+  "buildExecution": {
+    "command": "pnpm --filter @paperclipai/server build",
+    "tool": "pnpm",
+    "version": "9.15.4",
+    "nodeVersion": "v22.22.2",
+    "inputs": ["server/tsconfig.json", "server/package.json"],
+    "inputsDigest": "sha256:69ce261f418519c4eea680b5eca62270c30d0ed4503f8467d8e39234fbd2dd00",
+    "environment": {"platform": "linux", "arch": "x64"},
+    "executionIdentity": "paperclip"
+  },
+  "artifactInstance": {
+    "kind": "ArtifactInstance",
+    "mediaType": "application/javascript",
+    "contentPath": "server/dist/services/recovery/service.js",
+    "contentDigest": "sha256:6c40e58a8af7fc05872b51a8b473089844d4d0b53504365a990aad4ba899219c"
+  },
+  "artifactInstanceDigest": "sha256:013e14c988056930fbd0a2011f00e954002625b08d9fe80d8345f57101eb7b1e"
+}
