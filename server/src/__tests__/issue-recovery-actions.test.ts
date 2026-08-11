@@ -267,7 +267,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("uses the winning live state when concurrent reconciliation races restoration", async () => {
+  it("uses the winning live state when concurrent reconciliation races repair", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     const decisionId = randomUUID();
@@ -302,9 +302,57 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       lastDecisionId: decisionId,
       lastDecisionOutcome: "changes_requested",
     });
-    // Concurrent CAS repair must still not wake a reviewer while the gate is
-    // changes_requested; only participant alignment is restored.
+    // A changes-requested gate is repaired for the next executor submission;
+    // reconciliation must not wake a reviewer before the gate is pending.
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a restored pending reviewer on a later reconciliation", async () => {
+    const { managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    const protectedHistory = {
+      completedStageIds: ["protected-stage"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
+    };
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(1);
+
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(0);
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(after?.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: managerId },
+      ...protectedHistory,
+    });
   });
 
   function createApp(

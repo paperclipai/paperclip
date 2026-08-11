@@ -42,6 +42,21 @@ describe("babysitter artifact provenance", () => {
     expect(() => createBabysitterArtifactInstance({ ...input, artifactBytes: Buffer.alloc(0) })).toThrow();
   });
 
+  it("rejects placeholder source and build provenance", () => {
+    for (const field of [
+      ["sourceRevision", "commit"],
+      ["sourceRevision", "path"],
+      ["build", "tool"],
+      ["build", "version"],
+      ["build", "inputsDigest"],
+    ]) {
+      const [section, key] = field;
+      const value = structuredClone(input);
+      value[section][key] = "";
+      expect(() => createBabysitterArtifactInstance(value)).toThrow();
+    }
+  });
+
   it("is content-addressed by retained artifact bytes", () => {
     const original = createBabysitterArtifactInstance(input);
     const changed = createBabysitterArtifactInstance({ ...input, artifactBytes: Buffer.from("different") });

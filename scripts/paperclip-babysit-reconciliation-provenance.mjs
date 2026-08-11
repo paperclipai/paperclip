@@ -19,6 +19,19 @@ export function createBabysitterArtifactInstance(input) {
   if (artifactBytes.length === 0 || !input.mediaType) {
     throw new TypeError("a non-empty artifact and mediaType are required");
   }
+  for (const [name, value] of [
+    ["repository", input.sourceRevision.repository],
+    ["commit", input.sourceRevision.commit],
+    ["path", input.sourceRevision.path],
+    ["tool", input.build.tool],
+    ["version", input.build.version],
+    ["inputsDigest", input.build.inputsDigest],
+    ["mediaType", input.mediaType],
+  ]) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new TypeError(`${name} provenance must be a non-empty string`);
+    }
+  }
   const sourceRevision = {
     repository: input.sourceRevision.repository,
     commit: input.sourceRevision.commit,
