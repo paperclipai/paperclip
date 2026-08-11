@@ -28,6 +28,7 @@ export function createBabysitterArtifactInstance(input) {
     ["version", input.build.version],
     ["inputsDigest", input.build.inputsDigest],
     ["mediaType", input.mediaType],
+    ["buildExecutionId", input.buildExecutionId],
   ]) {
     if (typeof value !== "string" || value.trim() === "") {
       throw new TypeError(`${name} provenance must be a non-empty string`);
@@ -48,6 +49,7 @@ export function createBabysitterArtifactInstance(input) {
     sourceRevision,
     build,
     mediaType: input.mediaType,
+    buildExecutionId: input.buildExecutionId,
     sourceContentDigest: `sha256:${createHash("sha256").update(sourceBytes).digest("hex")}`,
     // ArtifactInstance identity is the retained BuildExecution output, not
     // the source bytes. This prevents a source-only digest from masquerading

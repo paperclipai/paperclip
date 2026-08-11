@@ -6,6 +6,7 @@ import { createBabysitterArtifactInstance } from "./paperclip-babysit-reconcilia
 
 const reviewedSourcePath = "server/src/services/recovery/service.ts";
 const retainedBuildOutputPath = "server/dist/services/recovery/service.js";
+const manifestPath = "artifacts/babysitter-reconciliation/build-execution.json";
 execFileSync("pnpm", ["--filter", "@paperclipai/server", "build"], { stdio: "inherit" });
 const reviewedSourceBytes = readFileSync(reviewedSourcePath);
 // Read the retained output emitted by the real server BuildExecution. The
@@ -31,6 +32,7 @@ const input = {
   sourceBytes: reviewedSourceBytes,
   buildOutputBytes: retainedBuildOutputBytes,
   mediaType: "application/javascript",
+  buildExecutionId: `build-eco-1123-${execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()}`,
 };
 
 describe("babysitter artifact provenance", () => {
@@ -93,5 +95,45 @@ describe("babysitter artifact provenance", () => {
     const reread = createBabysitterArtifactInstance({ ...input, sourceBytes: readFileSync(reviewedSourcePath) });
     expect(reread.contentDigest).toBe(original.contentDigest);
     expect(reread.artifactInstanceDigest).toBe(original.artifactInstanceDigest);
+  });
+
+  it("verifies the checked-in manifest and links BuildExecution to retained attachments", () => {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const result = createBabysitterArtifactInstance(input);
+    expect(manifest.sourceRevision.commit).toBe(input.sourceRevision.commit);
+    expect(manifest.sourceRevision.contentDigest).toBe(result.sourceContentDigest);
+    expect(manifest.buildExecution.id).toBe(`build-eco-1123-${input.sourceRevision.commit}`);
+    expect(manifest.buildExecution.inputsDigest).toBe(input.build.inputsDigest);
+    expect(manifest.artifactInstance).toMatchObject({
+      kind: result.kind,
+      sourceRevision: result.sourceRevision,
+      build: result.build,
+      mediaType: result.mediaType,
+      buildExecutionId: result.buildExecutionId,
+      sourceContentDigest: result.sourceContentDigest,
+      contentDigest: result.contentDigest,
+      sourceRevisionDigest: result.sourceRevisionDigest,
+      buildDigest: result.buildDigest,
+    });
+    expect(manifest.artifactInstance.buildExecutionId).toBe(manifest.buildExecution.id);
+    expect(manifest.artifactInstanceDigest).toBe(result.artifactInstanceDigest);
+    expect(manifest.retainedAttachments).toEqual([
+      {
+        id: `attachment-source-${input.sourceRevision.commit}`,
+        role: "source-revision",
+        path: reviewedSourcePath,
+        mediaType: "text/typescript",
+        contentDigest: result.sourceContentDigest,
+        buildExecutionId: manifest.buildExecution.id,
+      },
+      {
+        id: `attachment-build-output-${input.sourceRevision.commit}`,
+        role: "build-output",
+        path: retainedBuildOutputPath,
+        mediaType: input.mediaType,
+        contentDigest: result.contentDigest,
+        buildExecutionId: manifest.buildExecution.id,
+      },
+    ]);
   });
 });
