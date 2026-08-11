@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  SYSTEM_ISSUE_DOCUMENT_KEYS,
   MODEL_PROFILE_KEYS,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
@@ -39,6 +40,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  documents,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -276,6 +278,27 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+// HELA-7804 (parent HELA-7803 "полный контекст агенту"): opt-in "fat" context mode
+// raises the inline wake budgets for agents that explicitly request it via
+// `agent.runtimeConfig.contextMode = "fat"`. Default stays "thin" — this is fleet-wide
+// prompt shape, so every added block below is bounded and token-budgeted.
+const MAX_INLINE_WAKE_COMMENTS_FAT = 20;
+const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS_FAT = 40_000;
+// Parent/self issue description surfaced in the wake payload. Kept aligned with the
+// task-markdown parent-DoR slice (batch 1) so all surfaces see a consistent spec. ~1.2 KB.
+const MAX_WAKE_ISSUE_DESCRIPTION_CHARS = 1_200;
+// "Related context": lightweight linked-doc + direct-child visibility. Titles/keys only in
+// thin mode → a few hundred bytes; small doc bodies inlined only in fat mode (bounded below).
+const MAX_WAKE_RELATED_LINKED_DOCS = 12;
+const MAX_WAKE_RELATED_CHILD_ISSUES = 20;
+const MAX_WAKE_RELATED_CHILD_TITLE_CHARS = 160;
+const MAX_WAKE_RELATED_DOC_TITLE_CHARS = 200;
+// Fat-mode only: inline small linked-doc bodies and a fresh slice of the recent thread.
+const MAX_WAKE_FAT_LINKED_DOC_BODY_CHARS = 2_000;
+const MAX_WAKE_FAT_LINKED_DOC_BODY_TOTAL_CHARS = 8_000;
+const MAX_WAKE_FAT_RECENT_THREAD_COMMENTS = 15;
+const MAX_WAKE_FAT_RECENT_THREAD_BODY_CHARS = 1_500;
+const MAX_WAKE_FAT_RECENT_THREAD_BODY_TOTAL_CHARS = 15_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -4008,6 +4031,107 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+// ── HELA-7804 wake-context helpers (pure, unit-tested in heartbeat-context-summary.test.ts) ──
+
+export type WakeContextMode = "thin" | "fat";
+
+/**
+ * Resolve the opt-in context mode from an agent's runtimeConfig. Defaults to "thin"
+ * (compact heartbeat context). "fat" is only honored when explicitly requested, so the
+ * fleet-wide default prompt shape is unchanged unless an operator opts a given agent in.
+ */
+export function resolveWakeContextMode(runtimeConfig: unknown): WakeContextMode {
+  return parseObject(runtimeConfig).contextMode === "fat" ? "fat" : "thin";
+}
+
+export function wakeContextLimits(mode: WakeContextMode): {
+  maxComments: number;
+  maxTotalBodyChars: number;
+} {
+  return mode === "fat"
+    ? {
+        maxComments: MAX_INLINE_WAKE_COMMENTS_FAT,
+        maxTotalBodyChars: MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS_FAT,
+      }
+    : {
+        maxComments: MAX_INLINE_WAKE_COMMENTS,
+        maxTotalBodyChars: MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS,
+      };
+}
+
+function truncateWithFlag(value: string | null | undefined, max: number): { text: string; truncated: boolean } {
+  const text = typeof value === "string" ? value : "";
+  if (text.length <= max) return { text, truncated: false };
+  return { text: text.slice(0, max), truncated: true };
+}
+
+/**
+ * Project the issue description for the wake payload's `issue` block. Mirrors the
+ * task-markdown parent-DoR slice so a delegated assignee sees the same authoritative spec
+ * across every surface.
+ */
+export function projectWakeIssueDescription(description: string | null | undefined): {
+  description: string | null;
+  descriptionTruncated: boolean;
+} {
+  if (typeof description !== "string" || description.length === 0) {
+    return { description: null, descriptionTruncated: false };
+  }
+  const { text, truncated } = truncateWithFlag(description, MAX_WAKE_ISSUE_DESCRIPTION_CHARS);
+  return { description: text, descriptionTruncated: truncated };
+}
+
+/**
+ * Project linked documents for the "Related context" block. Thin mode emits key + title
+ * only (a few hundred bytes); fat mode additionally inlines small doc bodies under a shared
+ * total budget so a single large doc can't blow up the prompt.
+ */
+export function projectWakeRelatedLinkedDocuments(
+  rows: Array<{ key: string; title: string | null; body?: string | null }>,
+  mode: WakeContextMode,
+): {
+  documents: Array<{ key: string; title: string | null; body?: string; bodyTruncated?: boolean }>;
+  truncated: boolean;
+} {
+  const limited = rows.slice(0, MAX_WAKE_RELATED_LINKED_DOCS);
+  let remainingBodyBudget = MAX_WAKE_FAT_LINKED_DOC_BODY_TOTAL_CHARS;
+  const documents = limited.map((row) => {
+    const projected: { key: string; title: string | null; body?: string; bodyTruncated?: boolean } = {
+      key: row.key,
+      title: row.title == null ? null : truncateWithFlag(row.title, MAX_WAKE_RELATED_DOC_TITLE_CHARS).text,
+    };
+    if (mode === "fat" && typeof row.body === "string" && row.body.length > 0 && remainingBodyBudget > 0) {
+      const allowed = Math.min(MAX_WAKE_FAT_LINKED_DOC_BODY_CHARS, remainingBodyBudget);
+      const sliced = truncateWithFlag(row.body, allowed);
+      projected.body = sliced.text;
+      projected.bodyTruncated = sliced.truncated;
+      remainingBodyBudget -= sliced.text.length;
+    }
+    return projected;
+  });
+  return { documents, truncated: rows.length > limited.length };
+}
+
+/**
+ * Project direct child issues for the "Related context" block. Always-on complement to
+ * `childIssueSummaries` (which only populates once every child is done) so open children are
+ * visible too.
+ */
+export function projectWakeRelatedChildIssues(
+  rows: Array<{ identifier: string | null; title: string; status: string }>,
+): {
+  children: Array<{ identifier: string | null; title: string; status: string }>;
+  truncated: boolean;
+} {
+  const limited = rows.slice(0, MAX_WAKE_RELATED_CHILD_ISSUES);
+  const children = limited.map((row) => ({
+    identifier: row.identifier,
+    title: truncateWithFlag(row.title, MAX_WAKE_RELATED_CHILD_TITLE_CHARS).text,
+    status: row.status,
+  }));
+  return { children, truncated: rows.length > limited.length };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -4029,10 +4153,12 @@ export async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        description?: string | null;
         projectId?: string | null;
         executionPolicy?: unknown;
       }
     | null;
+  agentRuntimeConfig?: unknown;
   exposeLowTrustRaw?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
@@ -4040,6 +4166,8 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const contextMode = resolveWakeContextMode(input.agentRuntimeConfig);
+  const { maxComments, maxTotalBodyChars } = wakeContextLimits(contextMode);
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -4051,6 +4179,7 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            description: issues.description,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
@@ -4089,7 +4218,7 @@ export async function buildPaperclipWakePayload(input: {
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
-  let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
+  let remainingBodyChars = maxTotalBodyChars;
   let truncated = false;
   let missingCommentCount = 0;
   const safeContinuationSummary =
@@ -4104,7 +4233,7 @@ export async function buildPaperclipWakePayload(input: {
       missingCommentCount += 1;
       continue;
     }
-    if (comments.length >= MAX_INLINE_WAKE_COMMENTS) {
+    if (comments.length >= maxComments) {
       truncated = true;
       break;
     }
@@ -4214,10 +4343,123 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
+  // HELA-7804 "Related context": lightweight visibility into linked docs + direct children
+  // so a wake-payload-only surface no longer sees the issue in isolation. Thin mode = keys +
+  // titles; fat mode additionally inlines small doc bodies (bounded in the projector).
+  const relatedLinkedDocRows = issueId
+    ? await input.db
+        .select({
+          key: issueDocuments.key,
+          title: documents.title,
+          latestBody: documents.latestBody,
+        })
+        .from(issueDocuments)
+        .innerJoin(
+          documents,
+          and(
+            eq(issueDocuments.documentId, documents.id),
+            eq(documents.companyId, issueDocuments.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issueDocuments.companyId, input.companyId),
+            eq(issueDocuments.issueId, issueId),
+            notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
+          ),
+        )
+        .orderBy(desc(documents.updatedAt))
+        .limit(MAX_WAKE_RELATED_LINKED_DOCS + 1)
+    : [];
+  const relatedChildRows = issueId
+    ? await input.db
+        .select({
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.parentId, issueId)))
+        .orderBy(asc(issues.issueNumber), asc(issues.createdAt))
+        .limit(MAX_WAKE_RELATED_CHILD_ISSUES + 1)
+    : [];
+  const relatedLinkedDocuments = projectWakeRelatedLinkedDocuments(
+    relatedLinkedDocRows.map((row) => ({ key: row.key, title: row.title, body: row.latestBody })),
+    contextMode,
+  );
+  const relatedChildIssues = projectWakeRelatedChildIssues(relatedChildRows);
+  const relatedContext =
+    relatedLinkedDocuments.documents.length > 0 || relatedChildIssues.children.length > 0
+      ? {
+          linkedDocuments: relatedLinkedDocuments.documents,
+          linkedDocumentsTruncated: relatedLinkedDocuments.truncated,
+          childIssues: relatedChildIssues.children,
+          childIssuesTruncated: relatedChildIssues.truncated,
+        }
+      : null;
+
+  // Fat mode only: a fresh slice of the recent thread (beyond the wake-triggering comments)
+  // so an opted-in agent resumes with conversational continuity. Redacted for higher trust
+  // and body-capped under a shared budget.
+  let recentThread: Array<Record<string, unknown>> = [];
+  let recentThreadTruncated = false;
+  if (contextMode === "fat" && issueId) {
+    const threadRows = await input.db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorType: issueComments.authorType,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
+        sourceTrust: issueComments.sourceTrust,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, issueId),
+          isNull(issueComments.deletedAt),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(MAX_WAKE_FAT_RECENT_THREAD_COMMENTS + 1);
+    if (threadRows.length > MAX_WAKE_FAT_RECENT_THREAD_COMMENTS) {
+      recentThreadTruncated = true;
+      threadRows.length = MAX_WAKE_FAT_RECENT_THREAD_COMMENTS;
+    }
+    let remainingThreadBudget = MAX_WAKE_FAT_RECENT_THREAD_BODY_TOTAL_CHARS;
+    recentThread = threadRows
+      .reverse()
+      .map((row) => {
+        const safeRow = input.exposeLowTrustRaw ? row : sanitizeQuarantinedCommentForHigherTrust(row);
+        const allowed = Math.min(MAX_WAKE_FAT_RECENT_THREAD_BODY_CHARS, Math.max(0, remainingThreadBudget));
+        const sliced = truncateWithFlag(safeRow.body, allowed);
+        if (sliced.truncated) recentThreadTruncated = true;
+        remainingThreadBudget -= sliced.text.length;
+        return {
+          id: row.id,
+          authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+          body: sliced.text,
+          bodyTruncated: sliced.truncated,
+          sourceTrust: row.sourceTrust ?? null,
+          createdAt: row.createdAt.toISOString(),
+          author: row.authorAgentId
+            ? { type: "agent", id: row.authorAgentId }
+            : row.authorUserId
+              ? { type: "user", id: row.authorUserId }
+              : { type: "system", id: null },
+        };
+      });
+  }
+
   const payloadTruncated = truncated || planReviewContext?.truncated === true;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    contextMode,
     issue: issueSummary
       ? {
           id: issueSummary.id,
@@ -4226,8 +4468,12 @@ export async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          ...projectWakeIssueDescription(issueSummary.description),
         }
       : null,
+    relatedContext,
+    recentThread,
+    recentThreadTruncated,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
@@ -10597,10 +10843,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            description: issueRef.description,
             projectId: issueRef.projectId,
             executionPolicy: issueContext?.executionPolicy ?? null,
           }
         : null,
+      agentRuntimeConfig: agent.runtimeConfig,
       exposeLowTrustRaw,
     });
     if (paperclipWakePayload) {
