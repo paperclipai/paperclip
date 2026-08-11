@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.IncorporatedPartners%2Flabelhead-artist-momentum.svg)](https://mcptoplist.com/server/io.github.IncorporatedPartners%2Flabelhead-artist-momentum)
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
