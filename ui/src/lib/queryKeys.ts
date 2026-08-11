@@ -398,10 +398,6 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
-  decisionTraining: {
-    list: (companyId: string) => ["decision-training", companyId] as const,
-    detail: (id: string) => ["decision-training", "detail", id] as const,
-  },
   decisions: {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,

@@ -742,94 +742,19 @@ describe("AttentionQueueRow", () => {
     expect(gallery?.querySelectorAll("a")).toHaveLength(0);
   });
 
-  // Decision training (PAP-14299): a trainable row shows the train affordance;
-  // the trained/untrained state renders purely from `trainingExampleId`.
-  function trainableItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
-    return buildItem({
-      sourceKind: "issue_thread_interaction",
-      subject: {
-        kind: "interaction",
-        id: "interaction-1",
-        companyId: "c1",
-        title: "Approve the migration plan?",
-        identifier: null,
-        status: "pending",
-        href: "/PAP/issues/PAP-1",
-        metadata: { issueId: "issue-1", kind: "request_confirmation" },
-      },
-      ...overrides,
-    });
-  }
-
-  // Training lives in the row's overflow menu AND on a visible inline "Train"
-  // pill for untrained rows. Menu items live in a portal that
-  // only mounts once opened — environment-flaky in jsdom (see the dismiss test
-  // above) — so the untrained path asserts the menu exists, no trained badge is
-  // shown, and the onTrain contract is exercised through the visible pill.
-  it("shows a visible Train pill (no trained badge) and fires onTrain when clicked", () => {
-    const onTrain = vi.fn();
+  it("does not surface training state or actions for decisions", () => {
     render(
       <AttentionQueueRow
-        item={trainableItem()}
+        item={buildItem({ trainingExampleId: "example-1" })}
         companyId="c1"
         expanded={false}
         onToggleExpand={noop}
         onDismiss={noop}
-        onTrain={onTrain}
       />,
     );
-    expect(container?.querySelector('[aria-label="Row actions"]')).toBeTruthy();
+    expect(container?.textContent).not.toContain("Train");
     expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
-    const trainPill = container?.querySelector('[data-testid="attention-train-inline"]');
-    expect(trainPill?.textContent).toContain("Train");
-    act(() => trainPill?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
-  });
-
-  it("hides the visible Train pill once trained (the badge stands in for it)", () => {
-    render(
-      <AttentionQueueRow
-        item={trainableItem({ trainingExampleId: "example-1" })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={noop}
-      />,
-    );
     expect(container?.querySelector('[data-testid="attention-train-inline"]')).toBeNull();
-    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeTruthy();
-  });
-
-  it("renders a Trained ✓ badge once trained and fires onTrain when it is clicked", () => {
-    const onTrain = vi.fn();
-    render(
-      <AttentionQueueRow
-        item={trainableItem({ trainingExampleId: "example-1" })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={onTrain}
-      />,
-    );
-    const badge = container?.querySelector('[data-testid="attention-trained-badge"]');
-    expect(badge?.textContent).toContain("Trained");
-    act(() => badge?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
-  });
-
-  it("does not offer training on a decision that isn't anchored to an issue", () => {
-    render(
-      <AttentionQueueRow
-        item={buildItem({ subject: { ...buildItem().subject, metadata: {} }, relatedIssue: null })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={noop}
-      />,
-    );
     expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
   });
 });
