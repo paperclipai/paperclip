@@ -223,6 +223,13 @@ function mapSsoProviderToOAuthConfig(provider: SsoProviderConfig): GenericOAuthC
       break;
   }
 
+  return withRoleRestrictedUserInfo(baseConfig, provider);
+}
+
+export function withRoleRestrictedUserInfo(
+  baseConfig: GenericOAuthConfig,
+  provider: SsoProviderConfig,
+): GenericOAuthConfig {
   if (!provider.requiredRoles) {
     return baseConfig;
   }
@@ -276,6 +283,26 @@ function mapSsoProviderToOAuthConfig(provider: SsoProviderConfig): GenericOAuthC
     if (upstreamGetUserInfo) {
       return upstreamGetUserInfo(tokens);
     }
+    // Better Auth only falls back to its own user-info resolution when the
+    // provider config has NO getUserInfo at all — and this wrapper is one.
+    // Replicate its id_token fallback here (same shape as the plugin's
+    // getUserInfo), otherwise every role-restricted provider whose helper
+    // does not define getUserInfo fails with "user_info_is_missing".
+    if (idToken) {
+      const claims = decodeJwtPayload(idToken);
+      if (claims && typeof claims.sub === "string" && typeof claims.email === "string") {
+        return {
+          id: claims.sub,
+          emailVerified: Boolean(claims.email_verified),
+          image: typeof claims.picture === "string" ? claims.picture : undefined,
+          ...claims,
+        } as Awaited<ReturnType<NonNullable<GenericOAuthConfig["getUserInfo"]>>>;
+      }
+    }
+    logger.warn(
+      { providerId: provider.providerId },
+      "SSO login rejected: id_token lacks sub/email claims and provider has no getUserInfo",
+    );
     return null;
   };
 

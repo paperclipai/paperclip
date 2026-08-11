@@ -621,7 +621,7 @@ export async function startServer(): Promise<StartedServer> {
     config.ssoProviders = initialSsoProviders;
 
     if (config.ssoProviders.length > 0) {
-      const publicBase = config.authPublicBaseUrl ?? `http://localhost:${config.port}`;
+      const publicBase = (config.authPublicBaseUrl ?? `http://localhost:${config.port}`).replace(/\/+$/, "");
       logger.info(
         {
           providers: config.ssoProviders.map((p) => p.providerId),
