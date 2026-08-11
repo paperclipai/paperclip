@@ -643,6 +643,9 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 PAPERCLIP_DATA_DIR=$DATA_DIR_REL
 PAPERCLIP_DEPLOY_ID=$DEPLOY_ID
 PAPERCLIP_PROJECT_NAME=$PROJECT_NAME
+# Non-secret identity for re-arming bootstrap after ./manage.sh reset
+PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL=$ADMIN_EMAIL
+PAPERCLIP_BOOTSTRAP_ADMIN_NAME=$ADMIN_NAME
 
 # Allow opencode/all-models in agent runner (set to false to restrict)
 OPENCODE_ALLOW_ALL_MODELS=true
@@ -1143,6 +1146,39 @@ PURGED
   log "Removed admin credentials from .env.bootstrap"
 }
 
+# After `reset` wipes DB volumes, re-enable auto-admin with a fresh password so
+# the next `./manage.sh start` can provision a new administrator.
+rearm_bootstrap_secrets() {
+  local deployment_mode email name pass
+  deployment_mode="$(read_env_value .env PAPERCLIP_DEPLOYMENT_MODE)"
+  [ "$deployment_mode" = "authenticated" ] || return 0
+
+  email="$(read_env_value .env PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL)"
+  name="$(read_env_value .env PAPERCLIP_BOOTSTRAP_ADMIN_NAME)"
+  # Only re-arm when the original deploy configured auto-admin (email stored).
+  [ -n "$email" ] || return 0
+  name="${name:-Paperclip Admin}"
+  if command -v openssl >/dev/null 2>&1; then
+    pass="$(openssl rand -hex 12)"
+  else
+    pass="$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+  pass="$(printf '%s-%s-%s-%s' "${pass:0:6}" "${pass:6:6}" "${pass:12:6}" "${pass:18:6}")"
+
+  {
+    cat <<'ENVBOOT'
+# Re-armed after ./manage.sh reset — used only by the bootstrap container.
+AUTOMATED_AUTO_ADMIN=true
+ENVBOOT
+    # Quote values; double `$` is unnecessary here because we generate hex only.
+    printf 'AUTOMATED_ADMIN_EMAIL="%s"\n' "$email"
+    printf 'AUTOMATED_ADMIN_PASSWORD="%s"\n' "$pass"
+    printf 'AUTOMATED_ADMIN_NAME="%s"\n' "$name"
+  } > .env.bootstrap
+  chmod 600 .env.bootstrap
+  log "Re-armed bootstrap admin secrets for the next start (email: $email)"
+}
+
 print_shell_hint() {
   local cid project public_url
   project="$(read_env_value .env PAPERCLIP_PROJECT_NAME)"
@@ -1289,8 +1325,11 @@ case "$cmd" in
       esac
     fi
     compose down -v
-    rm -f admin-credentials.txt
+    rm -f admin-credentials.txt admin-credentials.chown-failed
     remove_data_dir "$(read_env_value .env PAPERCLIP_DATA_DIR)"
+    # DB is empty again — restore auto-admin so the next start can provision.
+    rearm_bootstrap_secrets
+    log "Reset complete. Run ./manage.sh start to recreate services and admin."
     ;;
   help|-h|--help)
     usage
