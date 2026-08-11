@@ -16,19 +16,16 @@ function getDetachedClient(): QueryClient {
 }
 
 /**
- * Task Chat Redesign experimental flag.
+ * Classic Task Interface experimental flag (`enableClassicTaskInterface`).
  *
  * Wraps the shared experimental-settings query so gated call sites don't
- * repeat the boilerplate. `enabled` stays false while the query is in flight
- * (no flash of gated UI); `loaded` lets route gates avoid redirecting away
- * before the flag value is actually known.
- *
- * Renders without a QueryClientProvider resolve to the flag-off default
- * (`{ enabled: false, loaded: true }`) instead of throwing, so widely shared
- * leaf components (e.g. the task detail thread) stay mountable in isolation —
- * and, critically, flag-off is provably the current behavior.
+ * repeat the boilerplate. Fail-closed to chat-style: `enabled` stays false
+ * while the query is in flight, on fetch errors, and in renders without a
+ * QueryClientProvider (isolated unit-test mounts), so the default chat-style
+ * view is what renders unless the classic opt-in is provably on. `loaded`
+ * lets hosts that care distinguish "flag is off" from "flag not yet known".
  */
-export function useTaskChatRedesignEnabled(): { enabled: boolean; loaded: boolean } {
+export function useClassicTaskInterfaceEnabled(): { enabled: boolean; loaded: boolean } {
   const contextClient = useContext(QueryClientContext);
   const { data, isFetched } = useQuery(
     {
@@ -41,5 +38,5 @@ export function useTaskChatRedesignEnabled(): { enabled: boolean; loaded: boolea
   if (!contextClient) {
     return { enabled: false, loaded: true };
   }
-  return { enabled: data?.enableTaskChatRedesign === true, loaded: isFetched };
+  return { enabled: data?.enableClassicTaskInterface === true, loaded: isFetched };
 }

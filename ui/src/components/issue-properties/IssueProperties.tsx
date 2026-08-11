@@ -14,6 +14,8 @@ import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -171,45 +173,75 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
-  // Task Chat Redesign: gate the Properties | Plans | Artifacts tab shell. Flag
-  // OFF renders today's stacked sections verbatim (no Tabs wrapper). This pane
-  // is always task-scoped, so the flag alone is a sufficient gate.
-  const taskChatRedesignEnabled = experimentalSettings?.enableTaskChatRedesign === true;
-  // When hosted by the redesigned PropertiesPanel, the tab strip portals into
+  // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
+  // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
+  // flag OFF — including while settings load — renders the chat-style tab
+  // shell. This pane is always task-scoped, so the flag alone is a sufficient
+  // gate.
+  const taskChatShellEnabled = experimentalSettings?.enableClassicTaskInterface !== true;
+  // When hosted by the resizable PropertiesPanel, the tab strip portals into
   // the pane's header bar (left of the window controls). The slot only exists
   // once the panel has committed, hence the effect; inline hosts (mobile sheet)
   // keep the tab strip in place.
   const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (!taskChatRedesignEnabled || inline) {
+    if (!taskChatShellEnabled || inline) {
       setPaneHeaderSlot(null);
       return;
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
-  }, [taskChatRedesignEnabled, inline]);
+  }, [taskChatShellEnabled, inline]);
   // Plan earns a tab as soon as an issue is in planning mode, even before the
   // plan document arrives. This keeps an expected plan surface visible and
   // lets its diagnostic empty state explain what is missing.
   // Same query keys as the tab bodies, so these share their cached fetches.
   const { data: paneTabPlanDocument } = useIssuePlanDocument(
-    taskChatRedesignEnabled ? issue.id : null,
+    taskChatShellEnabled ? issue.id : null,
   );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
     queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
-    enabled: taskChatRedesignEnabled,
+    enabled: taskChatShellEnabled,
   });
   const { data: paneTabAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
-    enabled: taskChatRedesignEnabled,
+    enabled: taskChatShellEnabled,
   });
+  const { data: paneTabWorkProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   const hasPlanTab =
     Boolean(paneTabPlanDocument)
     || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
     || issue.workMode === "planning";
-  const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
+  // Artifacts covers the same three sources the tab body composes: work
+  // products, documents (redundant with the Plan tab, intentionally), and
+  // agent-created attachments. User comment uploads stay thread-only and
+  // no longer summon the tab.
+  const hasArtifactsTab =
+    (paneTabWorkProducts?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
+    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState("properties");
+  // Once a plan document exists, surface it: switch the pane to the Plan tab so
+  // the write-up is exposed alongside the plan-approval card, instead of leaving
+  // the user on Properties. Only auto-switch until the user picks a tab by hand —
+  // after that their choice wins. Ref-guarded so it fires once per mount.
+  const paneTabUserChosenRef = useRef(false);
+  const handlePaneTabChange = useCallback((value: string) => {
+    paneTabUserChosenRef.current = true;
+    setPaneTab(value);
+  }, []);
+  useEffect(() => {
+    if (hasPlanTab && !paneTabUserChosenRef.current) {
+      setPaneTab("plans");
+    }
+  }, [hasPlanTab]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -2496,10 +2528,10 @@ export function IssueProperties({
     </div>
   );
 
-  // Flag OFF (or non-redesign hosts): today's stacked pane, byte-for-byte.
-  if (!taskChatRedesignEnabled) return propertiesBody;
+  // Classic Task Interface ON: the legacy stacked pane, byte-for-byte.
+  if (!taskChatShellEnabled) return propertiesBody;
 
-  // Flag ON with nothing to switch between: no tab strip — the header bar
+  // Chat-style with nothing to switch between: no tab strip — the header bar
   // shows a plain title and the pane body is just the properties stack.
   if (!hasPlanTab && !hasArtifactsTab) {
     return (
@@ -2552,7 +2584,7 @@ export function IssueProperties({
     </TabsList>
   );
   return (
-    <Tabs value={activePaneTab} onValueChange={setPaneTab} className="flex min-h-0 flex-col gap-3">
+    <Tabs value={activePaneTab} onValueChange={handlePaneTabChange} className="flex min-h-0 flex-col gap-3">
       {paneHeaderSlot
         ? createPortal(
             // Portals keep React context but break the DOM tree the Tailwind

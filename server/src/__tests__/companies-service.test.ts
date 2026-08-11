@@ -24,7 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { companyService } from "../services/companies.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
-import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
+import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -81,19 +81,28 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
-  it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
+  it("does not auto-provision bundled built-in agents for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",
     });
 
+    // A new company starts clean: the Reflection Coach and Summarizer are
+    // opt-in, not seeded by default for a new user.
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    const reflectionRows = agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
-    expect(reflectionRows).toHaveLength(1);
-    expect(reflectionRows[0]).toMatchObject({
+    expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata))).toHaveLength(0);
+
+    // Startup reconcile leaves a fresh company untouched — nothing is created.
+    await reconcileBuiltInAgentsOnStartup(db);
+    const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
+    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata))).toHaveLength(0);
+
+    // The Reflection Coach remains available to enable on demand, and enabling
+    // it materializes its bundled skill + paused routine.
+    const enabled = await builtInAgentService(db).ensure(created.id, "reflection-coach");
+    expect(enabled.agent).toMatchObject({
       name: "Reflection Coach",
       status: "paused",
       budgetMonthlyCents: 0,
-      spentMonthlyCents: 0,
     });
 
     const [skill] = await db
@@ -110,10 +119,10 @@ describeEmbeddedPostgres("companyService", () => {
     const [routine] = await db
       .select()
       .from(routines)
-      .where(and(eq(routines.companyId, created.id), eq(routines.assigneeAgentId, reflectionRows[0]!.id)));
+      .where(and(eq(routines.companyId, created.id), eq(routines.assigneeAgentId, enabled.agentId!)));
     expect(routine).toMatchObject({
       status: "paused",
-      assigneeAgentId: reflectionRows[0]!.id,
+      assigneeAgentId: enabled.agentId,
       originKind: "built_in_agent_bundle",
       originId: "reflection-coach:recent-agent-reflection",
     });
@@ -122,10 +131,6 @@ describeEmbeddedPostgres("companyService", () => {
       kind: "schedule",
       enabled: false,
     });
-
-    await reconcileBuiltInAgentsOnStartup(db);
-    const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
   });
 
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {

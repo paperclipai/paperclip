@@ -783,6 +783,33 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("preserves tenant env vars across managed sandbox boot reconciles", async () => {
+    // The cloud contract lets tenants add env vars — and only env vars —
+    // to the managed sandbox environment. The provisioner reconciles
+    // name/config/metadata/status on every boot; it must never touch the
+    // tenant's env vars, or a redeploy would silently wipe them.
+    const companyId = await seedCompany();
+    const created = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    })).environment;
+    expect(created.envVars).toEqual({});
+
+    await svc.update(created.id, { envVars: { MY_TOOL_TOKEN_REF: "binding-ref", PLAIN: "value" } });
+
+    const reconciled = (await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona (EU)",
+      provider: "daytona",
+      config: { target: "eu" },
+    })).environment;
+    expect(reconciled.id).toBe(created.id);
+    expect(reconciled.config.target).toBe("eu");
+    expect(reconciled.envVars).toEqual({ MY_TOOL_TOKEN_REF: "binding-ref", PLAIN: "value" });
+  });
+
   it("treats stock_current as an environment-row no-op and preserves user-owned fields", async () => {
     const companyId = await seedCompany();
     const created = await svc.ensureManagedSandboxEnvironment({

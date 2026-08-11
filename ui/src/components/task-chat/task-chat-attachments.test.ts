@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractAttachmentRefs,
+  extractImageRefs,
   fileKindForName,
   formatFileSize,
   isImageFilename,
@@ -84,5 +85,32 @@ describe("extractAttachmentRefs", () => {
     expect(refs).toEqual([
       { name: "weird [name].txt", url: "/api/assets/a1/content?download=1" },
     ]);
+  });
+});
+
+describe("extractImageRefs", () => {
+  it("collects image embeds in order, skipping plain links", () => {
+    const body =
+      "![a.png](/api/attachments/a/content)\nSee [notes.txt](/api/attachments/n/content)\n![b.jpg](https://example.com/b.jpg)";
+    expect(extractImageRefs(body)).toEqual([
+      { name: "a.png", url: "/api/attachments/a/content" },
+      { name: "b.jpg", url: "https://example.com/b.jpg" },
+    ]);
+  });
+
+  it("dedupes repeated embeds and tolerates empty alt text", () => {
+    const body = "![](/api/attachments/a/content)\n![again](/api/attachments/a/content)";
+    expect(extractImageRefs(body)).toEqual([{ name: "", url: "/api/attachments/a/content" }]);
+  });
+
+  it("unescapes bracket-escaped alt text", () => {
+    const body = String.raw`![shot \[1\].png](/api/attachments/s/content)`;
+    expect(extractImageRefs(body)).toEqual([
+      { name: "shot [1].png", url: "/api/attachments/s/content" },
+    ]);
+  });
+
+  it("returns nothing for bodies without images", () => {
+    expect(extractImageRefs("just text and a [link](/api/attachments/x/content)")).toEqual([]);
   });
 });

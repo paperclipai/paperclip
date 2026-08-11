@@ -9,6 +9,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  pendingAskUserQuestionsWithFreeTextOption,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
   declinedToolActionInteraction,
@@ -185,6 +186,104 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("reveals an inline field when a free-text option is selected and hides the standalone Other link", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsWithFreeTextOption,
+      onSubmitInteractionAnswers,
+    });
+
+    // A first-class free-text option suppresses the built-in "Other" link.
+    const otherLink = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "Other",
+    );
+    expect(otherLink).toBeUndefined();
+
+    // No text field until the free-text option is selected.
+    expect(host.querySelector("textarea")).toBeNull();
+
+    const describeOption = Array.from(host.querySelectorAll('[role="radio"]')).find(
+      (button) => button.textContent?.includes("I'll describe it"),
+    ) as HTMLButtonElement | undefined;
+    expect(describeOption).toBeTruthy();
+
+    await act(async () => {
+      describeOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(describeOption?.getAttribute("aria-checked")).toBe("true");
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Call it Threads");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      [
+        {
+          questionId: "surface-name",
+          optionIds: [],
+          otherText: "Call it Threads",
+        },
+      ],
+    );
+  });
+
+  it("renders nothing for a degenerate ask_user_questions card", () => {
+    // A truly unanswerable question: a prompt with no options and no free-text
+    // field, so there is nothing for the user to select or type. Hiding it
+    // strands nothing.
+    const degenerate = {
+      ...pendingAskUserQuestionsInteraction,
+      id: "interaction-questions-degenerate",
+      payload: {
+        version: 1 as const,
+        title: "Placeholder",
+        questions: [
+          {
+            id: "q1",
+            prompt: "Anything?",
+            selectionMode: "single" as const,
+            options: [],
+          },
+        ],
+      },
+    };
+
+    const host = renderCard({
+      interaction: degenerate,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    // No card wrapper, no title, no controls — the component returns null.
+    expect(host.childElementCount).toBe(0);
+    expect(host.textContent).toBe("");
+  });
+
+  it("still renders a legitimate ask_user_questions card", () => {
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    expect(host.childElementCount).toBeGreaterThan(0);
+    expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
+  });
+
   it("only shows question cancellation when a cancel handler is wired", () => {
     const withoutHandler = renderCard({
       interaction: pendingAskUserQuestionsInteraction,
@@ -329,32 +428,37 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("No reason provided.");
   });
 
-  it("requires a decline reason when the request confirmation payload asks for one", async () => {
+  it("requires a revision note when the request confirmation payload asks for one", async () => {
     const onRejectInteraction = vi.fn(async () => undefined);
     const host = renderCard({
       interaction: pendingRequestConfirmationInteraction,
       onRejectInteraction,
     });
 
-    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Request revisions"),
+    // rejectRequiresReason drops the bare Reject: the only send-back path is Revise…
+    expect(Array.from(host.querySelectorAll("button")).some((button) =>
+      button.textContent?.trim() === "Reject",
+    )).toBe(false);
+    const reviseButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Revise"),
     );
-    expect(declineButton).toBeTruthy();
+    expect(reviseButton).toBeTruthy();
 
     await act(async () => {
-      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      reviseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
-    expect(saveButton?.hasAttribute("disabled")).toBe(false);
+    const sendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
+    expect(sendButton?.hasAttribute("disabled")).toBe(false);
 
     await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(host.textContent).toContain("A decline reason is required.");
+    expect(host.textContent).toContain("Add a note describing the changes you want.");
+    expect(onRejectInteraction).not.toHaveBeenCalled();
 
     const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
     expect(textarea).toBeTruthy();
@@ -368,12 +472,12 @@ describe("IssueThreadInteractionCard", () => {
       valueSetter?.call(textarea, "Needs a smaller phase split");
       textarea!.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const enabledSaveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
-    expect(enabledSaveButton?.hasAttribute("disabled")).toBe(false);
+    const enabledSendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
+    expect(enabledSendButton?.hasAttribute("disabled")).toBe(false);
     await act(async () => {
-      enabledSaveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      enabledSendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onRejectInteraction).toHaveBeenCalledWith(
@@ -401,6 +505,35 @@ describe("IssueThreadInteractionCard", () => {
     expect(onAcceptInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
     );
+  });
+
+  it("standardizes the bare-reject button to Reject even when the payload carries a legacy rejectLabel", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          // Onboarding/plan-approval interactions are still seeded with the
+          // legacy "Request changes" reject label; it must not leak into the CTA.
+          rejectLabel: "Request changes",
+          rejectRequiresReason: false,
+        },
+      },
+      onAcceptInteraction: vi.fn(async () => undefined),
+      onRejectInteraction: vi.fn(async () => undefined),
+    });
+
+    const labels = Array.from(host.querySelectorAll("button")).map((button) =>
+      button.textContent?.trim(),
+    );
+
+    // Canonical plan-approval grammar, right→left: Approve · Revise… · Reject.
+    // "Revise…" already carries the send-back-with-notes path, so a distinct
+    // "Request changes" word is redundant and must not render.
+    expect(labels).toContain("Reject");
+    expect(labels).toContain("Revise…");
+    expect(labels.some((label) => label?.includes("Approve"))).toBe(true);
+    expect(host.textContent).not.toContain("Request changes");
   });
 
   it("does not expose continuation wake policy labels in the card header", () => {
@@ -450,8 +583,10 @@ describe("IssueThreadInteractionCard", () => {
       onRejectInteraction,
     });
 
+    // The bare-reject button always renders the canonical "Reject", not the
+    // payload's "Keep it" — ConfirmationActionRow no longer honors the override.
     const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Keep it"),
+      button.textContent?.trim() === "Reject",
     );
     expect(declineButton).toBeTruthy();
 
@@ -543,11 +678,11 @@ describe("IssueThreadInteractionCard", () => {
       onUploadImage,
     });
 
-    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Request revisions"),
+    const reviseButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Revise"),
     );
     await act(async () => {
-      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      reviseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const attachButton = Array.from(host.querySelectorAll("button")).find((button) =>
@@ -570,11 +705,11 @@ describe("IssueThreadInteractionCard", () => {
     });
     expect(onUploadImage).toHaveBeenCalledTimes(1);
 
-    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
+    const sendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
     await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onRejectInteraction).toHaveBeenCalledWith(
@@ -790,19 +925,19 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).not.toContain("Technical details");
   });
 
-  it("renders the agents-may-resolve policy badge and addressee chip", () => {
+  it("renders the addressee chip without the removed policy badge", () => {
     const host = renderCard({
       interaction: agentAddressedRequestConfirmationInteraction,
     });
 
-    const policyBadge = host.querySelector('[data-testid="interaction-policy-badge"]');
-    expect(policyBadge?.textContent).toContain("Agents may resolve");
+    // PAP-440: the "Agents may resolve" policy badge was pure noise — never rendered.
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
 
     const addresseeBadge = host.querySelector('[data-testid="interaction-addressee-badge"]');
     expect(addresseeBadge?.textContent).toContain("For ");
   });
 
-  it("omits the policy and addressee badges for a board-only interaction", () => {
+  it("omits the addressee badge for a board-only interaction", () => {
     const host = renderCard({
       interaction: pendingRequestConfirmationInteraction,
     });

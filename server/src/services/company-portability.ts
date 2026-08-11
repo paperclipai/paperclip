@@ -161,8 +161,10 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 // The bundle shape this build reads and writes. Bundles began declaring
 // their schemaVersion in the .paperclip.yaml extension at 6; undeclared
-// bundles are read as 5, the last unstamped shape.
-const BUNDLE_SCHEMA_VERSION = 6;
+// bundles are read as 5, the last unstamped shape. 7 adds preserved task
+// timestamps and parent links; 5/6 bundles still import, with those fields
+// falling back to import-time defaults.
+const BUNDLE_SCHEMA_VERSION = 7;
 const UNSTAMPED_BUNDLE_SCHEMA_VERSION = 5;
 const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
 // Blob entries are content-addressed by sha256; the store itself is
@@ -897,6 +899,38 @@ function readPortableIssueLabelNames(value: unknown): string[] {
     names.push(name);
   }
   return names;
+}
+
+/**
+ * Read a preserved issue timestamp from the extension, validated the same way
+ * comment createdAt is (Date.parse). Invalid values are ignored with a
+ * warning — never a hard failure — so a hand-edited bundle still imports.
+ */
+function readPortableIssueTimestamp(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+  fieldLabel: string,
+): string | null {
+  if (value === undefined || value === null) return null;
+  const raw = asString(value);
+  if (raw && !Number.isNaN(Date.parse(raw))) return raw;
+  warnings.push(`${sourceLabel} ${fieldLabel} was ignored because it is not a valid timestamp.`);
+  return null;
+}
+
+/** Render a stored timestamp as a portable ISO string, or omit it when unset/invalid. */
+function toPortableTimestamp(value: Date | string | null | undefined): string | undefined {
+  if (value == null) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+/** Convert a manifest timestamp (already validated at parse time) to a Date, or null. */
+function portableManifestDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function readPortableIssueBlockedBy(value: unknown): string[] {
@@ -3353,6 +3387,12 @@ function buildManifestFromPackageFiles(
       workProducts: normalizePortableIssueWorkProducts(extension.workProducts),
       monitor: normalizePortableIssueMonitor(extension.monitor),
       attachments: normalizePortableIssueAttachments(extension.attachments, warnings, `Task ${slug}`),
+      parentSlug: asString(extension.parent),
+      createdAt: readPortableIssueTimestamp(extension.createdAt, warnings, `Task ${slug}`, "createdAt"),
+      updatedAt: readPortableIssueTimestamp(extension.updatedAt, warnings, `Task ${slug}`, "updatedAt"),
+      startedAt: readPortableIssueTimestamp(extension.startedAt, warnings, `Task ${slug}`, "startedAt"),
+      completedAt: readPortableIssueTimestamp(extension.completedAt, warnings, `Task ${slug}`, "completedAt"),
+      cancelledAt: readPortableIssueTimestamp(extension.cancelledAt, warnings, `Task ${slug}`, "cancelledAt"),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -3361,7 +3401,10 @@ function buildManifestFromPackageFiles(
   }
 
   if (bundleSchemaVersion < BUNDLE_SCHEMA_VERSION && manifest.issues.length > 0) {
-    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, attachment, and embedded image transfer; that task data imports only if the bundle carries it.`);
+    const predated = bundleSchemaVersion < 6
+      ? "label, blocker, document, work product, monitor, attachment, embedded image, task timestamp, and parent link transfer"
+      : "task timestamp and parent link transfer";
+    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates ${predated}; that task data imports only if the bundle carries it.`);
   }
 
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
@@ -4216,6 +4259,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     let unexportedBlockerEdgeCount = 0;
+    let unexportedParentEdgeCount = 0;
     let unportableWorkProductRefCount = 0;
     const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
     for (const issue of selectedIssueRows) {
@@ -4256,6 +4300,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       unexportedBlockerEdgeCount += relationSummaries.blocks
         .filter((blocked) => !taskSlugByIssueId.has(blocked.id))
         .length;
+      // Parent links travel by task slug like blockers; a parent outside the
+      // export selection drops the edge and is counted for one warning.
+      let parentTaskSlug: string | null = null;
+      if (issue.parentId) {
+        parentTaskSlug = taskSlugByIssueId.get(issue.parentId) ?? null;
+        if (!parentTaskSlug) unexportedParentEdgeCount += 1;
+      }
       const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
       const documentEntries = issueDocumentRows.map((document) => {
         const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
@@ -4339,6 +4390,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
+        parent: parentTaskSlug ?? undefined,
+        createdAt: toPortableTimestamp(issue.createdAt),
+        updatedAt: toPortableTimestamp(issue.updatedAt),
+        startedAt: toPortableTimestamp(issue.startedAt),
+        completedAt: toPortableTimestamp(issue.completedAt),
+        cancelledAt: toPortableTimestamp(issue.cancelledAt),
         // Labels travel by name (their natural key); the bundle-level labels
         // section carries the matching color definitions.
         labels: (issue.labelIds ?? [])
@@ -4379,6 +4436,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (unexportedBlockerEdgeCount > 0) {
       warnings.push(`${unexportedBlockerEdgeCount} blocker relation${unexportedBlockerEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedBlockerEdgeCount === 1 ? "was" : "were"} not included.`);
+    }
+    if (unexportedParentEdgeCount > 0) {
+      warnings.push(`${unexportedParentEdgeCount} parent relation${unexportedParentEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedParentEdgeCount === 1 ? "was" : "were"} not included.`);
     }
     if (unportableWorkProductRefCount > 0) {
       warnings.push(`${unportableWorkProductRefCount} work product${unportableWorkProductRefCount === 1 ? " references" : "s reference"} execution workspaces or runs that are not portable; those references were omitted from the export.`);
@@ -5721,6 +5781,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         const importedIssueIdBySlug = new Map<string, string>();
         const blockedByBySlug = new Map<string, string[]>();
+        const parentSlugBySlug = new Map<string, string>();
         let unarmedMonitorCount = 0;
         let attachmentsSkippedNoStorage = 0;
         const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
@@ -5924,6 +5985,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if ((manifestIssue.blockedBy ?? []).length > 0) {
             blockedByBySlug.set(manifestIssue.slug, manifestIssue.blockedBy ?? []);
           }
+          if (manifestIssue.parentSlug) {
+            parentSlugBySlug.set(manifestIssue.slug, manifestIssue.parentSlug);
+          }
           for (const documentEntry of manifestIssue.documents ?? []) {
             const documentBody = readPortableTextFile(plan.source.files, documentEntry.path);
             if (documentBody === null) {
@@ -6050,7 +6114,68 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             labelIds: resolvedLabelIds,
             monitorNotes,
             monitorScheduledBy,
+            parentId: null,
+            createdAt: portableManifestDate(manifestIssue.createdAt),
+            updatedAt: portableManifestDate(manifestIssue.updatedAt),
+            startedAt: portableManifestDate(manifestIssue.startedAt),
+            completedAt: portableManifestDate(manifestIssue.completedAt),
+            cancelledAt: portableManifestDate(manifestIssue.cancelledAt),
           });
+        }
+
+        // Parent links resolve against the pre-generated ids before the flush
+        // so each issue row carries its parentId on insert. Edges whose parent
+        // was not imported, self-references, and cycles (possible only in a
+        // hand-edited bundle) drop with a warning, mirroring blocker handling.
+        if (parentSlugBySlug.size > 0) {
+          const rowBySlug = new Map(issueRows.map((row) => [row.ref, row] as const));
+          const acceptedParentById = new Map<string, string>();
+          const wouldCreateParentCycle = (childId: string, parentId: string) => {
+            let current: string | undefined = parentId;
+            const visited = new Set<string>();
+            while (current) {
+              if (current === childId) return true;
+              if (visited.has(current)) return false;
+              visited.add(current);
+              current = acceptedParentById.get(current);
+            }
+            return false;
+          };
+          for (const [slug, parentSlug] of parentSlugBySlug) {
+            const row = rowBySlug.get(slug);
+            if (!row) continue;
+            const parentId = importedIssueIdBySlug.get(parentSlug);
+            if (!parentId) {
+              warnings.push(`Task ${slug} parent ${parentSlug} was skipped because that task was not imported.`);
+              continue;
+            }
+            if (parentId === row.id || wouldCreateParentCycle(row.id, parentId)) {
+              warnings.push(`Task ${slug} parent ${parentSlug} was skipped because it would create a parent cycle.`);
+              continue;
+            }
+            acceptedParentById.set(row.id, parentId);
+            row.parentId = parentId;
+          }
+          // The parent foreign key is checked per insert statement, so order
+          // rows parents-first: a child must never land in an earlier chunk
+          // than its parent.
+          if (acceptedParentById.size > 0) {
+            const rowById = new Map(issueRows.map((row) => [row.id, row] as const));
+            const orderedRows: typeof issueRows = [];
+            const emitted = new Set<string>();
+            for (const row of issueRows) {
+              const chain: typeof issueRows = [];
+              let current: (typeof issueRows)[number] | undefined = row;
+              while (current && !emitted.has(current.id)) {
+                emitted.add(current.id);
+                chain.push(current);
+                current = current.parentId ? rowById.get(current.parentId) : undefined;
+              }
+              for (const entry of chain.reverse()) orderedRows.push(entry);
+            }
+            issueRows.length = 0;
+            issueRows.push(...orderedRows);
+          }
         }
 
         // Flush the buffered rows in dependency order: issues first (parents of

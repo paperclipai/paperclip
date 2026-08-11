@@ -132,8 +132,8 @@ function useStreamingReplay(
 }
 
 /**
- * Dev harness for the Task Chat Redesign (route: /dev/task-chat-lab, behind the
- * enableTaskChatRedesign flag). Drives the render layer into every inventory
+ * Dev harness for the chat-style task thread (route: /dev/task-chat-lab, dev
+ * builds only). Drives the render layer into every inventory
  * state via synthetic events — no live agent — and is also the human's
  * post-baseline iteration cockpit: state switcher, streaming replay, a
  * 0.1×–10× speed control, and the live motion tweak panel.

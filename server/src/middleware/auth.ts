@@ -17,6 +17,33 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
+const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
+
+function cloudTenantWriteDebounceFor(db: Db) {
+  let debounce = cloudTenantWriteDebounces.get(db);
+  if (!debounce) {
+    debounce = new Map();
+    cloudTenantWriteDebounces.set(db, debounce);
+  }
+  return debounce;
+}
+
+function pruneCloudTenantWriteDebounce(
+  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
+  nowMs: number,
+) {
+  for (const [subject, entry] of debounce) {
+    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
+  }
+  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
+    const oldestSubject = debounce.keys().next().value;
+    if (!oldestSubject) break;
+    debounce.delete(oldestSubject);
+  }
+}
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
@@ -431,8 +458,20 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const companyId = cloudTenantCompanyId(stackId);
   const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
+  const cloudTenantWriteDebounce = cloudTenantWriteDebounceFor(db);
+  pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, now.getTime());
+  const previousSync = cloudTenantWriteDebounce.get(userId);
+  const shouldSync = previousSync?.fingerprint !== syncFingerprint
+    || previousSync.syncedAt <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
+    companyId,
+    membershipRole,
+    status: "active",
+  };
 
-  await db
+  if (shouldSync) await db
     .insert(authUsers)
     .values({
       id: userId,
@@ -462,7 +501,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  await db
+  if (shouldSync) await db
     .insert(companies)
     .values({
       id: companyId,
@@ -476,7 +515,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       target: companies.id,
     });
 
-  if (paperclipCompanyName) {
+  if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {
       companyId,
       paperclipCompanyId,
@@ -485,8 +524,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     });
   }
 
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const membership = await db
+  effectiveMembership = shouldSync ? await db
     .insert(companyMemberships)
     .values({
       companyId,
@@ -513,17 +551,22 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       companyId,
       membershipRole,
       status: "active",
-    });
+    }) : { companyId, membershipRole, status: "active" as const };
 
   // Without instance-admin elevation, cloud tenant users are authorized purely
   // through company-scoped permission grants — seed the same role defaults the
   // regular membership flows create.
-  await ensureHumanRoleDefaultGrants(db, {
+  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
-    membershipRole: membership.membershipRole,
+    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
     grantedByUserId: null,
   });
+  if (shouldSync) {
+    cloudTenantWriteDebounce.delete(userId);
+    cloudTenantWriteDebounce.set(userId, { fingerprint: syncFingerprint, syncedAt: Date.now() });
+    pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, Date.now());
+  }
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -556,8 +599,8 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships: [
       {
         companyId,
-        membershipRole: membership.membershipRole,
-        status: membership.status,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        status: effectiveMembership.status,
       },
       ...additionalMemberships,
     ],

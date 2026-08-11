@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Lock, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -40,6 +40,7 @@ import {
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
+import { isPlatformManagedEnvironment } from "@/lib/managed-sandbox-environment";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
@@ -1249,6 +1250,41 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     },
   });
 
+  // Managed (platform-provisioned) environments accept exactly one tenant
+  // edit: the env var map. The server's write floor rejects everything
+  // else, so this mutation sends an envVars-only PATCH — the one body
+  // shape the floor admits.
+  const managedEnvironmentEnvVarsMutation = useMutation({
+    mutationFn: async (envVars: EnvironmentFormState["envVars"]) => {
+      if (!editingEnvironmentId) throw new Error("No environment selected");
+      return await environmentsApi.update(editingEnvironmentId, { envVars });
+    },
+    onSuccess: async (environment) => {
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.environments.list(selectedCompanyId),
+        });
+      }
+      initializedFormKeyRef.current = null;
+      setEnvironmentForm(createEmptyEnvironmentForm());
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
+      navigate(ENVIRONMENTS_PATH, { replace: true });
+      pushToast({
+        title: "Environment variables updated",
+        body: `${environment.name} will inject the updated variables into future runs.`,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to save environment variables",
+        body: error instanceof Error ? error.message : "Environment variables save failed.",
+        tone: "error",
+      });
+    },
+  });
+
   const environmentMutation = useMutation({
     mutationFn: async (form: EnvironmentFormState) => {
       const body = buildEnvironmentPayload(form);
@@ -1656,8 +1692,16 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
-                    <div className="text-sm font-medium">
-                      {environment.name} <span className="text-muted-foreground">· {environment.driver}</span>
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      <span>
+                        {environment.name} <span className="text-muted-foreground">· {environment.driver}</span>
+                      </span>
+                      {isPlatformManagedEnvironment(environment) ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-xs font-normal text-muted-foreground">
+                          <Lock className="h-3 w-3" aria-hidden />
+                          Managed by Paperclip
+                        </span>
+                      ) : null}
                     </div>
                     {environment.description ? (
                       <div className="text-xs text-muted-foreground">{environment.description}</div>
@@ -1735,7 +1779,77 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         </div>
       ) : null}
 
-      {isEnvironmentFormPage && (mode === "create" || editingEnvironment) ? (
+      {isEnvironmentFormPage && mode === "edit" && editingEnvironment && isPlatformManagedEnvironment(editingEnvironment) ? (
+        <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
+        <div className="rounded-md border border-border bg-background" data-testid="managed-environment-form-page">
+          <div className="border-b border-border/60 px-6 pb-4 pt-6">
+            <div className="mb-4">
+              <Button size="sm" variant="ghost" asChild>
+                <Link to={ENVIRONMENTS_PATH}>
+                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+                  Environments
+                </Link>
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-lg font-semibold">{editingEnvironment.name}</h1>
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/70 px-2 py-0.5 text-xs text-muted-foreground">
+                <Lock className="h-3 w-3" aria-hidden />
+                Managed by Paperclip
+              </span>
+            </div>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              {editingEnvironment.description ?? "Your agent runs in a sandbox managed by Paperclip."}
+            </p>
+            <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+              This environment is provisioned and maintained for you. You can add environment
+              variables for your agents; its name and configuration are managed by Paperclip.
+            </p>
+          </div>
+          <div className="px-6 py-4">
+            <Field
+              label="Environment variables"
+              hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
+            >
+              <EnvironmentVariablesEditor
+                ref={environmentVariablesEditorRef}
+                value={environmentForm.envVars}
+                secrets={secrets ?? []}
+                onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                onChange={(env) =>
+                  setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
+                onDirtyChange={setEnvironmentVariablesDirty}
+              />
+            </Field>
+            {managedEnvironmentEnvVarsMutation.isError ? (
+              <div className="mt-3 text-xs text-destructive">
+                {managedEnvironmentEnvVarsMutation.error instanceof Error
+                  ? managedEnvironmentEnvVarsMutation.error.message
+                  : "Failed to save environment variables"}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 bg-background px-6 py-4">
+            <Button
+              variant="outline"
+              onClick={closeEnvironmentForm}
+              disabled={managedEnvironmentEnvVarsMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => managedEnvironmentEnvVarsMutation.mutate(flushEnvironmentForm().envVars)}
+              disabled={managedEnvironmentEnvVarsMutation.isPending}
+            >
+              {managedEnvironmentEnvVarsMutation.isPending ? "Saving..." : "Save environment variables"}
+            </Button>
+          </div>
+        </div>
+        </SecretRefHintsContext.Provider>
+      ) : null}
+
+      {isEnvironmentFormPage &&
+      (mode === "create" || (editingEnvironment && !isPlatformManagedEnvironment(editingEnvironment))) ? (
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
         <div className="rounded-md border border-border bg-background" data-testid="environment-form-page">
           <div className="border-b border-border/60 px-6 pb-4 pt-6">

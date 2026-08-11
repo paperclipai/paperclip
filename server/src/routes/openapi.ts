@@ -188,6 +188,8 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  workspaceFileAvailabilityRequestSchema,
+  workspaceFileAvailabilityResponseSchema,
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
   // Tool access
@@ -812,6 +814,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "POST /api/issues/{issueId}/file-resources/availability",
   "GET /api/issues/{issueId}/file-resources/content",
   "GET /api/issues/{issueId}/file-resources/list",
   "GET /api/issues/{issueId}/file-resources/resolve",
@@ -2482,6 +2485,28 @@ registry.registerPath({
   summary: "Get a feedback trace bundle",
   request: { params: z.object({ traceId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{issueId}/file-resources/availability",
+  tags: ["issues"],
+  summary: "Check whether issue workspace files can be opened",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    body: {
+      required: true,
+      content: { "application/json": { schema: workspaceFileAvailabilityRequestSchema } },
+    },
+  },
+  responses: {
+    200: r.ok(workspaceFileAvailabilityResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    429: r.tooManyRequests,
+  },
 });
 
 registry.registerPath({

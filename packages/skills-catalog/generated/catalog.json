@@ -172,11 +172,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 8682,
-          "sha256": "c5f459ced4e97e6ae33c3ffbe7b3fb7d4c1fe7bfb0121187f0c2f9000a670b37"
+          "sizeBytes": 8877,
+          "sha256": "4cb3d177f5d16e3cc2052d2f80e7fb245ab95e79c1e947abdc84cd4ee3d8c61e"
         }
       ],
-      "contentHash": "sha256:32d2f231a35fc3a658b244f13dd726b2f2bc642db6d3512559fdf9a2b680838d"
+      "contentHash": "sha256:3e49ee2b8d83d1371fb0f59197bb96c46b64f722540405f46d4a5a756fbe1b89"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",

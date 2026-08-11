@@ -196,7 +196,8 @@
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 
   /* ────────────────────────────────────────────────────────────────────────
-     Motion tokens — Task Chat Redesign (flag: enableTaskChatRedesign).
+     Motion tokens — chat-style task thread (default; classic legacy view sits
+     behind enableClassicTaskInterface).
 
      These are the single source of truth for the redesigned thread's motion.
      Kept in :root (NOT @theme inline) on purpose: @theme inline bakes literals
@@ -548,7 +549,8 @@
 }
 
 /* ────────────────────────────────────────────────────────────────────────
-   Task Chat Redesign animation utilities (flag: enableTaskChatRedesign).
+   Chat-style task thread animation utilities (default view; classic legacy
+   view sits behind enableClassicTaskInterface).
 
    These classes are the ONLY place the redesigned thread's motion is applied;
    every duration/easing is a var(--motion-*) reference (never a literal), so
@@ -837,6 +839,35 @@
 @media (prefers-reduced-motion: reduce) {
   .cot-line-enter,
   .cot-line-exit {
+    animation: none;
+  }
+}
+
+/* RunTranscriptView live-tail motion (PAP-461, A3). The experimental chat-style
+   view streams its live output through RunTranscriptView; these token-driven
+   classes replace the raw Tailwind `animate-in … duration-300` / `animate-ping`
+   the tail used so its streaming affordances honor --motion-* retuning AND the
+   reduced-motion override below, exactly like the rest of the redesign. */
+@keyframes tc-stream-block-in {
+  from { opacity: 0; transform: translateY(0.25rem); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tc-stream-block-enter {
+  animation: tc-stream-block-in var(--motion-tool-enter) var(--motion-ease-standard) both;
+}
+
+@keyframes tc-live-ping {
+  75%, 100% { transform: scale(2); opacity: 0; }
+}
+
+.tc-live-ping {
+  animation: tc-live-ping var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-stream-block-enter,
+  .tc-live-ping {
     animation: none;
   }
 }

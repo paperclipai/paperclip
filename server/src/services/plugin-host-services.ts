@@ -2492,7 +2492,13 @@ export function buildHostServices(
         };
         if (params.action === "accept") {
           const result = await interactions.acceptInteraction(
-            { id: issue.id, companyId, projectId: issue.projectId ?? null, goalId: issue.goalId ?? null },
+            {
+              id: issue.id,
+              companyId,
+              projectId: issue.projectId ?? null,
+              goalId: issue.goalId ?? null,
+              status: issue.status,
+            },
             params.interactionId,
             {},
             actor,
@@ -2507,7 +2513,7 @@ export function buildHostServices(
           }
         } else {
           resolved = (await interactions.rejectInteraction(
-            { id: issue.id, companyId },
+            { id: issue.id, companyId, status: issue.status },
             params.interactionId,
             { reason: params.reason ?? undefined },
             actor,
