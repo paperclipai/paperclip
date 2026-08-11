@@ -778,6 +778,46 @@ Automatic backups are disabled for isolated worktree instances created with
 configs are migrated to the disabled setting when their server next starts. The
 main/default instance keeps the normal enabled-by-default behavior.
 
+The cross-process singleton protocol is a separate, default-off rollout gate. Do not
+enable it during a rolling or mixed-version deployment: older binaries do not observe
+its leases or durable marker. To activate it, deploy the new binary everywhere with the
+flag absent, stop every server and external backup writer, apply migrations, prove that
+no `pg_dump` or Paperclip backup remains active and that
+`database_backup_execution_fence` is empty, set
+`PAPERCLIP_DB_BACKUP_SINGLETON_ENABLED=true` for every server, and then start only the
+homogeneous new version. Roll back with the same stop-the-world sequence before
+removing the flag.
+
+Once activated, PostgreSQL advisory leases elect one automatic emitter and serialize
+automatic and server-requested manual dump execution. The lease is database-scoped,
+not directory-scoped: use a separate backup directory for each database. A durable
+`database_backup_execution_fence` row survives even if both advisory-lock sessions
+disappear. Losing execution authority cancels the dump, joins its child, clears that
+row, and only then releases the remaining locks. If the owner process dies first, new
+backups stop rather than risk overlap. Recovery requires stopping all backup writers,
+proving no dump child remains, and explicitly clearing the abandoned row before
+restart; never clear it merely because it is old.
+
+Logical backups preserve the `database_backup_execution_fence` table definition but
+never its transient row. Both the `pg_dump` and JavaScript engines therefore restore
+the fence empty instead of copying ownership from the source runtime.
+
+Successful writes are atomic and produce two files:
+
+- `paperclip-<timestamp>-<id>.sql.gz`
+- `paperclip-<timestamp>-<id>.sql.gz.complete.json`
+
+The second file is a completion record. The dump and record are fsynced individually
+and moved into place with same-directory atomic renames; directory fsync is best effort
+because some filesystems do not support it. Scheduling and `/api/health` ignore bare
+`.sql.gz` files, `.partial-*` artifacts, and invalid or mismatched completion records.
+The record validates filename, completion time, and byte size, but it is not a content
+checksum, gzip validation, or restore rehearsal. Once singleton mode is activated, an
+elected process immediately creates a committed backup when only older pre-manifest
+dumps exist. Legacy bare dumps remain manual restore inputs and are pruned in retention
+buckets separate from validated committed pairs. Copy both files off-host when the
+destination should preserve Paperclip's completion evidence.
+
 Configure these in:
 
 ```sh
@@ -792,9 +832,17 @@ pnpm paperclipai db:backup
 pnpm db:backup
 ```
 
+These standalone CLI commands are external writers and do not join the server's
+default-off singleton protocol yet. While singleton mode is active, use the
+server-requested manual-backup path, or stop every server and prove no dump is active
+before invoking a standalone command. Never run the standalone commands concurrently
+with a singleton-enabled server.
+
 Environment overrides:
 
 - `PAPERCLIP_DB_BACKUP_ENABLED=true|false`
+- `PAPERCLIP_DB_BACKUP_SINGLETON_ENABLED=true|false` enables the singleton
+  protocol only after the homogeneous stop-the-world activation above; default: false
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`

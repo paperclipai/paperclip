@@ -22,11 +22,23 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  readCommittedDatabaseBackup,
+  listCommittedDatabaseBackups,
+  DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX,
   type BackupRetentionPolicy,
+  type CommittedDatabaseBackup,
+  type ListCommittedDatabaseBackupsOptions,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
 } from "./backup-lib.js";
+export {
+  DatabaseBackupFenceConflictError,
+  tryAcquireDatabaseBackupLease,
+  tryAcquireDatabaseBackupEmitterLease,
+  type AcquireDatabaseBackupLeaseOptions,
+  type DatabaseBackupLease,
+} from "./database-backup-lease.js";
 export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,

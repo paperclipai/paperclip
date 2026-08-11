@@ -13,6 +13,8 @@ const {
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
+  databaseBackupEmitterLeaseReleaseMock,
+  databaseBackupLeaseReleaseMock,
   detectPortMock,
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
@@ -30,8 +32,12 @@ const {
   issueThreadInteractionServiceMock,
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
+  runDatabaseBackupMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  systemdNotifyMock,
+  tryAcquireDatabaseBackupEmitterLeaseMock,
+  tryAcquireDatabaseBackupLeaseMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -40,6 +46,9 @@ const {
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
+  const neverLost = new Promise<void>(() => {});
+  const databaseBackupEmitterLeaseReleaseMock = vi.fn(async () => undefined);
+  const databaseBackupLeaseReleaseMock = vi.fn(async () => undefined);
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
@@ -108,6 +117,7 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const systemdNotifyMock = vi.fn(async () => false);
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -122,11 +132,30 @@ const {
     close: vi.fn(),
   };
   const loadConfigMock = vi.fn();
+  const runDatabaseBackupMock = vi.fn(async () => ({
+    backupFile: "/tmp/paperclip-test-backups/paperclip-test.sql.gz",
+    sizeBytes: 1024,
+    prunedCount: 0,
+  }));
+  const tryAcquireDatabaseBackupLeaseMock = vi.fn(
+    async () => ({
+      lost: neverLost,
+      isHeld: () => true,
+      release: databaseBackupLeaseReleaseMock,
+    }),
+  );
+  const tryAcquireDatabaseBackupEmitterLeaseMock = vi.fn(async () => ({
+    lost: neverLost,
+    isHeld: () => true,
+    release: databaseBackupEmitterLeaseReleaseMock,
+  }));
 
   return {
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
+    databaseBackupEmitterLeaseReleaseMock,
+    databaseBackupLeaseReleaseMock,
     detectPortMock,
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
@@ -144,8 +173,12 @@ const {
     issueThreadInteractionServiceMock,
     loadConfigMock,
     resolveHeartbeatSchedulingSuppressionMock,
+    runDatabaseBackupMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    systemdNotifyMock,
+    tryAcquireDatabaseBackupEmitterLeaseMock,
+    tryAcquireDatabaseBackupLeaseMock,
   };
 });
 
@@ -166,6 +199,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     embeddedPostgresDataDir: "/tmp/paperclip-test-db",
     embeddedPostgresPort: 54329,
     databaseBackupEnabled: false,
+    databaseBackupSingletonEnabled: false,
     databaseBackupIntervalMinutes: 60,
     databaseBackupRetentionDays: 30,
     databaseBackupDir: "/tmp/paperclip-test-backups",
@@ -206,7 +240,9 @@ vi.mock("@paperclipai/db", () => ({
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
+  runDatabaseBackup: runDatabaseBackupMock,
+  tryAcquireDatabaseBackupEmitterLease: tryAcquireDatabaseBackupEmitterLeaseMock,
+  tryAcquireDatabaseBackupLease: tryAcquireDatabaseBackupLeaseMock,
   authUsers: {},
   companies: {},
   companyMemberships: {},
@@ -330,6 +366,14 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
   createPluginWorkerManager: vi.fn(() => ({ id: "plugin-worker-manager" })),
 }));
 
+vi.mock("../services/database-backup-health.js", () => ({
+  inspectDatabaseBackupHealth: vi.fn(() => ({ latestBackup: null })),
+}));
+
+vi.mock("../services/systemd-notify.js", () => ({
+  systemdNotify: systemdNotifyMock,
+}));
+
 vi.mock("../startup-banner.js", () => ({
   printStartupBanner: vi.fn(),
 }));
@@ -349,6 +393,24 @@ vi.mock("../auth/better-auth.js", () => ({
 
 import { startServer } from "../index.ts";
 
+const startupSignals = ["SIGINT", "SIGTERM"] as const;
+let signalListenersBeforeTest = new Map<(typeof startupSignals)[number], Function[]>();
+
+beforeEach(() => {
+  signalListenersBeforeTest = new Map(
+    startupSignals.map((signal) => [signal, process.listeners(signal)]),
+  );
+});
+
+afterEach(() => {
+  for (const signal of startupSignals) {
+    const retained = new Set(signalListenersBeforeTest.get(signal) ?? []);
+    for (const listener of process.listeners(signal)) {
+      if (!retained.has(listener)) process.removeListener(signal, listener);
+    }
+  }
+});
+
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -359,6 +421,8 @@ describe("startServer feedback export wiring", () => {
       suppressed: false,
       reason: null,
     });
+    systemdNotifyMock.mockReset();
+    systemdNotifyMock.mockResolvedValue(false);
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
@@ -464,6 +528,288 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("acquires and releases the cross-server lease around a manual backup", async () => {
+    const migrationUrl = "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip-direct";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseMigrationUrl: migrationUrl,
+      databaseBackupSingletonEnabled: true,
+    }));
+    await startServer();
+
+    const appOptions = createAppMock.mock.calls[0]?.[1] as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+    await appOptions.databaseBackupService.runManualBackup();
+
+    expect(tryAcquireDatabaseBackupLeaseMock).toHaveBeenCalledWith(migrationUrl);
+    expect(runDatabaseBackupMock).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionString: migrationUrl }),
+    );
+    expect(databaseBackupLeaseReleaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels and joins a running backup before releasing its execution fence", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupSingletonEnabled: true,
+    }));
+    let resolveLeaseLost!: () => void;
+    const leaseLost = new Promise<void>((resolve) => {
+      resolveLeaseLost = resolve;
+    });
+    let held = true;
+    const release = vi.fn(async () => {
+      held = false;
+    });
+    tryAcquireDatabaseBackupLeaseMock.mockResolvedValueOnce({
+      lost: leaseLost,
+      isHeld: () => held,
+      release,
+    });
+    let backupSignal: AbortSignal | null = null;
+    runDatabaseBackupMock.mockImplementationOnce(async (options: { signal?: AbortSignal }) => {
+      backupSignal = options.signal ?? null;
+      if (!backupSignal) {
+        return new Promise(() => {});
+      }
+      return new Promise((_, reject) => {
+        backupSignal!.addEventListener(
+          "abort",
+          () => reject(new Error("pg_dump cancelled after execution authority loss")),
+          { once: true },
+        );
+      });
+    });
+    await startServer();
+    const appOptions = createAppMock.mock.calls[0]?.[1] as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+
+    const runningBackup = appOptions.databaseBackupService.runManualBackup();
+    await vi.waitFor(() => {
+      expect(backupSignal).not.toBeNull();
+    });
+    held = false;
+    resolveLeaseLost();
+
+    await expect(runningBackup).rejects.toThrow(
+      "pg_dump cancelled after execution authority loss",
+    );
+    expect(backupSignal!.aborted).toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a manual backup when another server owns the lease", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupSingletonEnabled: true,
+    }));
+    tryAcquireDatabaseBackupLeaseMock.mockResolvedValueOnce(null);
+    await startServer();
+
+    const appOptions = createAppMock.mock.calls[0]?.[1] as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+    await expect(appOptions.databaseBackupService.runManualBackup()).rejects.toThrow(
+      "Database backup already in progress on another server",
+    );
+
+    expect(runDatabaseBackupMock).not.toHaveBeenCalled();
+    expect(databaseBackupLeaseReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it("elects one automatic-backup emitter and uses a separate execution lease", async () => {
+    const migrationUrl = "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip-direct";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupEnabled: true,
+      databaseBackupSingletonEnabled: true,
+      databaseMigrationUrl: migrationUrl,
+      databaseBackupIntervalMinutes: 60,
+    }));
+    const intervalCallbacks: Array<{ callback: () => void; intervalMs: number }> = [];
+    const timeoutCallbacks: Array<{ callback: () => void; delayMs: number }> = [];
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void, intervalMs: number) => {
+        intervalCallbacks.push({ callback, intervalMs });
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((callback: () => void, delayMs: number) => {
+        timeoutCallbacks.push({ callback, delayMs });
+        return 2 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout);
+
+    try {
+      await startServer();
+
+      expect(tryAcquireDatabaseBackupEmitterLeaseMock).toHaveBeenCalledWith(migrationUrl);
+      expect(databaseBackupEmitterLeaseReleaseMock).not.toHaveBeenCalled();
+      expect(intervalCallbacks.some(({ intervalMs }) => intervalMs === 60_000)).toBe(true);
+      const backupTimer = timeoutCallbacks.find(({ delayMs }) => delayMs === 0);
+      expect(backupTimer).toBeDefined();
+
+      backupTimer!.callback();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(tryAcquireDatabaseBackupLeaseMock).toHaveBeenCalledWith(migrationUrl);
+      expect(runDatabaseBackupMock).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(databaseBackupLeaseReleaseMock).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("retries a due automatic backup when the execution lease is contended", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupEnabled: true,
+      databaseBackupSingletonEnabled: true,
+      databaseBackupIntervalMinutes: 60,
+    }));
+    tryAcquireDatabaseBackupLeaseMock.mockResolvedValueOnce(null);
+    const timeoutCallbacks: Array<{ callback: () => void; delayMs: number }> = [];
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval);
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((callback: () => void, delayMs: number) => {
+        timeoutCallbacks.push({ callback, delayMs });
+        return 2 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout);
+
+    try {
+      await startServer();
+
+      const dueBackup = timeoutCallbacks.find(({ delayMs }) => delayMs === 0);
+      expect(dueBackup).toBeDefined();
+      dueBackup!.callback();
+
+      await vi.waitFor(() => {
+        expect(timeoutCallbacks.some(({ delayMs }) => delayMs === 60_000)).toBe(true);
+      });
+      expect(runDatabaseBackupMock).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("releases automatic-backup leadership when startup fails after election", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupEnabled: true,
+      databaseBackupSingletonEnabled: true,
+      databaseBackupIntervalMinutes: 60,
+    }));
+    fakeServer.listen.mockImplementationOnce(() => {
+      throw new Error("listen failed after backup election");
+    });
+
+    await expect(startServer()).rejects.toThrow("listen failed after backup election");
+
+    expect(tryAcquireDatabaseBackupEmitterLeaseMock).toHaveBeenCalledTimes(1);
+    expect(databaseBackupEmitterLeaseReleaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps singleton authority default-off during a mixed-version rollout", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupEnabled: true,
+      databaseBackupSingletonEnabled: false,
+      databaseBackupIntervalMinutes: 60,
+    }));
+    const intervals: Array<{ callback: () => void; intervalMs: number }> = [];
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void, intervalMs: number) => {
+        intervals.push({ callback, intervalMs });
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(tryAcquireDatabaseBackupEmitterLeaseMock).not.toHaveBeenCalled();
+      const legacyBackupTimer = intervals.find(({ intervalMs }) => intervalMs === 3_600_000);
+      expect(legacyBackupTimer).toBeDefined();
+      legacyBackupTimer?.callback();
+      await vi.waitFor(() => {
+        expect(runDatabaseBackupMock).toHaveBeenCalledTimes(1);
+      });
+      expect(tryAcquireDatabaseBackupLeaseMock).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("aborts and joins a manual backup before a stalled shutdown notification", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseBackupSingletonEnabled: true,
+    }));
+    const events: string[] = [];
+    let backupSignal: AbortSignal | null = null;
+    databaseBackupLeaseReleaseMock.mockImplementationOnce(async () => {
+      events.push("lease-released");
+    });
+    runDatabaseBackupMock.mockImplementationOnce(async (options: { signal?: AbortSignal }) => {
+      backupSignal = options.signal ?? null;
+      return new Promise((_, reject) => {
+        backupSignal?.addEventListener(
+          "abort",
+          () => {
+            events.push("backup-aborted");
+            reject(new Error("manual backup cancelled during shutdown"));
+          },
+          { once: true },
+        );
+      });
+    });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      events.push("process-exit");
+      return undefined as never;
+    }) as typeof process.exit);
+    let resolveStoppingNotification: ((notified: boolean) => void) | null = null;
+
+    try {
+      await startServer();
+      const appOptions = createAppMock.mock.calls[0]?.[1] as {
+        databaseBackupService: { runManualBackup(): Promise<unknown> };
+      };
+      const runningBackup = appOptions.databaseBackupService.runManualBackup();
+      const observedBackupFailure = runningBackup.catch((error: unknown) => error);
+      await vi.waitFor(() => {
+        expect(backupSignal).not.toBeNull();
+      });
+
+      systemdNotifyMock.mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => {
+          resolveStoppingNotification = resolve;
+        }),
+      );
+      process.emit("SIGTERM");
+      await vi.waitFor(() => {
+        expect(backupSignal!.aborted).toBe(true);
+        expect(databaseBackupLeaseReleaseMock).toHaveBeenCalledTimes(1);
+      });
+      expect(exitSpy).not.toHaveBeenCalled();
+      await expect(observedBackupFailure).resolves.toMatchObject({
+        message: "manual backup cancelled during shutdown",
+      });
+      expect(events.indexOf("backup-aborted")).toBeLessThan(events.indexOf("lease-released"));
+      resolveStoppingNotification?.(false);
+      await vi.waitFor(() => {
+        expect(exitSpy).toHaveBeenCalledWith(0);
+      });
+      expect(events.indexOf("lease-released")).toBeLessThan(events.indexOf("process-exit"));
+    } finally {
+      resolveStoppingNotification?.(false);
+      exitSpy.mockRestore();
+    }
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {

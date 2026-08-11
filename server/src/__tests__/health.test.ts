@@ -35,6 +35,22 @@ function createHealthyDb(): Db {
   } as unknown as Db;
 }
 
+function writeCommittedBackup(backupFile: string, completedAt: string): void {
+  const body = "backup";
+  fs.writeFileSync(backupFile, body);
+  fs.writeFileSync(
+    `${backupFile}.complete.json`,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      backupFile: path.basename(backupFile),
+      completedAt,
+      sizeBytes: Buffer.byteLength(body),
+    })}\n`,
+  );
+  const completedDate = new Date(completedAt);
+  fs.utimesSync(backupFile, completedDate, completedDate);
+}
+
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
@@ -178,11 +194,13 @@ describe("GET /health", () => {
   it("surfaces a stale database backup warning in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
+    writeCommittedBackup(backupFile, "2026-07-05T03:17:02.000Z");
+    // A copied/touched file must not manufacture a newer recovery point; the
+    // durable completion record is authoritative for cadence and health.
     fs.utimesSync(
       backupFile,
-      new Date("2026-07-05T03:17:02.000Z"),
-      new Date("2026-07-05T03:17:02.000Z"),
+      new Date("2026-07-06T12:00:00.000Z"),
+      new Date("2026-07-06T12:00:00.000Z"),
     );
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -215,7 +233,7 @@ describe("GET /health", () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupDir, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    writeCommittedBackup(backupFile, "2026-07-06T03:17:02.000Z");
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed at 2026-07-06T03:17:00.000Z exit=1\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -249,7 +267,7 @@ describe("GET /health", () => {
     fs.mkdirSync(backupDir);
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupRoot, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    writeCommittedBackup(backupFile, "2026-07-06T03:17:02.000Z");
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed beside backups\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -279,12 +297,7 @@ describe("GET /health", () => {
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
-    fs.utimesSync(
-      backupFile,
-      new Date("2026-07-05T03:17:02.000Z"),
-      new Date("2026-07-05T03:17:02.000Z"),
-    );
+    writeCommittedBackup(backupFile, "2026-07-05T03:17:02.000Z");
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -342,6 +355,31 @@ describe("GET /health", () => {
           message: "Latest database backup is stale.",
         },
       ],
+    });
+  });
+
+  it("ignores bare, partial, and future-dated files as recovery-point evidence", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-uncommitted-"));
+    const bareBackup = path.join(backupDir, "paperclip-bare.sql.gz");
+    const partialBackup = path.join(backupDir, "paperclip-running.sql.gz.partial-owner");
+    const futureBackup = path.join(backupDir, "paperclip-future.sql.gz");
+    fs.writeFileSync(bareBackup, "uncommitted");
+    fs.writeFileSync(partialBackup, "in progress");
+    writeCommittedBackup(futureBackup, "2026-07-07T04:00:00.000Z");
+
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      latestBackup: null,
+      warnings: [{ code: "database_backup_missing" }],
     });
   });
 

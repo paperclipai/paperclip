@@ -66,6 +66,7 @@ export interface Config {
   embeddedPostgresDataDir: string;
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
+  databaseBackupSingletonEnabled: boolean;
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
@@ -248,6 +249,11 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
       : (fileDatabaseBackup?.enabled ?? true);
+  // Rollout fence: the singleton protocol is intentionally default-off so a
+  // new binary cannot claim safety while older backup writers still run. Turn
+  // it on only after a homogeneous stop-the-world activation.
+  const databaseBackupSingletonEnabled =
+    process.env.PAPERCLIP_DB_BACKUP_SINGLETON_ENABLED === "true";
   const databaseBackupIntervalMinutes = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ||
@@ -304,6 +310,7 @@ export function loadConfig(): Config {
     ),
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
+    databaseBackupSingletonEnabled,
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,

@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { listCommittedDatabaseBackups } from "@paperclipai/db";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
@@ -36,6 +37,7 @@ export type InspectDatabaseBackupHealthOptions = {
   enabled: boolean;
   backupDir: string;
   maxAgeHours: number;
+  filenamePrefix?: string;
   alertFile?: string;
   alertFiles?: string[];
   now?: Date;
@@ -78,27 +80,25 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
-function findLatestBackup(backupDir: string, nowMs: number) {
-  if (!existsSync(backupDir)) return null;
-
-  const candidates = readdirSync(backupDir)
-    .filter((name) => name.endsWith(".sql.gz"))
-    .map((name) => {
-      const fullPath = join(backupDir, name);
-      const stat = statSync(fullPath);
-      return { fullPath, name, stat };
-    })
-    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-
-  const latest = candidates[0];
+function findLatestBackup(
+  backupDir: string,
+  nowMs: number,
+  filenamePrefix: string,
+) {
+  const latest = listCommittedDatabaseBackups(backupDir, {
+    filenamePrefix,
+    nowMs,
+  })[0];
   if (!latest) return null;
 
   return {
-    name: basename(latest.fullPath),
-    path: latest.fullPath,
-    mtime: new Date(latest.stat.mtimeMs).toISOString(),
-    ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
-    sizeBytes: latest.stat.size,
+    name: basename(latest.backupFile),
+    path: latest.backupFile,
+    // Keep the public field name for API compatibility. Its value is now the
+    // durable completion time, not a mutable filesystem mtime.
+    mtime: latest.completedAt,
+    ageHours: roundHours(Math.max(0, nowMs - latest.completedAtMs) / 3_600_000),
+    sizeBytes: latest.sizeBytes,
   };
 }
 
@@ -113,13 +113,17 @@ export function inspectDatabaseBackupHealth(
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
 
   try {
-    latestBackup = findLatestBackup(opts.backupDir, now.getTime());
+    latestBackup = findLatestBackup(
+      opts.backupDir,
+      now.getTime(),
+      opts.filenamePrefix ?? "paperclip",
+    );
     lastFailure = readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
       warnings.push({
         code: "database_backup_missing",
-        message: `No .sql.gz database backups found in ${opts.backupDir}.`,
+        message: `No committed .sql.gz database backups found in ${opts.backupDir}.`,
       });
     } else if (latestBackup.ageHours > maxAgeHours) {
       warnings.push({

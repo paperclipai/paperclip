@@ -210,6 +210,32 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+A completed backup consists of a `.sql.gz` file plus a matching
+`.sql.gz.complete.json` completion manifest. Backup content is fsynced and renamed from
+a same-directory partial path before the manifest is written; the manifest is also
+fsynced and renamed from a partial path. Directory fsync is attempted but is not
+supported by every filesystem. Automatic-backup cadence and `/api/health` only count
+pairs whose manifest has a supported schema version and matches the dump's name,
+completion time, and byte size. This is completion evidence, not a checksum, gzip
+integrity check, or restore test. Bare dumps, partial files, malformed manifests, and
+implausibly future-dated manifests are ignored. Legacy bare dumps remain available for
+manual restore and use retention buckets separate from committed pairs.
+
+The cross-process singleton protocol is deliberately default-off. After a homogeneous,
+stop-the-world activation with `PAPERCLIP_DB_BACKUP_SINGLETON_ENABLED=true`, automatic
+emission and server-triggered dump execution are independently serialized with
+database-scoped PostgreSQL advisory leases. A durable database execution marker also
+survives total advisory-session loss, so a replacement fails closed until the prior
+owner has joined its child and cleared the marker. Different databases do not share
+this fence, so do not point them at the same backup directory. The direct
+`DATABASE_MIGRATION_URL` path, when configured, is used for both the leases and dump.
+The fence table's schema is included in a logical backup, but its transient ownership
+row is always excluded so a restore starts without fossilized execution authority.
+
+Off-host copy jobs should preserve the dump and its `.complete.json` sidecar together
+when they need Paperclip's completion evidence. The dump itself remains the restore
+input.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.

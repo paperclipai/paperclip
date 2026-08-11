@@ -4,7 +4,13 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  __setBeforeDatabaseBackupTableCopyForTests,
+  createBufferedTextFileWriter,
+  readCommittedDatabaseBackup,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -39,6 +45,7 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
 }
 
 afterEach(async () => {
+  __setBeforeDatabaseBackupTableCopyForTests(null);
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
     await cleanup?.();
@@ -76,6 +83,347 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
+    "keeps in-progress pg_dump output off the committed filename and removes it on abort",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-atomic-");
+      const fakePgDump = path.join(backupDir, "fake-pg-dump");
+      fs.writeFileSync(
+        fakePgDump,
+        "#!/bin/sh\nprintf 'partial database backup'\nsleep 2\nprintf 'never committed'\n",
+      );
+      fs.chmodSync(fakePgDump, 0o755);
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = fakePgDump;
+      const controller = new AbortController();
+      const pending = runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-atomic-test",
+        backupEngine: "pg_dump",
+        signal: controller.signal,
+      });
+
+      try {
+        await expect.poll(
+          () => fs.readdirSync(backupDir).some((name) => name.includes(".partial-")),
+          { timeout: 2_000 },
+        ).toBe(true);
+        expect(
+          fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz")),
+        ).toEqual([]);
+
+        controller.abort(new Error("execution lease lost"));
+        await expect(pending).rejects.toThrow(/aborted|cancelled|lease lost/i);
+        expect(
+          fs.readdirSync(backupDir).filter(
+            (name) => name.includes(".partial-") || name.endsWith(".sql.gz"),
+          ),
+        ).toEqual([]);
+      } finally {
+        controller.abort();
+        await pending.catch(() => {});
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+      }
+    },
+    15_000,
+  );
+
+  it(
+    "interrupts a blocked JavaScript backup query when aborted",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-query-abort-");
+      const blocker = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const observer = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      cleanups.push(() => blocker.end());
+      cleanups.push(() => observer.end());
+
+      await blocker.unsafe(`
+        CREATE TABLE "public"."backup_query_abort_target" (
+          "id" integer PRIMARY KEY
+        );
+        INSERT INTO "public"."backup_query_abort_target" ("id") VALUES (1);
+      `);
+      const [blockerSession] = await blocker<{ pid: number }[]>`
+        SELECT pg_backend_pid()::int AS pid
+      `;
+      const [observerSession] = await observer<{ pid: number }[]>`
+        SELECT pg_backend_pid()::int AS pid
+      `;
+
+      let releaseTableLock!: () => void;
+      const tableLockReleased = new Promise<void>((resolve) => {
+        releaseTableLock = resolve;
+      });
+      let reportTableLockReady!: () => void;
+      const tableLockReady = new Promise<void>((resolve) => {
+        reportTableLockReady = resolve;
+      });
+      const tableLock = blocker.begin(async (sql) => {
+        await sql.unsafe(`
+          LOCK TABLE "public"."backup_query_abort_target"
+          IN ACCESS EXCLUSIVE MODE
+        `);
+        reportTableLockReady();
+        await tableLockReleased;
+      });
+      await tableLockReady;
+
+      const controller = new AbortController();
+      const pending = runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-query-abort-test",
+        backupEngine: "javascript",
+        signal: controller.signal,
+      });
+
+      try {
+        await expect.poll(
+          async () => {
+            const [row] = await observer<{ waiting: number }[]>`
+              SELECT count(*)::int AS waiting
+              FROM pg_stat_activity
+              WHERE wait_event_type = 'Lock'
+                AND pid NOT IN (${blockerSession!.pid}, ${observerSession!.pid})
+            `;
+            return row?.waiting ?? 0;
+          },
+          { timeout: 5_000 },
+        ).toBeGreaterThan(0);
+
+        controller.abort(new Error("execution lease lost during JavaScript query"));
+        const outcome = await Promise.race([
+          pending.then(
+            () => "resolved",
+            () => "rejected",
+          ),
+          new Promise<string>((resolve) => {
+            const timer = setTimeout(() => resolve("timed-out"), 2_000);
+            timer.unref?.();
+          }),
+        ]);
+        expect(outcome).toBe("rejected");
+        await expect(pending).rejects.toThrow(/aborted|lease lost/i);
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        controller.abort();
+        releaseTableLock();
+        await tableLock;
+        await pending.catch(() => {});
+      }
+    },
+    15_000,
+  );
+
+  it(
+    "interrupts a blocked transformed-backup COPY query when aborted",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-copy-abort-");
+      const blocker = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const observer = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      cleanups.push(() => blocker.end());
+      cleanups.push(() => observer.end());
+
+      await blocker.unsafe(`
+        CREATE TABLE "public"."aaa_backup_copy_abort_target" (
+          "id" integer PRIMARY KEY
+        );
+        INSERT INTO "public"."aaa_backup_copy_abort_target" ("id") VALUES (1);
+      `);
+      const [blockerSession] = await blocker<{ pid: number }[]>`
+        SELECT pg_backend_pid()::int AS pid
+      `;
+      const [observerSession] = await observer<{ pid: number }[]>`
+        SELECT pg_backend_pid()::int AS pid
+      `;
+
+      let releaseTableLock!: () => void;
+      const tableLockReleased = new Promise<void>((resolve) => {
+        releaseTableLock = resolve;
+      });
+      let tableLock: Promise<void> | null = null;
+      __setBeforeDatabaseBackupTableCopyForTests(async ({ tableName }) => {
+        if (tableName !== "aaa_backup_copy_abort_target") return;
+        let reportTableLockReady!: () => void;
+        const tableLockReady = new Promise<void>((resolve) => {
+          reportTableLockReady = resolve;
+        });
+        tableLock = blocker.begin(async (sql) => {
+          await sql.unsafe(`
+            LOCK TABLE "public"."aaa_backup_copy_abort_target"
+            IN ACCESS EXCLUSIVE MODE
+          `);
+          reportTableLockReady();
+          await tableLockReleased;
+        });
+        await tableLockReady;
+      });
+
+      const controller = new AbortController();
+      const pending = runDatabaseBackup({
+        connectionString: sourceConnectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-copy-abort-test",
+        backupEngine: "auto",
+        excludeTables: ["public.table_that_does_not_exist"],
+        signal: controller.signal,
+      });
+
+      try {
+        await expect.poll(
+          async () => {
+            const [row] = await observer<{ waiting: number }[]>`
+              SELECT count(*)::int AS waiting
+              FROM pg_stat_activity
+              WHERE wait_event_type = 'Lock'
+                AND pid NOT IN (${blockerSession!.pid}, ${observerSession!.pid})
+            `;
+            return row?.waiting ?? 0;
+          },
+          { timeout: 5_000 },
+        ).toBeGreaterThan(0);
+
+        controller.abort(new Error("execution lease lost during transformed COPY"));
+        const outcome = await Promise.race([
+          pending.then(
+            () => "resolved",
+            () => "rejected",
+          ),
+          new Promise<string>((resolve) => {
+            const timer = setTimeout(() => resolve("timed-out"), 2_000);
+            timer.unref?.();
+          }),
+        ]);
+        expect(outcome).toBe("rejected");
+        await expect(pending).rejects.toThrow(/aborted|lease lost/i);
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        controller.abort();
+        releaseTableLock();
+        await tableLock;
+        await pending.catch(() => {});
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "publishes a validated commit manifest only after the backup file is complete",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-commit-");
+      const fakePgDump = path.join(backupDir, "fake-pg-dump");
+      const pgDumpArgsFile = path.join(backupDir, "pg-dump-args.txt");
+      fs.writeFileSync(
+        fakePgDump,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$PAPERCLIP_TEST_PG_DUMP_ARGS_FILE\"\nprintf '%s\\n' '-- complete logical database backup'\n",
+      );
+      fs.chmodSync(fakePgDump, 0o755);
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPgDumpArgsFile = process.env.PAPERCLIP_TEST_PG_DUMP_ARGS_FILE;
+      process.env.PAPERCLIP_PG_DUMP_PATH = fakePgDump;
+      process.env.PAPERCLIP_TEST_PG_DUMP_ARGS_FILE = pgDumpArgsFile;
+
+      try {
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-commit-test",
+          backupEngine: "pg_dump",
+        });
+
+        const committed = readCommittedDatabaseBackup(result.backupFile);
+        expect(committed).toMatchObject({
+          backupFile: result.backupFile,
+          sizeBytes: result.sizeBytes,
+        });
+        expect(committed?.completedAtMs).toBeGreaterThan(0);
+        expect(fs.existsSync(`${result.backupFile}.complete.json`)).toBe(true);
+        expect(fs.readdirSync(backupDir).some((name) => name.includes(".partial-"))).toBe(false);
+        expect(fs.readFileSync(pgDumpArgsFile, "utf8").split("\n")).toContain(
+          "--exclude-table-data=public.database_backup_execution_fence",
+        );
+        if (process.platform !== "win32") {
+          expect(fs.statSync(result.backupFile).mode & 0o777).toBe(0o600);
+          expect(fs.statSync(`${result.backupFile}.complete.json`).mode & 0o777).toBe(0o600);
+        }
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPgDumpArgsFile === undefined) {
+          delete process.env.PAPERCLIP_TEST_PG_DUMP_ARGS_FILE;
+        } else {
+          process.env.PAPERCLIP_TEST_PG_DUMP_ARGS_FILE = originalPgDumpArgsFile;
+        }
+      }
+    },
+    15_000,
+  );
+
+  it(
+    "restores the durable execution-fence table without restoring transient ownership",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_fence_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-backup-fence-state-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          INSERT INTO "public"."database_backup_execution_fence" (
+            "singleton_key",
+            "owner_token"
+          ) VALUES (
+            'default',
+            '11111111-1111-4111-8111-111111111111'
+          )
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-fence-state-test",
+          backupEngine: "javascript",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ count: number }[]>(`
+          SELECT count(*)::int AS count
+          FROM "public"."database_backup_execution_fence"
+        `);
+        expect(rows).toEqual([{ count: 0 }]);
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "keeps the newest backup for each retained calendar month",
     async () => {
       const sourceConnectionString = await createTempDatabase();
@@ -107,6 +455,80 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(fs.existsSync(janNewest)).toBe(true);
         expect(fs.existsSync(janOlder)).toBe(false);
         expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "keeps committed retention buckets independent from newer bare crash artifacts",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-retention-fence-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const committedNewest = path.join(
+        backupDir,
+        "paperclip-fenced-2026-01-28T12-00-00.sql.gz",
+      );
+      const committedOlder = path.join(
+        backupDir,
+        "paperclip-fenced-2026-01-10T12-00-00.sql.gz",
+      );
+      const bareCrashArtifact = path.join(
+        backupDir,
+        "paperclip-fenced-2026-01-29T12-00-00.sql.gz",
+      );
+      const writeCommitted = (backupFile: string, body: string, completedAt: string) => {
+        fs.writeFileSync(backupFile, body, { mode: 0o600 });
+        fs.writeFileSync(
+          `${backupFile}.complete.json`,
+          `${JSON.stringify({
+            schemaVersion: 1,
+            backupFile: path.basename(backupFile),
+            completedAt,
+            sizeBytes: Buffer.byteLength(body),
+          })}\n`,
+          { mode: 0o600 },
+        );
+      };
+
+      try {
+        writeCommitted(committedNewest, "committed-newest", "2026-01-28T12:00:00.000Z");
+        writeCommitted(committedOlder, "committed-older", "2026-01-10T12:00:00.000Z");
+        fs.writeFileSync(bareCrashArtifact, "uncommitted-newer", { mode: 0o600 });
+        fs.utimesSync(
+          committedNewest,
+          new Date("2026-01-28T12:00:00Z"),
+          new Date("2026-01-28T12:00:00Z"),
+        );
+        fs.utimesSync(
+          committedOlder,
+          new Date("2026-01-10T12:00:00Z"),
+          new Date("2026-01-10T12:00:00Z"),
+        );
+        fs.utimesSync(
+          bareCrashArtifact,
+          new Date("2026-01-29T12:00:00Z"),
+          new Date("2026-01-29T12:00:00Z"),
+        );
+
+        await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-fenced",
+          backupEngine: "javascript",
+        });
+
+        expect(fs.existsSync(committedNewest)).toBe(true);
+        expect(fs.existsSync(`${committedNewest}.complete.json`)).toBe(true);
+        expect(fs.existsSync(committedOlder)).toBe(false);
+        expect(fs.existsSync(`${committedOlder}.complete.json`)).toBe(false);
+        expect(fs.existsSync(bareCrashArtifact)).toBe(true);
       } finally {
         Date.now = realDateNow;
       }

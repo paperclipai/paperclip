@@ -24,6 +24,9 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  tryAcquireDatabaseBackupEmitterLease,
+  tryAcquireDatabaseBackupLease,
+  type DatabaseBackupLease,
   authUsers,
   companies,
   companyMemberships,
@@ -86,6 +89,11 @@ import {
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import {
+  createDatabaseBackupEmitter,
+  type DatabaseBackupEmitter,
+} from "./services/database-backup-emitter.js";
+import { inspectDatabaseBackupHealth } from "./services/database-backup-health.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -664,64 +672,207 @@ export async function startServer(): Promise<StartedServer> {
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
-  const runServerDatabaseBackup = async (
+  const databaseBackupLeaseReleaseWaitMs = 7_000;
+  const databaseBackupShutdownWaitMs = 15_000;
+  let databaseBackupAcceptingWork = true;
+  let databaseBackupEmitter: DatabaseBackupEmitter | null = null;
+  let databaseBackupLegacyInterval: ReturnType<typeof setInterval> | null = null;
+  let activeDatabaseBackup: {
+    trigger: InstanceDatabaseBackupTrigger;
+    controller: AbortController;
+    completion: Promise<InstanceDatabaseBackupRunResult | null>;
+  } | null = null;
+  const databaseBackupLeaseConnectionString =
+    config.databaseMigrationUrl ?? activeDatabaseConnectionString;
+  const waitForDatabaseBackupSettlement = async (
+    promise: Promise<unknown>,
+    timeoutMs: number,
+  ): Promise<boolean> => new Promise<boolean>((resolveWait) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveWait(value);
+    };
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    timeout.unref?.();
+    void promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
+  });
+  const executeServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
+    controller: AbortController,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
+    let databaseBackupLease: DatabaseBackupLease | null = null;
+    let databaseBackupLeaseReleased = false;
+    try {
+      if (config.databaseBackupSingletonEnabled) {
+        try {
+          databaseBackupLease = await tryAcquireDatabaseBackupLease(
+            databaseBackupLeaseConnectionString,
+          );
+        } catch (err) {
+          logger.error({ err, trigger }, "Failed to acquire database backup lease");
+          throw err;
+        }
+
+        if (!databaseBackupLease) {
+          const message = "Database backup already in progress on another server";
+          if (trigger === "scheduled") {
+            logger.warn(
+              "Skipping scheduled database backup because another server is already running one",
+            );
+            return null;
+          }
+          throw conflict(message);
+        }
+        void databaseBackupLease.lost.then(() => {
+          if (databaseBackupLeaseReleased) return;
+          controller.abort(
+            new Error("Database backup execution authority was lost"),
+          );
+        });
+      }
+
+      if (controller.signal.aborted) {
+        throw controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new Error("Database backup was cancelled before execution");
+      }
+
+      const startedAt = new Date();
+      const startedAtMs = Date.now();
+      const label = trigger === "scheduled" ? "Automatic" : "Manual";
+      try {
+        logger.info(
+          { backupDir: config.databaseBackupDir, trigger },
+          `${label} database backup starting`,
+        );
+        // Read retention from Instance Settings (DB) so changes take effect without restart.
+        const generalSettings = await backupSettingsSvc.getGeneral();
+        const retention = generalSettings.backupRetention;
+        if (databaseBackupLease && !databaseBackupLease.isHeld()) {
+          controller.abort(
+            new Error("Database backup execution authority was lost"),
+          );
+        }
+        if (controller.signal.aborted) {
+          throw controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new Error("Database backup was cancelled before the dump started");
+        }
+
+        const result = await runDatabaseBackup({
+          // In singleton mode the dump and every authority/fence operation use
+          // the same direct database path. A transaction-pooler runtime URL is
+          // never mixed with a direct lease URL inside the protected protocol.
+          connectionString: config.databaseBackupSingletonEnabled
+            ? databaseBackupLeaseConnectionString
+            : activeDatabaseConnectionString,
+          backupDir: config.databaseBackupDir,
+          retention,
+          filenamePrefix: "paperclip",
+          signal: controller.signal,
+        });
+        const finishedAt = new Date();
+        const response: InstanceDatabaseBackupRunResult = {
+          ...result,
+          trigger,
+          backupDir: config.databaseBackupDir,
+          retention,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: Date.now() - startedAtMs,
+        };
+        logger.info(
+          {
+            backupFile: result.backupFile,
+            sizeBytes: result.sizeBytes,
+            prunedCount: result.prunedCount,
+            backupDir: config.databaseBackupDir,
+            retention,
+            trigger,
+            durationMs: response.durationMs,
+          },
+          `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+        );
+        return response;
+      } catch (err) {
+        logger.error(
+          { err, backupDir: config.databaseBackupDir, trigger },
+          `${label} database backup failed`,
+        );
+        throw err;
+      }
+    } finally {
+      databaseBackupLeaseReleased = true;
+      if (databaseBackupLease) {
+        let releaseError: unknown = null;
+        const release = databaseBackupLease.release().catch((err) => {
+          releaseError = err;
+        });
+        const released = await waitForDatabaseBackupSettlement(
+          release,
+          databaseBackupLeaseReleaseWaitMs,
+        );
+        if (!released) {
+          logger.error(
+            { trigger, timeoutMs: databaseBackupLeaseReleaseWaitMs },
+            "Timed out releasing database backup lease; durable fence remains fail-closed",
+          );
+        } else if (releaseError) {
+          logger.error(
+            { err: releaseError, trigger },
+            "Failed to release database backup lease",
+          );
+        }
+      }
+    }
+  };
+  const runServerDatabaseBackup = (
+    trigger: InstanceDatabaseBackupTrigger,
+    upstreamSignal?: AbortSignal,
+  ): Promise<InstanceDatabaseBackupRunResult | null> => {
+    if (!databaseBackupAcceptingWork) {
+      return Promise.reject(conflict("Database backup service is shutting down"));
+    }
+    if (activeDatabaseBackup) {
       const message = "Database backup already in progress";
       if (trigger === "scheduled") {
         logger.warn("Skipping scheduled database backup because a previous backup is still running");
-        return null;
+        return Promise.resolve(null);
       }
-      throw conflict(message);
+      return Promise.reject(conflict(message));
     }
 
-    databaseBackupInFlight = true;
-    const startedAt = new Date();
-    const startedAtMs = Date.now();
-    const label = trigger === "scheduled" ? "Automatic" : "Manual";
-    try {
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
-      // Read retention from Instance Settings (DB) so changes take effect without restart.
-      const generalSettings = await backupSettingsSvc.getGeneral();
-      const retention = generalSettings.backupRetention;
-
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retention,
-        filenamePrefix: "paperclip",
-      });
-      const finishedAt = new Date();
-      const response: InstanceDatabaseBackupRunResult = {
-        ...result,
-        trigger,
-        backupDir: config.databaseBackupDir,
-        retention,
-        startedAt: startedAt.toISOString(),
-        finishedAt: finishedAt.toISOString(),
-        durationMs: Date.now() - startedAtMs,
-      };
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
-          backupDir: config.databaseBackupDir,
-          retention,
-          trigger,
-          durationMs: response.durationMs,
-        },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+    const controller = new AbortController();
+    const abortFromUpstream = () => {
+      controller.abort(
+        upstreamSignal?.reason ?? new Error("Automatic database-backup work was cancelled"),
       );
-      return response;
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
-      throw err;
-    } finally {
-      databaseBackupInFlight = false;
+    };
+    let removeUpstreamAbortListener: (() => void) | null = null;
+    if (upstreamSignal?.aborted) {
+      abortFromUpstream();
+    } else if (upstreamSignal) {
+      upstreamSignal.addEventListener("abort", abortFromUpstream, { once: true });
+      removeUpstreamAbortListener = () => {
+        upstreamSignal.removeEventListener("abort", abortFromUpstream);
+      };
     }
+
+    let completion!: Promise<InstanceDatabaseBackupRunResult | null>;
+    completion = executeServerDatabaseBackup(trigger, controller).finally(() => {
+      removeUpstreamAbortListener?.();
+      if (activeDatabaseBackup?.completion === completion) {
+        activeDatabaseBackup = null;
+      }
+    });
+    activeDatabaseBackup = { trigger, controller, completion };
+    return completion;
   };
   const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
@@ -1328,115 +1479,219 @@ export async function startServer(): Promise<StartedServer> {
       scheduleExternalObjectRefreshSweep(new Date());
     });
   }
-  
-  if (config.databaseBackupEnabled) {
-    const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
-    logger.info(
-      {
-        intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionSource: "instance-settings-db",
-        backupDir: config.databaseBackupDir,
-      },
-      "Automatic database backups enabled",
-    );
-    setInterval(() => {
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
-  }
-  
-  // Wait for external adapters to finish loading before accepting requests.
-  // Without this, adapter type validation (assertKnownAdapterType) would
-  // reject valid external adapter types during the startup loading window.
-  const { waitForExternalAdapters } = await import("./adapters/registry.js");
-  await waitForExternalAdapters();
-
-  // Reconcile the agent-creation picker to the declaratively-configured adapter
-  // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
-  // known-adapter list is complete. Fail loud on misconfig (a declared adapter
-  // with no implementation), consistent with the execution-policy bootstrap:
-  // log the structured error, then rethrow to fail startup.
   try {
-    reconcileAdapterAvailability(parseAdapterRegistryEnv());
-  } catch (err) {
-    logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
-    throw err;
-  }
+    if (config.databaseBackupEnabled) {
+      const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
-  await new Promise<void>((resolveListen, rejectListen) => {
-    const onError = (err: Error) => {
-      server.off("error", onError);
-      rejectListen(err);
-    };
-
-    server.once("error", onError);
-    server.listen(listenPort, config.host, () => {
-      server.off("error", onError);
-      logger.info(`Server listening on ${config.host}:${listenPort}`);
-      void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
-        if (notified) logger.info("Notified systemd that Paperclip is ready");
-      });
-      if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
-        const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
-        const url = `http://${openHost}:${listenPort}`;
-        void import("open")
-          .then((mod) => mod.default(url))
-          .then(() => {
-            logger.info(`Opened browser at ${url}`);
-          })
-          .catch((err) => {
-            logger.warn({ err, url }, "Failed to open browser on startup");
+      if (config.databaseBackupSingletonEnabled) {
+        logger.info(
+          {
+            intervalMinutes: config.databaseBackupIntervalMinutes,
+            retentionSource: "instance-settings-db",
+            backupDir: config.databaseBackupDir,
+          },
+          "Automatic database backups enabled; electing singleton emitter",
+        );
+        databaseBackupEmitter = createDatabaseBackupEmitter({
+          backupIntervalMs,
+          acquireLease: () =>
+            tryAcquireDatabaseBackupEmitterLease(databaseBackupLeaseConnectionString),
+          getLastSuccessfulBackupAtMs: async () => {
+            const latestBackup = inspectDatabaseBackupHealth({
+              enabled: true,
+              backupDir: config.databaseBackupDir,
+              maxAgeHours: databaseBackupMaxAgeHours,
+            }).latestBackup;
+            return latestBackup ? Date.parse(latestBackup.mtime) : null;
+          },
+          runBackup: async (signal) => {
+            const result = await runServerDatabaseBackup("scheduled", signal);
+            if (!result) {
+              throw new Error(
+                "Automatic database backup did not acquire the execution lease",
+              );
+            }
+          },
+          onLeadershipAcquired: () => {
+            logger.info("This server is the automatic database-backup emitter");
+          },
+          onLeadershipLost: () => {
+            logger.warn("Automatic database-backup emitter lease was lost; emission stopped");
+          },
+          onLeadershipError: (err) => {
+            logger.error({ err }, "Failed to elect an automatic database-backup emitter");
+          },
+          onBackupError: (err) => {
+            logger.warn(
+              { err },
+              "Automatic database backup did not complete; a bounded retry is scheduled",
+            );
+          },
+        });
+        await databaseBackupEmitter.start();
+      } else {
+        logger.warn(
+          {
+            intervalMinutes: config.databaseBackupIntervalMinutes,
+            backupDir: config.databaseBackupDir,
+            activationFlag: "PAPERCLIP_DB_BACKUP_SINGLETON_ENABLED",
+          },
+          "Database-backup singleton protocol is default-off; using legacy per-process scheduling until homogeneous activation",
+        );
+        databaseBackupLegacyInterval = setInterval(() => {
+          void runServerDatabaseBackup("scheduled").catch(() => {
+            // runServerDatabaseBackup already logs the failure with context.
           });
+        }, backupIntervalMs);
       }
+    }
+
+    // Wait for external adapters to finish loading before accepting requests.
+    // Without this, adapter type validation (assertKnownAdapterType) would
+    // reject valid external adapter types during the startup loading window.
+    const { waitForExternalAdapters } = await import("./adapters/registry.js");
+    await waitForExternalAdapters();
+
+    // Reconcile the agent-creation picker to the declaratively-configured adapter
+    // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
+    // known-adapter list is complete. Fail loud on misconfig (a declared adapter
+    // with no implementation), consistent with the execution-policy bootstrap:
+    // log the structured error, then rethrow to fail startup.
+    try {
+      reconcileAdapterAvailability(parseAdapterRegistryEnv());
+    } catch (err) {
+      logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
+      throw err;
+    }
+
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (err: Error) => {
+        server.off("error", onError);
+        rejectListen(err);
+      };
+
+      server.once("error", onError);
+      server.listen(listenPort, config.host, () => {
+        server.off("error", onError);
+        logger.info(`Server listening on ${config.host}:${listenPort}`);
+        void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
+          if (notified) logger.info("Notified systemd that Paperclip is ready");
+        });
+        if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
+          const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
+          const url = `http://${openHost}:${listenPort}`;
+          void import("open")
+            .then((mod) => mod.default(url))
+            .then(() => {
+              logger.info(`Opened browser at ${url}`);
+            })
+            .catch((err) => {
+              logger.warn({ err, url }, "Failed to open browser on startup");
+            });
+        }
         printStartupBanner({
           bind: config.bind,
           host: config.host,
           deploymentMode: config.deploymentMode,
-        deploymentExposure: config.deploymentExposure,
-        authReady,
-        requestedPort: requestedListenPort,
-        listenPort,
-        uiMode,
-        db: startupDbInfo,
-        migrationSummary,
-        heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
-        heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
-        databaseBackupEnabled: config.databaseBackupEnabled,
-        databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
-        databaseBackupRetentionDays: config.databaseBackupRetentionDays,
-        databaseBackupDir: config.databaseBackupDir,
+          deploymentExposure: config.deploymentExposure,
+          authReady,
+          requestedPort: requestedListenPort,
+          listenPort,
+          uiMode,
+          db: startupDbInfo,
+          migrationSummary,
+          heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
+          heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
+          databaseBackupEnabled: config.databaseBackupEnabled,
+          databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
+          databaseBackupRetentionDays: config.databaseBackupRetentionDays,
+          databaseBackupDir: config.databaseBackupDir,
+        });
+
+        const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
+        if (boardClaimUrl) {
+          const red = "\x1b[41m\x1b[30m";
+          const yellow = "\x1b[33m";
+          const reset = "\x1b[0m";
+          console.log(
+            [
+              `${red}  BOARD CLAIM REQUIRED  ${reset}`,
+              `${yellow}This instance was previously local_trusted and still has local-board as the only admin.${reset}`,
+              `${yellow}Sign in with a real user and open this one-time URL to claim ownership:${reset}`,
+              `${yellow}${boardClaimUrl}${reset}`,
+              `${yellow}If you are connecting over Tailscale, replace the host in this URL with your Tailscale IP/MagicDNS name.${reset}`,
+            ].join("\n"),
+          );
+        }
+
+        resolveListen();
       });
-
-      const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
-      if (boardClaimUrl) {
-        const red = "\x1b[41m\x1b[30m";
-        const yellow = "\x1b[33m";
-        const reset = "\x1b[0m";
-        console.log(
-          [
-            `${red}  BOARD CLAIM REQUIRED  ${reset}`,
-            `${yellow}This instance was previously local_trusted and still has local-board as the only admin.${reset}`,
-            `${yellow}Sign in with a real user and open this one-time URL to claim ownership:${reset}`,
-            `${yellow}${boardClaimUrl}${reset}`,
-            `${yellow}If you are connecting over Tailscale, replace the host in this URL with your Tailscale IP/MagicDNS name.${reset}`,
-          ].join("\n"),
-        );
-      }
-
-      resolveListen();
     });
-  });
-  
+  } catch (error) {
+    if (databaseBackupLegacyInterval) {
+      clearInterval(databaseBackupLegacyInterval);
+      databaseBackupLegacyInterval = null;
+    }
+    if (databaseBackupEmitter) {
+      try {
+        await databaseBackupEmitter.stop();
+      } catch (stopError) {
+        logger.error(
+          { err: stopError },
+          "Failed to release automatic database-backup authority after startup failure",
+        );
+      } finally {
+        databaseBackupEmitter = null;
+      }
+    }
+    throw error;
+  }
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+      databaseBackupAcceptingWork = false;
+      const stoppingNotification = systemdNotify([
+        "--stopping",
+        `--status=Stopping after ${signal}`,
+      ]);
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
+      if (databaseBackupLegacyInterval) {
+        clearInterval(databaseBackupLegacyInterval);
+        databaseBackupLegacyInterval = null;
+      }
+      if (databaseBackupEmitter) {
+        try {
+          await databaseBackupEmitter.stop();
+        } catch (err) {
+          logger.error({ err, signal }, "Failed to stop automatic database-backup emitter cleanly");
+        }
+      }
+      const backupAtShutdown = activeDatabaseBackup;
+      if (backupAtShutdown) {
+        backupAtShutdown.controller.abort(
+          new Error(`Database backup cancelled during ${signal} shutdown`),
+        );
+        const settled = await waitForDatabaseBackupSettlement(
+          backupAtShutdown.completion,
+          databaseBackupShutdownWaitMs,
+        );
+        if (!settled) {
+          logger.error(
+            {
+              signal,
+              trigger: backupAtShutdown.trigger,
+              timeoutMs: databaseBackupShutdownWaitMs,
+            },
+            "Database backup did not settle before shutdown deadline; durable fence remains fail-closed",
+          );
+        }
+      }
+      await stoppingNotification;
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
         signal,

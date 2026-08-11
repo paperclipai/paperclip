@@ -1,5 +1,20 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
@@ -28,12 +43,27 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Cancels an in-progress backup and removes all uncommitted artifacts. */
+  signal?: AbortSignal;
 };
 
 export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+};
+
+export type CommittedDatabaseBackup = {
+  backupFile: string;
+  manifestFile: string;
+  completedAt: string;
+  completedAtMs: number;
+  sizeBytes: number;
+};
+
+export type ListCommittedDatabaseBackupsOptions = {
+  filenamePrefix?: string;
+  nowMs?: number;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -70,6 +100,10 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const BACKUP_COMMIT_MANIFEST_VERSION = 1;
+const BACKUP_COMMIT_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+const DATABASE_BACKUP_TRANSIENT_FENCE_TABLE = "public.database_backup_execution_fence";
+export const DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX = ".complete.json";
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -89,14 +123,182 @@ function sanitizeRestoreErrorMessage(error: unknown): string {
 
 function timestamp(date: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${milliseconds}`;
+}
+
+class DatabaseBackupAbortedError extends Error {
+  constructor(signal?: AbortSignal) {
+    const reason = signal?.reason;
+    const detail = reason instanceof Error
+      ? reason.message
+      : typeof reason === "string"
+        ? reason
+        : null;
+    super(`Database backup aborted${detail ? `: ${detail}` : ""}`);
+    this.name = "DatabaseBackupAbortedError";
+  }
+}
+
+let beforeDatabaseBackupTableCopyForTests:
+  | ((table: { schemaName: string; tableName: string }) => void | Promise<void>)
+  | null = null;
+
+export function __setBeforeDatabaseBackupTableCopyForTests(
+  hook:
+    | ((table: { schemaName: string; tableName: string }) => void | Promise<void>)
+    | null,
+): void {
+  beforeDatabaseBackupTableCopyForTests = hook;
+}
+
+function throwIfDatabaseBackupAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DatabaseBackupAbortedError(signal);
+}
+
+function unlinkIfPresent(filePath: string): void {
+  if (!existsSync(filePath)) return;
+  try {
+    unlinkSync(filePath);
+  } catch {
+    // Preserve the primary backup error when best-effort cleanup also fails.
+  }
+}
+
+function fsyncFile(filePath: string): void {
+  const file = openSync(filePath, "r");
+  try {
+    fsyncSync(file);
+  } finally {
+    closeSync(file);
+  }
+}
+
+function fsyncDirectoryBestEffort(directoryPath: string): void {
+  try {
+    const directory = openSync(directoryPath, "r");
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+  } catch {
+    // Some filesystems do not support directory fsync. File fsync plus an
+    // atomic same-directory rename still preserves the visibility invariant.
+  }
+}
+
+function publishCommittedDatabaseBackup(
+  partialBackupFile: string,
+  backupFile: string,
+  signal?: AbortSignal,
+): CommittedDatabaseBackup {
+  throwIfDatabaseBackupAborted(signal);
+  const sizeBytes = statSync(partialBackupFile).size;
+  if (sizeBytes <= 0) {
+    throw new Error("Database backup output was empty");
+  }
+
+  fsyncFile(partialBackupFile);
+  throwIfDatabaseBackupAborted(signal);
+  renameSync(partialBackupFile, backupFile);
+  fsyncDirectoryBestEffort(dirname(backupFile));
+
+  const completedAt = new Date().toISOString();
+  const manifestFile = `${backupFile}${DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX}`;
+  const partialManifestFile = `${manifestFile}.partial-${randomUUID()}`;
+  try {
+    writeFileSync(
+      partialManifestFile,
+      `${JSON.stringify({
+        schemaVersion: BACKUP_COMMIT_MANIFEST_VERSION,
+        backupFile: basename(backupFile),
+        completedAt,
+        sizeBytes,
+      })}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 },
+    );
+    fsyncFile(partialManifestFile);
+    throwIfDatabaseBackupAborted(signal);
+    renameSync(partialManifestFile, manifestFile);
+    fsyncDirectoryBestEffort(dirname(backupFile));
+  } catch (error) {
+    unlinkIfPresent(partialManifestFile);
+    unlinkIfPresent(manifestFile);
+    unlinkIfPresent(backupFile);
+    throw error;
+  }
+
+  return {
+    backupFile,
+    manifestFile,
+    completedAt,
+    completedAtMs: Date.parse(completedAt),
+    sizeBytes,
+  };
+}
+
+/**
+ * Validate the durable success record for one backup. Bare `.sql.gz` files,
+ * mismatched sizes, malformed records, and implausibly future-dated records
+ * are never recovery-point evidence.
+ */
+export function readCommittedDatabaseBackup(
+  backupFile: string,
+  nowMs = Date.now(),
+): CommittedDatabaseBackup | null {
+  const resolvedBackupFile = resolve(backupFile);
+  const manifestFile = `${resolvedBackupFile}${DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX}`;
+  try {
+    const raw = JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, unknown>;
+    if (raw.schemaVersion !== BACKUP_COMMIT_MANIFEST_VERSION) return null;
+    if (raw.backupFile !== basename(resolvedBackupFile)) return null;
+    if (typeof raw.completedAt !== "string") return null;
+    if (typeof raw.sizeBytes !== "number" || !Number.isSafeInteger(raw.sizeBytes)) return null;
+    if (raw.sizeBytes <= 0) return null;
+
+    const completedAtMs = Date.parse(raw.completedAt);
+    if (!Number.isFinite(completedAtMs)) return null;
+    if (completedAtMs > nowMs + BACKUP_COMMIT_FUTURE_TOLERANCE_MS) return null;
+
+    const stat = statSync(resolvedBackupFile);
+    if (!stat.isFile() || stat.size !== raw.sizeBytes) return null;
+    return {
+      backupFile: resolvedBackupFile,
+      manifestFile,
+      completedAt: raw.completedAt,
+      completedAtMs,
+      sizeBytes: raw.sizeBytes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function listCommittedDatabaseBackups(
+  backupDir: string,
+  options: ListCommittedDatabaseBackupsOptions = {},
+): CommittedDatabaseBackup[] {
+  if (!existsSync(backupDir)) return [];
+  const nowMs = options.nowMs ?? Date.now();
+  const prefix = options.filenamePrefix
+    ? `${options.filenamePrefix}-`
+    : null;
+  return readdirSync(backupDir)
+    .filter((name) => name.endsWith(DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX))
+    .map((name) => name.slice(0, -DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX.length))
+    .filter((name) => name.endsWith(".sql.gz"))
+    .filter((name) => prefix === null || name.startsWith(prefix))
+    .map((name) => readCommittedDatabaseBackup(resolve(backupDir, name), nowMs))
+    .filter((backup): backup is CommittedDatabaseBackup => backup !== null)
+    .sort((left, right) => right.completedAtMs - left.completedAtMs);
 }
 
 /**
  * ISO week key for grouping backups by calendar week (ISO 8601).
  */
 function isoWeekKey(date: Date): string {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const weekNo = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
@@ -120,44 +322,39 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
-  if (!existsSync(backupDir)) return 0;
+type RetentionEntry = {
+  fullPath: string;
+  retentionTimeMs: number;
+};
 
-  const now = Date.now();
+function selectRetentionDeletions(
+  entries: RetentionEntry[],
+  retention: BackupRetentionPolicy,
+  now: number,
+): RetentionEntry[] {
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
-  type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
-  const entries: BackupEntry[] = [];
-
-  for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`)) continue;
-    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
-    const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
-  }
-
   // Sort newest first so the first entry per week/month bucket is the one we keep
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  entries.sort((a, b) => b.retentionTimeMs - a.retentionTimeMs);
 
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
-  const toDelete: string[] = [];
+  const toDelete: RetentionEntry[] = [];
 
   for (const entry of entries) {
     // Daily tier — keep everything within dailyDays
-    if (entry.mtimeMs >= dailyCutoff) continue;
+    if (entry.retentionTimeMs >= dailyCutoff) continue;
 
-    const date = new Date(entry.mtimeMs);
+    const date = new Date(entry.retentionTimeMs);
     const week = isoWeekKey(date);
     const month = monthKey(date);
 
     // Weekly tier — keep newest per calendar week
-    if (entry.mtimeMs >= weeklyCutoff) {
+    if (entry.retentionTimeMs >= weeklyCutoff) {
       if (keepWeekBuckets.has(week)) {
-        toDelete.push(entry.fullPath);
+        toDelete.push(entry);
       } else {
         keepWeekBuckets.add(week);
       }
@@ -165,9 +362,9 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     }
 
     // Monthly tier — keep newest per calendar month
-    if (entry.mtimeMs >= monthlyCutoff) {
+    if (entry.retentionTimeMs >= monthlyCutoff) {
       if (keepMonthBuckets.has(month)) {
-        toDelete.push(entry.fullPath);
+        toDelete.push(entry);
       } else {
         keepMonthBuckets.add(month);
       }
@@ -175,11 +372,48 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     }
 
     // Beyond all retention tiers — delete
-    toDelete.push(entry.fullPath);
+    toDelete.push(entry);
   }
 
-  for (const filePath of toDelete) {
-    unlinkSync(filePath);
+  return toDelete;
+}
+
+function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+
+  const now = Date.now();
+  const committed = listCommittedDatabaseBackups(backupDir, {
+    filenamePrefix,
+    nowMs: now,
+  });
+  const committedPaths = new Set(committed.map((entry) => entry.backupFile));
+  const committedDeletions = selectRetentionDeletions(
+    committed.map((entry) => ({
+      fullPath: entry.backupFile,
+      retentionTimeMs: entry.completedAtMs,
+    })),
+    retention,
+    now,
+  );
+
+  // Legacy bare backups remain eligible for the historical mtime-based policy,
+  // but they get their own buckets. An incomplete or malformed artifact can
+  // therefore never evict a validated committed recovery point.
+  const legacyEntries: RetentionEntry[] = [];
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    const fullPath = resolve(backupDir, name);
+    if (committedPaths.has(fullPath)) continue;
+    const stat = statSync(fullPath);
+    legacyEntries.push({ fullPath, retentionTimeMs: stat.mtimeMs });
+  }
+  const legacyDeletions = selectRetentionDeletions(legacyEntries, retention, now);
+  const toDelete = [...committedDeletions, ...legacyDeletions];
+
+  for (const entry of toDelete) {
+    unlinkSync(entry.fullPath);
+    unlinkIfPresent(`${entry.fullPath}${DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX}`);
   }
 
   return toDelete.length;
@@ -321,35 +555,73 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  signal?: AbortSignal;
 }): Promise<void> {
+  throwIfDatabaseBackupAborted(opts.signal);
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
     pgDumpBin,
     [
-      `--dbname=${opts.connectionString}`,
       "--format=plain",
       "--clean",
       "--if-exists",
       "--no-owner",
       "--no-privileges",
+      `--exclude-table-data=${DATABASE_BACKUP_TRANSIENT_FENCE_TABLE}`,
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
+        PGDATABASE: opts.connectionString,
         PGCONNECT_TIMEOUT: String(opts.connectTimeout),
       },
     },
   );
 
   if (!child.stdout) {
+    child.kill("SIGTERM");
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  let hardKillTimer: ReturnType<typeof setTimeout> | null = null;
+  const requestTermination = () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
+    if (hardKillTimer !== null) return;
+    hardKillTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, 5_000);
+    hardKillTimer.unref?.();
+  };
+  opts.signal?.addEventListener("abort", requestTermination, { once: true });
+  const outputPipeline = opts.signal
+    ? pipeline(
+      child.stdout,
+      createGzip(),
+      createWriteStream(opts.backupFile, { mode: 0o600 }),
+      { signal: opts.signal },
+    )
+    : pipeline(
+      child.stdout,
+      createGzip(),
+      createWriteStream(opts.backupFile, { mode: 0o600 }),
+    );
+  const childExit = waitForChildExit(child, pgDumpBin);
+
+  try {
+    await Promise.all([outputPipeline, childExit]);
+  } catch (error) {
+    requestTermination();
+    await Promise.allSettled([outputPipeline, childExit]);
+    if (opts.signal?.aborted) throw new DatabaseBackupAbortedError(opts.signal);
+    throw error;
+  } finally {
+    opts.signal?.removeEventListener("abort", requestTermination);
+    if (hardKillTimer !== null) clearTimeout(hardKillTimer);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -443,7 +715,7 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
 }
 
 export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
+  const filePromise = openFile(filePath, "w", 0o600);
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
@@ -525,6 +797,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
+  throwIfDatabaseBackupAborted(opts.signal);
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
@@ -533,48 +806,77 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-  let sqlClosed = false;
-  const closeSql = async () => {
-    if (sqlClosed) return;
-    sqlClosed = true;
-    await sql.end();
+  let sqlClosePromise: Promise<void> | null = null;
+  const closeSql = (timeoutSeconds?: number): Promise<void> => {
+    if (sqlClosePromise) return sqlClosePromise;
+    sqlClosePromise = timeoutSeconds === undefined
+      ? sql.end()
+      : sql.end({ timeout: timeoutSeconds });
+    return sqlClosePromise;
   };
+  const abortActiveSql = () => {
+    // postgres.js waits for active queries during a normal end(). On authority
+    // loss, terminate the connection immediately so a blocked metadata, count,
+    // cursor, or COPY query cannot hold backup finalization open indefinitely.
+    void closeSql(0).catch(() => {});
+  };
+  opts.signal?.addEventListener("abort", abortActiveSql, { once: true });
+  if (opts.signal?.aborted) abortActiveSql();
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
+  const backupId = `${timestamp()}-${randomUUID().slice(0, 8)}`;
+  const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${backupId}`);
+  const backupFile = `${backupBase}.sql.gz`;
+  const partialId = randomUUID();
+  const sqlFile = `${backupBase}.sql.partial-${partialId}`;
+  const partialBackupFile = `${backupFile}.partial-${partialId}`;
+  const manifestFile = `${backupFile}${DATABASE_BACKUP_COMMIT_MANIFEST_SUFFIX}`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      throwIfDatabaseBackupAborted(opts.signal);
       try {
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: partialBackupFile,
           connectTimeout,
+          signal: opts.signal,
         });
         await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
+        const committed = publishCommittedDatabaseBackup(
+          partialBackupFile,
+          backupFile,
+          opts.signal,
+        );
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
-          sizeBytes,
+          sizeBytes: committed.sizeBytes,
           prunedCount,
         };
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        unlinkIfPresent(partialBackupFile);
+        unlinkIfPresent(manifestFile);
+        unlinkIfPresent(backupFile);
+        if (opts.signal?.aborted || error instanceof DatabaseBackupAbortedError) {
+          throw new DatabaseBackupAbortedError(opts.signal);
         }
         if (backupEngine === "pg_dump") {
           throw error;
         }
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-        sqlClosed = false;
+        sqlClosePromise = null;
+        // The abort event may have fired while the prior client was closing.
+        // Recheck after installing the fallback client so that no replacement
+        // query can start after authority has already been lost.
+        throwIfDatabaseBackupAborted(opts.signal);
       }
     }
 
     await sql`SELECT 1`;
+    throwIfDatabaseBackupAborted(opts.signal);
 
     const emit = (line: string) => writer.emit(line);
     const emitStatement = (statement: string) => {
@@ -615,6 +917,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY n.nspname, t.typname
     `;
     for (const e of enums) includedSchemas.add(e.schema_name);
+    throwIfDatabaseBackupAborted(opts.signal);
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
@@ -886,6 +1189,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     // Dump data for each table
     for (const { schema_name, tablename } of tables) {
       const currentTableKey = tableKey(schema_name, tablename);
+      throwIfDatabaseBackupAborted(opts.signal);
+      // The durable ownership marker describes a currently executing backup.
+      // Preserve its schema for restores, but never fossilize transient
+      // authority into a backup artifact that could block the restored system.
+      if (currentTableKey === DATABASE_BACKUP_TRANSIENT_FENCE_TABLE) continue;
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
@@ -905,16 +1213,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-        try {
-          const copyStream = await copySql
-            .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
-            .readable();
-          for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-          }
-        } finally {
-          await copySql.end();
+        await beforeDatabaseBackupTableCopyForTests?.({
+          schemaName: schema_name,
+          tableName: tablename,
+        });
+        const copyStream = await sql
+          .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
+          .readable();
+        for await (const chunk of copyStream) {
+          throwIfDatabaseBackupAborted(opts.signal);
+          await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
         }
         await writer.writeRaw("\\.\n");
         emitStatementBoundary();
@@ -927,6 +1235,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
+        throwIfDatabaseBackupAborted(opts.signal);
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
@@ -942,6 +1251,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     if (sequences.length > 0) {
       emit("-- Sequence values");
       for (const seq of sequences) {
+        throwIfDatabaseBackupAborted(opts.signal);
         const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
         const val = await sql.unsafe<{ last_value: string; is_called: boolean }[]>(
           `SELECT last_value::text, is_called FROM ${qualifiedSequenceName}`,
@@ -960,31 +1270,42 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emit("");
 
     await writer.close();
+    throwIfDatabaseBackupAborted(opts.signal);
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
+    const gzWriteStream = createWriteStream(partialBackupFile, { mode: 0o600 });
+    if (opts.signal) {
+      await pipeline(sqlReadStream, createGzip(), gzWriteStream, { signal: opts.signal });
+    } else {
+      await pipeline(sqlReadStream, createGzip(), gzWriteStream);
+    }
     unlinkSync(sqlFile);
 
-    const sizeBytes = statSync(backupFile).size;
+    const committed = publishCommittedDatabaseBackup(
+      partialBackupFile,
+      backupFile,
+      opts.signal,
+    );
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
-      sizeBytes,
+      sizeBytes: committed.sizeBytes,
       prunedCount,
     };
   } catch (error) {
     await writer.abort();
-    if (existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
-    }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
+    unlinkIfPresent(partialBackupFile);
+    unlinkIfPresent(manifestFile);
+    unlinkIfPresent(backupFile);
+    unlinkIfPresent(sqlFile);
+    if (opts.signal?.aborted && !(error instanceof DatabaseBackupAbortedError)) {
+      throw new DatabaseBackupAbortedError(opts.signal);
     }
     throw error;
   } finally {
+    opts.signal?.removeEventListener("abort", abortActiveSql);
     await closeSql();
   }
 }
