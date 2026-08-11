@@ -33,6 +33,10 @@ function registerModuleMocks() {
   }));
 }
 
+// Identity object the mocked db.transaction hands to writers; tests assert
+// both the marker clear and the settings update receive THIS same tx.
+const TX_SENTINEL = { __tx: true };
+
 async function createApp(actor: any) {
   const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -44,7 +48,13 @@ async function createApp(actor: any) {
     req.actor = actor;
     next();
   });
-  app.use("/api", instanceSettingsRoutes({} as any));
+  const mockDb = {
+    // Runs the callback with a sentinel tx and propagates throws, so a
+    // failing write inside rejects the whole request exactly like a real
+    // transaction rollback.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  };
+  app.use("/api", instanceSettingsRoutes(mockDb as any));
   app.use(errorHandler);
   return app;
 }
@@ -298,9 +308,10 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
-      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
-    });
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
@@ -329,21 +340,25 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockEnvironmentService.update).toHaveBeenCalledWith("managed-env-1", {
-      metadata: { managedByPaperclip: true },
-    });
-    // Marker-first ordering: the stamp clears before the settings write,
-    // so no partial failure can leave a tenant-chosen default attributed
-    // to reconciliation (and later erased by a mode-off pass).
-    const clearOrder = mockEnvironmentService.update.mock.invocationCallOrder[0];
-    const settingsOrder = mockInstanceSettingsService.update.mock.invocationCallOrder[0];
-    expect(clearOrder).toBeLessThan(settingsOrder);
+    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
+      "managed-env-1",
+      { metadata: { managedByPaperclip: true } },
+      { db: TX_SENTINEL },
+    );
+    // Both writes commit in ONE transaction — each receives the SAME tx —
+    // so no partial failure can desync the stamp marker from the default
+    // (neither a stale stamp on a tenant choice, nor a reconciliation
+    // default that lost its marker and can never revert).
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
   });
 
-  it("does not write settings when the stamp-marker clear fails", async () => {
-    // Conservative partial-failure posture: if the marker cannot clear,
-    // the tenant's default write fails too — nothing is left in a state
-    // where a mode-off pass could erase a tenant-chosen default.
+  it("aborts the whole request (no committed settings) when the stamp-marker clear fails inside the transaction", async () => {
+    // The marker clear and the settings write share a transaction, so a
+    // failure in either rolls the whole thing back — a real DB would
+    // discard both; here the settings write is never even reached.
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
       id: "managed-env-1",
       driver: "sandbox",

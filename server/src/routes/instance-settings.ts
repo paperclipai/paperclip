@@ -47,27 +47,26 @@ export function instanceSettingsRoutes(db: Db) {
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
       }
-      if (Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId")) {
-        // An explicit tenant write of the instance default reclassifies its
-        // attribution: whatever the default becomes — including a deliberate
-        // re-selection of the managed sandbox row — it is tenant-chosen, so
-        // the reconciliation stamp marker must not survive to let a later
-        // managed-sandbox-only mode-off pass mistake the tenant's choice
-        // for a stamp and clear it. The marker clears BEFORE the settings
-        // write: every partial-failure ordering then degrades
-        // conservatively — a cleared marker with an unchanged default only
-        // reclassifies a stamp as tenant-owned (the mode-off pass skips
-        // it), while the reverse order could leave a tenant-chosen default
-        // marked and later erased.
-        const managedSandbox = await environments.findManagedSandboxEnvironment(undefined, {
-          includeArchived: true,
-        });
+      // An explicit tenant write of the instance default reclassifies its
+      // attribution: whatever the default becomes — including a deliberate
+      // re-selection of the managed sandbox row — it is tenant-chosen, so
+      // the reconciliation stamp marker must not survive to let a later
+      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
+      // stamp and revert it. The marker clear and the settings write commit
+      // in ONE transaction, so no partial failure can desync attribution
+      // from the default (neither a stale stamp on a tenant choice, nor a
+      // reconciliation default that lost its marker and can never revert).
+      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
+      const managedSandbox = writesDefault
+        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
+        : null;
+      const updated = await db.transaction(async (tx) => {
         if (managedSandbox?.metadata?.managedDefaultStamped === true) {
           const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
-          await environments.update(managedSandbox.id, { metadata: remainingMetadata });
+          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
         }
-      }
-      const updated = await svc.update(req.body);
+        return svc.update(req.body, { db: tx });
+      });
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
