@@ -232,9 +232,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         currentParticipant: { type: "agent", agentId: coderId, userId: null },
         returnAssignee: { type: "agent", agentId: managerId, userId: null },
         reviewRequest: null,
-        completedStageIds: [],
+        completedStageIds: ["protected-stage"],
         lastDecisionId: decisionId,
         lastDecisionOutcome: "changes_requested",
+        comments: [{ id: "protected-comment", body: "review evidence" }],
       },
     }).where(eq(issues.id, sourceIssueId));
 
@@ -249,8 +250,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "changes_requested",
       currentParticipant: { type: "agent", agentId: managerId },
       returnAssignee: { type: "agent", agentId: managerId },
+      completedStageIds: ["protected-stage"],
       lastDecisionId: decisionId,
       lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
     });
     expect(repairs.filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
     expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.anything());
@@ -259,6 +262,45 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(second.changesRequestedRepaired).toBe(0);
     expect((await db.select().from(activityLog)).filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the winning live state when concurrent reconciliation races restoration", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        completedStageIds: ["history"],
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [first, second] = await Promise.all([
+      recovery.reconcileStrandedAssignedIssues(),
+      recovery.reconcileStrandedAssignedIssues(),
+    ]);
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+
+    expect(first.changesRequestedRepaired + second.changesRequestedRepaired).toBe(1);
+    expect(after?.executionState).toMatchObject({
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
+      completedStageIds: ["history"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.anything());
   });
 
   function createApp(
