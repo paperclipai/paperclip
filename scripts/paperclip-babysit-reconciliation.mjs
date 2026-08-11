@@ -23,9 +23,33 @@ export function changesRequestedRepairSql() {
         AND return_agent.company_id = issues.company_id
         AND execution_state->>'status' = 'changes_requested'
         AND (execution_state->'currentParticipant'->>'agentId') IS DISTINCT FROM (execution_state->'returnAssignee'->>'agentId')
-      RETURNING issues.identifier
-    ) SELECT coalesce(string_agg(identifier, ','), '') FROM updated;
+      RETURNING issues.id, issues.company_id, issues.identifier,
+        execution_state->'returnAssignee' AS return_assignee
+    ), logged AS (
+      INSERT INTO activity_log (
+        company_id, actor_type, actor_id, action, entity_type, entity_id,
+        agent_id, details
+      )
+      SELECT company_id, 'system', 'paperclip-babysitter',
+        'recovery.changes_requested_participant_repaired', 'issue', id::text,
+        (return_assignee->>'agentId')::uuid,
+        jsonb_build_object(
+          'source', 'recovery.reconcile_stranded_assigned_issues',
+          'issueIdentifier', identifier,
+          'returnAssignee', return_assignee
+        )
+      FROM updated
+      RETURNING entity_id
+    ) SELECT coalesce(string_agg(entity_id, ','), '') FROM logged;
   `;
+}
+
+/** Execute the reviewed CAS repair against one company/issue subject. */
+export function reconcileChangesRequested(psql, { companyId, issueId }) {
+  if (typeof psql !== "function" || !companyId || !issueId) {
+    throw new TypeError("psql, companyId, and issueId are required");
+  }
+  return psql(changesRequestedRepairSql(), [companyId, issueId]);
 }
 
 export function shouldRepairChangesRequested(state) {
