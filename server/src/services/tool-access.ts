@@ -6478,6 +6478,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // Rotating refresh first means a failure there leaves both secrets
         // on their old (still-matching) generation, and the access-token
         // rotation below never runs.
+        //
+        // Two residual gaps here are accepted, not overlooked. Both are
+        // properties of this codebase's secret-provider abstraction and
+        // lease pattern generally (see refreshOAuthCredentials' identical
+        // shape above), not something specific to this function:
+        //
+        // 1. If the refresh-token rotation above succeeds but the
+        //    access-token rotation below then fails after every retry, the
+        //    grant is left with a rotated refresh token and a stale access
+        //    token/expiry. This surfaces as one avoidable reconnect prompt,
+        //    self-healing on the very next attempt (the refresh secret
+        //    already resolves to its new value via "latest"). Closing this
+        //    fully would need atomic multi-secret writes, which the secret
+        //    provider abstraction doesn't support.
+        // 2. secrets.rotate()'s underlying provider has no AbortSignal
+        //    support, so raceWithTimeout/rotateSecretWithRetry can abandon
+        //    a hung write, not cancel it -- an abandoned write could still
+        //    land after this function has given up and released the lease.
+        //    True cancellation would require plumbing AbortSignal through
+        //    every secret-provider implementation, a larger change than
+        //    this function's scope.
         if (token.refreshToken) {
           await rotateSecretWithRetry(
             secrets,
