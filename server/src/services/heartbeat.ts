@@ -859,6 +859,11 @@ export async function resolveExecutionRunAdapterConfig(input: {
   projectEnv: unknown;
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
+  /**
+   * Resolves the selected provider-credential pool for this run after secret
+   * bindings are validated, but before adapter-specific readiness checks.
+   */
+  resolveProviderCredentialEnv?: () => Promise<Record<string, string>>;
   trustPreset?: TrustPresetResolution;
   requiredScopedEnvBinding?: {
     keys: string[];
@@ -1118,15 +1123,32 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  // Provider credentials are selected only once per run. Merge their resolved
+  // runtime environment before adapter preflight so a Codex OAuth credential's
+  // isolated CODEX_HOME (or an OpenAI API-key credential) counts as available
+  // authentication instead of being added too late to avoid a false blocker.
+  if (input.resolveProviderCredentialEnv) {
+    const providerCredentialEnv = await input.resolveProviderCredentialEnv();
+    if (Object.keys(providerCredentialEnv).length > 0) {
+      resolvedConfig.env = {
+        ...parseObject(resolvedConfig.env),
+        ...providerCredentialEnv,
+      };
+      for (const key of Object.keys(providerCredentialEnv)) {
+        secretKeys.add(key);
+      }
+    }
+  }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
   // immediately fails with "no Codex credentials provisioned" (adapter_failed),
   // making a configuration problem look like a runtime failure. Surface it as a
   // configuration-incomplete blocker instead, naming the missing credential
   // action and owner without leaking any secret value. This runs after secret
-  // resolution so a per-agent OPENAI_API_KEY (plain or resolved secret) counts
-  // as satisfying the credential. It shares the exact readiness predicate the
-  // adapter uses at execute time, so the two cannot drift.
+  // and provider-credential resolution so a selected Codex OAuth credential or
+  // per-agent OPENAI_API_KEY (plain or resolved secret) counts as satisfying the
+  // credential. It shares the exact readiness predicate the adapter uses at
+  // execute time, so the two cannot drift.
   //
   // Sandbox-destined runs are exempt: the sandbox image may carry its own
   // Codex login (`~/.codex/auth.json` baked in at image setup), which only the
@@ -1144,7 +1166,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     if (readiness.managed && !readiness.ready) {
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
-          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
+          `Sign in to Codex on the host with a ChatGPT subscription, select a compatible Codex OAuth or OpenAI API-key credential for this agent, or bind a per-agent OPENAI_API_KEY secret.`,
         {
           configurationIncomplete: {
             reason: "codex_credentials_missing",
@@ -15773,6 +15795,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       adapterConfig: executionRunConfig,
     });
+    let credentialResolution: Awaited<ReturnType<typeof resolveAllCredentialEnv>> = {
+      env: {},
+      credentialIds: [],
+      chosen: [],
+    };
+    const resolveProviderCredentialEnv = async (): Promise<Record<string, string>> => {
+      try {
+        credentialResolution = await resolveAllCredentialEnv(db, agent.id);
+        return credentialResolution.env;
+      } catch (err) {
+        logger.error(
+          { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
+          "failed to apply provider credential env to execution run",
+        );
+        return {};
+      }
+    };
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
@@ -15789,6 +15828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
       secretsSvc,
+      resolveProviderCredentialEnv,
       trustPreset,
       requiredScopedEnvBinding: pushCapabilityPreflightRequired
         ? {
@@ -15806,26 +15846,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runActiveCredentialId: string | null = null;
     let runActiveCredentialType: string | null = null;
     try {
-      const credResolution = await resolveAllCredentialEnv(db, agent.id);
-      const existingEnv = parseObject(resolvedConfig.env);
-      const mergedEnv = {
-        ...existingEnv,
-        ...credResolution.env,
-      };
       const activeChoice = selectActiveCredentialForAdapter({
         adapterType: agent.adapterType,
         adapterConfig: parseObject(agent.adapterConfig),
-        chosen: credResolution.chosen,
-        env: mergedEnv,
+        chosen: credentialResolution.chosen,
+        env: parseObject(resolvedConfig.env),
       });
       runActiveCredentialId = activeChoice?.credentialId ?? null;
       runActiveCredentialType = activeChoice?.type ?? null;
-      if (Object.keys(credResolution.env).length > 0) {
-        resolvedConfig.env = mergedEnv;
-        for (const key of Object.keys(credResolution.env)) {
-          secretKeys.add(key);
-        }
-      }
     } catch (err) {
       logger.error(
         { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },

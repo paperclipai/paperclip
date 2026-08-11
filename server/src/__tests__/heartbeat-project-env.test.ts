@@ -626,6 +626,41 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     expect(result.resolvedConfig.env).toMatchObject({ OPENAI_API_KEY: "sk-agent-resolved" });
   });
 
+  it("resolves selected provider credentials before the Codex readiness gate", async () => {
+    const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
+    const providerCredentialHome = "/tmp/paperclip-provider-credential-home/.codex";
+    const resolveProviderCredentialEnv = vi.fn(async () => ({
+      CODEX_HOME: providerCredentialHome,
+      HOME: "/tmp/paperclip-provider-credential-home",
+    }));
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "codex_local",
+      executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      projectEnv: null,
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings: vi.fn(),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+      resolveProviderCredentialEnv,
+    });
+
+    expect(resolveProviderCredentialEnv).toHaveBeenCalledTimes(1);
+    expect(result.resolvedConfig.env).toMatchObject({
+      CODEX_HOME: providerCredentialHome,
+      HOME: "/tmp/paperclip-provider-credential-home",
+    });
+    expect([...result.secretKeys]).toEqual(expect.arrayContaining(["CODEX_HOME", "HOME"]));
+  });
+
   it("dispatches normally when the shared host home carries subscription auth", async () => {
     const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: true });
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({

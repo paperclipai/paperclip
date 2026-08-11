@@ -543,7 +543,9 @@ export function credentialService(db: Db) {
  *   sets CODEX_HOME so the Codex CLI discovers the ChatGPT OAuth token.
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local, cursor-local,
- *   opencode-local, and pi-local's OpenAI API-key provider).
+ *   opencode-local, and pi-local's OpenAI API-key provider). Codex-local also
+ *   receives an isolated managed CODEX_HOME so the provider key cannot be
+ *   materialized into the shared host-login home.
  * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local and
  *   pi-local's OpenRouter provider).
  * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api), or the
@@ -895,7 +897,18 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "openai_api_key credential missing apiKey");
         return { env: {} };
       }
-      return { env: { OPENAI_API_KEY: apiKey, CURSOR_API_KEY: apiKey } };
+      const env: Record<string, string> = { OPENAI_API_KEY: apiKey, CURSOR_API_KEY: apiKey };
+      if (adapterType === "codex_local") {
+        env.CODEX_HOME = path.join(
+          resolvePaperclipInstanceRoot(),
+          "companies",
+          cred.companyId,
+          "agents",
+          agentId,
+          "codex-home",
+        );
+      }
+      return { env };
     }
 
     case "openrouter_api_key": {

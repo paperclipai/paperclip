@@ -1569,10 +1569,9 @@ export function agentRoutes(
 
   // codex_local agents inherit whatever Codex login is already on the device
   // (the host's ~/.codex or $CODEX_HOME) by default, so a fresh agent needs no
-  // env overrides at all. We only carve out an isolated per-agent CODEX_HOME
-  // when the agent sets its own OPENAI_API_KEY, so that key's api-key auth.json
-  // does not collide with the shared company home other agents use for the host
-  // login. Agents without a key share the host credentials.
+  // env overrides at all. We only persist an isolated per-agent CODEX_HOME
+  // when the config sets its own OPENAI_API_KEY. Provider-managed credentials
+  // receive their isolated runtime home during credential resolution.
   function applyCodexLocalKeyIsolation(
     companyId: string,
     agentId: string,

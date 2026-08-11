@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -101,6 +102,31 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(resolved.env.CURSOR_API_KEY).toBe("sk-openai-test-key");
     expect(resolved.credentialIds).toHaveLength(2);
     expect(resolved.credentialIds).toEqual(expect.arrayContaining([claudeCred.id, openaiCred.id]));
+  });
+
+  it("gives a provider-bound OpenAI API key an isolated Codex home", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "codex-api-key",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-codex-isolated" },
+    });
+
+    const setResult = await svc.setForAgent(agent.id, [credential.id]);
+    expect(setResult.ok).toBe(true);
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+
+    expect(resolved.env.OPENAI_API_KEY).toBe("sk-codex-isolated");
+    expect(resolved.env.CODEX_HOME).toBeDefined();
+    expect(resolved.env.CODEX_HOME!.endsWith(path.join(
+      "companies",
+      company.id,
+      "agents",
+      agent.id,
+      "codex-home",
+    ))).toBe(true);
   });
 
   it("allows a same-type rotation pool and rotates least-recently-used", async () => {
