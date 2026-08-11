@@ -4,6 +4,19 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **Company memory table + remember/recall agent tools (foundational)** — new
+  `company_memories` schema + migration `0213` + `paperclip-self:remember`/`recall` in
+  tool-gateway. Greenfield (memlawb = dormant external-MCP template, not DB-backed; no
+  existing knowledge table — confirmed by recon). Company-scoped, nullable agent attribution,
+  tags[], pg_trgm GIN index on content (mirrors documents' search). recall = per-term ILIKE
+  over content/title + tag overlap, recency-ranked; semantic/vector is a deliberate later
+  step. Agent-gated + company-scoped via session; obeys the SAME deny-default `tools:use`
+  grant as every gateway tool (agents need that grant to use them — the D1 baseline). remember
+  ungated by default (no require_approval policy); content capped 16k. +1 test (write, recall
+  by keyword+tag, non-match, cross-company isolation). VERIFY: 18/18 gateway-service tests +
+  typecheck; DEPLOYED (0213 applied clean at 22:26, table exists 8 cols, tools in dist, boot
+  exit 0). Self-audit: CLEAN (server-derived company scope, parameterized queries, input cap).
+  Commit `4b13b4582`. RISKY (table+migration+agent tool) → local commit, no PR.
 - **Wire `actionability` → recovery escalation (TWE-182 deferred half)** — `recovery/service.ts`
   + `issue-recovery-actions.test.ts`. The persisted `heartbeat_runs.actionability` axis was
   written but never READ by the recovery reconciler, so a successful run that flagged a
@@ -89,8 +102,10 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. Company memory table + recall tool (L, foundational).
-2. Evals in CI + run-liveness golden corpus (M).
-3. Deploy-preflight `db:check` — diff pending migrations vs live schema before a restart, so a
+1. Evals in CI + run-liveness golden corpus (M).
+2. Deploy-preflight `db:check` — diff pending migrations vs live schema before a restart, so a
    hand-applied/out-of-band schema change can't crash-loop the boot migrator again (S–M; the
    2026-08-10 incident's structural fix).
+3. Company-memory follow-ups: verify the 25 Twenty Four agents actually hold the `tools:use`
+   grant (D1) so remember/recall are reachable; auto-recall injection at run start (vs pull);
+   semantic/vector recall once a company outgrows trigram ILIKE (S/M/L).
