@@ -332,6 +332,40 @@ describe("instance settings routes", () => {
     expect(mockEnvironmentService.update).toHaveBeenCalledWith("managed-env-1", {
       metadata: { managedByPaperclip: true },
     });
+    // Marker-first ordering: the stamp clears before the settings write,
+    // so no partial failure can leave a tenant-chosen default attributed
+    // to reconciliation (and later erased by a mode-off pass).
+    const clearOrder = mockEnvironmentService.update.mock.invocationCallOrder[0];
+    const settingsOrder = mockInstanceSettingsService.update.mock.invocationCallOrder[0];
+    expect(clearOrder).toBeLessThan(settingsOrder);
+  });
+
+  it("does not write settings when the stamp-marker clear fails", async () => {
+    // Conservative partial-failure posture: if the marker cannot clear,
+    // the tenant's default write fails too — nothing is left in a state
+    // where a mode-off pass could erase a tenant-chosen default.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    mockEnvironmentService.update.mockRejectedValue(new Error("metadata write failed"));
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBeGreaterThanOrEqual(500);
+    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {
