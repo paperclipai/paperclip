@@ -192,6 +192,15 @@ jobs:
             exit 0
           fi
 
+          # Promotions run the release tooling of the source commit, so the
+          # source must already understand the nightly channel. (Literal match
+          # of release.sh's channel case arm; if that line is reformatted this
+          # fails closed and should be updated alongside it.)
+          if ! git show "${sha}:scripts/release.sh" | grep -qF 'canary|nightly'; then
+            echo "Error: source commit $sha predates nightly release tooling; promote a newer canary." >&2
+            exit 1
+          fi
+
           echo "proceed=true" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "canary_version=$canary_version" >> "$GITHUB_OUTPUT"
@@ -377,6 +386,15 @@ jobs:
           existing_beta="$(git tag --points-at "$sha" | grep '^beta/v' | head -1 || true)"
           if [ -n "$existing_beta" ]; then
             echo "Error: candidate $sha (nightly $nightly_version) already shipped as $existing_beta." >&2
+            exit 1
+          fi
+
+          # Promotions run the release tooling of the source commit, so the
+          # source must already understand the beta channel. (Literal match of
+          # release.sh's channel case arm; if that line is reformatted this
+          # fails closed and should be updated alongside it.)
+          if ! git show "${sha}:scripts/release.sh" | grep -qF 'canary|nightly|beta|stable)'; then
+            echo "Error: source commit $sha predates beta release tooling; promote a newer nightly whose source contains the beta channel." >&2
             exit 1
           fi
 

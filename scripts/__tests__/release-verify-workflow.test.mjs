@@ -38,6 +38,15 @@ test("onboard smoke container binds beyond loopback so the mapped port is reacha
   assert.match(dockerfile, /onboard --yes --bind lan/);
 });
 
+test("promotion selection guards against sources that predate their channel tooling", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // Promotions run the source commit's release.sh, so selection must reject
+  // sources whose tooling does not know the target channel yet.
+  assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly'/);
+  assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly\|beta\|stable\)'/);
+});
+
 test("release smoke workflow extends the container readiness budget for CI", () => {
   const smokeWorkflow = readWorkflow("release-smoke.yml");
   const harness = readFileSync(path.join(repoRoot, "scripts/docker-onboard-smoke.sh"), "utf8");

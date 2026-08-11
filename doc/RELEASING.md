@@ -148,6 +148,10 @@ Betas are manual promotions. Dispatch
   it does not exist or already shipped as a beta
 - the publish waits for approval in the **`npm-beta` environment** — its
   required reviewers are the promotion gate
+- promotions run the release tooling of the source commit, so the source
+  nightly must postdate the beta channel's introduction; the selection job
+  rejects older sources with a clear error (in practice every nightly cut
+  after the beta tooling merged qualifies)
 - the same commit is republished as `YYYY.MDD.P-beta.N` under the npm
   dist-tag `beta`, tagged `beta/vYYYY.MDD.P-beta.N`, and `docker.yml` is
   dispatched at that tag to publish the `:beta` images
