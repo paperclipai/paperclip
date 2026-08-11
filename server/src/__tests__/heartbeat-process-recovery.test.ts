@@ -2001,6 +2001,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
   });
+  it("re-queues a hot-restart run claimed before adapter spawn instead of losing it", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: null,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "pre-spawn-version",
+        requestedAt: new Date("2026-08-01T01:10:00.000Z"),
+      });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-01T01:11:00.000Z"),
+      );
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T01:12:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        lostRunIds: [],
+        skippedRunIds: [runId],
+      });
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run).toMatchObject({ status: "queued", processPid: null, processGroupId: null });
+      const wakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("queued");
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as { runs?: Array<Record<string, unknown>> };
+      expect(report.runs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId,
+            classification: "skipped",
+            reason: "pre_spawn_requeued",
+          }),
+        ]),
+      );
+    });
+  });
   it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
     let releaseAdapter: (() => void) | null = null;
     let spawnedPid: number | null = null;

@@ -11531,7 +11531,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = isProcessAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
-        classify(candidate, "lost", "missing_process_metadata", patch);
+        // A run can be claimed after deployment preflight but before its adapter
+        // has spawned a child. There is nothing to adopt, but it is safe to put
+        // the same wake back on the queue; calling it lost strands work solely
+        // because the restart caught this tiny pre-spawn window.
+        const requeued = await db
+          .update(heartbeatRuns)
+          .set({
+            status: "queued",
+            error: null,
+            errorCode: null,
+            processPid: null,
+            processGroupId: null,
+            processStartedAt: null,
+            resultJson: {
+              ...parseObject(run.resultJson),
+              hotRestart: {
+                requeuedBeforeSpawnAt: now.toISOString(),
+                previousServerPid: intent.previousServerPid,
+                newServerPid: process.pid,
+              },
+            },
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!requeued) {
+          classify(candidate, "lost", "pre_spawn_requeue_not_applied", patch);
+          continue;
+        }
+        await setWakeupStatus(requeued.wakeupRequestId, "queued", {
+          claimedAt: null,
+          finishedAt: null,
+          error: null,
+        });
+        await appendRunEvent(requeued, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Hot restart re-queued a claimed run before adapter spawn",
+          payload: {
+            previousServerPid: intent.previousServerPid,
+            newServerPid: process.pid,
+          },
+        });
+        classify(candidate, "skipped", "pre_spawn_requeued", {
+          ...patch,
+          status: "queued",
+        });
         continue;
       }
       if (!processPidAlive && !processGroupAlive) {
