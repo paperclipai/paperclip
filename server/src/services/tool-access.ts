@@ -6163,6 +6163,81 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   const userGrantRefreshCooldownUntil = new Map<string, number>();
   const USER_GRANT_REFRESH_COOLDOWN_MS = 30_000;
 
+  // Cross-process serialization for refreshUserGrant, mirroring
+  // acquireOAuthRefreshLease/clearOAuthRefreshLease above -- those guard the
+  // connection-level refresh; userGrantRefreshFlights only stops one process
+  // from racing itself. Simpler than the connection-level lease in one way:
+  // connectionGrants.refreshLease is its own column, not a field nested in a
+  // shared config blob, so the claim only needs to guard that one column
+  // (no full-row snapshot compare is needed to avoid clobbering unrelated
+  // fields). A present-but-expired lease is never auto-reclaimed here --
+  // same reasoning as the connection-level "stuck lease" case: a crashed
+  // holder might have already rotated secrets before dying, and blindly
+  // reclaiming could race a slow-finishing holder. Unlike that path, this
+  // function's contract is "never throw," so a stuck or contended lease
+  // just waits out OAUTH_REFRESH_LEASE_WAIT_MS and then reports itself
+  // unavailable, same as a missing grant, rather than throwing.
+  //
+  // On every poll iteration, this also re-checks the access token's own
+  // expiresAt (not just the lease) -- same as acquireOAuthRefreshLease's
+  // top-of-loop expiry check. Without that, a losing caller would wait out
+  // the winner's lease, see it cleared, and redundantly re-refresh a token
+  // the winner had just rotated a moment earlier. Returning the already-
+  // fresh row instead lets the caller reuse the winner's result.
+  async function acquireGrantRefreshLease(
+    grantId: string,
+    companyId: string,
+  ): Promise<{ grant: typeof connectionGrants.$inferSelect | null; leaseId: string | null }> {
+    const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
+    while (true) {
+      const [latest] = await db
+        .select()
+        .from(connectionGrants)
+        .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, companyId)))
+        .limit(1);
+      if (!latest || latest.status !== "active") return { grant: latest ?? null, leaseId: null };
+
+      const accessRef = latest.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+      const accessExpiresAtMs = accessRef?.expiresAt ? Date.parse(accessRef.expiresAt) : Number.NaN;
+      if (Number.isFinite(accessExpiresAtMs) && accessExpiresAtMs > Date.now() + 60_000) {
+        return { grant: latest, leaseId: null };
+      }
+
+      if (!latest.refreshLease) {
+        const leaseId = randomUUID();
+        const [claimed] = await db
+          .update(connectionGrants)
+          .set({
+            refreshLease: { id: leaseId, expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString() },
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(connectionGrants.id, grantId),
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.status, "active"),
+            sql`${connectionGrants.refreshLease} is null`,
+          ))
+          .returning();
+        if (claimed) return { grant: claimed, leaseId };
+        continue;
+      }
+
+      if (Date.now() >= waitDeadline) return { grant: latest, leaseId: null };
+      await new Promise((resolve) => setTimeout(resolve, OAUTH_REFRESH_LEASE_POLL_MS));
+    }
+  }
+
+  async function clearGrantRefreshLease(grantId: string, companyId: string, leaseId: string) {
+    await db
+      .update(connectionGrants)
+      .set({ refreshLease: null, updatedAt: new Date() })
+      .where(and(
+        eq(connectionGrants.id, grantId),
+        eq(connectionGrants.companyId, companyId),
+        sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
+      ));
+  }
+
   async function refreshUserGrant(input: {
     companyId: string;
     connectionId: string;
@@ -6204,6 +6279,53 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         return null;
       }
 
+      // Claim the cross-process lease before calling the OAuth provider at
+      // all -- userGrantRefreshFlights only dedupes within this process, so
+      // without this, two server processes could both reach exchangeOAuthToken
+      // with the same refresh token.
+      const lease = await acquireGrantRefreshLease(grant.id, input.companyId);
+      if (!lease.leaseId) {
+        // No lease to work with, for one of two reasons. Either another
+        // process already refreshed this grant while we were polling (its
+        // access token is now fresh -- reuse that result instead of
+        // needlessly refreshing again), or the lease was busy/stuck and
+        // never cleared, or the grant is no longer active. Only the first
+        // case has a token to return; the rest report the same as a
+        // missing grant (null), matching this function's contract.
+        const freshAccessRef = lease.grant?.credentialSecretRefs.find(
+          (ref) => ref.configPath === "oauth.access_token",
+        );
+        const freshExpiresAtMs = freshAccessRef?.expiresAt ? Date.parse(freshAccessRef.expiresAt) : Number.NaN;
+        const isFresh = lease.grant?.status === "active"
+          && Number.isFinite(freshExpiresAtMs)
+          && freshExpiresAtMs > Date.now() + 60_000;
+        if (!isFresh || !freshAccessRef) return null;
+        try {
+          const freshAccessToken = await secrets.resolveSecretValue(
+            input.companyId,
+            freshAccessRef.secretId,
+            freshAccessRef.versionSelector ?? "latest",
+            {
+              consumerType: "connection_grant",
+              consumerId: lease.grant!.id,
+              configPath: "oauth.access_token",
+              actorType: "system",
+            },
+          );
+          return { accessToken: freshAccessToken, expiresAt: freshAccessRef.expiresAt ?? null };
+        } catch {
+          return null;
+        }
+      }
+      const leaseId = lease.leaseId;
+
+      // The success and reauthorization paths below already clear the
+      // lease as part of their own guarded write, so this is a no-op there
+      // (the lease id no longer matches by the time it runs). It's the only
+      // release for every other exit -- the early "!client.clientId" return,
+      // and the plain network-error branch of the catch below that doesn't
+      // touch the grant row at all.
+      try {
       try {
         // consumerType/consumerId target this grant, not the connection --
         // see the connection_grant comment on SECRET_BINDING_TARGET_TYPES
@@ -6230,41 +6352,47 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           refreshToken: refreshTokenValue,
         });
 
-        // DB write before secret rotation, deliberately: if the write fails
-        // (transient DB error) before rotation happens, the grant is
-        // untouched and the next call retries cleanly. The prior ordering
-        // rotated the secret first, so a DB failure after a successful
-        // rotation left the store holding a new token while the grant row
-        // still had the old expiry -- the next request would re-enter
-        // refresh with a refresh_token some providers had already rotated
-        // server-side, permanently breaking the grant on `invalid_grant`.
-        // This ordering can't eliminate that window (the two writes are to
-        // different systems with no shared transaction), but it moves the
-        // failure mode from "silent permanent breakage" to "one wasted
-        // refresh, safely retried."
+        // Rotate secrets before persisting the new expiry, matching
+        // refreshOAuthCredentials' ordering for the connection-level path.
+        // Grant refs are always stored with versionSelector "latest" (set
+        // once at grant creation, never repinned -- see
+        // createOrRotateOAuthSecret), so resolveSecretValue picks up a
+        // rotation immediately regardless of whether the metadata write
+        // below succeeds. Rotating first closes the gap the previous
+        // ordering left open: persisting a future expiresAt before rotation
+        // happened meant a rotation failure left the grant claiming a fresh
+        // token while the secret store still held the stale one, so callers
+        // stopped refreshing and kept sending the old, already-expired
+        // token until something else intervened. Now, if rotation fails,
+        // the metadata write below never runs, so the grant's expiresAt
+        // still (accurately) says expired and the next call retries.
+        await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
+        if (token.refreshToken) {
+          await secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {});
+        }
+
         const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
         const updatedRefs = grant.credentialSecretRefs.map((ref) =>
           ref.configPath === "oauth.access_token" ? { ...ref, expiresAt: expiresAt ?? undefined } : ref);
         const [updated] = await db
           .update(connectionGrants)
-          .set({ credentialSecretRefs: updatedRefs, lastUsedAt: new Date(), updatedAt: new Date() })
+          .set({ credentialSecretRefs: updatedRefs, refreshLease: null, lastUsedAt: new Date(), updatedAt: new Date() })
           .where(and(
             eq(connectionGrants.id, grant.id),
             eq(connectionGrants.companyId, input.companyId),
             eq(connectionGrants.status, "active"),
+            sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
           ))
           .returning({ id: connectionGrants.id });
         if (!updated) {
           // Lost the race to a concurrent process that already marked this
           // grant needs_reauthorization (or revoked it) between our SELECT
-          // and this UPDATE. Do not rotate secrets for a grant that's no
-          // longer active -- fall through to null, same as no grant.
+          // and this UPDATE -- or, now that rotation happens first, this
+          // write itself was superseded. Secrets are already rotated and
+          // correct either way (versionSelector "latest" resolves them
+          // regardless of this write's outcome); only the metadata persist
+          // was lost, so fall through to null, same as no grant.
           return null;
-        }
-
-        await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
-        if (token.refreshToken) {
-          await secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {});
         }
 
         userGrantRefreshCooldownUntil.delete(flightKey);
@@ -6285,11 +6413,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           try {
             const [reauthorized] = await db
               .update(connectionGrants)
-              .set({ status: "needs_reauthorization", updatedAt: new Date() })
+              .set({ status: "needs_reauthorization", refreshLease: null, updatedAt: new Date() })
               .where(and(
                 eq(connectionGrants.id, grant.id),
                 eq(connectionGrants.companyId, input.companyId),
                 eq(connectionGrants.status, "active"),
+                sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
               ))
               .returning({ id: connectionGrants.id });
             // Only claim the transition happened if a row actually came
@@ -6373,6 +6502,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           );
         }
         return null;
+      }
+      } finally {
+        await clearGrantRefreshLease(grant.id, input.companyId, leaseId).catch(() => undefined);
       }
     });
   }

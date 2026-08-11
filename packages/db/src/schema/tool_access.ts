@@ -157,6 +157,10 @@ export const connectionGrants = pgTable(
     providerTenant: jsonb("provider_tenant").$type<{ name?: string; externalId?: string }>(),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
     status: text("status").$type<ConnectionGrantStatus>().notNull().default("active"),
+    // Cross-process refresh coordination, mirroring toolConnections' config.oauth.refreshLease
+    // (see acquireOAuthRefreshLease in tool-access.ts). A dedicated column here since, unlike
+    // toolConnections, this table has no general-purpose jsonb config blob to nest it under.
+    refreshLease: jsonb("refresh_lease").$type<{ id: string; expiresAt: string }>(),
     isDefault: boolean("is_default").notNull().default(false),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),

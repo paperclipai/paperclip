@@ -3078,6 +3078,180 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
   });
 
+  it("leaves a user grant's credentialSecretRefs unchanged when secret rotation fails after a successful OAuth exchange", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack rotation failure" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const refreshing = body.get("grant_type") === "refresh_token";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: refreshing ? "rotated-access-token" : "user-access-token",
+            refresh_token: refreshing ? "rotated-refresh-token" : "user-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    const originalRefs = grant.credentialSecretRefs;
+    const accessTokenRef = originalRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+
+    // secrets.rotate() throws "Cannot rotate a non-active secret" for any
+    // non-active status -- the simplest deterministic way to make rotation
+    // fail *after* a successful OAuth exchange, without mocking internals.
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, accessTokenRef.secretId));
+
+    const result = await service.refreshUserGrant({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      subjectUserId: "user-for-run",
+    });
+
+    expect(result).toBeNull();
+    const [unchanged] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(unchanged.credentialSecretRefs).toEqual(originalRefs);
+    expect(unchanged.status).toBe("active");
+    expect(unchanged.refreshLease).toBeNull();
+  });
+
+  it("leases rotating a user grant's refresh token across service instances before concurrent gateway calls", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack grant lease" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    let refreshCallCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        if (body.get("grant_type") === "refresh_token") {
+          refreshCallCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ access_token: "rotated-access-token", refresh_token: "rotated-refresh-token", expires_in: 3600 }),
+          } as Response;
+        }
+        const userAuthorization = body.get("code") === "user-authorization-code";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: userAuthorization ? "user-access-token" : "workspace-access-token",
+            refresh_token: userAuthorization ? "user-refresh-token" : "workspace-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const refreshInput = { companyId: company.id, connectionId: connected.connectionId, subjectUserId: "user-for-run" };
+    const [result, concurrentResult] = await Promise.all([
+      service.refreshUserGrant(refreshInput),
+      concurrentService.refreshUserGrant(refreshInput),
+    ]);
+
+    expect(refreshCallCount).toBe(1);
+    expect(result).toMatchObject({ accessToken: "rotated-access-token" });
+    expect(concurrentResult).toMatchObject({ accessToken: "rotated-access-token" });
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    expect(grant.refreshLease).toBeNull();
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+    const accessTokenVersions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, accessTokenRef.secretId));
+    expect(accessTokenVersions).toHaveLength(2);
+  });
+
   it("starts agent-initiated user authorization from the typed responsibleUserId column with no JSONB value", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
