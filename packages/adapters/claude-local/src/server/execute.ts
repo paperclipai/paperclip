@@ -877,6 +877,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let tokenBudgetExceeded = false;
   let tokenBudgetObserved = 0;
+  let predictedNextTurnTokens = 0;
   let tokenStreamRemainder = "";
   const observedMessageIds = new Set<string>();
   const observedMessageUsage: Required<UsageSummary> = {
@@ -893,22 +894,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const line of lines) {
       const event = parseJson(line.trim());
       const observed = claudeAssistantMessageUsage(event);
-      if (!observed || observedMessageIds.has(observed.messageId)) continue;
-      observedMessageIds.add(observed.messageId);
-      observedMessageUsage.inputTokens += observed.usage.inputTokens;
-      observedMessageUsage.cachedInputTokens += observed.usage.cachedInputTokens ?? 0;
-      observedMessageUsage.outputTokens += observed.usage.outputTokens;
+      if (!observed) continue;
+      if (!observedMessageIds.has(observed.messageId)) {
+        predictedNextTurnTokens = 0;
+        observedMessageIds.add(observed.messageId);
+        observedMessageUsage.inputTokens += observed.usage.inputTokens;
+        observedMessageUsage.cachedInputTokens += observed.usage.cachedInputTokens ?? 0;
+        observedMessageUsage.outputTokens += observed.usage.outputTokens;
+      }
+      if (observed.hasToolUse) {
+        predictedNextTurnTokens = Math.max(predictedNextTurnTokens, observed.inputTokensForTurn);
+      }
     }
     tokenBudgetObserved =
       observedMessageUsage.inputTokens +
       observedMessageUsage.cachedInputTokens +
       observedMessageUsage.outputTokens;
-    if (tokenBudgetObserved < maxTokensPerRun) return;
+    const nextTurnWouldExhaustBudget =
+      predictedNextTurnTokens > 0 &&
+      tokenBudgetObserved + predictedNextTurnTokens >= maxTokensPerRun;
+    if (tokenBudgetObserved < maxTokensPerRun && !nextTurnWouldExhaustBudget) return;
 
     tokenBudgetExceeded = true;
     await onLog(
       "stderr",
-      `[paperclip] Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}); stopping before another model turn.\n`,
+      nextTurnWouldExhaustBudget && tokenBudgetObserved < maxTokensPerRun
+        ? `[paperclip] Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens cannot fit the next model turn (observed ${tokenBudgetObserved}, projected next-turn input ${predictedNextTurnTokens}); stopping before tool execution.\n`
+        : `[paperclip] Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}); stopping before another model turn.\n`,
     );
     const running = runningProcesses.get(runId);
     if (running) signalRunningProcess(running, "SIGTERM");
@@ -1065,6 +1077,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             stopReason: "token_budget_exhausted",
             maxTokensPerRun,
             observedTokens: tokenBudgetObserved,
+            ...(predictedNextTurnTokens > 0 ? { predictedNextTurnTokens } : {}),
           },
           clearSession: true,
         };
@@ -1265,7 +1278,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(tokenBudgetExceeded
-        ? { stopReason: "token_budget_exhausted", maxTokensPerRun, observedTokens: tokenBudgetObserved }
+        ? {
+          stopReason: "token_budget_exhausted",
+          maxTokensPerRun,
+          observedTokens: tokenBudgetObserved,
+          ...(predictedNextTurnTokens > 0 ? { predictedNextTurnTokens } : {}),
+        }
         : {}),
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),

@@ -108,6 +108,8 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
 export function claudeAssistantMessageUsage(event: unknown): {
   messageId: string;
   usage: UsageSummary;
+  inputTokensForTurn: number;
+  hasToolUse: boolean;
 } | null {
   const eventObj = parseObject(event);
   if (asString(eventObj.type, "") !== "assistant") return null;
@@ -119,8 +121,17 @@ export function claudeAssistantMessageUsage(event: unknown): {
     asString(eventObj.uuid, "") ||
     asString(eventObj.request_id, "");
   if (!messageId) return null;
+  const inputTokensForTurn =
+    asNumber(usage.input_tokens, 0) +
+    asNumber(usage.cache_creation_input_tokens, 0) +
+    asNumber(usage.cache_read_input_tokens, 0);
+  const content = Array.isArray(message.content) ? message.content : [];
   return {
     messageId,
+    inputTokensForTurn,
+    hasToolUse: content.some((entry) =>
+      asString(parseObject(entry).type, "") === "tool_use"
+    ),
     usage: {
       inputTokens:
         asNumber(usage.input_tokens, 0) +

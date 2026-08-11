@@ -82,6 +82,8 @@ describe("claudeAssistantMessageUsage", () => {
       },
     })).toEqual({
       messageId: "msg-1",
+      inputTokensForTurn: 26_924,
+      hasToolUse: false,
       usage: {
         inputTokens: 9_787,
         cachedInputTokens: 17_137,

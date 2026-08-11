@@ -191,4 +191,64 @@ describe("claude_local ACP startup fallback", () => {
       },
     });
   });
+
+  it("stops before a tool call when the next context-bearing turn cannot fit", async () => {
+    const firstMessage = {
+      type: "assistant",
+      uuid: "event-1",
+      message: {
+        id: "msg-1",
+        content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: {} }],
+        usage: {
+          input_tokens: 1,
+          cache_creation_input_tokens: 20_000,
+          cache_read_input_tokens: 30_000,
+          output_tokens: 10,
+        },
+      },
+    };
+    const secondMessage = {
+      type: "assistant",
+      uuid: "event-2",
+      message: {
+        id: "msg-2",
+        content: [{ type: "tool_use", id: "tool-2", name: "Bash", input: {} }],
+        usage: {
+          input_tokens: 1,
+          cache_creation_input_tokens: 10_000,
+          cache_read_input_tokens: 20_000,
+          output_tokens: 10,
+        },
+      },
+    };
+    const stdout = [JSON.stringify(firstMessage), JSON.stringify(secondMessage)].join("\n");
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await options.onLog("stdout", `${stdout}\n`);
+      return {
+        exitCode: 143,
+        signal: null,
+        timedOut: false,
+        stdout,
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    const result = await execute(buildContext({ maxTokensPerRun: 100_000 }) as never);
+
+    expect(result).toMatchObject({
+      errorCode: "token_budget_exhausted",
+      clearSession: true,
+      resultJson: {
+        stopReason: "token_budget_exhausted",
+        maxTokensPerRun: 100_000,
+        observedTokens: 80_022,
+        predictedNextTurnTokens: 30_001,
+      },
+    });
+  });
 });
