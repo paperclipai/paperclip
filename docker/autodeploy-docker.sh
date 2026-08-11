@@ -1025,8 +1025,20 @@ async function writeAdminCredentials() {
   if (!Number.isInteger(hostUid) || !Number.isInteger(hostGid) || hostUid < 0 || hostGid < 0) {
     throw new Error("HOST_UID/HOST_GID must be set so admin-credentials.txt is host-readable");
   }
-  await fs.chown(target, hostUid, hostGid);
-  log(`Credentials written to admin-credentials.txt (owner ${hostUid}:${hostGid})`);
+  try {
+    await fs.chown(target, hostUid, hostGid);
+    log(`Credentials written to admin-credentials.txt (owner ${hostUid}:${hostGid})`);
+  } catch (err) {
+    // Rootless Docker user-namespaces can reject chown. Leave the file in place
+    // and surface a clear marker so the host wrapper does not purge the password
+    // from .env.bootstrap while the credentials file may be unreadable.
+    await fs.writeFile("/paperclip-output/admin-credentials.chown-failed", `${hostUid}:${hostGid}\n`, {
+      mode: 0o644,
+    });
+    log(
+      `Credentials written but chown to ${hostUid}:${hostGid} failed (${err?.message || err}); host must recover password from .env.bootstrap if the file is unreadable`
+    );
+  }
 }
 
 async function bootstrap() {
@@ -1149,6 +1161,7 @@ print_shell_hint() {
 run_bootstrap() {
   local force="${1:-false}"
   local deployment_mode
+  local creds_backup=""
   deployment_mode="$(read_env_value .env PAPERCLIP_DEPLOYMENT_MODE)"
   if [ "$deployment_mode" != "authenticated" ]; then
     return
@@ -1158,14 +1171,49 @@ run_bootstrap() {
     log "(run './manage.sh bootstrap' to force re-run)"
     return
   fi
-  rm -f admin-credentials.txt
-  compose --profile bootstrap run --rm bootstrap
+
+  # Forced re-bootstrap needs live admin secrets. After the first success we
+  # purge them from .env.bootstrap — re-running then would only delete the
+  # retained credentials file without creating a replacement.
+  if ! grep -q '^AUTOMATED_AUTO_ADMIN=true$' .env.bootstrap 2>/dev/null; then
+    log "Bootstrap secrets already purged from .env.bootstrap; cannot re-create admin automatically."
+    log "Keep admin-credentials.txt, or reset the deployment / create a new invite if credentials were lost."
+    return 1
+  fi
+
   if [ -f admin-credentials.txt ]; then
+    creds_backup="$(mktemp "${TMPDIR:-/tmp}/paperclip-admin-creds.XXXXXX")"
+    cp -p admin-credentials.txt "$creds_backup"
+  fi
+  rm -f admin-credentials.txt admin-credentials.chown-failed
+
+  if ! compose --profile bootstrap run --rm bootstrap; then
+    log "Bootstrap container failed"
+    if [ -n "$creds_backup" ] && [ -f "$creds_backup" ]; then
+      mv "$creds_backup" admin-credentials.txt
+      log "Restored previous admin-credentials.txt"
+    fi
+    return 1
+  fi
+
+  if [ -f admin-credentials.txt ] && [ -r admin-credentials.txt ] && [ ! -f admin-credentials.chown-failed ]; then
     log "Admin credentials saved to $(pwd)/admin-credentials.txt"
+    rm -f "$creds_backup"
     disable_sign_up_after_admin
     purge_bootstrap_secrets
     print_shell_hint
+    return 0
   fi
+
+  log "Bootstrap finished without host-readable admin-credentials.txt; keeping .env.bootstrap secrets"
+  if [ -n "$creds_backup" ] && [ -f "$creds_backup" ] && [ ! -f admin-credentials.txt ]; then
+    mv "$creds_backup" admin-credentials.txt
+    log "Restored previous admin-credentials.txt"
+  else
+    rm -f "$creds_backup"
+  fi
+  rm -f admin-credentials.chown-failed
+  return 1
 }
 
 start_stack() {
