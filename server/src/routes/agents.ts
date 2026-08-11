@@ -3,11 +3,12 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   ADAPTER_AGNOSTIC_KEYS,
+  AGENT_CHAT_ORIGIN_KIND,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
@@ -3652,6 +3653,76 @@ export function agentRoutes(
       source: req.body.source,
       skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
     });
+  });
+
+  // Standing direct-chat thread with an agent. Finds (or creates) the single
+  // non-hidden `agent_chat` issue assigned to this agent and returns it, so the
+  // UI can open the existing issue chat surface without the user filing a task
+  // first. The issue is created in `ask` work mode — the agent answers
+  // in-thread instead of treating messages as implementation work — and stays
+  // out of default issue lists (see nonAgentChatIssueCondition in
+  // services/issues). Messages reuse the normal issue-comment flow, so wakeups,
+  // streaming, billing, and session resume behave exactly like task comments.
+  router.post("/agents/:id/chat-issue", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+
+    if (req.actor.type === "agent") {
+      res.status(403).json({ error: "Agent chat threads can only be opened by users" });
+      return;
+    }
+
+    const findExisting = async () => {
+      const [existing] = await db
+        .select()
+        .from(issuesTable)
+        .where(and(
+          eq(issuesTable.companyId, agent.companyId),
+          eq(issuesTable.originKind, AGENT_CHAT_ORIGIN_KIND),
+          eq(issuesTable.originId, agent.id),
+          isNull(issuesTable.hiddenAt),
+        ))
+        .orderBy(desc(issuesTable.createdAt))
+        .limit(1);
+      return existing ?? null;
+    };
+
+    const existing = await findExisting();
+    if (existing) {
+      res.status(200).json({ issue: existing, created: false });
+      return;
+    }
+
+    try {
+      const issue = await issueService(db).create(agent.companyId, {
+        title: `Chat with ${agent.name}`,
+        description:
+          "Standing chat thread with this agent. Messages here are conversational — answer in the thread; they are not tasks to execute.",
+        status: "backlog",
+        workMode: "ask",
+        priority: "low",
+        assigneeAgentId: agent.id,
+        originKind: AGENT_CHAT_ORIGIN_KIND,
+        originId: agent.id,
+        createdByUserId: req.actor.userId ?? null,
+      });
+      res.status(201).json({ issue, created: true });
+    } catch (err) {
+      // Concurrent open: issues_active_agent_chat_uq guarantees one live chat
+      // issue per agent, so fall back to the row the winning request created.
+      const maybe = (err ?? {}) as { code?: unknown; constraint?: unknown; cause?: { code?: unknown; constraint?: unknown } };
+      const code = maybe.code ?? maybe.cause?.code;
+      const constraint = maybe.constraint ?? maybe.cause?.constraint;
+      if (code === "23505" && constraint === "issues_active_agent_chat_uq") {
+        const winner = await findExisting();
+        if (winner) {
+          res.status(200).json({ issue: winner, created: false });
+          return;
+        }
+      }
+      throw err;
+    }
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {

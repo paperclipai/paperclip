@@ -5,6 +5,7 @@ import {
   Pause,
   Play,
   Plus,
+  MessageCircle,
   MoreHorizontal,
   Loader2,
   Copy,
@@ -33,6 +34,7 @@ import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
+import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
@@ -315,6 +317,17 @@ export function AgentActionButtons({
     },
   });
 
+  const openChat = useMutation({
+    mutationFn: () => agentsApi.openChatIssue(agent.id, resolvedCompanyId ?? undefined),
+    onSuccess: ({ issue }) => {
+      onActionError?.(null);
+      navigate(createIssueDetailPath(issue.identifier ?? issue.id));
+    },
+    onError: (err) => {
+      reportError(err instanceof Error ? err.message : "Failed to open chat");
+    },
+  });
+
   const isPendingApproval = agent.status === "pending_approval";
   const disabled = actionsDisabled || agentAction.isPending;
   const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
@@ -323,6 +336,20 @@ export function AgentActionButtons({
 
   return (
     <div className={className ?? "flex items-center gap-1 sm:gap-2 shrink-0"}>
+      <Button
+        variant="outline"
+        size={size}
+        onClick={() => openChat.mutate()}
+        disabled={assignAndRunDisabled || openChat.isPending}
+        title={workActionsDisabled ? workActionsDisabledReason : undefined}
+      >
+        {openChat.isPending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1" />
+        ) : (
+          <MessageCircle className="h-3.5 w-3.5 sm:mr-1" />
+        )}
+        <span className="hidden sm:inline">Chat</span>
+      </Button>
       <Button
         variant="outline"
         size={size}

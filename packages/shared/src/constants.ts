@@ -295,6 +295,13 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
 
+/**
+ * Origin kind for the standing direct-chat issue between a user and an agent.
+ * At most one non-hidden issue with this origin exists per agent (enforced by
+ * a partial unique index); these issues are excluded from default issue lists.
+ */
+export const AGENT_CHAT_ORIGIN_KIND = "agent_chat";
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -304,6 +311,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  AGENT_CHAT_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;

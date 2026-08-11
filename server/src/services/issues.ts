@@ -56,6 +56,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
+  AGENT_CHAT_ORIGIN_KIND,
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -562,6 +563,7 @@ export interface IssueFilters {
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
+  includeAgentChats?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -1663,6 +1665,22 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
     filters?.originKindPrefix ||
     filters?.originId ||
     filters?.projectId,
+  );
+}
+
+// Direct-chat threads with an agent are backed by hidden `agent_chat` issues.
+// They are conversation surfaces, not work items, so default lists (boards,
+// inbox, counts) exclude them unless the caller targets them explicitly.
+function nonAgentChatIssueCondition() {
+  return ne(issues.originKind, AGENT_CHAT_ORIGIN_KIND);
+}
+
+function shouldIncludeAgentChatIssues(filters: IssueFilters | undefined) {
+  return Boolean(
+    filters?.includeAgentChats ||
+    filters?.originKind ||
+    filters?.originKindPrefix ||
+    filters?.originId,
   );
 }
 
@@ -4161,6 +4179,7 @@ async function blockedInboxIssueConditions(
     conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
   }
   if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+  if (!shouldIncludeAgentChatIssues(filters)) conditions.push(nonAgentChatIssueCondition());
   if (filters?.labelId) {
     const labeledIssueIds = await dbOrTx
       .select({ issueId: issueLabels.issueId })
@@ -5513,6 +5532,9 @@ export function issueService(db: Db) {
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
+      if (!shouldIncludeAgentChatIssues(filters)) {
+        conditions.push(nonAgentChatIssueCondition());
+      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -5693,6 +5715,7 @@ export function issueService(db: Db) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      if (!shouldIncludeAgentChatIssues(filters)) conditions.push(nonAgentChatIssueCondition());
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
@@ -5709,6 +5732,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
         nonPluginOperationIssueCondition(),
+        nonAgentChatIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
       const statuses = parseStatusFilter(status);

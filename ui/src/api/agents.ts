@@ -13,6 +13,7 @@ import type {
   AgentTaskSession,
   AgentWakeupResponse,
   HeartbeatRun,
+  Issue,
   Approval,
   AgentConfigRevision,
   ClearAgentErrorResponse,
@@ -235,6 +236,8 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  openChatIssue: (id: string, companyId?: string) =>
+    api.post<{ issue: Issue; created: boolean }>(agentPath(id, companyId, "/chat-issue"), {}),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>

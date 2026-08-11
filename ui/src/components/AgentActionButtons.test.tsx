@@ -23,6 +23,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsFile: vi.fn(),
   create: vi.fn(),
   hire: vi.fn(),
+  openChatIssue: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -110,6 +111,10 @@ describe("AgentActionButtons", () => {
     mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated" }));
     mockAgentsApi.invoke.mockResolvedValue({ id: "run-1" });
     mockAgentsApi.resetSession.mockResolvedValue(undefined);
+    mockAgentsApi.openChatIssue.mockResolvedValue({
+      issue: { id: "issue-1", identifier: "PAP-9" },
+      created: true,
+    });
   });
 
   afterEach(async () => {
@@ -167,6 +172,23 @@ describe("AgentActionButtons", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["live-runs", "company-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["heartbeats", "company-1", "agent-1"] });
+  });
+
+  it("opens the agent chat issue and navigates to its thread", async () => {
+    render(makeAgent({ status: "active" }));
+    await flushReact();
+
+    const chatButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Chat"));
+    expect(chatButton).toBeTruthy();
+
+    await act(async () => {
+      chatButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.openChatIssue).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/issues/PAP-9");
   });
 
   it("keeps the normal pause action for non-error agents", async () => {
