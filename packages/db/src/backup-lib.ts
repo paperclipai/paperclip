@@ -460,25 +460,25 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  const childResult = waitForChildExit(child, pgDumpBin);
-  const handledChildResult = childResult.catch((error) => {
-    throw error;
-  });
+  const childResultState = waitForChildExit(child, pgDumpBin).then(
+    () => ({ ok: true } as const),
+    (error) => ({ ok: false, error } as const),
+  );
   const output = fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
   try {
     await waitForWriteStreamOpen(output);
   } catch (error) {
     output.destroy();
     child.kill();
-    await Promise.allSettled([handledChildResult]);
+    await childResultState;
     throw error;
   }
 
   const pipelineResult = pipeline(child.stdout, createGzip(), output);
-  const [pipelineState, childState] = await Promise.allSettled([pipelineResult, handledChildResult]);
+  const [pipelineState, childState] = await Promise.allSettled([pipelineResult, childResultState]);
 
-  if (childState.status === "rejected") {
-    throw childState.reason;
+  if (childState.status === "fulfilled" && !childState.value.ok) {
+    throw childState.value.error;
   }
   if (pipelineState.status === "rejected") {
     throw pipelineState.reason;

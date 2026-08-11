@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Writable } from "node:stream";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
@@ -162,6 +163,69 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".partial"))).toEqual([]);
         expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql"))).toEqual([]);
       } finally {
+        if (realPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = realPgDumpPath;
+        }
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "does not emit an unhandled rejection when pg_dump fails before the output stream opens",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-pgdump-early-fail-");
+      const realPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const missingPgDumpPath = path.join(backupDir, "missing-pg-dump");
+      const createWriteStreamSpy = vi.spyOn(fs, "createWriteStream");
+      const unhandledRejections: unknown[] = [];
+      const onUnhandledRejection = (reason: unknown) => {
+        unhandledRejections.push(reason);
+      };
+
+      class DelayedOpenWriteStream extends Writable {
+        pending = true;
+
+        constructor() {
+          super();
+          setTimeout(() => {
+            this.pending = false;
+            this.emit("open", 1);
+          }, 25);
+        }
+
+        _write(
+          _chunk: unknown,
+          _encoding: BufferEncoding,
+          callback: (error?: Error | null) => void,
+        ): void {
+          callback();
+        }
+      }
+
+      createWriteStreamSpy.mockImplementation(
+        () => new DelayedOpenWriteStream() as unknown as fs.WriteStream,
+      );
+      process.on("unhandledRejection", onUnhandledRejection);
+      process.env.PAPERCLIP_PG_DUMP_PATH = missingPgDumpPath;
+
+      try {
+        await expect(runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-test",
+          backupEngine: "pg_dump",
+        })).rejects.toThrow(/ENOENT/);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(unhandledRejections).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandledRejection);
+        createWriteStreamSpy.mockRestore();
         if (realPgDumpPath === undefined) {
           delete process.env.PAPERCLIP_PG_DUMP_PATH;
         } else {
