@@ -3571,7 +3571,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? pendingExecutionState.currentParticipant
         : null;
       const participantAgentId = currentParticipant?.type === "agent" ? currentParticipant.agentId : null;
-      const agentId = issue.status === "in_review" && participantAgentId
+      const agentId = effectiveIssue.status === "in_review" && participantAgentId
         ? participantAgentId
         : issue.assigneeAgentId;
       if (!agentId) {
