@@ -90,7 +90,11 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
-import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  INTENTIONAL_COMPANY_PAUSE_OUTCOME,
+  evaluateRecoverySuppression,
+  isIntentionalCompanyPauseReason,
+} from "./pause-hold-guard.js";
 import {
   RECOVERY_REVIEW_ESCALATION_THRESHOLD,
   bumpConsecutiveReviewCount,
@@ -982,6 +986,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function getAgent(agentId: string) {
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * TSMC-20760: a company pause is an operator decision, not a recovery failure.
+   * Resolve an already-visible recovery action exactly once so the audit trail
+   * explains why the automatic reassign/invoke/liveness path stopped.  We do not
+   * create a fresh action merely to report a pause: that would itself be the
+   * duplicate recovery/liveness work the pause is meant to prevent.
+   */
+  async function evaluateAutomaticRecoverySuppression(companyId: string, issueId: string) {
+    const decision = await evaluateRecoverySuppression(db, companyId, issueId, treeControlSvc);
+    if (!decision.suppressed || !isIntentionalCompanyPauseReason(decision.reason)) return decision;
+
+    const activeAction = await recoveryActionsSvc.getActiveForIssue(companyId, issueId);
+    if (activeAction) {
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId,
+        sourceIssueId: issueId,
+        actionId: activeAction.id,
+        status: "resolved",
+        outcome: INTENTIONAL_COMPANY_PAUSE_OUTCOME,
+        resolutionNote: `Automatic recovery suppressed by intentional company pause (${decision.reason}).`,
+      });
+      if (resolved) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.recovery_suppressed",
+          entityType: "issue",
+          entityId: issueId,
+          details: {
+            outcome: INTENTIONAL_COMPANY_PAUSE_OUTCOME,
+            suppressionReason: decision.reason,
+            recoveryActionId: resolved.id,
+          },
+        });
+      }
+    }
+    return decision;
   }
 
   async function listCompanyAgentsForToolRouting(companyId: string): Promise<AgentCapabilityRoutingInput[]> {
@@ -5554,7 +5600,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (await isAutomaticRecoverySuppressedByPauseHold(db, freshIssue.companyId, freshIssue.id, treeControlSvc)) {
+        if ((await evaluateAutomaticRecoverySuppression(freshIssue.companyId, freshIssue.id)).suppressed) {
           result.skipped += 1;
           continue;
         }
@@ -7203,7 +7249,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(eq(issues.id, input.finding.issueId))
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
-    if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+    if ((await evaluateAutomaticRecoverySuppression(issue.companyId, issue.id)).suppressed) {
       return { kind: "skipped" as const };
     }
 
@@ -7653,7 +7699,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
+        if ((await evaluateAutomaticRecoverySuppression(companyId, candidate.id)).suppressed) {
           result.pauseHoldSkipped += 1;
           continue;
         }
@@ -8133,7 +8179,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (await isAutomaticRecoverySuppressedByPauseHold(db, fresh.companyId, fresh.id, treeControlSvc)) {
+        if ((await evaluateAutomaticRecoverySuppression(fresh.companyId, fresh.id)).suppressed) {
           result.skipped += 1;
           continue;
         }

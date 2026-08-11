@@ -5418,7 +5418,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("still escalates a continuation parked for review when no open dependency remains", async () => {
-    const { companyId, issueId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
       retryReason: "issue_continuation_needed",
@@ -7716,7 +7716,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.reconcileStrandedAssignedIssues();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "process_lost",
+      fingerprint: `test:${issueId}`,
+      nextAction: "Recover after the operator resumes the company.",
+    });
 
     const livenessWake = await waitForValue(async () => {
       const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
@@ -8375,6 +8384,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(1);
+  });
+
+  it("folds one active recovery action for a company run-pause without creating duplicate recovery work", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "process_lost",
+      fingerprint: `test:${issueId}`,
+      nextAction: "Recover after the operator resumes the company.",
+    });
+    await db
+      .update(companies)
+      .set({ runPauseState: { active: true, reason: "operator maintenance" } })
+      .where(eq(companies.id, companyId));
+
+    const firstPausedSweep = await heartbeat.reconcileStrandedAssignedIssues();
+    const secondPausedSweep = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstPausedSweep.skipped).toBe(1);
+    expect(secondPausedSweep.skipped).toBe(1);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      status: "resolved",
+      outcome: "intentional_company_pause",
+    });
   });
 
   it("re-enqueues recovery when the latest in-progress continuation made progress but left no live path", async () => {
