@@ -87,7 +87,7 @@ export interface ApplyManagedEnvironmentsOptions {
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
-    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment" | "getById"
+    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment" | "getById" | "update"
   >;
   /** Test seam: overrides the instance-settings service built from `db`. */
   instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
@@ -169,43 +169,60 @@ export async function applyManagedEnvironments(
    * `enableManagedSandboxOnly`:
    *
    * - Declared: stamp the managed row as the default, so pickers and run
-   *   selection agree the platform sandbox is "the default".
+   *   selection agree the platform sandbox is "the default". The stamp is
+   *   recorded as `managedDefaultStamped` in the row's platform-owned
+   *   metadata (which boot reconciliation preserves and the client write
+   *   floor protects), so a stamped default is distinguishable from one
+   *   the tenant chose deliberately.
    * - Not declared: local execution is a legitimate default again, so a
-   *   default THIS reconciliation stamped earlier (it points at the
-   *   managed row) reverts to unset — otherwise turning the mode off
-   *   would keep routing default-following runs into the sandbox off a
-   *   stale stamp. A tenant-chosen custom default is untouched in both
-   *   directions.
+   *   default THIS reconciliation stamped earlier (points at the managed
+   *   row AND carries the stamp marker) reverts to unset — otherwise
+   *   turning the mode off would keep routing default-following runs
+   *   into the sandbox off a stale stamp. A default the tenant selected
+   *   themselves — the managed row without the marker, or any custom
+   *   environment — is untouched in both directions.
    *
    * Idempotent and best-effort — a failure degrades to the run-time
    * policy, which refuses local under managed-sandbox-only regardless.
    */
   const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
-  const ensureManagedInstanceDefault = async (managedEnvironmentId: string): Promise<void> => {
+  const ensureManagedInstanceDefault = async (managedEnvironment: {
+    id: string;
+    metadata: Record<string, unknown> | null;
+  }): Promise<void> => {
     try {
       const current = (await settings.get()).defaultEnvironmentId ?? null;
+      const stampedByReconciliation = managedEnvironment.metadata?.managedDefaultStamped === true;
       if (!managedSandboxOnlyDeclared) {
-        if (current !== managedEnvironmentId) return;
+        if (current !== managedEnvironment.id || !stampedByReconciliation) return;
         await settings.update({ defaultEnvironmentId: null });
+        const { managedDefaultStamped: _cleared, ...remainingMetadata } =
+          managedEnvironment.metadata ?? {};
+        await environments.update(managedEnvironment.id, { metadata: remainingMetadata });
         logger.info(
-          { environmentId: managedEnvironmentId },
+          { environmentId: managedEnvironment.id },
           "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
         );
         return;
       }
-      if (current === managedEnvironmentId) return;
+      if (current === managedEnvironment.id) return;
       if (current !== null) {
         const currentEnvironment = await environments.getById(current);
         if (currentEnvironment && currentEnvironment.driver !== "local") return;
       }
-      await settings.update({ defaultEnvironmentId: managedEnvironmentId });
+      // Marker first: a crash between the two writes must never leave a
+      // stamped default that the revert path cannot attribute.
+      await environments.update(managedEnvironment.id, {
+        metadata: { ...(managedEnvironment.metadata ?? {}), managedDefaultStamped: true },
+      });
+      await settings.update({ defaultEnvironmentId: managedEnvironment.id });
       logger.info(
-        { environmentId: managedEnvironmentId, previousDefaultEnvironmentId: current },
+        { environmentId: managedEnvironment.id, previousDefaultEnvironmentId: current },
         "instance default environment set to the managed sandbox environment",
       );
     } catch (err) {
       logger.error(
-        { err, environmentId: managedEnvironmentId },
+        { err, environmentId: managedEnvironment.id },
         "failed to reconcile the instance default environment with the managed sandbox environment",
       );
     }
@@ -334,7 +351,7 @@ export async function applyManagedEnvironments(
         stockStatus: reconciliation.stockStatus,
         updateAvailable: reconciliation.updateAvailable,
       });
-      await ensureManagedInstanceDefault(reconciliation.environment.id);
+      await ensureManagedInstanceDefault(reconciliation.environment);
       const logContext = {
         environmentId: reconciliation.environment.id,
         name: reconciliation.environment.name,
