@@ -55,6 +55,10 @@ diagnostics/
 # Doc maintenance cursor
 .doc-review-cursor
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/

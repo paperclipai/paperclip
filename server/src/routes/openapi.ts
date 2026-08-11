@@ -1221,6 +1221,59 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// ─── Enrichment review ─────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/enrichment/batches",
+  tags: ["enrichment"],
+  summary: "List enrichment batches",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/enrichment/staging",
+  tags: ["enrichment"],
+  summary: "List enrichment staging rows",
+  query: z.object({
+    batchId: z.string(),
+    flagged: z.enum(["true", "false", "1", "0"]).optional(),
+  }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/enrichment/staging/{id}/approve",
+  tags: ["enrichment"],
+  summary: "Approve an enrichment staging row",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/enrichment/staging/{id}/reject",
+  tags: ["enrichment"],
+  summary: "Reject an enrichment staging row",
+  body: z.object({ reason: z.string().max(1_000).optional() }),
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/enrichment/batches/{batchId}/bulk-approve",
+  tags: ["enrichment"],
+  summary: "Bulk approve unflagged enrichment staging rows",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/stats",
