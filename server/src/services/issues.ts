@@ -135,7 +135,6 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { logActivity } from "./activity-log.js";
 import {
-  BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE,
   BLOCKED_REQUIRES_SANCTIONED_REASON_MESSAGE,
   DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE,
   dateGatedBlockerMissingExecutor,
@@ -7474,20 +7473,11 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (data.status === "blocked") {
-        const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(
-          db,
-          companyId,
-          blockedByIssueIds ?? [],
-        );
-        if (
-          unresolvedBlockerIssueIds.length === 0
-          && !hasSanctionedNoLinkBlockReason({
-            description: data.description,
-            unblockDescriptor: data.unblockDescriptor,
-          })
-        ) {
-          throw unprocessable(BLOCKED_CREATE_REQUIRES_SANCTIONED_REASON_MESSAGE);
-        }
+        // The transactional accountable-state gate below is the canonical
+        // validator for blocker links, structured external waits, and
+        // sanctioned no-link descriptors. Do not duplicate it here: the old
+        // precheck ignored executionPolicy.externalWait and discarded the
+        // structured blocked_state_requires_wait_path error details.
         // Layer 2 (TSMC-18729 / TSMC-19681): a date-gated blocker must name a permissioned
         // executor at write time, or its gate opens onto nobody. Covers prose gate lines and
         // first-class unblockDescriptor.blockedUntil. A dateless external wait is unaffected.
