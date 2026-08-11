@@ -22,6 +22,7 @@ STATE_DIR="${PAPERCLIP_PINNED_DEPLOY_STATE_DIR:-$HOME/.paperclip/deploy}"
 RECEIPT_DIR="${PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR:-$STATE_DIR/receipts}"
 CURRENT_RECEIPT="${PAPERCLIP_DEPLOY_RECEIPT:-$STATE_DIR/current-receipt.json}"
 APPROVED_BRANCH="${PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH:-live}"
+LEASE_DIR="${PAPERCLIP_PINNED_DEPLOY_LEASE_DIR:-$STATE_DIR/deployment-lease}"
 
 # Heavy gates (typecheck / dev-watch-gate) can be stubbed in unit tests only.
 SKIP_HEAVY="${PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY:-0}"
@@ -59,11 +60,69 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL  # default ie.thinkstack.paperclip-deploy
   PAPERCLIP_PINNED_DEPLOY_API_URL        # default http://127.0.0.1:3100
   PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
+  PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN    # required, unique per approved deployment
 USAGE
 }
 
 working_receipt_path() {
   echo "$RECEIPT_DIR/working-receipt.json"
+}
+
+# A deployment is one transaction, not four independently safe shell commands.
+# The caller supplies one opaque token for its entire prepare -> gates -> restart
+# sequence. mkdir is used as a portable cross-process lock because macOS does
+# not provide flock. A second terminal must fail before it can touch candidate
+# state, the working receipt, the deploy pointer, or launchd.
+lease_token() {
+  local token="${PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN:-}"
+  [ -n "$token" ] || fail "deployment lease token required; set PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN to a fresh value before prepare-candidate"
+  printf '%s' "$token"
+}
+
+lease_owner_path() { echo "$LEASE_DIR/owner.json"; }
+
+acquire_deployment_lease() {
+  local token actor now owner_token
+  token="$(lease_token)"
+  actor="${PAPERCLIP_PINNED_DEPLOY_ACTOR:-${USER:-unknown}}"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir "$LEASE_DIR" 2>/dev/null; then
+    node - "$(lease_owner_path)" "$token" "$actor" "$now" <<'NODE'
+const fs = require("fs");
+const [path, token, actor, acquiredAt] = process.argv.slice(2);
+fs.writeFileSync(path, JSON.stringify({ token, actor, acquiredAt, pid: process.pid }, null, 2) + "\n", { mode: 0o600 });
+NODE
+    log "acquired deployment lease at $LEASE_DIR"
+    return 0
+  fi
+  [ -f "$(lease_owner_path)" ] || fail "deployment lease directory is malformed: $LEASE_DIR"
+  owner_token="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.token||""))' "$(lease_owner_path)")"
+  [ "$owner_token" = "$token" ] && return 0
+  fail "deployment lease already held; second caller exited before candidate, receipt, pointer, or restart mutation"
+}
+
+require_deployment_lease() {
+  local token owner_token
+  token="$(lease_token)"
+  [ -f "$(lease_owner_path)" ] || fail "no deployment lease; begin with prepare-candidate"
+  owner_token="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.token||""))' "$(lease_owner_path)")"
+  [ "$owner_token" = "$token" ] || fail "deployment lease is held by another caller; exited before mutation"
+}
+
+release_deployment_lease() {
+  require_deployment_lease
+  rm -f "$(lease_owner_path)"
+  rmdir "$LEASE_DIR" || fail "deployment lease directory contains unexpected files: $LEASE_DIR"
+  if [ -f "$(working_receipt_path)" ]; then
+    node - "$(working_receipt_path)" <<'NODE'
+const fs = require("fs");
+const path = process.argv[2];
+const receipt = JSON.parse(fs.readFileSync(path, "utf8"));
+receipt.deploymentLease = { ...(receipt.deploymentLease || {}), held: false, releasedAt: new Date().toISOString() };
+fs.writeFileSync(path, JSON.stringify(receipt, null, 2) + "\n");
+NODE
+  fi
+  log "released deployment lease"
 }
 
 init_receipt() {
@@ -92,6 +151,7 @@ init_receipt() {
   "candidateRoot": "$CANDIDATE_ROOT",
   "deployRoot": "$DEPLOY_ROOT",
   "approvedBranch": "$APPROVED_BRANCH",
+  "deploymentLease": { "path": "$LEASE_DIR", "held": true },
   "gates": {},
   "failedGateCount": 0,
   "mandatoryGates": [
@@ -227,6 +287,7 @@ cmd_prepare_candidate() {
   local sha="${1:-}"
   [ -n "$sha" ] || fail "prepare-candidate requires <sha>"
   [ -d "$SOURCE_ROOT/.git" ] || [ -f "$SOURCE_ROOT/.git" ] || fail "SOURCE_ROOT is not a git checkout: $SOURCE_ROOT"
+  acquire_deployment_lease
 
   # Resolve to full SHA; must be committed object.
   local full
@@ -331,6 +392,7 @@ cmd_server_typecheck() {
 }
 
 cmd_run_gates() {
+  require_deployment_lease
   [ -f "$(working_receipt_path)" ] || fail "no working receipt"
   # committed_sha should already be pass from prepare
   cmd_lint_plists
@@ -348,6 +410,7 @@ cmd_run_gates() {
 
 # Atomic pointer promotion: only after green gates + dual allow flags.
 cmd_promote_pointer() {
+  require_deployment_lease
   local allow_flag=0
   for arg in "$@"; do
     [ "$arg" = "--allow-live-pointer" ] && allow_flag=1
@@ -601,6 +664,7 @@ NODE
 # Single sanctioned door: pointer flip + zero-loss LaunchAgent handoff.
 # Still requires dual allow flags; never touches source coexist agents.
 cmd_promote_and_restart() {
+  require_deployment_lease
   local api_base old_pid pointer_mutated=0 handoff_verified=0
   api_base="$(live_api_base)"
   old_pid="$(read_live_server_pid "$api_base")" \
@@ -632,6 +696,7 @@ cmd_promote_and_restart() {
     wait_for_hot_restart_report "$api_base" "$old_pid"
     handoff_verified=1
     trap - EXIT
+    release_deployment_lease
   else
     fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then kickstart manually)"
   fi
@@ -708,6 +773,7 @@ cmd_full_dry_run() {
   [ -n "$sha" ] || fail "full-dry-run requires <sha>"
   cmd_prepare_candidate "$sha"
   cmd_run_gates
+  release_deployment_lease
   log "full-dry-run complete — live pointer NOT mutated (deployPointerMutated remains false unless promote-pointer)"
   node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(r.deployPointerMutated) process.exit(1); console.log(JSON.stringify({candidateSha:r.candidateSha,failedGateCount:r.failedGateCount,gates:Object.fromEntries(Object.entries(r.gates).map(([k,v])=>[k,v.status]))},null,2))' "$(working_receipt_path)"
 }

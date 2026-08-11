@@ -28,7 +28,11 @@ const SMOKE = path.join(REPO_ROOT, "scripts/pinned-deploy-snapshot-smoke.sh");
 function sh(cmd, args, env = {}, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: {
+      ...process.env,
+      PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "test-deployment-lease",
+      ...env,
+    },
     cwd: opts.cwd,
   });
   return res;
@@ -85,6 +89,11 @@ test("promote-pointer refuses without allow flags (fail closed)", () => {
     mkdirSync(receipts, { recursive: true });
     mkdirSync(deploy, { recursive: true });
     mkdirSync(candidate, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({ token: "test-deployment-lease" }),
+    );
     writeFileSync(path.join(deploy, "MARKER"), "before");
     writeFileSync(
       path.join(receipts, "working-receipt.json"),
@@ -115,6 +124,11 @@ test("promote-pointer refuses when a mandatory gate is red (pointer unchanged)",
     mkdirSync(receipts, { recursive: true });
     mkdirSync(deploy, { recursive: true });
     mkdirSync(candidate, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({ token: "test-deployment-lease" }),
+    );
     writeFileSync(path.join(deploy, "MARKER"), "before");
     writeFileSync(path.join(candidate, "MARKER"), "after");
     const red = greenReceipt();
@@ -148,6 +162,11 @@ test("successful temporary-pointer promote records transition metadata on durabl
     mkdirSync(receipts, { recursive: true });
     mkdirSync(deploy, { recursive: true });
     mkdirSync(candidate, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({ token: "test-deployment-lease" }),
+    );
     writeFileSync(path.join(deploy, "MARKER"), "before");
     writeFileSync(path.join(candidate, "MARKER"), "after-promote");
     writeFileSync(path.join(candidate, "EXTRA"), "from-candidate");
@@ -239,6 +258,47 @@ test("prepare-candidate provisions .paperclip/.env and records worktree_env + ca
     assert.equal(receipt.gates.candidate_deps.status, "pass");
     assert.ok(receipt.mandatoryGates.includes("worktree_env"));
     assert.ok(receipt.mandatoryGates.includes("candidate_deps"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a second deployment caller cannot replace the candidate or working receipt while the lease is held", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-deploy-lease-"));
+  try {
+    const source = path.join(tmp, "source");
+    const candidate = path.join(tmp, "candidate");
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(receipts, { recursive: true });
+    runOk("git", ["init", "-b", "live"], {}, { cwd: source });
+    runOk("git", ["config", "user.email", "test@example.com"], {}, { cwd: source });
+    runOk("git", ["config", "user.name", "test"], {}, { cwd: source });
+    writeFileSync(path.join(source, "README"), "lease fixture\n");
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "fixture", private: true }));
+    runOk("git", ["add", "."], {}, { cwd: source });
+    runOk("git", ["commit", "-m", "init"], {}, { cwd: source });
+    const sha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+    const env = {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH: "live",
+      PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY: "1",
+      PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "first-caller",
+    };
+    runOk("bash", [PROMOTE, "prepare-candidate", sha], env);
+    const before = readFileSync(path.join(receipts, "working-receipt.json"), "utf8");
+    const second = sh("bash", [PROMOTE, "prepare-candidate", sha], {
+      ...env,
+      PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "second-caller",
+    });
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /lease already held/);
+    assert.equal(readFileSync(path.join(receipts, "working-receipt.json"), "utf8"), before);
+    assert.equal(readFileSync(path.join(candidate, "README"), "utf8"), "lease fixture\n");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
