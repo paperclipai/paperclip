@@ -4,6 +4,19 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **Wire `actionability` → recovery escalation (TWE-182 deferred half)** — `recovery/service.ts`
+  + `issue-recovery-actions.test.ts`. The persisted `heartbeat_runs.actionability` axis was
+  written but never READ by the recovery reconciler, so a successful run that flagged a
+  manager/human-review change (prod deploy, secret rotation, strategy call) mapped to
+  `livenessState=needs_followup` → counted as a productive continuation → got AUTO-RE-WOKEN
+  (the exact unsafe path run-liveness.ts:351-354 warns about). Fix: added `actionability` to the
+  `LatestIssueRun` Pick + all 3 `getLatestIssueRun*` selects, and a guard at the top of the
+  successful-continuation branch — `actionability==='manager_review'` routes to the existing
+  `escalateStrandedAssignedIssue` (issue→blocked + manager recovery owner + danger notice)
+  before any auto-continue path. +1 reconciler test (manager_review escalates, no requeue).
+  VERIFY: server typecheck green; 89/89 recovery+run-liveness tests. Self-audit: CLEAN (reads an
+  existing column; reuses vetted escalation helper; reversible). Isolated commit `590b275a3`;
+  DEPLOYED (rebuilt + graceful SIGTERM restart, clean boot exit 0, string confirmed in dist).
 - **Heartbeat scheduler reentrancy guard (correctness)** — `server/src/index.ts`
   (`startHeartbeatSchedulerInterval`). On a slow/memory-bound box a tick's recovery chain
   (reap → promote → resume → reconcile …) outlasts `heartbeatSchedulerIntervalMs`, so the
@@ -76,8 +89,8 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. Wire `actionability` axis into recovery escalation (M) — deferred half of TWE-182;
-   migration 0212 now exists so it's unblocked. Route `manager_review` into the recovery
-   subsystem so risky productive runs escalate on the persisted axis.
-2. Company memory table + recall tool (L, foundational).
-3. Evals in CI + run-liveness golden corpus (M).
+1. Company memory table + recall tool (L, foundational).
+2. Evals in CI + run-liveness golden corpus (M).
+3. Deploy-preflight `db:check` — diff pending migrations vs live schema before a restart, so a
+   hand-applied/out-of-band schema change can't crash-loop the boot migrator again (S–M; the
+   2026-08-10 incident's structural fix).
