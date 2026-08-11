@@ -6,11 +6,13 @@ import {
   agents,
   approvals,
   companies,
+  companyMemories,
   createDb,
   heartbeatRuns,
   issueApprovals,
   issues,
   issueThreadInteractions,
+  principalPermissionGrants,
   toolApplications,
   toolCatalogEntries,
   toolConnections,
@@ -162,6 +164,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(toolPolicies);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemories);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -170,6 +174,81 @@ describeEmbeddedPostgres("tool gateway service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("remembers and recalls company memories without an approval gate, scoped to the company", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    // Baseline tool grant (null scope) — the same deny-default permit every
+    // gateway tool needs; memory tools are not special.
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: null,
+      grantedByUserId: null,
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+
+    // A benign internal write with no require_approval policy executes directly.
+    const remembered = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "paperclip-self:remember",
+      parameters: {
+        title: "Deploy step",
+        content: "Deploy paperclip: pnpm build then graceful SIGTERM restart, never kickstart -k.",
+        tags: ["deploy", "ops"],
+      },
+    });
+    expect(remembered.status).toBe("completed");
+
+    const rows = await db.select().from(companyMemories).where(eq(companyMemories.companyId, company.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ createdByAgentId: agent.id, title: "Deploy step", tags: ["deploy", "ops"] });
+
+    // recall by keyword (both terms hit the content).
+    const byQuery = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "paperclip-self:recall",
+      parameters: { query: "graceful restart" },
+    });
+    expect(byQuery.status).toBe("completed");
+    const queryMemories = (byQuery.result as { data?: { memories?: Array<{ title?: string }> } }).data?.memories ?? [];
+    expect(queryMemories).toHaveLength(1);
+    expect(queryMemories[0]?.title).toBe("Deploy step");
+
+    // recall by tag hits; a non-matching query returns nothing.
+    const byTag = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "paperclip-self:recall",
+      parameters: { tags: ["ops"] },
+    });
+    expect((byTag.result as { data?: { memories?: unknown[] } }).data?.memories).toHaveLength(1);
+    const noMatch = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "paperclip-self:recall",
+      parameters: { query: "kubernetes helm chart" },
+    });
+    expect((noMatch.result as { data?: { memories?: unknown[] } }).data?.memories).toHaveLength(0);
+
+    // Company isolation: another company's matching memory is never recalled.
+    const other = await db
+      .insert(companies)
+      .values({ name: `Other ${randomUUID()}`, issuePrefix: `OT${randomUUID().slice(0, 6).toUpperCase()}` })
+      .returning()
+      .then((r) => r[0]!);
+    await db.insert(companyMemories).values({ companyId: other.id, content: "graceful restart note for another company", tags: ["ops"] });
+    const isolated = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "paperclip-self:recall",
+      parameters: { query: "graceful restart" },
+    });
+    expect((isolated.result as { data?: { memories?: unknown[] } }).data?.memories).toHaveLength(1);
   });
 
   it("gates write tools with an action request and executes only stored reviewed arguments once", async () => {

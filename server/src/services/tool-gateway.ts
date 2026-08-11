@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, arrayOverlaps, desc, eq, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  companyMemories,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -677,6 +678,43 @@ const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
     parametersSchema: {
       type: "object",
       properties: { limit: { type: "number" } },
+      additionalProperties: false,
+    },
+    pluginId: "paperclip-self",
+    providerType: "paperclip_self",
+    risk: "read",
+  },
+  {
+    name: "paperclip-self:remember",
+    displayName: "Remember company knowledge",
+    description:
+      "Persist a durable company memory (a fact, decision, convention, or lesson) that any agent on this company can recall in later runs. Use for knowledge worth keeping across runs, not per-issue chatter.",
+    parametersSchema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The knowledge to remember. Be specific and self-contained." },
+        title: { type: "string", description: "Optional short label for the memory." },
+        tags: { type: "array", items: { type: "string" }, description: "Optional topic tags for later recall filtering." },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+    pluginId: "paperclip-self",
+    providerType: "paperclip_self",
+    risk: "write",
+  },
+  {
+    name: "paperclip-self:recall",
+    displayName: "Recall company knowledge",
+    description:
+      "Search durable company memories saved by any agent on this company. Provide a query and/or tags; returns the most relevant recent memories. Call this before starting work to reuse prior knowledge.",
+    parametersSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords to search memory content and titles." },
+        tags: { type: "array", items: { type: "string" }, description: "Only return memories carrying any of these tags." },
+        limit: { type: "number", description: "Max memories to return (default 10, max 50)." },
+      },
       additionalProperties: false,
     },
     pluginId: "paperclip-self",
@@ -2021,6 +2059,76 @@ export function createToolGatewayService(
       return {
         content: JSON.stringify(rows),
         data: { issues: rows },
+      };
+    }
+
+    if (tool.name === "paperclip-self:remember") {
+      if (!session.agentId) {
+        throw new ToolGatewayHttpError(403, "Paperclip self tools require an agent-scoped gateway session", "agent_context_required");
+      }
+      const content = typeof params.content === "string" ? params.content.trim() : "";
+      if (!content) {
+        throw new ToolGatewayHttpError(400, "Parameter content is required", "invalid_parameters");
+      }
+      if (content.length > 16000) {
+        throw new ToolGatewayHttpError(400, "Parameter content exceeds the 16000-character memory limit", "invalid_parameters");
+      }
+      const title = typeof params.title === "string" && params.title.trim() ? params.title.trim().slice(0, 200) : null;
+      const tags = Array.isArray(params.tags)
+        ? params.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0).map((t) => t.trim()).slice(0, 20)
+        : [];
+      const [row] = await db
+        .insert(companyMemories)
+        .values({ companyId: session.companyId, createdByAgentId: session.agentId, title, content, tags })
+        .returning({ id: companyMemories.id, createdAt: companyMemories.createdAt });
+      return {
+        content: JSON.stringify({ id: row?.id, remembered: true }),
+        data: { id: row?.id, createdAt: row?.createdAt },
+      };
+    }
+
+    if (tool.name === "paperclip-self:recall") {
+      if (!session.agentId) {
+        throw new ToolGatewayHttpError(403, "Paperclip self tools require an agent-scoped gateway session", "agent_context_required");
+      }
+      const limit = Math.max(1, Math.min(50, Number(params.limit ?? 10) || 10));
+      const query = typeof params.query === "string" ? params.query.trim() : "";
+      const tags = Array.isArray(params.tags)
+        ? params.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0).map((t) => t.trim())
+        : [];
+      const conditions = [eq(companyMemories.companyId, session.companyId)];
+      if (query) {
+        // Match any whitespace-separated term against content or title; the
+        // pg_trgm GIN index on content accelerates the ILIKEs.
+        const terms = query.split(/\s+/).filter((t) => t.length >= 2).slice(0, 8);
+        const needles = terms.length > 0 ? terms : [query];
+        const termMatch = or(
+          ...needles.flatMap((t) => [
+            ilike(companyMemories.content, `%${t}%`),
+            ilike(companyMemories.title, `%${t}%`),
+          ]),
+        );
+        if (termMatch) conditions.push(termMatch);
+      }
+      if (tags.length > 0) {
+        conditions.push(arrayOverlaps(companyMemories.tags, tags));
+      }
+      const rows = await db
+        .select({
+          id: companyMemories.id,
+          title: companyMemories.title,
+          content: companyMemories.content,
+          tags: companyMemories.tags,
+          createdByAgentId: companyMemories.createdByAgentId,
+          createdAt: companyMemories.createdAt,
+        })
+        .from(companyMemories)
+        .where(and(...conditions))
+        .orderBy(desc(companyMemories.createdAt))
+        .limit(limit);
+      return {
+        content: JSON.stringify(rows),
+        data: { memories: rows },
       };
     }
 
