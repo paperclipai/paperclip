@@ -3462,7 +3462,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+  async function reconcileStrandedAssignedIssues(opts?: {
+    issueCreatedAtGte?: Date | null;
+    /** Test seam for exercising a stale candidate between read and CAS. */
+    beforeRepair?: (issue: typeof issues.$inferSelect) => Promise<void>;
+  }) {
     const candidates = await db
       .select()
       .from(issues)
@@ -3498,6 +3502,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     for (const candidate of candidates) {
       let issue = candidate;
+      await opts?.beforeRepair?.(issue);
       // Subject/company-bound CAS repair. Only currentParticipant changes;
       // decision and verdict history remain untouched.
       const repaired = await db.transaction(async (tx) => {

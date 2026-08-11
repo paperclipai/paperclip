@@ -390,6 +390,56 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("rejects a stale repair candidate restored to a pending reviewer before CAS", async () => {
+    const { managerId, coderId, reviewerId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    const protectedHistory = {
+      completedStageIds: ["protected-stage"],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+      comments: [{ id: "protected-comment", body: "review evidence" }],
+    };
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        ...protectedHistory,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileStrandedAssignedIssues({
+      beforeRepair: async (candidate) => {
+        if (candidate.id !== sourceIssueId) return;
+        await db.update(issues).set({
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: reviewerId },
+            returnAssignee: { type: "agent", agentId: managerId },
+            ...protectedHistory,
+          },
+        }).where(eq(issues.id, sourceIssueId));
+      },
+    });
+
+    const [after] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(result.changesRequestedRepaired).toBe(0);
+    expect(after?.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      ...protectedHistory,
+    });
+  });
+
   it("does not repair a same-shaped issue in another company", async () => {
     const first = await seedCompany();
     await db.update(issues).set({
