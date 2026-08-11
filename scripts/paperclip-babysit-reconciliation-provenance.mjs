@@ -10,14 +10,15 @@ function digest(value) {
  * digest is content-addressed and cannot be changed by later reconciliation.
  */
 export function createBabysitterArtifactInstance(input) {
-  if (!input?.sourceRevision || !input?.build || input.artifactBytes == null) {
-    throw new TypeError("sourceRevision, build provenance, and retained artifact bytes are required");
+  if (!input?.sourceRevision || !input?.build || input.sourceBytes == null || input.buildOutputBytes == null) {
+    throw new TypeError("sourceRevision, build provenance, source bytes, and retained build output bytes are required");
   }
-  const artifactBytes = Buffer.isBuffer(input.artifactBytes)
-    ? input.artifactBytes
-    : Buffer.from(input.artifactBytes);
-  if (artifactBytes.length === 0 || !input.mediaType) {
-    throw new TypeError("a non-empty artifact and mediaType are required");
+  const sourceBytes = Buffer.isBuffer(input.sourceBytes) ? input.sourceBytes : Buffer.from(input.sourceBytes);
+  const buildOutputBytes = Buffer.isBuffer(input.buildOutputBytes)
+    ? input.buildOutputBytes
+    : Buffer.from(input.buildOutputBytes);
+  if (sourceBytes.length === 0 || buildOutputBytes.length === 0 || !input.mediaType) {
+    throw new TypeError("non-empty source and retained build output bytes plus mediaType are required");
   }
   for (const [name, value] of [
     ["repository", input.sourceRevision.repository],
@@ -47,8 +48,11 @@ export function createBabysitterArtifactInstance(input) {
     sourceRevision,
     build,
     mediaType: input.mediaType,
-    sourceContentDigest: `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`,
-    contentDigest: `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`,
+    sourceContentDigest: `sha256:${createHash("sha256").update(sourceBytes).digest("hex")}`,
+    // ArtifactInstance identity is the retained BuildExecution output, not
+    // the source bytes. This prevents a source-only digest from masquerading
+    // as deployable artifact provenance.
+    contentDigest: `sha256:${createHash("sha256").update(buildOutputBytes).digest("hex")}`,
   };
   return {
     ...artifact,
