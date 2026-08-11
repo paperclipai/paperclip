@@ -139,7 +139,7 @@ function AgentOwnerPicker({
             <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate">{agent.name}</span>
             {agent.status === "terminated" && (
-              <span className="text-muted-foreground text-[10px] ml-auto shrink-0">(terminated)</span>
+              <span className="text-muted-foreground text-xs ml-auto shrink-0">(terminated)</span>
             )}
           </Button>
         ))}
