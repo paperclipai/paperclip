@@ -119,7 +119,11 @@ const fs = require("fs");
 const path = process.argv[2];
 const receipt = JSON.parse(fs.readFileSync(path, "utf8"));
 receipt.deploymentLease = { ...(receipt.deploymentLease || {}), held: false, releasedAt: new Date().toISOString() };
-fs.writeFileSync(path, JSON.stringify(receipt, null, 2) + "\n");
+const body = JSON.stringify(receipt, null, 2) + "\n";
+fs.writeFileSync(path, body);
+for (const receiptPath of [receipt.currentReceiptPath, receipt.durableReceiptPath]) {
+  if (typeof receiptPath === "string" && receiptPath.length > 0) fs.writeFileSync(receiptPath, body);
+}
 NODE
   fi
   log "released deployment lease"
