@@ -140,6 +140,7 @@ function health(overrides: Record<string, unknown> = {}) {
       toolFailuresLastHour: 0,
       toolTimeoutsLastHour: 0,
       capacityDeferralsLastHour: 0,
+      personalCredentialFailuresLastHour: 0,
       activeSlots: 1,
       runningSlots: 1,
     },
@@ -240,5 +241,35 @@ describe("RuntimeTab", () => {
     await flushReact();
 
     expect(restartRuntimeSlotMock).toHaveBeenCalledWith("company-1", "slot-1");
+  });
+
+  it("shows personal credential failures as a separate, non-error line — not folded into Errors", async () => {
+    getRuntimeHealthMock.mockResolvedValue(
+      health({
+        metrics: {
+          averageToolLatencyMsLastHour: 1200,
+          p95ToolLatencyMsLastHour: 2400,
+          timeoutRateLastHour: 0,
+          toolFailuresLastHour: 0,
+          toolTimeoutsLastHour: 0,
+          capacityDeferralsLastHour: 0,
+          personalCredentialFailuresLastHour: 3,
+          activeSlots: 1,
+          runningSlots: 1,
+        },
+      }),
+    );
+
+    await render();
+
+    // Errors headline stays 0 — personal credential failures are routine, not errors.
+    // Summary strip order is: Apps running, Typical response time, Errors in the last hour.
+    const headlineValues = Array.from(container.querySelectorAll(".text-2xl")).map((el) => el.textContent);
+    expect(headlineValues[2]).toBe("0");
+
+    // The count appears in its own clearly-labeled, non-error line.
+    expect(container.textContent).toContain(
+      "personal credential failures in the last hour (routine, not counted as errors",
+    );
   });
 });

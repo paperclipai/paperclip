@@ -109,7 +109,9 @@ import type {
 } from "@paperclipai/shared";
 import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { sanitizeLoggedProviderError } from "../lib/sanitize-logged-error.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
@@ -133,6 +135,78 @@ const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
 const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+// Bounds exchangeOAuthToken's provider round-trip well under
+// OAUTH_REFRESH_LEASE_MS. Without this, a slow or hung token endpoint could
+// keep a refresh lease's holder "in flight" past the lease's own expiry,
+// letting another process reclaim it (see acquireGrantRefreshLease /
+// acquireOAuthRefreshLease) and submit the same rotating refresh token
+// concurrently -- exactly the race the lease exists to prevent. This timeout
+// caps the one thing that wasn't already bounded by the lease duration.
+const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
+// Same reasoning, for secrets.rotate(): its underlying secret provider can be
+// an external service (see getSecretProvider) with no timeout of its own.
+// Two of these can run in a single refresh (refresh token, then access
+// token) alongside the token exchange above, so 30s each keeps the worst-case
+// critical section (30 + 30 + 30 = 90s) comfortably under the 120s lease.
+// This can abandon a hung rotate() call rather than truly cancel it (no
+// AbortSignal support in the secret-provider abstraction), but it still
+// closes the common case: a slow-but-eventually-completing write now fails
+// cleanly and releases the lease, instead of silently outliving it.
+const SECRET_ROTATION_TIMEOUT_MS = 30_000;
+
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), ms);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+// Short backoff for retrying a secret rotation that fails fast (e.g. a
+// dropped connection), not one that's genuinely hanging -- the retry loop
+// this feeds into is itself wrapped in raceWithTimeout, so a hung first
+// attempt already consumes the whole budget and never reaches a retry.
+const SECRET_ROTATION_RETRY_DELAYS_MS = [200, 500];
+
+// Retries a secret rotation a couple of times within a single time budget
+// before giving up. Once the refresh token secret is rotated, we're holding
+// a valid new access token in memory (token.accessToken) that a transient
+// failure shouldn't waste -- retrying immediately, while we still hold the
+// lease, turns a fast/transient failure into a same-call recovery instead of
+// an avoidable reconnect prompt that would've cleared up on the very next
+// attempt anyway. The whole loop, backoff included, runs inside one
+// raceWithTimeout call, so a genuinely hung attempt still can't blow past
+// the per-rotation time budget -- it just never reaches a retry.
+async function rotateSecretWithRetry(
+  secrets: { rotate: (secretId: string, input: { value?: string | null }, actor: object) => Promise<unknown> },
+  secretId: string,
+  value: string,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<void> {
+  await raceWithTimeout(
+    (async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await secrets.rotate(secretId, { value }, {});
+          return;
+        } catch (err) {
+          if (attempt >= SECRET_ROTATION_RETRY_DELAYS_MS.length) throw err;
+          await new Promise((resolve) => setTimeout(resolve, SECRET_ROTATION_RETRY_DELAYS_MS[attempt]));
+        }
+      }
+    })(),
+    timeoutMs,
+    timeoutMessage,
+  );
+}
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -147,6 +221,18 @@ type OAuthProviderEndpoints = {
 };
 
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
+
+// getRuntimeHealth is a read-side aggregation polled by the board UI roughly
+// every 15 seconds. Logging on every call while any personal-credential
+// failure exists in the trailing hour window produces log volume
+// proportional to the number of dashboard viewers, not to actual failure
+// events. Tracking the last-observed count per company lets us log only on a
+// genuine state change (0 -> nonzero, or the count moving to a new value)
+// instead of on every poll. This is a read-side fallback: the ideal fix is
+// logging once at the point the audit row is written (in tool-gateway.ts),
+// but that write path isn't reachable from this read-side aggregation
+// function.
+const lastObservedPersonalCredentialFailureCount = new Map<string, number>();
 
 async function oauthSingleFlight<T>(
   flights: Map<string, Promise<unknown>>,
@@ -1375,6 +1461,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   // This map only removes duplicate work inside one service instance. The
   // database refresh lease below is the cross-process serialization boundary.
   const oauthRefreshFlights = new Map<string, Promise<unknown>>();
+  // Separate map, not a shared key namespace with oauthRefreshFlights above:
+  // that one dedupes the connection's own default-credential refresh, this
+  // one dedupes a specific person's grant refresh (see refreshUserGrant) --
+  // logically independent operations even when they share a connectionId,
+  // so there's no reason to serialize one behind the other. In-process only,
+  // same caveat as oauthRefreshFlights: this does not protect a multi-process
+  // deployment from two instances racing the same grant's refresh_token
+  // (mitigated instead by the `status = 'active'` guard on the error-path
+  // UPDATE in refreshUserGrant, so a losing racer can't clobber a winner).
+  const userGrantRefreshFlights = new Map<string, Promise<unknown>>();
 
   function allowPrivateRemoteEndpoints() {
     return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
@@ -1636,8 +1732,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       issueId: runSnapshotString(snapshot, "issueId") ?? runSnapshotString(paperclipIssue, "id"),
       projectId: runSnapshotString(snapshot, "projectId") ?? runSnapshotString(paperclipIssue, "projectId"),
       routineId: runSnapshotString(snapshot, "routineId"),
-      responsibleUserId: runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
-        ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id"),
+      // Typed column only, no JSONB fallback -- both callers
+      // (mintConnectionTokenForAgent, startAuthorizationForAgent) use this
+      // value for a subject_not_permitted identity check, and contextSnapshot
+      // is populated by several routes that don't all treat it as a trusted
+      // identity source. Falling back to it here would let a run whose typed
+      // column is unset (or doesn't match) still pass that check via a
+      // JSONB-carried userId. This also matches tool-gateway.ts's
+      // resolveResponsibleUserId, which is typed-column-only for the same
+      // reason -- a run this function resolves null for is a run the gateway
+      // already wouldn't attempt the personal-connection flow for, so there's
+      // no case this drops that the gateway path would otherwise reach.
+      responsibleUserId: typeof run.responsibleUserId === "string" && run.responsibleUserId.trim() ? run.responsibleUserId : null,
     };
   }
 
@@ -1963,6 +2069,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return input;
   }
 
+  // Deliberately has no personalCredentialFailures input. That counter
+  // (personalCredentialFailuresLastHour, computed in runtimeHealth below) is
+  // informational/dashboard-only by design -- personal-credential failures
+  // (e.g. an individual's expired personal OAuth grant) are routine,
+  // per-user conditions, not infrastructure problems, and should not page
+  // on-call. Do not add an alert for it here.
   function buildRuntimeAlerts(input: {
     stuckStartingSlots: number;
     stuckRunningSlots: number;
@@ -2143,10 +2255,91 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       row.action === "runtime_stopped"
       && row.reasonCode === "idle_ttl_expired"
     ).length;
+    const isPersonalCredentialResolutionFailure = (row: (typeof auditRows)[number]) =>
+      // Personal-credential-resolution failures (an individual user's own
+      // OAuth grant expiring or being revoked) are routine and per-user --
+      // they must never feed this infra-facing alert, even though their
+      // audit rows can carry a reasonCode like "secret_resolution_failed"
+      // that would otherwise match the "secret" substring below.
+      //
+      // writeAudit() maps this logical action through dedicatedAuditAction
+      // before insert (e.g. to "call_failed"/"call_denied"/"policy_decision"
+      // -- the last for reason: "gallery_identity_model_override", a
+      // reclassification rather than a failure), so the original action
+      // string never lands in the `action` column -- it is only preserved
+      // in details.source. Filter on that field, not row.action.
+      asRecord(row.details).source === "tool_gateway.personal_credential_resolution_error"
+      && row.reasonCode === "secret_resolution_failed";
+    const personalCredentialFailures = auditRows.filter(isPersonalCredentialResolutionFailure);
+    const previousPersonalCredentialFailureCount = lastObservedPersonalCredentialFailureCount.get(companyId) ?? 0;
+    if (personalCredentialFailures.length > previousPersonalCredentialFailureCount) {
+      // getRuntimeHealth is polled by the board UI roughly every 15 seconds,
+      // so logging unconditionally here would produce log volume
+      // proportional to the number of people with the dashboard open, not to
+      // actual failure events. Gate on a change in the observed count (per
+      // company) so this only fires when the underlying condition actually
+      // changes -- e.g. 0 -> nonzero when a grant first starts failing, or
+      // the count moving as more failures fall inside the trailing hour
+      // window -- rather than on every read-side health computation.
+      //
+      // Only fires on an INCREASE, not any change: a count going down means
+      // failures are aging out of the trailing-hour window on their own,
+      // which is not a new condition an operator needs to be warned about --
+      // warning on that decay produced a misleading "Suppressed ... failures"
+      // WARN as the count naturally drained back toward 0. The symmetric
+      // decrease case gets its own, lower-severity info log below instead.
+      //
+      // Raised to warn (matching refreshUserGrant's sibling degradation
+      // logs above) rather than debug: this PR's whole point is making
+      // these suppressed events operator-visible, and debug is invisible
+      // in most production deployments. Includes per-row connectionId,
+      // reasonCode, and actorId (the user whose personal grant failed) so an
+      // operator can tell which connections/grants/users are affected
+      // without querying the audit table directly.
+      logger.warn(
+        {
+          companyId,
+          count: personalCredentialFailures.length,
+          previousCount: previousPersonalCredentialFailureCount,
+          events: personalCredentialFailures.map((row) => ({
+            connectionId: row.connectionId,
+            reasonCode: row.reasonCode,
+            actorId: row.actorId,
+          })),
+        },
+        "Suppressed personal-credential-resolution failures from missing-secret runtime alert",
+      );
+    } else if (personalCredentialFailures.length < previousPersonalCredentialFailureCount) {
+      // Distinct message (not the same "Suppressed ... failures" WARN used
+      // for an increase) so a log reader can't mistake a recovery for a new
+      // onset -- and at info, not warn, since a shrinking count is the
+      // routine, unremarkable case of failures aging out of the window.
+      logger.info(
+        {
+          companyId,
+          count: personalCredentialFailures.length,
+          previousCount: previousPersonalCredentialFailureCount,
+        },
+        "Personal-credential-resolution failure count decreased (aged out of the trailing-hour window)",
+      );
+    }
+    lastObservedPersonalCredentialFailureCount.set(companyId, personalCredentialFailures.length);
     const missingSecretFailures = auditRows.filter((row) =>
-      row.reasonCode === "missing_secret"
-      || row.outcome === "failure" && row.reasonCode?.includes("secret")
+      !isPersonalCredentialResolutionFailure(row)
+      && (
+        row.reasonCode === "missing_secret"
+        || row.outcome === "failure" && row.reasonCode?.includes("secret")
+      )
     ).length;
+    // Informational/dashboard-only by design -- intentionally NOT passed
+    // into buildRuntimeAlerts below and never degrades health.status. The
+    // whole point of splitting this out from missingSecretFailuresLastHour
+    // in earlier review rounds was to stop these routine, per-user
+    // conditions (e.g. an individual's expired personal OAuth grant) from
+    // paging on-call. Do not wire this into alerting; if the volume needs to
+    // be watched, do it via the metrics/dashboard (see
+    // doc/MCP-RUNTIME-OPERATIONS.md).
+    const personalCredentialFailuresLastHour = personalCredentialFailures.length;
     const legacyAuditWriteFailures = auditRows.filter((row) =>
       row.action === "runtime_audit_write_failed"
       || row.reasonCode === "audit_write_failed"
@@ -2186,6 +2379,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         : null,
       p95ToolLatencyMsLastHour: percentile(durations, 95),
       missingSecretFailuresLastHour: missingSecretFailures,
+      personalCredentialFailuresLastHour,
       auditWriteFailuresLastHour: auditWriteFailuresMetric,
       activeConnections,
       disabledConnections,
@@ -2193,6 +2387,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       remoteHttpConnections: connections.filter((connection) => connection.status !== "archived" && connection.transport === "mcp_remote").length,
       localStdioConnections: connections.filter((connection) => connection.status !== "archived" && connection.transport === "local_stdio").length,
     };
+    // Note: metrics.personalCredentialFailuresLastHour is deliberately not
+    // passed to buildRuntimeAlerts -- see the comment on its computation
+    // above. It stays dashboard-only so routine per-user credential
+    // conditions don't page on-call.
     const recommendations = buildRuntimeAlerts({
       stuckStartingSlots: metrics.stuckStartingSlots,
       stuckRunningSlots: metrics.stuckRunningSlots,
@@ -4427,6 +4625,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
+      signal: AbortSignal.timeout(OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS),
     });
     const payload = await response.json().catch(() => ({})) as unknown;
     const record = asRecord(payload);
@@ -4841,11 +5040,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
     const transport = method?.transport ?? "mcp_remote";
+    // The personal-only credential guarantee (tool-gateway.ts,
+    // resolvePersonalOrConnectionCredentialHeaders) is only enforced on the
+    // remote-HTTP execution path today -- local_stdio and the
+    // catalog/health-check paths don't check identityModel at all. Rather
+    // than auditing every execution path, refuse the combination outright at
+    // connect time: a personal_only connection can only ever be mcp_remote,
+    // so the gap simply can't be reached through this connect flow. A
+    // non-gallery link connect is always mcp_remote already (see baseConfig
+    // below), so this only matters for a gallery AppDefinition that declares
+    // both identityModel: "personal_only" and a non-mcp_remote transport.
+    if (method?.identityModel === "personal_only" && transport !== "mcp_remote") {
+      throw unprocessable(
+        `${galleryEntry?.slug ?? "This app"} declares identityModel "personal_only" with transport "${transport}" -- personal-only credential resolution is only implemented for mcp_remote connections.`,
+      );
+    }
     const baseConfig = transport === "mcp_remote"
       ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
       : { templateId: method?.defaults?.templateKey };
     let config: Record<string, unknown> = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.slug, quarantineNewEntries: true }
+      ? {
+        ...baseConfig,
+        sourceTemplateKey: galleryEntry.slug,
+        quarantineNewEntries: true,
+        // Without this, a gallery AppDefinition declaring identityModel:
+        // "personal_only" (see packages/shared/src/types/app-definition.ts)
+        // has no effect at all -- isPersonalOnlyConnection in
+        // tool-gateway.ts reads only connection.config.identityModel, and a
+        // field declared on the method but never copied here is a contract
+        // that nothing enforces. Omitted when the method doesn't set one, so
+        // this stays a no-op for every existing gallery entry.
+        ...(method?.identityModel ? { identityModel: method.identityModel } : {}),
+      }
       : { ...baseConfig, quarantineNewEntries: true };
     if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
@@ -5699,19 +5925,69 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         revokedByUserId: null,
         updatedAt: new Date(),
       };
-      if (existingUserGrant) {
-        await db.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
-      } else {
-        await db.insert(connectionGrants).values({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          kind: "user",
-          subjectUserId: stateRow.subjectUserId,
-          ...grantValues,
-          isDefault: false,
-          createdByUserId: stateRow.subjectUserId,
+      // Transactional, deliberately: these two writes must not be allowed to
+      // split. If the grant INSERT/UPDATE succeeded but the binding INSERT
+      // then failed (a distinct DB round-trip), the grant row would sit
+      // there with real credentialSecretRefs and zero matching bindings --
+      // every subsequent resolveSecretValue call fails closed as
+      // "missing binding," indistinguishable from the person never having
+      // connected, and unrecoverable without a full re-auth.
+      const grantId = await db.transaction(async (tx) => {
+        let id: string;
+        if (existingUserGrant) {
+          id = existingUserGrant.id;
+          await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, id));
+        } else {
+          const [inserted] = await tx.insert(connectionGrants).values({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            kind: "user",
+            subjectUserId: stateRow.subjectUserId,
+            ...grantValues,
+            isDefault: false,
+            createdByUserId: stateRow.subjectUserId,
+          }).returning({ id: connectionGrants.id });
+          if (!inserted) throw new Error("connectionGrants insert returned no row; aborting binding write");
+          id = inserted.id;
+        }
+        // Without this, secrets.resolveSecretValue's binding check
+        // (server/src/services/secrets.ts, getBinding) has nothing to match
+        // against and every read of this grant's token fails closed as
+        // "missing binding" -- indistinguishable from the person never
+        // having connected at all. Targets the grant's own id, not the
+        // connection's (see the connection_grant comment on
+        // SECRET_BINDING_TARGET_TYPES): company_secret_bindings has a
+        // unique index on (companyId, targetType, targetId, configPath), so
+        // binding to the shared connection.id would let only one user's
+        // grant on this connection ever resolve. onConflictDoUpdate (not
+        // onConflictDoNothing) so a binding surviving from a prior secretId
+        // -- possible if a future code path ever creates a new secret for
+        // an existing grant instead of rotating in place -- gets corrected
+        // for any configPath still present in nextCredentialSecretRefs,
+        // rather than silently left stale and unresolvable. This does NOT
+        // cover a configPath that disappears entirely (e.g. a provider
+        // stops returning a refresh_token on a later re-auth) -- that
+        // binding row is orphaned, not corrected, a pre-existing gap this
+        // change doesn't introduce or claim to close.
+        await tx.insert(companySecretBindings).values(
+          nextCredentialSecretRefs.map((ref) => ({
+            companyId: connection.companyId,
+            secretId: ref.secretId,
+            targetType: "connection_grant" as const,
+            targetId: id,
+            configPath: ref.configPath,
+          })),
+        ).onConflictDoUpdate({
+          target: [
+            companySecretBindings.companyId,
+            companySecretBindings.targetType,
+            companySecretBindings.targetId,
+            companySecretBindings.configPath,
+          ],
+          set: { secretId: sql`excluded.secret_id`, updatedAt: new Date() },
         });
-      }
+        return id;
+      });
       if (stateRow.interactionId) {
         await db.update(issueThreadInteractions).set({
           status: "accepted",
@@ -5940,7 +6216,447 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
+  // Refreshes a per-user connection_grants row's access token via its stored
+  // refresh_token, without requiring the person to re-authorize. Called from
+  // the gateway (server/src/services/tool-gateway.ts,
+  // resolveUserGrantAuthHeader) when a personal_only connection's grant has
+  // an expired access token but a refresh_token is on file -- wired via the
+  // same post-construction hook pattern as configureUserAuthorization, since
+  // toolGatewayService is constructed first and can't take this as a
+  // constructor dependency. Returns null (never throws) on any failure so
+  // the caller falls through to its existing "connect your account" prompt
+  // rather than surfacing a raw OAuth error to the agent.
+  // Transient (non-reauth) refresh failures -- a network blip, the
+  // provider's token endpoint returning a 5xx -- get a short in-memory
+  // cooldown per grant so a hot loop of tool calls doesn't hammer the
+  // provider on every single invocation while it's degraded. Same
+  // in-process-only caveat as userGrantRefreshFlights above: this doesn't
+  // coordinate across multiple server instances, it just stops one instance
+  // from retrying faster than the cooldown allows.
+  const userGrantRefreshCooldownUntil = new Map<string, number>();
+  const USER_GRANT_REFRESH_COOLDOWN_MS = 30_000;
+
+  // Cross-process serialization for refreshUserGrant, mirroring
+  // acquireOAuthRefreshLease/clearOAuthRefreshLease above -- those guard the
+  // connection-level refresh; userGrantRefreshFlights only stops one process
+  // from racing itself. Simpler than the connection-level lease in two ways:
+  //
+  // 1. connectionGrants.refreshLease is its own column, not a field nested
+  //    in a shared config blob, so the claim only needs to guard that one
+  //    column (no full-row snapshot compare is needed to avoid clobbering
+  //    unrelated fields).
+  // 2. An expired lease IS auto-reclaimed here, unlike the connection-level
+  //    path's conservative "throw and require reconnect" for a stuck lease.
+  //    That conservatism doesn't apply to grants: every grant secret ref is
+  //    stored with versionSelector "latest" and never repinned (see
+  //    refreshUserGrant), so a crashed holder that already rotated secrets
+  //    before dying leaves "latest" pointing at its result regardless --
+  //    reclaiming and retrying just resolves the already-current secret and
+  //    performs one more (idempotent-in-effect) refresh. Without this, an
+  //    abandoned lease would block every future refresh forever: this
+  //    function never throws, so there's no equivalent of the connection
+  //    path's explicit "reconnect this app" surfaced to break the deadlock.
+  //
+  // On every poll iteration, this also re-checks the access token's own
+  // expiresAt (not just the lease) -- same as acquireOAuthRefreshLease's
+  // top-of-loop expiry check. Without that, a losing caller would wait out
+  // the winner's lease, see it cleared, and redundantly re-refresh a token
+  // the winner had just rotated a moment earlier. Returning the already-
+  // fresh row instead lets the caller reuse the winner's result.
+  async function acquireGrantRefreshLease(
+    grantId: string,
+    companyId: string,
+  ): Promise<{ grant: typeof connectionGrants.$inferSelect | null; leaseId: string | null }> {
+    const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
+    while (true) {
+      const [latest] = await db
+        .select()
+        .from(connectionGrants)
+        .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, companyId)))
+        .limit(1);
+      if (!latest || latest.status !== "active") return { grant: latest ?? null, leaseId: null };
+
+      const accessRef = latest.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+      const accessExpiresAtMs = accessRef?.expiresAt ? Date.parse(accessRef.expiresAt) : Number.NaN;
+      if (Number.isFinite(accessExpiresAtMs) && accessExpiresAtMs > Date.now() + 60_000) {
+        return { grant: latest, leaseId: null };
+      }
+
+      const currentLeaseExpiresAtMs = latest.refreshLease?.expiresAt ? Date.parse(latest.refreshLease.expiresAt) : Number.NaN;
+      const leaseIsActive = Boolean(latest.refreshLease) && Number.isFinite(currentLeaseExpiresAtMs) && currentLeaseExpiresAtMs > Date.now();
+      if (!leaseIsActive) {
+        const leaseId = randomUUID();
+        const [claimed] = await db
+          .update(connectionGrants)
+          .set({
+            refreshLease: { id: leaseId, expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString() },
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(connectionGrants.id, grantId),
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.status, "active"),
+            latest.refreshLease
+              ? sql`${connectionGrants.refreshLease} ->> 'id' = ${latest.refreshLease.id}`
+              : sql`${connectionGrants.refreshLease} is null`,
+          ))
+          .returning();
+        if (claimed) return { grant: claimed, leaseId };
+        continue;
+      }
+
+      if (Date.now() >= waitDeadline) return { grant: latest, leaseId: null };
+      await new Promise((resolve) => setTimeout(resolve, OAUTH_REFRESH_LEASE_POLL_MS));
+    }
+  }
+
+  async function clearGrantRefreshLease(grantId: string, companyId: string, leaseId: string) {
+    await db
+      .update(connectionGrants)
+      .set({ refreshLease: null, updatedAt: new Date() })
+      .where(and(
+        eq(connectionGrants.id, grantId),
+        eq(connectionGrants.companyId, companyId),
+        sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
+      ));
+  }
+
+  async function refreshUserGrant(input: {
+    companyId: string;
+    connectionId: string;
+    subjectUserId: string;
+  }): Promise<{ accessToken: string; expiresAt: string | null } | null> {
+    // companyId-prefixed: connectionId is already company-scoped on its own
+    // (it's a UUID primary key), so the prefix isn't load-bearing for
+    // uniqueness here. It's kept for the same reason every other
+    // singleflight/cooldown key in this file is company-prefixed: log and
+    // debug output naming a flight/cooldown key reads immediately as "which
+    // company", instead of requiring a lookup from connectionId, and it
+    // keeps this key's shape consistent with its siblings elsewhere in the
+    // file.
+    const flightKey = `${input.companyId}:${input.connectionId}:${input.subjectUserId}`;
+    return oauthSingleFlight(userGrantRefreshFlights, flightKey, async () => {
+      const cooldownUntil = userGrantRefreshCooldownUntil.get(flightKey);
+      if (cooldownUntil && cooldownUntil > Date.now()) return null;
+
+      const [grant] = await db
+        .select()
+        .from(connectionGrants)
+        .where(and(
+          eq(connectionGrants.companyId, input.companyId),
+          eq(connectionGrants.connectionId, input.connectionId),
+          eq(connectionGrants.kind, "user"),
+          eq(connectionGrants.subjectUserId, input.subjectUserId),
+          eq(connectionGrants.status, "active"),
+        ))
+        .limit(1);
+      if (!grant) return null;
+      const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+      const refreshTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+      if (!accessTokenRef || !refreshTokenRef) return null;
+
+      let connection: typeof toolConnections.$inferSelect;
+      try {
+        connection = await getConnectionRow(input.connectionId, input.companyId);
+      } catch {
+        return null;
+      }
+
+      // Claim the cross-process lease before calling the OAuth provider at
+      // all -- userGrantRefreshFlights only dedupes within this process, so
+      // without this, two server processes could both reach exchangeOAuthToken
+      // with the same refresh token.
+      const lease = await acquireGrantRefreshLease(grant.id, input.companyId);
+      if (!lease.leaseId) {
+        // No lease to work with, for one of two reasons. Either another
+        // process already refreshed this grant while we were polling (its
+        // access token is now fresh -- reuse that result instead of
+        // needlessly refreshing again), or the lease was busy/stuck and
+        // never cleared, or the grant is no longer active. Only the first
+        // case has a token to return; the rest report the same as a
+        // missing grant (null), matching this function's contract.
+        const freshAccessRef = lease.grant?.credentialSecretRefs.find(
+          (ref) => ref.configPath === "oauth.access_token",
+        );
+        const freshExpiresAtMs = freshAccessRef?.expiresAt ? Date.parse(freshAccessRef.expiresAt) : Number.NaN;
+        const isFresh = lease.grant?.status === "active"
+          && Number.isFinite(freshExpiresAtMs)
+          && freshExpiresAtMs > Date.now() + 60_000;
+        if (!isFresh || !freshAccessRef) return null;
+        try {
+          const freshAccessToken = await secrets.resolveSecretValue(
+            input.companyId,
+            freshAccessRef.secretId,
+            freshAccessRef.versionSelector ?? "latest",
+            {
+              consumerType: "connection_grant",
+              consumerId: lease.grant!.id,
+              configPath: "oauth.access_token",
+              actorType: "system",
+            },
+          );
+          return { accessToken: freshAccessToken, expiresAt: freshAccessRef.expiresAt ?? null };
+        } catch {
+          return null;
+        }
+      }
+      const leaseId = lease.leaseId;
+
+      // The success and reauthorization paths below already clear the
+      // lease as part of their own guarded write, so this is a no-op there
+      // (the lease id no longer matches by the time it runs). It's the only
+      // release for every other exit -- the early "!client.clientId" return,
+      // and the plain network-error branch of the catch below that doesn't
+      // touch the grant row at all.
+      try {
+      try {
+        // consumerType/consumerId target this grant, not the connection --
+        // see the connection_grant comment on SECRET_BINDING_TARGET_TYPES
+        // and the matching fix in tool-gateway.ts's resolveUserGrantAuthHeader.
+        const refreshTokenValue = await secrets.resolveSecretValue(
+          input.companyId,
+          refreshTokenRef.secretId,
+          refreshTokenRef.versionSelector ?? "latest",
+          {
+            consumerType: "connection_grant",
+            consumerId: grant.id,
+            configPath: "oauth.refresh_token",
+            actorType: "system",
+          },
+        );
+        const endpoints = await oauthEndpointsForConnection(connection, null);
+        const client = await oauthClientForConnection(connection, endpoints.provider);
+        if (!client.clientId) return null;
+        const token = await exchangeOAuthToken({
+          tokenUrl: endpoints.tokenUrl,
+          clientId: client.clientId,
+          clientSecret: client.clientSecret,
+          grantType: "refresh_token",
+          refreshToken: refreshTokenValue,
+        });
+
+        // Revalidate lease ownership right before the side effects below --
+        // acquiring the lease only proves we held it at that moment, not
+        // that we still do after the network round-trip above. The 30s
+        // exchange timeout keeps this from ever legitimately expiring in
+        // between, but re-checking here is cheap insurance against acting
+        // on a lease we no longer hold (e.g. after an unexpected pause) --
+        // fail closed the same as any other lost-lease case rather than
+        // proceeding to rotate secrets a losing racer no longer owns.
+        const [leaseCheck] = await db
+          .select({ refreshLease: connectionGrants.refreshLease })
+          .from(connectionGrants)
+          .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, input.companyId)))
+          .limit(1);
+        if (leaseCheck?.refreshLease?.id !== leaseId) return null;
+
+        // Rotate secrets before persisting the new expiry, matching
+        // refreshOAuthCredentials' ordering for the connection-level path.
+        // Grant refs are always stored with versionSelector "latest" (set
+        // once at grant creation, never repinned -- see
+        // createOrRotateOAuthSecret), so resolveSecretValue picks up a
+        // rotation immediately regardless of whether the metadata write
+        // below succeeds. Rotating first closes the gap the previous
+        // ordering left open: persisting a future expiresAt before rotation
+        // happened meant a rotation failure left the grant claiming a fresh
+        // token while the secret store still held the stale one, so callers
+        // stopped refreshing and kept sending the old, already-expired
+        // token until something else intervened. Now, if rotation fails,
+        // the metadata write below never runs, so the grant's expiresAt
+        // still (accurately) says expired and the next call retries.
+        //
+        // Refresh token rotates first, access token second -- same order as
+        // refreshOAuthCredentials, and for the same reason: a rotating
+        // provider invalidates the submitted refresh token as soon as the
+        // exchange above succeeds, whether or not we ever persist its
+        // replacement. Rotating access first and having refresh-rotation
+        // fail afterward would leave the access secret on a newer
+        // generation than the refresh secret, which the provider has
+        // already invalidated -- the next refresh attempt would resolve
+        // that stale refresh token via "latest" and get `invalid_grant`,
+        // forcing reauthorization despite this exchange having succeeded.
+        // Rotating refresh first means a failure there leaves both secrets
+        // on their old (still-matching) generation, and the access-token
+        // rotation below never runs.
+        //
+        // Two residual gaps here are accepted, not overlooked. Both are
+        // properties of this codebase's secret-provider abstraction and
+        // lease pattern generally (see refreshOAuthCredentials' identical
+        // shape above), not something specific to this function:
+        //
+        // 1. If the refresh-token rotation above succeeds but the
+        //    access-token rotation below then fails after every retry, the
+        //    grant is left with a rotated refresh token and a stale access
+        //    token/expiry. This surfaces as one avoidable reconnect prompt,
+        //    self-healing on the very next attempt (the refresh secret
+        //    already resolves to its new value via "latest"). Closing this
+        //    fully would need atomic multi-secret writes, which the secret
+        //    provider abstraction doesn't support.
+        // 2. secrets.rotate()'s underlying provider has no AbortSignal
+        //    support, so raceWithTimeout/rotateSecretWithRetry can abandon
+        //    a hung write, not cancel it -- an abandoned write could still
+        //    land after this function has given up and released the lease.
+        //    True cancellation would require plumbing AbortSignal through
+        //    every secret-provider implementation, a larger change than
+        //    this function's scope.
+        if (token.refreshToken) {
+          await rotateSecretWithRetry(
+            secrets,
+            refreshTokenRef.secretId,
+            token.refreshToken,
+            SECRET_ROTATION_TIMEOUT_MS,
+            "Timed out rotating a connection grant's refresh token secret",
+          );
+        }
+        await rotateSecretWithRetry(
+          secrets,
+          accessTokenRef.secretId,
+          token.accessToken,
+          SECRET_ROTATION_TIMEOUT_MS,
+          "Timed out rotating a connection grant's access token secret",
+        );
+
+        const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
+        const updatedRefs = grant.credentialSecretRefs.map((ref) =>
+          ref.configPath === "oauth.access_token" ? { ...ref, expiresAt: expiresAt ?? undefined } : ref);
+        const [updated] = await db
+          .update(connectionGrants)
+          .set({ credentialSecretRefs: updatedRefs, refreshLease: null, lastUsedAt: new Date(), updatedAt: new Date() })
+          .where(and(
+            eq(connectionGrants.id, grant.id),
+            eq(connectionGrants.companyId, input.companyId),
+            eq(connectionGrants.status, "active"),
+            sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
+          ))
+          .returning({ id: connectionGrants.id });
+        if (!updated) {
+          // Lost the race to a concurrent process that already marked this
+          // grant needs_reauthorization (or revoked it) between our SELECT
+          // and this UPDATE -- or, now that rotation happens first, this
+          // write itself was superseded. Secrets are already rotated and
+          // correct either way (versionSelector "latest" resolves them
+          // regardless of this write's outcome); only the metadata persist
+          // was lost, so fall through to null, same as no grant.
+          return null;
+        }
+
+        userGrantRefreshCooldownUntil.delete(flightKey);
+        return { accessToken: token.accessToken, expiresAt };
+      } catch (err) {
+        // A refresh_token itself expiring/being revoked is expected over a
+        // long enough time horizon, not a bug -- fail closed by marking the
+        // grant for reauthorization so the next call's missing-grant path
+        // posts a fresh connect prompt, rather than looping on the same
+        // failed refresh. The `status = 'active'` guard matches the success
+        // path above: don't let a losing racer overwrite a grant a
+        // concurrent call already refreshed successfully or already flagged.
+        const errorCode = err instanceof HttpError && err.details && typeof err.details === "object" && "code" in err.details
+          ? (err.details as { code?: unknown }).code
+          : null;
+        let markedNeedsReauthorization = false;
+        if (errorCode === "oauth_reauthorization_required") {
+          try {
+            const [reauthorized] = await db
+              .update(connectionGrants)
+              .set({ status: "needs_reauthorization", refreshLease: null, updatedAt: new Date() })
+              .where(and(
+                eq(connectionGrants.id, grant.id),
+                eq(connectionGrants.companyId, input.companyId),
+                eq(connectionGrants.status, "active"),
+                sql`${connectionGrants.refreshLease} ->> 'id' = ${leaseId}`,
+              ))
+              .returning({ id: connectionGrants.id });
+            // Only claim the transition happened if a row actually came
+            // back -- a zero-row UPDATE (e.g. a concurrent call already
+            // moved this grant to "revoked" or "needs_reauthorization"
+            // between our SELECT and this UPDATE) still runs successfully
+            // but affects nothing, and without this check the flag below
+            // would be set as if we'd made the transition ourselves.
+            markedNeedsReauthorization = Boolean(reauthorized);
+          } catch (updateErr) {
+            // Same "never throws" contract as the rest of this function --
+            // if the DB is degraded and this update fails, fall through to
+            // the cooldown below instead of propagating. Without a catch
+            // here, this exception would escape through oauthSingleFlight
+            // (which only has a `finally`, no `catch`) to every concurrent
+            // waiter, and no cooldown would get set -- every subsequent
+            // tool call would re-enter refreshUserGrant and hammer the
+            // OAuth provider again with no backoff while the DB recovers.
+            // Logged (unlike a bare swallow) because a failure here leaves
+            // the grant stuck marked "active" while its OAuth provider
+            // keeps getting retried on every cooldown expiry, with no other
+            // operator-visible signal that the reauthorization transition
+            // never landed.
+            logger.warn(
+              {
+                connectionId: input.connectionId,
+                subjectUserId: input.subjectUserId,
+                error: sanitizeLoggedProviderError(updateErr instanceof Error ? updateErr.message : String(updateErr)),
+              },
+              "refreshUserGrant failed to mark a connection grant needs_reauthorization",
+            );
+          }
+        }
+        if (!markedNeedsReauthorization) {
+          userGrantRefreshCooldownUntil.set(flightKey, Date.now() + USER_GRANT_REFRESH_COOLDOWN_MS);
+        }
+        // Best-effort, deliberately: refreshUserGrant's contract (see
+        // tool-gateway.ts's resolveUserGrantAuthHeader) is "never throws,
+        // returns null on any failure so the caller falls through to the
+        // connect-card/reauthorization prompt." A bare, awaited logActivity
+        // call here broke that contract silently -- a transient DB error
+        // while auditing the refresh failure would itself throw, propagate
+        // out of this catch block uncaught, and replace the structured
+        // user_authorization_required 403 with an opaque error, since
+        // nothing on the gateway side wraps this call either.
+        try {
+          await logActivity(db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "connection-grant-refresh",
+            action: "connection_grant.refresh_failed",
+            entityType: "tool_connection",
+            entityId: input.connectionId,
+            details: {
+              subjectUserId: input.subjectUserId,
+              errorCode: errorCode ?? null,
+              // This message can originate directly from the OAuth provider's
+              // own error_description field (see exchangeOAuthToken) -- an
+              // untrusted external string being persisted into a durable
+              // activity log. Capped and stripped of non-printable characters
+              // so a malicious or misconfigured authorization server can't use
+              // this as an unbounded storage sink or smuggle control
+              // characters into log output.
+              error: sanitizeLoggedProviderError(err instanceof Error ? err.message : String(err)),
+            },
+          });
+        } catch (logErr) {
+          // Swallow -- see comment above -- but not silently: without this,
+          // a transient DB failure here has no signal at all, unlike every
+          // sibling degradation branch in tool-gateway.ts's bestEffortAudit.
+          logger.warn(
+            {
+              connectionId: input.connectionId,
+              subjectUserId: input.subjectUserId,
+              // Same rationale as the sanitizeLoggedProviderError call above --
+              // this can be a raw DB/driver error message that echoes back
+              // query or parameter content.
+              error: sanitizeLoggedProviderError(logErr instanceof Error ? logErr.message : String(logErr)),
+            },
+            "refreshUserGrant swallowed a logActivity failure",
+          );
+        }
+        return null;
+      }
+      } finally {
+        await clearGrantRefreshLease(grant.id, input.companyId, leaseId).catch(() => undefined);
+      }
+    });
+  }
+
   return {
+    refreshUserGrant,
+
     approvedStdioTemplates: async (companyId: string): Promise<ToolStdioCommandTemplate[]> => {
       const adminTemplates = await db
         .select()
@@ -6545,9 +7261,39 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return { connectionId: connection.id, installs: await listConnectionInstalls(connection.id, connection.companyId) };
     },
 
-    updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
-      const existing = await getConnectionRow(connectionId);
+    // companyId is required here (not merely threaded through as an
+    // optional filter like getConnectionRow's other callers) so this
+    // function is tenant-scoped on its own terms: today only the PATCH
+    // route calls this, and it always resolves `existing` (and therefore
+    // companyId) via svc.getConnection before calling in, so route-layer
+    // auth already prevents cross-tenant updates in practice. But that's a
+    // property of the caller, not of this function -- without a companyId
+    // predicate here, any future or alternate call path that passed a raw
+    // connectionId would silently update (or read) another company's
+    // connection. Forcing the parameter keeps that guarantee intrinsic to
+    // updateConnection instead of resting entirely on callers remembering
+    // to check first.
+    updateConnection: async (connectionId: string, input: UpdateToolConnection, companyId: string): Promise<ToolConnection> => {
+      const existing = await getConnectionRow(connectionId, companyId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
+      // sourceTemplateKey and identityModel are set once at connect time
+      // (connectGalleryApp) and read for authorization decisions elsewhere
+      // in this file and in tool-gateway.ts's isPersonalOnlyConnection --
+      // never let a PATCH silently strip or repoint them. Without this, a
+      // caller with only PATCH access could omit identityModel from their
+      // update payload, or swap sourceTemplateKey to point at a gallery
+      // entry with a different identityModel, and downgrade a
+      // personal-only connection to shared credentials. There's no
+      // legitimate reason for either field to change after connect, so
+      // both are pinned to whatever was already stored rather than merged.
+      for (const immutableKey of ["sourceTemplateKey", "identityModel"] as const) {
+        const existingValue = asRecord(existing.config)[immutableKey];
+        if (existingValue === undefined) {
+          delete config[immutableKey];
+        } else {
+          config[immutableKey] = existingValue;
+        }
+      }
       if (existing.transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
@@ -6565,8 +7311,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
           updatedAt: new Date(),
         })
-        .where(eq(toolConnections.id, connectionId))
+        .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)))
         .returning();
+      if (!row) throw notFound("Tool connection not found");
       await syncCredentialBindings(row);
       await ensureRuntimeSlot(row);
       return toConnection(row);

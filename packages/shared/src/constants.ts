@@ -689,6 +689,13 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "issue",
   "run",
   "tool_connection",
+  // Distinct from "tool_connection": company_secret_bindings has a unique
+  // index on (companyId, targetType, targetId, configPath). A personal_only
+  // connection can have many users' grants, each needing its own binding at
+  // configPath "oauth.access_token" -- binding to the connection itself
+  // would let only one of them ever resolve. Bindings for a connection_grant
+  // row's secrets target the grant's own id instead.
+  "connection_grant",
   "system",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];

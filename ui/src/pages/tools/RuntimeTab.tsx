@@ -383,6 +383,17 @@ export function RuntimeTab({ companyId }: { companyId: string }) {
         />
       </div>
 
+      {/* Personal credential failures are routine and per-user (e.g. an expired OAuth
+          grant) — deliberately NOT part of the "Errors" card above, so they get their
+          own neutral, clearly-labeled line rather than looking like an infra failure. */}
+      {(metrics?.personalCredentialFailuresLastHour ?? 0) > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{metrics?.personalCredentialFailuresLastHour}</span>{" "}
+          personal credential {metrics?.personalCredentialFailuresLastHour === 1 ? "failure" : "failures"} in the
+          last hour (routine, not counted as errors — someone needs to reconnect their own key).
+        </p>
+      ) : null}
+
       {/* Needs-attention cards — one per firing supervisor alert, in plain words. */}
       {firingAlerts.map((alert) => {
         const action = alertAction(alert);

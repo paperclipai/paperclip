@@ -91,6 +91,24 @@ export function toolAccessRoutes(
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
 
+  // Wires the gateway's personal-only credential resolution (see
+  // startUserAuthorizationHook in tool-gateway.ts) back to this service's
+  // existing OAuth-start logic, rather than duplicating PKCE/state handling
+  // in the gateway. The gateway is constructed before this service (it's a
+  // constructor dependency of toolAccessService), so this can't be wired at
+  // construction time -- it's set post-construction here instead.
+  options.toolGateway?.configureUserAuthorization(async (input) => {
+    await svc.startAuthorizationForAgent({
+      companyId: input.companyId,
+      connectionId: input.connectionId,
+      agentId: input.agentId,
+      runId: input.runId,
+      subjectUserId: input.subjectUserId,
+      redirectUri: oauthRedirectUri(),
+    });
+  });
+  options.toolGateway?.configureGrantRefresh(svc.refreshUserGrant);
+
   function configuredPublicBaseUrl() {
     const raw = (
       process.env.PAPERCLIP_PUBLIC_URL?.trim()
@@ -740,7 +758,7 @@ export function toolAccessRoutes(
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
     const existing = await svc.getConnection(req.params.connectionId as string);
     assertToolAppMutationAccess(req, existing.companyId);
-    const connection = await svc.updateConnection(existing.id, req.body);
+    const connection = await svc.updateConnection(existing.id, req.body, existing.companyId);
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },
       { enabled: connection.enabled, config: connection.config },

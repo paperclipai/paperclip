@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  connectionGrants,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -50,8 +51,10 @@ import type {
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
 } from "@paperclipai/shared";
+import { getAvailableConnectionMethod, getConnectableAppDefinition } from "@paperclipai/shared";
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { sanitizeLoggedProviderError } from "../lib/sanitize-logged-error.js";
 import { secretService } from "./secrets.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
@@ -64,6 +67,7 @@ import {
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { logger } from "../middleware/logger.js";
 import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
@@ -755,8 +759,36 @@ export function createToolGatewayService(
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
     now?: () => number;
+    // Test-only seam: resolveResponsibleUserId's own `!session.runId` early
+    // return already makes it impossible, through any real request path, to
+    // reach resolvePersonalOrConnectionCredentialHeaders' runId-invariant
+    // guard with a non-null responsibleUserId -- by the time that guard runs,
+    // session.runId is guaranteed non-null or the request already failed
+    // earlier with responsible_user_unknown. That guard exists purely to
+    // fail loudly if a future refactor breaks that guarantee, so it has no
+    // organic way to fire in an integration test. This flag lets tests force
+    // the guard's "violated" branch to run (without actually touching
+    // session.runId, so the audit/log details it records stay accurate) to
+    // verify its error response and audit event.
+    simulateRunIdInvariantViolationForTesting?: boolean;
   } = {},
 ) {
+  // simulateRunIdInvariantViolationForTesting is a fault-injection switch
+  // that deliberately forces the runId-invariant guard below to fail as if
+  // violated -- it must never be able to fire against real production
+  // traffic. The check is specifically `=== "production"` (denylist) rather
+  // than something like `!== "test"` (allowlist): an allowlist form would
+  // fail open -- any misconfigured or unset NODE_ENV (a typo, unset var, or
+  // a new deploy environment name that isn't "test") would silently let the
+  // flag through. Denylisting the one value that must never see it means
+  // the flag is blocked whenever NODE_ENV is unambiguously "production",
+  // which is the only environment where the risk (fault injection reaching
+  // real traffic) actually applies.
+  if (options.simulateRunIdInvariantViolationForTesting && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "simulateRunIdInvariantViolationForTesting must not be set in production",
+    );
+  }
   const runtimeSupervisor = createToolRuntimeSupervisor(db, {
     deploymentMode: options.deploymentMode,
     deploymentExposure: options.deploymentExposure,
@@ -769,6 +801,36 @@ export function createToolGatewayService(
   const secrets = secretService(db);
   const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
   let nextProtocolRateLimitPruneAt = 0;
+  // Wired post-construction by whoever also constructs toolAccessService, since
+  // that service owns OAuth-endpoint discovery and PKCE state and this service
+  // is constructed first (see server/src/routes/tool-access.ts). Personal-only
+  // connections (no legitimate non-personal identity -- Gmail, Calendar, a
+  // user-scoped Slack grant) call this to post the "Connect your account"
+  // interaction card when the run's responsible user has no grant yet, instead
+  // of duplicating OAuth-start logic here.
+  let startUserAuthorizationHook:
+    | ((input: {
+        companyId: string;
+        connectionId: string;
+        agentId: string;
+        runId: string;
+        subjectUserId: string;
+        issueId: string | null;
+      }) => Promise<void>)
+    | null = null;
+  // Same wiring rationale as startUserAuthorizationHook above: rotates a
+  // personal grant's access token via its refresh_token when possible, so a
+  // long-lived agent doesn't hit "reconnect" every time an access token's
+  // short lifetime expires. Returns null (not an error) when refresh isn't
+  // possible or fails -- resolveUserGrantAuthHeader falls through to the
+  // existing missing-grant/connect-card path either way.
+  let refreshUserGrantHook:
+    | ((input: {
+        companyId: string;
+        connectionId: string;
+        subjectUserId: string;
+      }) => Promise<{ accessToken: string; expiresAt: string | null } | null>)
+    | null = null;
 
   async function pruneExpiredProtocolRateLimitCounters(current: number) {
     if (current < nextProtocolRateLimitPruneAt) return;
@@ -1124,7 +1186,26 @@ export function createToolGatewayService(
               ? "call_denied"
               : input.action === "tool_gateway.call_deferred"
                 ? "call_failed"
-                : "call_failed";
+                // Mirrors the agent_not_personal branch in dedicatedOutcome
+                // below: that reason code is an explicit 403 denial, so its
+                // action column must match every other outcome: "denied" row
+                // (call_denied) rather than falling through to the generic
+                // call_failed default -- otherwise dashboards/alerts that
+                // filter on action: "call_denied" silently miss it.
+                : input.action === "tool_gateway.personal_credential_resolution_error" && input.details?.reason === "agent_not_personal"
+                  ? "call_denied"
+                  // gallery_identity_model_override records a policy
+                  // reclassification (a gallery AppDefinition's identityModel
+                  // downgraded a connection pinned personal_only), not a
+                  // failed or denied call -- the call itself proceeds and
+                  // typically succeeds using shared credentials. Routing it
+                  // through the call_failed default here would misclassify
+                  // it alongside genuine failures, so it gets the same
+                  // action bucket as other non-outcome policy decisions
+                  // (call_allowed/session_created) instead.
+                  : input.action === "tool_gateway.personal_credential_resolution_error" && input.details?.reason === "gallery_identity_model_override"
+                    ? "policy_decision"
+                    : "call_failed";
     const dedicatedOutcome =
       input.action === "tool_gateway.session_revoked"
         ? "success"
@@ -1134,7 +1215,30 @@ export function createToolGatewayService(
           ? "timeout"
           : input.action === "tool_gateway.call_failed"
             ? "failure"
-            : "success";
+            // All four resolvePersonalOrConnectionCredentialHeaders /
+            // resolveUserGrantAuthHeader reason codes represent a failure or
+            // denial to resolve personal credentials, never a success --
+            // without this branch they fell through to the "success"
+            // default below, hiding them from any dashboard/alert filtering
+            // on outcome: "failure". agent_not_personal is the one reason
+            // that corresponds to an explicit 403 denial (mirroring
+            // call_denied/session_rejected above); the rest are ordinary
+            // resolution failures -- except gallery_identity_model_override,
+            // handled below: that reason fires from isPersonalOnlyConnection
+            // returning false, which lets the call proceed on shared
+            // credentials rather than blocking it. Recording it as
+            // "failure" would produce two contradictory audit rows for one
+            // successful call (this reclassification event plus the real
+            // call_completed success row), corrupting failure-rate
+            // dashboards. The reclassification itself is a policy decision,
+            // not an error, so it gets "success" like the default case.
+            : input.action === "tool_gateway.personal_credential_resolution_error"
+              ? (input.details.reason === "agent_not_personal"
+                  ? "denied"
+                  : input.details.reason === "gallery_identity_model_override"
+                    ? "success"
+                    : "failure")
+              : "success";
     try {
       await db.insert(toolAccessAuditEvents).values({
         companyId: input.companyId,
@@ -1153,7 +1257,11 @@ export function createToolGatewayService(
         actorId: input.actorId ?? input.session?.actorId ?? input.agentId ?? input.session?.gatewayTokenId ?? input.companyId,
         action: dedicatedAuditAction,
         outcome: dedicatedOutcome,
-        reasonCode: typeof input.details.reasonCode === "string" ? input.details.reasonCode : null,
+        reasonCode: typeof input.details.reasonCode === "string"
+          ? input.details.reasonCode
+          : typeof input.details.reason === "string"
+            ? input.details.reason
+            : null,
         details: {
           source: input.action,
           agentId: input.agentId,
@@ -1175,26 +1283,108 @@ export function createToolGatewayService(
 
     const entityType = input.issueId ? "issue" : input.session?.gatewayId ? "tool_mcp_gateway" : "agent";
     const entityId = input.issueId ?? input.session?.gatewayId ?? input.agentId ?? input.companyId;
-    await logActivity(db, {
-      companyId: input.companyId,
-      actorType: input.actorType ?? input.session?.actorType ?? (input.agentId ? "agent" : "system"),
-      actorId: input.actorId ?? input.session?.actorId ?? input.agentId ?? input.session?.gatewayTokenId ?? input.companyId,
-      action: input.action,
-      entityType,
-      entityId,
-      agentId: input.agentId,
-      runId: input.runId,
-      issueId: input.issueId,
-      details: {
-        gatewaySessionId: input.session?.id ?? null,
-        gatewayId: input.session?.gatewayId ?? null,
-        gatewayPublicId: input.session?.gatewayPublicId ?? null,
-        issueId: input.issueId,
-        projectId: input.session?.projectId ?? null,
+    try {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actorType ?? input.session?.actorType ?? (input.agentId ? "agent" : "system"),
+        actorId: input.actorId ?? input.session?.actorId ?? input.agentId ?? input.session?.gatewayTokenId ?? input.companyId,
+        // Always keep the raw, dot-namespaced action string here, even for
+        // gallery_identity_model_override. ui/src/pages/audit/AuditFeed.tsx's
+        // ACTION_DOMAINS list sends a "tool_gateway." prefix as the `action`
+        // query param, and server/src/services/agent-action-audit.ts:72
+        // matches it with `starts_with(activityLog.action, filters.action)`
+        // to populate the company Audit feed's "Tools" domain -- routing
+        // this action through dedicatedAuditAction (as toolAccessAuditEvents'
+        // own `action` column does, for its own storage-shape reasons) would
+        // make "policy_decision" match no domain, silently dropping the
+        // event from the Tools view. The reclassification is still
+        // available for querying via details.dedicatedAuditAction below,
+        // without breaking the domain filter every other tool_gateway.*
+        // action relies on.
+        action: input.action,
+        entityType,
+        entityId,
+        agentId: input.agentId,
         runId: input.runId,
-        ...input.details,
-      },
-    });
+        issueId: input.issueId,
+        details: {
+          gatewaySessionId: input.session?.id ?? null,
+          gatewayId: input.session?.gatewayId ?? null,
+          gatewayPublicId: input.session?.gatewayPublicId ?? null,
+          issueId: input.issueId,
+          projectId: input.session?.projectId ?? null,
+          runId: input.runId,
+          ...input.details,
+          // Spread AFTER input.details (not before): dedicatedAuditAction is
+          // a value this function computes, not something a caller should
+          // be able to override. If it were spread first, a caller whose
+          // own `details` payload happened to contain a `dedicatedAuditAction`
+          // key (however unlikely today) would silently clobber the
+          // computed classification with untrusted input instead of the
+          // other way around.
+          ...(input.action === "tool_gateway.personal_credential_resolution_error" && input.details?.reason === "gallery_identity_model_override"
+            ? { dedicatedAuditAction }
+            : {}),
+        },
+      });
+    } catch (error) {
+      // The toolAccessAuditEvents row above is already durably written by
+      // this point -- that insert is the audit-of-record and its own catch
+      // block (above) already rethrows/counts failures for it. logActivity
+      // is a secondary, best-effort activity-feed mirror of the same event;
+      // letting its failure propagate from writeAudit would make callers
+      // like bestEffortAudit (and its galleryIdentityModelOverrideAudited
+      // dedup Set) unable to tell "the audit row itself never got written"
+      // apart from "the row was written but the activity-feed mirror
+      // failed" -- both looked identical (writeAudit throws) before this
+      // fix, so a persistent logActivity failure (e.g. this action string
+      // hitting a constraint/validation specific to activity_log rows)
+      // would make bestEffortAudit return false forever and the dedup Set
+      // would never gate, reproducing unbounded duplicate audit rows.
+      logger.warn({
+        action: input.action,
+        companyId: input.companyId,
+        error: error instanceof Error ? error.message : String(error),
+      }, "[tool-gateway] writeAudit's logActivity mirror failed after the toolAccessAuditEvents row was already written");
+    }
+  }
+
+  // writeAudit itself can throw (e.g. a transient DB error). Every call site
+  // that logs on a path leading to a thrown error or a fail-closed return
+  // needs this wrapped, not awaited bare -- otherwise a DB hiccup while
+  // auditing replaces the caller's intended, structured outcome (a 403, a
+  // null) with an opaque exception from the audit write itself. The audit is
+  // always a courtesy on top of the real outcome, never a precondition for it.
+  // Returns whether the audit write actually succeeded. Most call sites
+  // don't need this (the audit is a pure courtesy on top of an outcome
+  // that's already decided), but a caller that needs to know whether the
+  // event was durably recorded -- e.g. one guarding an in-process dedup Set
+  // against marking an event "audited" when the write silently failed --
+  // must not just fire-and-forget this.
+  async function bestEffortAudit(input: Parameters<typeof writeAudit>[0]): Promise<boolean> {
+    try {
+      await writeAudit(input);
+      return true;
+    } catch (err) {
+      // Only reached when the toolAccessAuditEvents insert itself failed --
+      // writeAudit now swallows a logActivity-only failure internally (with
+      // its own warn) and does not rethrow for that case, so a caller
+      // relying on this return value to gate an in-process dedup Set (e.g.
+      // galleryIdentityModelOverrideAudited) can treat `false` as "the
+      // audit row was not durably written" without also covering "the row
+      // was written but the activity-feed mirror failed" -- those are no
+      // longer conflated. recordToolRuntimeAuditWriteFailure (inside
+      // writeAudit) already counts this; this warn adds connectionId,
+      // which that counter doesn't carry, so an operator can correlate this
+      // failure back to a specific connection without a secondary query.
+      logger.warn({
+        action: input.action,
+        companyId: input.companyId,
+        connectionId: typeof input.details.connectionId === "string" ? input.details.connectionId : null,
+        error: err instanceof Error ? err.message : String(err),
+      }, "[tool-gateway] bestEffortAudit swallowed a writeAudit failure");
+      return false;
+    }
   }
 
   async function writeSessionAuthFailure(
@@ -2119,7 +2309,32 @@ export function createToolGatewayService(
 
   function headerValue(value: unknown): string | null {
     if (typeof value !== "string") return null;
-    if (/[\r\n]/.test(value)) return null;
+    // Blocks C0 controls (including NUL) and DEL, not just CRLF: those bytes
+    // can desync downstream HTTP clients/parsers the same way a raw CRLF
+    // injection would, but obs-text (0x80-0xFF) is left alone so a UTF-8
+    // tenant label in a static/passthrough header still works.
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\r\n]/.test(value)) return null;
+    return value;
+  }
+
+  // Deliberately separate from headerValue above, not a tightened version of
+  // it: headerValue is also used for operator-configured static headers and
+  // passthrough caller headers, which can legitimately carry non-ASCII bytes
+  // (RFC 7230 obs-text, e.g. a UTF-8 tenant label) -- rejecting those there
+  // would silently drop a working header with no error or audit trail. A
+  // bearer token has no legitimate reason to contain anything outside
+  // printable ASCII, so this stricter check applies only at the two call
+  // sites that build an `Authorization: Bearer <token>` value from a stored
+  // or freshly-refreshed personal grant.
+  function bearerTokenHeaderValue(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    // \x21-\x7e (not \x20-\x7e): RFC 6750 section 2.1's token68 format
+    // excludes ASCII whitespace, including the space character itself. A
+    // space-bearing token would still produce a syntactically-parseable
+    // `Authorization: Bearer <token>` header, but some HTTP/1.1 parsers
+    // downstream truncate or misinterpret unencoded spaces mid-header-value,
+    // so it's rejected here rather than trusting every recipient to handle it.
+    if (/[^\x21-\x7e]/.test(value)) return null;
     return value;
   }
 
@@ -2364,6 +2579,499 @@ export function createToolGatewayService(
       }
     }
     return headers;
+  }
+
+  // isPersonalOnlyConnection runs on every tool call for affected
+  // connections (it's in the hot credential-resolution path), so the
+  // gallery_identity_model_override audit write below must not fire on
+  // every single invocation -- that would write an unbounded number of
+  // audit rows (plus a logActivity row) for one connection over its
+  // lifetime, and add a synchronous DB write to a hot path. This set
+  // dedupes by connectionId + the gallery identityModel value that triggered
+  // the downgrade, in-process, for the lifetime of this service instance --
+  // same in-process-only convention (and same accepted multi-instance
+  // caveat) as tool-access.ts's userGrantRefreshFlights /
+  // userGrantRefreshCooldownUntil maps: it doesn't coordinate across
+  // multiple server instances, it just stops any one instance from writing
+  // this event more than once per connection per distinct downgrade value.
+  // Keying on connectionId alone would permanently suppress a *second*,
+  // distinct downgrade event for the same connection -- e.g. the gallery
+  // value is fixed/reverted back to personal_only (or omitted) and then
+  // changed to a different non-personal_only value later in this process's
+  // lifetime. Keying on connectionId + value still suppresses the
+  // original repeat-with-identical-value spam this dedup exists to prevent.
+  const galleryIdentityModelOverrideAudited = new Set<string>();
+  // Gates the one-line info log below, independent of
+  // galleryIdentityModelOverrideAudited: that Set only records a dedupKey
+  // once the audit ROW write succeeds, so it stays empty for as long as the
+  // DB is degraded, and the branch below it re-enters on every tool call in
+  // the meantime. Without a separate log-only gate, a persistently failing
+  // audit write would make this info line fire once per invocation for as
+  // long as the outage lasts, rather than the intended "at most once per
+  // dedupKey" this comment originally described. This Set is added to
+  // unconditionally (log fired == key added), matching the pre-fix
+  // single-attempt-per-process-lifetime intent for the log line
+  // specifically, while the audit Set above keeps its own success-gated
+  // retry semantics for the durable row.
+  const galleryIdentityModelOverrideLogged = new Set<string>();
+
+  // Gmail, Calendar, and any user-scoped Slack grant have no legitimate
+  // non-personal identity -- there is no "the company's calendar" to fall
+  // back to. A connection is marked personal_only in its config (either
+  // copied from the connecting AppDefinition's method, or set directly for
+  // link-connected servers like rh-google-mcp that have no gallery entry).
+  async function isPersonalOnlyConnection(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<boolean> {
+    // Authorization-relevant: derive this from the gallery AppDefinition
+    // (looked up via sourceTemplateKey) rather than trusting
+    // connection.config.identityModel directly. The config JSONB is
+    // caller-writable via updateConnection (PATCH), which replaces the
+    // whole config blob from input -- a user with only PATCH access could
+    // otherwise omit identityModel from their update payload and silently
+    // downgrade a personal-only connection to shared credentials. Both
+    // sourceTemplateKey and identityModel would need to stay in sync for a
+    // downgrade to succeed this way, so tool-access.ts's updateConnection
+    // additionally pins both fields to their originally-connected values,
+    // never letting a PATCH change or repoint either one.
+    // A gallery method that's found but simply omits identityModel (doesn't
+    // specify it either way -- e.g. after a gallery edit removes the field,
+    // or a method reorder resolves a different method) must NOT be treated
+    // as an implicit "not personal_only". identityModel is optional
+    // (ConnectionMethodDef#identityModel), so an omission is not a signal;
+    // only an explicit value is. An explicit gallery value wins in either
+    // direction (it can both upgrade and downgrade relative to the pinned
+    // config); an omission (gallery method exists but doesn't specify
+    // identityModel) never overrides the pinned config.
+    const pinnedIdentityModel = asRecord(connection.config)?.identityModel;
+    const sourceTemplateKey = asRecord(connection.config)?.sourceTemplateKey;
+    if (typeof sourceTemplateKey === "string" && sourceTemplateKey) {
+      const galleryEntry = getConnectableAppDefinition(sourceTemplateKey);
+      const method = galleryEntry ? getAvailableConnectionMethod(galleryEntry) : null;
+      // ADR-style note -- accepted tradeoff, established and tested over the
+      // last 2 rounds, not something to "fix" without a deliberate decision
+      // to revisit it:
+      //
+      // Context: tool-access.ts's updateConnection pins sourceTemplateKey and
+      // identityModel on PATCH specifically so a caller can't smuggle a
+      // downgrade through an update payload (see comment above). That pin
+      // does NOT, and structurally cannot, also block a gallery
+      // AppDefinition's identityModel from changing out from under an
+      // existing connection.
+      //
+      // Decision: that's acceptable. A caller's PATCH payload is an
+      // untrusted, per-request input; the gallery AppDefinition is an
+      // operator-controlled, trusted surface edited out-of-band (deploys/
+      // config changes), not something any tenant-scoped caller can reach.
+      // So an explicit gallery identityModel is allowed to override the
+      // pinned config in EITHER direction -- upgrade (shared -> personal_only)
+      // or downgrade (personal_only -> shared) -- while a gallery method that
+      // merely omits identityModel is never treated as an implicit
+      // reclassification (identityModel is optional on
+      // ConnectionMethodDef, so its absence carries no signal either way).
+      //
+      // Consequence accepted here: an operator who edits the gallery can
+      // silently downgrade a connection that a tenant believes is pinned
+      // personal_only. That's the tradeoff. What we do about it is make the
+      // downgrade observable rather than prevent it -- see the audit event
+      // below, distinct from the routine no-gallery-entry fallback path
+      // (which already has its own debug log).
+      if (method?.identityModel !== undefined) {
+        const result = method.identityModel === "personal_only";
+        const dedupKey = `${connection.id}:${method.identityModel}`;
+        if (pinnedIdentityModel === "personal_only" && !result && !galleryIdentityModelOverrideAudited.has(dedupKey)) {
+          // Logged at most once per dedupKey, gated on its own Set
+          // (galleryIdentityModelOverrideLogged) rather than on whether the
+          // audit write below succeeds: if it were gated on the same
+          // success-only Set as the audit row, a persistently failing audit
+          // write would leave this dedupKey un-added forever, so this
+          // branch -- and this log line -- would re-fire on every single
+          // tool call for the connection's remaining process lifetime. It's
+          // an "info", not a "warn"/"error": the event itself is a
+          // successful reclassification, not a failure -- writeAudit's own
+          // dedicatedOutcome mapping for this reason code agrees
+          // (outcome: "success").
+          if (!galleryIdentityModelOverrideLogged.has(dedupKey)) {
+            logger.info({
+              connectionId: connection.id,
+              pinnedIdentityModel,
+              galleryIdentityModel: method.identityModel,
+              method: method.key,
+            }, "[tool-gateway] gallery AppDefinition identityModel downgraded a connection pinned personal_only");
+            galleryIdentityModelOverrideLogged.add(dedupKey);
+          }
+          // Audit-row-only for now: this event is intentionally not wired
+          // into any metric counter/bucket, so it's only visible via raw
+          // tool_access_audit_events queries. That's a deliberate scope cut
+          // (see the ADR-style note above), not an oversight -- adding a
+          // metric for it is a separate, later change.
+          //
+          // Only mark this dedupKey as audited once the write actually
+          // succeeds. bestEffortAudit swallows the underlying error so the
+          // hot credential-resolution path this runs on is never disrupted
+          // by a transient DB issue -- but if we added to the dedup Set
+          // unconditionally (or before awaiting), a single transient audit
+          // write failure would permanently and silently suppress this event
+          // for the rest of this process's lifetime, since the Set is never
+          // otherwise invalidated.
+          const audited = await bestEffortAudit({
+            session,
+            companyId: connection.companyId,
+            agentId: session.agentId,
+            runId: session.runId,
+            issueId: session.issueId,
+            action: "tool_gateway.personal_credential_resolution_error",
+            details: {
+              connectionId: connection.id,
+              reason: "gallery_identity_model_override",
+              pinnedIdentityModel,
+              galleryIdentityModel: method.identityModel,
+              method: method.key,
+            },
+          });
+          if (audited) {
+            galleryIdentityModelOverrideAudited.add(dedupKey);
+          }
+        }
+        return result;
+      }
+      if (method) {
+        logger.debug(
+          { connectionId: connection.id, method: method.key },
+          "gallery method found but identityModel absent -- classifying by pinned config",
+        );
+      }
+    }
+    // No gallery entry to consult (e.g. a link-connected server with no
+    // AppDefinition), or the gallery method was found but doesn't explicitly
+    // specify identityModel -- fall back to the pinned, immutable stored
+    // config value.
+    return pinnedIdentityModel === "personal_only";
+  }
+
+  // Deliberately reads ONLY the typed heartbeatRuns.responsibleUserId
+  // column -- no JSONB contextSnapshot fallback, unlike
+  // loadBrokerRunContext's equivalent in tool-access.ts (which this function
+  // otherwise mirrors; duplicated rather than imported since the two
+  // services are constructed independently -- see startUserAuthorizationHook
+  // above for the one place that does need cross-service wiring). The
+  // snapshot can be influenced by paths that aren't the trusted ownership
+  // assignment the typed column represents; falling back to it here would
+  // let a NULL typed column resolve a *different* person's personal OAuth
+  // grant from less-trusted data, not just fail more visibly. If the typed
+  // column is unset, that's a real "no responsible user" case, not
+  // something to guess at from JSONB. Also rejects a run outside
+  // ACTIVE_GATEWAY_RUN_STATUSES, so a completed/failed/cancelled run can't
+  // still pull a live person's credentials the way the broker path already
+  // refuses to.
+  async function resolveResponsibleUserId(session: ToolGatewaySession): Promise<string | null> {
+    if (!session.runId || !session.agentId) return null;
+    const [run] = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        responsibleUserId: heartbeatRuns.responsibleUserId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, session.runId))
+      .limit(1);
+    if (!run || run.companyId !== session.companyId || run.agentId !== session.agentId) return null;
+    if (!ACTIVE_GATEWAY_RUN_STATUSES.has(run.status)) return null;
+    return typeof run.responsibleUserId === "string" && run.responsibleUserId.trim() ? run.responsibleUserId : null;
+  }
+
+  // Never falls back to a workspace grant or the connection's own
+  // credentialRefs -- for a personal_only connection there is no valid
+  // fallback identity, only this specific person's or nothing. Refresh is
+  // attempted via refreshUserGrantHook (when wired) before falling through to
+  // the reconnect prompt; a hook that's unwired, or that itself returns null
+  // (refresh failed), is treated the same as no grant at all.
+  async function resolveUserGrantAuthHeader(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    subjectUserId: string,
+  ): Promise<Record<string, string> | null> {
+    const [grant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, subjectUserId),
+        eq(connectionGrants.status, "active"),
+      ))
+      .limit(1);
+    if (!grant) return null;
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    if (!accessTokenRef) {
+      await bestEffortAudit({
+        session,
+        companyId: connection.companyId,
+        agentId: session.agentId,
+        runId: session.runId,
+        issueId: session.issueId,
+        action: "tool_gateway.personal_credential_resolution_error",
+        details: { connectionId: connection.id, reason: "grant_missing_credential_ref" },
+      });
+      return null;
+    }
+    const isExpired = accessTokenRef.expiresAt && Date.parse(accessTokenRef.expiresAt) <= Date.now();
+    if (isExpired) {
+      if (!refreshUserGrantHook) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "token_expired_no_refresh_hook" },
+        });
+        return null;
+      }
+      // The hook's own contract (see refreshUserGrant in tool-access.ts) is
+      // "never throws, returns null on failure" -- but this call crosses a
+      // service boundary to a function this file doesn't own, so it's
+      // defended here too rather than trusting the callee never to
+      // regress that contract. Same reasoning as bestEffortAudit: a thrown
+      // error here must not replace the structured connect-card/403 flow
+      // below with an opaque exception.
+      let refreshed: Awaited<ReturnType<NonNullable<typeof refreshUserGrantHook>>>;
+      try {
+        refreshed = await refreshUserGrantHook({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          subjectUserId,
+        });
+      } catch (err) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: {
+            connectionId: connection.id,
+            reason: "grant_refresh_hook_failed",
+            error: sanitizeLoggedProviderError(err instanceof Error ? err.message : String(err)),
+          },
+        });
+        return null;
+      }
+      if (!refreshed) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "grant_refresh_returned_null" },
+        });
+        return null;
+      }
+      const sanitized = bearerTokenHeaderValue(refreshed.accessToken);
+      if (!sanitized) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "refreshed_token_header_value_rejected" },
+        });
+        return null;
+      }
+      logger.info(
+        { connectionId: connection.id, grantId: grant.id, source: "refreshed", subjectUserId },
+        "[tool-gateway] personal grant resolved",
+      );
+      return { Authorization: `Bearer ${sanitized}` };
+    }
+    try {
+      // consumerType/consumerId target this specific grant, not the
+      // connection -- company_secret_bindings has a unique index on
+      // (companyId, targetType, targetId, configPath), so binding every
+      // user's "oauth.access_token" to the connection itself would let only
+      // one person's grant on a shared personal_only connection ever resolve
+      // at a time. See completeOAuthCallback's grant-binding sync, which
+      // binds to this same (connection_grant, grant.id) target.
+      const token = await secrets.resolveSecretValue(
+        connection.companyId,
+        accessTokenRef.secretId,
+        accessTokenRef.versionSelector ?? "latest",
+        {
+          consumerType: "connection_grant",
+          consumerId: grant.id,
+          configPath: "oauth.access_token",
+          actorType: "system",
+        },
+      );
+      const sanitized = bearerTokenHeaderValue(token);
+      if (!sanitized) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "token_header_value_rejected" },
+        });
+        return null;
+      }
+      logger.info(
+        { connectionId: connection.id, grantId: grant.id, source: "stored", subjectUserId },
+        "[tool-gateway] personal grant resolved",
+      );
+      return { Authorization: `Bearer ${sanitized}` };
+    } catch (err) {
+      // Swallowed to the caller (falls through to the connect-card/
+      // reauthorization flow, same as "no grant") -- but not silently: an
+      // audit event distinguishes a genuine infrastructure failure (secrets
+      // backend down, binding missing) from "this person never connected."
+      await bestEffortAudit({
+        session,
+        companyId: connection.companyId,
+        agentId: session.agentId,
+        runId: session.runId,
+        issueId: session.issueId,
+        action: "tool_gateway.personal_credential_resolution_error",
+        details: { connectionId: connection.id, reason: "secret_resolution_failed", error: sanitizeLoggedProviderError(err instanceof Error ? err.message : String(err)) },
+      });
+      return null;
+    }
+  }
+
+  async function resolvePersonalOrConnectionCredentialHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<Record<string, string>> {
+    if (!(await isPersonalOnlyConnection(session, connection))) {
+      return resolveCredentialHeaders(connection);
+    }
+    if (!session.agentId) {
+      await bestEffortAudit({
+        session,
+        companyId: connection.companyId,
+        agentId: session.agentId,
+        runId: session.runId,
+        issueId: session.issueId,
+        action: "tool_gateway.personal_credential_resolution_error",
+        details: { connectionId: connection.id, reason: "agent_not_personal" },
+      });
+      throw new ToolGatewayHttpError(
+        403,
+        "This app can only be used by an agent acting for a specific person.",
+        "agent_not_personal",
+        { connectionId: connection.id },
+      );
+    }
+    const responsibleUserId = await resolveResponsibleUserId(session);
+    if (!responsibleUserId) {
+      // Deliberately omits agentId/runId/subjectUserId from the thrown
+      // details -- those are internal identifiers, not something a caller
+      // hitting this 403 needs echoed back to it. They're already on the
+      // audit event below for anyone actually debugging this.
+      await bestEffortAudit({
+        session,
+        companyId: connection.companyId,
+        agentId: session.agentId,
+        runId: session.runId,
+        issueId: session.issueId,
+        action: "tool_gateway.personal_credential_resolution_error",
+        details: { connectionId: connection.id, reason: "responsible_user_unknown" },
+      });
+      throw new ToolGatewayHttpError(
+        403,
+        "Could not determine which person this agent run is acting for.",
+        "responsible_user_unknown",
+        { connectionId: connection.id },
+      );
+    }
+    const grantHeaders = await resolveUserGrantAuthHeader(session, connection, responsibleUserId);
+    if (grantHeaders) return grantHeaders;
+    if (startUserAuthorizationHook) {
+      // resolveResponsibleUserId (called above to produce responsibleUserId)
+      // already returns null -- which throws responsible_user_unknown before
+      // reaching here -- whenever session.runId is null, so this is
+      // reachable only with a real runId. That invariant is enforced
+      // explicitly here (rather than coalesced away with `?? ""`) so a
+      // future refactor that loosens the guard above fails loudly instead
+      // of silently starting OAuth authorization state keyed to an empty
+      // runId that can never be reconciled with any real run. Deliberately
+      // kept outside the try/catch below: this is a bug in this file (an
+      // invariant violation), not an ordinary hook failure, so it must not
+      // be recorded under the same generic connect_card_post_failed reason
+      // as a real startUserAuthorizationHook error -- it gets its own audit
+      // reason and a logger.error so it's distinguishable in both audit
+      // records and structured logs.
+      if (!session.runId || options.simulateRunIdInvariantViolationForTesting) {
+        logger.error(
+          { connectionId: connection.id, agentId: session.agentId, responsibleUserId, runId: session.runId },
+          "[tool-gateway] resolvePersonalOrConnectionCredentialHeaders: session.runId invariant violated",
+        );
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "runid_invariant_violation" },
+        });
+        // A plain Error here would leak straight through sendGatewayError's
+        // generic 500 fallback (server/src/routes/tool-gateway.ts), which
+        // echoes err.message -- including this internal function/field
+        // name -- verbatim into the response body. Use the typed HTTP error
+        // with a generic, caller-safe message instead; the specific
+        // "runid_invariant_violation" reason code (already on the audit
+        // event and logger.error above) stays available for anyone actually
+        // debugging this, without being exposed to API callers.
+        throw new ToolGatewayHttpError(
+          500,
+          "Internal error: session invariant violated",
+          "runid_invariant_violation",
+          { connectionId: connection.id },
+        );
+      }
+      // Best-effort: posting the connect card is a courtesy on top of the
+      // 403 below, not a precondition for it. A card-creation failure (e.g.
+      // the run's broker status doesn't allow starting authorization right
+      // now) must not replace the clear, structured user_authorization_
+      // required error with an opaque one.
+      try {
+        await startUserAuthorizationHook({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          agentId: session.agentId,
+          runId: session.runId,
+          subjectUserId: responsibleUserId,
+          issueId: session.issueId,
+        });
+      } catch (err) {
+        await bestEffortAudit({
+          session,
+          companyId: connection.companyId,
+          agentId: session.agentId,
+          runId: session.runId,
+          issueId: session.issueId,
+          action: "tool_gateway.personal_credential_resolution_error",
+          details: { connectionId: connection.id, reason: "connect_card_post_failed", error: sanitizeLoggedProviderError(err instanceof Error ? err.message : String(err)) },
+        });
+      }
+    }
+    throw new ToolGatewayHttpError(
+      403,
+      "This person needs to connect their own account before this agent can use it on their behalf.",
+      "user_authorization_required",
+      { connectionId: connection.id, remediation: { action: "start_authorization" } },
+    );
   }
 
   function credentialVersionRefHash(value: Record<string, unknown>): string {
@@ -3011,7 +3719,7 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const endpoint = await assertRemoteEndpointAllowed(connection.config ?? {});
-    const credentialHeaders = await resolveCredentialHeaders(connection);
+    const credentialHeaders = await resolvePersonalOrConnectionCredentialHeaders(session, connection);
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,
       connection,
@@ -4491,6 +5199,27 @@ export function createToolGatewayService(
   }
 
   return {
+    // See startUserAuthorizationHook above: toolAccessService is constructed
+    // after this service (it takes the gateway as a dependency), so the two
+    // are wired together here rather than at construction time. Called once
+    // from server/src/routes/tool-access.ts right after toolAccessService is
+    // created.
+    configureUserAuthorization(hook: typeof startUserAuthorizationHook) {
+      // These hooks control OAuth flow initiation and which access token a
+      // personal_only connection's calls use -- a second, accidental wiring
+      // call (e.g. a duplicate app.ts bootstrap path) would silently replace
+      // the registered hook rather than erroring, which is a much harder
+      // bug to notice than a startup crash.
+      if (startUserAuthorizationHook) throw new Error("configureUserAuthorization was already configured on this service instance");
+      startUserAuthorizationHook = hook;
+    },
+
+    // See refreshUserGrantHook above.
+    configureGrantRefresh(hook: typeof refreshUserGrantHook) {
+      if (refreshUserGrantHook) throw new Error("configureGrantRefresh was already configured on this service instance");
+      refreshUserGrantHook = hook;
+    },
+
     async recordRuntimeMcpDeliveryDiagnostic(input: {
       companyId: string;
       agentId: string;

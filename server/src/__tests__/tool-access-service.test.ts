@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { logger } from "../middleware/logger.js";
 import {
   activityLog,
   agents,
@@ -190,6 +191,7 @@ async function createIssueAndRun(db: ReturnType<typeof createDb>, companyId: str
     agentId,
     invocationSource: "assignment",
     status: "running",
+    responsibleUserId: "user-for-run",
     contextSnapshot: { issueId: issue!.id, responsibleUserId: "user-for-run" },
   }).returning();
   return { issue: issue!, run: run! };
@@ -2865,7 +2867,7 @@ describeEmbeddedPostgres("tool access service", () => {
           EXTRA_ENV: "preserved",
         },
       },
-    });
+    }, company.id);
 
     expect(first.connection.config.allowedSpreadsheetIds).toEqual(["same-company-sheet"]);
     expect(updated.config.allowedSpreadsheetIds).toEqual(["same-company-sheet", "new-company-sheet"]);
@@ -2874,6 +2876,120 @@ describeEmbeddedPostgres("tool access service", () => {
       GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "same-company-sheet,new-company-sheet",
     });
     expect(updated.transportConfig).toEqual(updated.config);
+  });
+
+  it("rejects updateConnection when the caller's companyId does not own the connection", async () => {
+    const companyA = await createCompany(db);
+    const companyB = await createCompany(db);
+    const service = toolAccessService(db);
+    const [applicationA] = await db.insert(toolApplications).values({
+      companyId: companyA.id,
+      name: "Company A app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connectionA] = await db.insert(toolConnections).values({
+      companyId: companyA.id,
+      applicationId: applicationA!.id,
+      name: "Company A connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp" },
+      transportConfig: { url: "https://fixture.example/mcp" },
+    }).returning();
+
+    // connectionA is owned by companyA, but the update is issued with
+    // companyB.id -- this must be rejected as not-found (tenant-scoped
+    // lookup failing) rather than silently succeeding or leaking
+    // companyA's connection details to companyB.
+    await expect(service.updateConnection(connectionA!.id, {
+      name: "Renamed by company B",
+    }, companyB.id)).rejects.toMatchObject({ status: 404 });
+
+    const [stillCompanyA] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectionA!.id));
+    expect(stillCompanyA.name).toBe("Company A connection");
+    expect(stillCompanyA.companyId).toBe(companyA.id);
+  });
+
+  it("pins identityModel and sourceTemplateKey against a PATCH that tries to overwrite them via config", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Personal-only app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Personal-only connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp", identityModel: "personal_only", sourceTemplateKey: "acme-app" },
+      transportConfig: { url: "https://fixture.example/mcp", identityModel: "personal_only", sourceTemplateKey: "acme-app" },
+    }).returning();
+
+    const updated = await service.updateConnection(connection!.id, {
+      config: {
+        url: "https://fixture.example/mcp",
+        identityModel: "company_or_personal",
+        sourceTemplateKey: "some-other-app",
+      },
+    }, company.id);
+
+    expect(updated.config.identityModel).toBe("personal_only");
+    expect(updated.config.sourceTemplateKey).toBe("acme-app");
+  });
+
+  it("pins identityModel and sourceTemplateKey even when config and transportConfig are both supplied in the same PATCH", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Personal-only app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Personal-only connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp", identityModel: "personal_only", sourceTemplateKey: "acme-app" },
+      transportConfig: { url: "https://fixture.example/mcp", identityModel: "personal_only", sourceTemplateKey: "acme-app" },
+    }).returning();
+
+    const updated = await service.updateConnection(connection!.id, {
+      config: {
+        url: "https://fixture.example/mcp",
+        identityModel: "company_or_personal",
+        sourceTemplateKey: "config-attack",
+      },
+      transportConfig: {
+        url: "https://fixture.example/mcp",
+        identityModel: "company_or_personal",
+        sourceTemplateKey: "transport-config-attack",
+      },
+    }, company.id);
+
+    // The authorization-relevant guarantee is on `config` -- that's the
+    // field isPersonalOnlyConnection (tool-gateway.ts) actually reads, so
+    // the pinning loop only needs to (and does) protect it, regardless of
+    // what else the same PATCH payload also tried to set on
+    // transportConfig.
+    expect(updated.config.identityModel).toBe("personal_only");
+    expect(updated.config.sourceTemplateKey).toBe("acme-app");
   });
 
   it("creates and resolves an agent-initiated user authorization grant card", async () => {
@@ -2960,6 +3076,393 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(unchangedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(workspaceSecretIds);
     const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
     expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
+  });
+
+  it("leaves a user grant's credentialSecretRefs unchanged when secret rotation fails after a successful OAuth exchange", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack rotation failure" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const refreshing = body.get("grant_type") === "refresh_token";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: refreshing ? "rotated-access-token" : "user-access-token",
+            refresh_token: refreshing ? "rotated-refresh-token" : "user-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    const originalRefs = grant.credentialSecretRefs;
+    const accessTokenRef = originalRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+
+    // secrets.rotate() throws "Cannot rotate a non-active secret" for any
+    // non-active status -- the simplest deterministic way to make rotation
+    // fail *after* a successful OAuth exchange, without mocking internals.
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, accessTokenRef.secretId));
+
+    const result = await service.refreshUserGrant({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      subjectUserId: "user-for-run",
+    });
+
+    expect(result).toBeNull();
+    const [unchanged] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(unchanged.credentialSecretRefs).toEqual(originalRefs);
+    expect(unchanged.status).toBe("active");
+    expect(unchanged.refreshLease).toBeNull();
+  });
+
+  it("leases rotating a user grant's refresh token across service instances before concurrent gateway calls", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack grant lease" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    let refreshCallCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        if (body.get("grant_type") === "refresh_token") {
+          refreshCallCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ access_token: "rotated-access-token", refresh_token: "rotated-refresh-token", expires_in: 3600 }),
+          } as Response;
+        }
+        const userAuthorization = body.get("code") === "user-authorization-code";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: userAuthorization ? "user-access-token" : "workspace-access-token",
+            refresh_token: userAuthorization ? "user-refresh-token" : "workspace-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const refreshInput = { companyId: company.id, connectionId: connected.connectionId, subjectUserId: "user-for-run" };
+    const [result, concurrentResult] = await Promise.all([
+      service.refreshUserGrant(refreshInput),
+      concurrentService.refreshUserGrant(refreshInput),
+    ]);
+
+    expect(refreshCallCount).toBe(1);
+    expect(result).toMatchObject({ accessToken: "rotated-access-token" });
+    expect(concurrentResult).toMatchObject({ accessToken: "rotated-access-token" });
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    expect(grant.refreshLease).toBeNull();
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+    const accessTokenVersions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, accessTokenRef.secretId));
+    expect(accessTokenVersions).toHaveLength(2);
+  });
+
+  it("reclaims an abandoned refresh lease left by a crashed process instead of blocking every future refresh", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack stuck lease" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const refreshing = body.get("grant_type") === "refresh_token";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: refreshing ? "rotated-access-token" : "user-access-token",
+            refresh_token: refreshing ? "rotated-refresh-token" : "user-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    // Simulate a process that claimed the lease and then crashed before
+    // clearing it -- its expiresAt is already in the past.
+    await db.update(connectionGrants).set({
+      refreshLease: { id: randomUUID(), expiresAt: new Date(Date.now() - 60_000).toISOString() },
+    }).where(eq(connectionGrants.id, grant.id));
+
+    const result = await service.refreshUserGrant({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      subjectUserId: "user-for-run",
+    });
+
+    expect(result).toMatchObject({ accessToken: "rotated-access-token" });
+    const [refreshed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.refreshLease).toBeNull();
+  });
+
+  it("recovers a transient access-token rotation failure within the same call instead of forcing a reconnect prompt", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack transient rotation failure" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const refreshing = body.get("grant_type") === "refresh_token";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: refreshing ? "rotated-access-token" : "user-access-token",
+            refresh_token: refreshing ? "rotated-refresh-token" : "user-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+
+    await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const [state] = await db.select().from(toolOauthStates).where(eq(toolOauthStates.subjectUserId, "user-for-run"));
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    const accessTokenRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token")!;
+
+    // Disable the access-token secret so its first rotation attempt fails,
+    // then re-enable it shortly after -- well within the retry loop's
+    // backoff window (200ms, 500ms) -- to simulate a transient failure the
+    // in-call retry should recover from without ever returning null.
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, accessTokenRef.secretId));
+    setTimeout(() => {
+      db.update(companySecrets).set({ status: "active" }).where(eq(companySecrets.id, accessTokenRef.secretId)).catch(() => undefined);
+    }, 250);
+
+    const result = await service.refreshUserGrant({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      subjectUserId: "user-for-run",
+    });
+
+    expect(result).toMatchObject({ accessToken: "rotated-access-token" });
+    const [refreshed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(refreshed.refreshLease).toBeNull();
+    expect(refreshed.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token")?.expiresAt).toBeDefined();
+    const accessTokenVersions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, accessTokenRef.secretId));
+    expect(accessTokenVersions).toHaveLength(2);
+  });
+
+  it("starts agent-initiated user authorization from the typed responsibleUserId column with no JSONB value", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: `Broker issue ${randomUUID()}`,
+      status: "in_progress",
+      assigneeAgentId: agent.id,
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "assignment",
+      status: "running",
+      responsibleUserId: "typed-column-user",
+      contextSnapshot: { issueId: issue!.id },
+    }).returning();
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth (typed column)" });
+
+    const started = await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run!.id,
+      subjectUserId: "typed-column-user",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    expect(started.authorizationUrl).toBeTruthy();
+    const [state] = await db.select().from(toolOauthStates);
+    expect(state).toMatchObject({ subjectUserId: "typed-column-user", issueId: issue!.id });
+
+    await expect(service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run!.id,
+      subjectUserId: "someone-else",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    })).rejects.toMatchObject({ status: 403, details: expect.objectContaining({ code: "subject_not_permitted" }) });
   });
 
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
@@ -6587,6 +7090,162 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(health.recommendations.find((alert) => alert.name === "mcp_runtime_audit_write_failures"))
       .toMatchObject({ status: "ok", observed: "0 audit write failure(s) in 1 hour." });
+  });
+
+  it("does not count personal credential resolution failures toward the missing-secret alert", async () => {
+    const company = await createCompany(db);
+    const generatedAt = new Date("2026-06-06T00:00:00.000Z");
+    const service = toolAccessService(db, { now: () => generatedAt });
+
+    await db.insert(toolAccessAuditEvents).values([
+      {
+        // A single user's expired personal OAuth grant -- routine, per-user,
+        // and must not page on-call under the infra-facing missing-secret alert.
+        //
+        // This mirrors what writeAudit() in tool-gateway.ts actually writes:
+        // the logical action "tool_gateway.personal_credential_resolution_error"
+        // is mapped through dedicatedAuditAction to "call_failed" before
+        // insert, and the original action string only survives inside
+        // details.source (see tool-gateway.test.ts's
+        // secret_resolution_failed / runid_invariant_violation assertions).
+        companyId: company.id,
+        action: "call_failed",
+        outcome: "failure",
+        reasonCode: "secret_resolution_failed",
+        details: { source: "tool_gateway.personal_credential_resolution_error", reason: "secret_resolution_failed" },
+        createdAt: generatedAt,
+      },
+      {
+        // A genuine infra secret-binding failure should still count.
+        companyId: company.id,
+        action: "runtime_started",
+        outcome: "failure",
+        reasonCode: "missing_secret",
+        details: {},
+        createdAt: generatedAt,
+      },
+    ]);
+
+    const health = await service.getRuntimeHealth(company.id);
+
+    expect(health.metrics.missingSecretFailuresLastHour).toBe(1);
+    // Suppressed from the infra alert, but not silently dropped -- it should
+    // still be visible via its own counter.
+    expect(health.metrics.personalCredentialFailuresLastHour).toBe(1);
+    expect(health.alerts.find((alert) => alert.name === "mcp_runtime_missing_secret_failures"))
+      .toMatchObject({ status: "firing", severity: "warning" });
+  });
+
+  it("excludes a gallery_identity_model_override personal-credential row from both failure counters", async () => {
+    const company = await createCompany(db);
+    const generatedAt = new Date("2026-06-06T00:00:00.000Z");
+    const service = toolAccessService(db, { now: () => generatedAt });
+
+    await db.insert(toolAccessAuditEvents).values([
+      {
+        // Another reason code under the same
+        // tool_gateway.personal_credential_resolution_error action, but
+        // NOT mapped the same way as secret_resolution_failed rows: as of
+        // the tool-gateway.ts dedicatedAuditAction/dedicatedOutcome
+        // handling for gallery_identity_model_override (see
+        // tool-gateway.test.ts's gallery_identity_model_override
+        // assertions), this reason is a policy reclassification -- the
+        // call proceeds and succeeds on shared credentials -- so writeAudit
+        // maps it to action: "policy_decision", outcome: "success", not
+        // "call_failed"/"failure". This fixture mirrors that real shape.
+        // personalCredentialFailuresLastHour is scoped narrowly to
+        // reasonCode === "secret_resolution_failed" (see the doc comment on
+        // that field in packages/shared/src/types/tool-access.ts), so this
+        // row must not increment it regardless of action/outcome.
+        // missingSecretFailuresLastHour's own filter
+        // (reasonCode === "missing_secret" || (outcome === "failure" &&
+        // reasonCode?.includes("secret"))) already excludes this row on its
+        // own terms -- outcome is "success" here, and "gallery_identity_
+        // model_override" is neither "missing_secret" nor a substring match
+        // for "secret" -- independent of the isPersonalCredentialResolution
+        // Failure/details.source check that guards the OTHER
+        // (secret_resolution_failed) rows in this file's sibling test.
+        companyId: company.id,
+        action: "policy_decision",
+        outcome: "success",
+        reasonCode: "gallery_identity_model_override",
+        details: {
+          source: "tool_gateway.personal_credential_resolution_error",
+          reason: "gallery_identity_model_override",
+        },
+        createdAt: generatedAt,
+      },
+    ]);
+
+    const health = await service.getRuntimeHealth(company.id);
+
+    expect(health.metrics.missingSecretFailuresLastHour).toBe(0);
+    expect(health.metrics.personalCredentialFailuresLastHour).toBe(0);
+  });
+
+  it("gates personal-credential-resolution failure logging on count changes, not every poll", async () => {
+    // getRuntimeHealth is polled roughly every 15s by the board UI -- this
+    // proves the WARN only fires when the observed count actually
+    // increases (not on every unchanged poll, and not on a decrease, which
+    // gets its own INFO instead so a log reader can't mistake a recovery
+    // for a new onset).
+    const company = await createCompany(db);
+    const generatedAt = new Date("2026-06-06T00:00:00.000Z");
+    const service = toolAccessService(db, { now: () => generatedAt });
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+
+    const insertFailureRow = (actorId: string) =>
+      db.insert(toolAccessAuditEvents).values({
+        companyId: company.id,
+        action: "call_failed",
+        outcome: "failure",
+        reasonCode: "secret_resolution_failed",
+        actorId,
+        details: { source: "tool_gateway.personal_credential_resolution_error", reason: "secret_resolution_failed" },
+        createdAt: generatedAt,
+      }).returning();
+
+    try {
+      // 0 -> 1: onset, must warn, with the structured payload (not just the
+      // message string) carrying actorId so an operator can identify which
+      // user's grant is failing without a secondary query.
+      const [firstRow] = await insertFailureRow("user-first-failure");
+      if (!firstRow) throw new Error("expected insertFailureRow to return the inserted row");
+      await service.getRuntimeHealth(company.id);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[1]).toContain("Suppressed personal-credential-resolution failures");
+      expect(warnSpy.mock.calls[0]?.[0]).toMatchObject({
+        count: 1,
+        previousCount: 0,
+        events: [expect.objectContaining({ actorId: "user-first-failure" })],
+      });
+      expect(infoSpy).not.toHaveBeenCalled();
+
+      // 1 -> 1: unchanged across a second poll, must not log again -- this
+      // is exactly the poll-spam the change-detection gate exists to
+      // prevent.
+      await service.getRuntimeHealth(company.id);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy).not.toHaveBeenCalled();
+
+      // 1 -> 2: further increase, must warn again.
+      await insertFailureRow("user-second-failure");
+      await service.getRuntimeHealth(company.id);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(infoSpy).not.toHaveBeenCalled();
+
+      // 2 -> 1: decrease (a failure aged out of the window), must log at
+      // info -- not warn -- and must not re-trigger the warn path.
+      await db.delete(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.id, firstRow.id));
+      await service.getRuntimeHealth(company.id);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy.mock.calls[0]?.[1]).toContain("decreased");
+    } finally {
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+    }
   });
 
   it("fires runtime health from the durable audit-write failure counter", async () => {
