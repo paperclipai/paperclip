@@ -420,6 +420,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       },
     }).where(eq(issues.id, sourceIssueId));
 
+    await db.insert(issueComments).values({
+      companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, sourceIssueId)))[0].companyId,
+      issueId: sourceIssueId,
+      authorType: "agent",
+      authorAgentId: coderId,
+      body: "protected review evidence",
+    });
+
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
     const result = await recovery.reconcileStrandedAssignedIssues({
       beforeRepair: async (candidate) => {
@@ -447,7 +455,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ...protectedHistory,
     });
     expect((await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, sourceIssueId)))
-      .map((comment) => comment.body)
+      .map((comment) => comment.body))
       .toEqual(["protected review evidence"]);
   });
 
