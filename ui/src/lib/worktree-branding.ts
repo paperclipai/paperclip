@@ -61,6 +61,17 @@ export function isWorktreeRuntime(): boolean {
   return readMetaContent("paperclip-worktree-enabled") === "true";
 }
 
+/**
+ * Runtime instance id of the worktree preview serving this UI, injected by the
+ * server as a `<meta name="paperclip-instance-id">` tag. Returns null outside a
+ * worktree or when the server did not surface the id. Used by the experimental
+ * "Run tasks in this worktree" card to fail closed when a copied settings row
+ * was armed in a different instance.
+ */
+export function getWorktreeInstanceId(): string | null {
+  return readMetaContent("paperclip-instance-id");
+}
+
 export function getWorktreeUiBranding(): WorktreeUiBranding | null {
   if (readMetaContent("paperclip-worktree-enabled") !== "true") return null;
 

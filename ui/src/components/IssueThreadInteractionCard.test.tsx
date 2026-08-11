@@ -11,12 +11,27 @@ import {
   pendingAskUserQuestionsInteraction,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
+  declinedToolActionInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
+  executedToolActionInteraction,
+  expiredToolActionInteraction,
   failedRequestConfirmationInteraction,
+  failedToolActionInteraction,
   pendingRequestConfirmationInteraction,
+  pendingToolActionDestructiveInteraction,
+  pendingToolActionWriteInteraction,
+  planApprovalResumeFailedRequestConfirmationInteraction,
+  pendingRequestItemVerdictsInteraction,
   pendingSuggestedTasksInteraction,
+  runningToolActionInteraction,
+  completeRequestItemVerdictsInteraction,
+  supersededRequestItemVerdictsInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
+  agentAddressedRequestConfirmationInteraction,
+  agentResolvedRequestConfirmationInteraction,
+  withdrawnRequestConfirmationInteraction,
+  issueClosedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -225,6 +240,76 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Questions expired by comment");
   });
 
+  it("renders withdrawn confirmations with the withdraw reason", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "cancelled",
+        result: { version: 1, outcome: "withdrawn", reason: "Superseded by the hotfix plan." },
+      },
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    expect(host.textContent).toContain("Withdrawn");
+    expect(host.textContent).toContain("Superseded by the hotfix plan.");
+    expect(host.textContent).not.toContain("Decline");
+  });
+
+  it("renders confirmations expired by issue closure with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "expired",
+        result: { version: 1, outcome: "issue_closed", reason: null },
+      },
+    });
+
+    expect(host.textContent).toContain("Expired · issue closed");
+    expect(host.textContent).toContain("This confirmation expired automatically when the issue reached a terminal state.");
+    expect(host.textContent).not.toContain("Expired by target change");
+  });
+
+  it("renders withdrawn question interactions with the withdraw reason", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "cancelled",
+        result: {
+          version: 1,
+          outcome: "withdrawn",
+          reason: "Scope was decided on the parent issue.",
+          answers: [],
+          summaryMarkdown: null,
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Questions withdrawn");
+    expect(host.textContent).toContain("Scope was decided on the parent issue.");
+    expect(host.textContent).not.toContain("Question cancelled");
+  });
+
+  it("renders question interactions expired by issue closure with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "issue_closed",
+          reason: null,
+          answers: [],
+          summaryMarkdown: null,
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Questions expired when the issue closed");
+    expect(host.textContent).toContain("This question request expired automatically when the issue reached a terminal state.");
+    expect(host.textContent).not.toContain("expired by comment");
+  });
+
   it("makes child tasks explicit in suggested task trees", () => {
     const host = renderCard({
       interaction: pendingSuggestedTasksInteraction,
@@ -419,6 +504,19 @@ describe("IssueThreadInteractionCard", () => {
     accepted.remove();
     root = null;
 
+    const resumeFailed = renderCard({
+      interaction: planApprovalResumeFailedRequestConfirmationInteraction,
+    });
+    expect((resumeFailed.firstElementChild as HTMLElement).className).toContain("border-amber-500/70");
+    expect(resumeFailed.textContent).toContain("Approved — agent resume failed");
+    expect(resumeFailed.textContent).toContain("Agent resume failed");
+    expect(resumeFailed.textContent).toContain("Paperclip needs attention before the agent can resume this approved work.");
+    expect(resumeFailed.textContent).toContain("adapter_failed");
+
+    act(() => root?.unmount());
+    resumeFailed.remove();
+    root = null;
+
     const rejected = renderCard({
       interaction: {
         ...pendingRequestConfirmationInteraction,
@@ -483,5 +581,290 @@ describe("IssueThreadInteractionCard", () => {
       expect.objectContaining({ kind: "request_confirmation" }),
       "![bug.png](https://cdn.example/shot.png)",
     );
+  });
+
+  it("submits an approve verdict once a draft is marked and applied", async () => {
+    const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestItemVerdictsInteraction,
+      onSubmitInteractionVerdicts,
+    });
+
+    const firstItemId = pendingRequestItemVerdictsInteraction.payload.items[0]!.id;
+    const approveButton = Array.from(
+      host.querySelectorAll<HTMLButtonElement>(`[data-item-id="${firstItemId}"] button[data-verdict="approve"]`),
+    )[0];
+    expect(approveButton).toBeTruthy();
+    // 44px minimum target (a11y).
+    expect(approveButton?.className).toContain("min-h-11");
+
+    await act(async () => {
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const applyButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply 1 decision"),
+    );
+    expect(applyButton).toBeTruthy();
+
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionVerdicts).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "request_item_verdicts" }),
+      [{ id: firstItemId, verdict: "approve", reason: undefined }],
+    );
+  });
+
+  it("blocks apply for a rejected item until a reason is entered", async () => {
+    const onSubmitInteractionVerdicts = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingRequestItemVerdictsInteraction,
+      onSubmitInteractionVerdicts,
+    });
+
+    const firstItemId = pendingRequestItemVerdictsInteraction.payload.items[0]!.id;
+    const rejectButton = Array.from(
+      host.querySelectorAll<HTMLButtonElement>(`[data-item-id="${firstItemId}"] button[data-verdict="reject"]`),
+    )[0];
+    await act(async () => {
+      rejectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Reject reveals a required reason field.
+    const reasonField = host.querySelector<HTMLTextAreaElement>(
+      `textarea[id="${pendingRequestItemVerdictsInteraction.id}-${firstItemId}-reason"]`,
+    );
+    expect(reasonField).toBeTruthy();
+
+    const applyButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply 1 decision"),
+    );
+    // Attempting to apply without a reason does not submit.
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSubmitInteractionVerdicts).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("A reason is required to reject this item.");
+  });
+
+  it("renders resolved verdicts as terminal chips with reason echo", () => {
+    const host = renderCard({ interaction: completeRequestItemVerdictsInteraction });
+    expect(host.textContent).toContain("Approved");
+    expect(host.textContent).toContain("Rejected");
+    expect(host.textContent).toContain("Tone is off-brand");
+    // S5 summary chip.
+    expect(host.textContent).toContain("3 approved");
+    // No actionable verdict buttons once terminal.
+    expect(host.querySelector("button[data-verdict]")).toBeNull();
+  });
+
+  it("shows an already-applied, cannot-revert notice when superseded", () => {
+    const host = renderCard({ interaction: supersededRequestItemVerdictsInteraction });
+    expect(host.textContent).toContain("expired after a later comment");
+    expect(host.textContent).toContain("cannot be");
+    expect(host.textContent?.toLowerCase()).toContain("revert");
+  });
+});
+
+describe("IssueThreadInteractionCard tool-action card", () => {
+  it("selects the pending state with the Approve & run affordance and identity header", () => {
+    const host = renderCard({
+      interaction: pendingToolActionWriteInteraction,
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    // Pending eyebrow, never a bare "Accepted".
+    expect(host.textContent).toContain("Awaiting approval");
+    // Identity header: tool display name + WRITE risk badge + app/tool sub-line.
+    expect(host.textContent).toContain("Append row to spreadsheet");
+    expect(host.textContent).toContain("WRITE");
+    expect(host.textContent).toContain("Google Sheets");
+    // Primary CTA is "Approve & run" (approve = run), plus the hint + countdown.
+    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve & run"),
+    );
+    expect(approve).toBeTruthy();
+    expect(host.textContent).toContain("Approving runs this action now.");
+    expect(host.textContent).toContain("Approval expires in");
+    // Technical details drawer is present but collapsed by default (hash hidden).
+    expect(host.textContent).toContain("Technical details");
+    expect(host.textContent).not.toContain("args hash");
+  });
+
+  it("uses the destructive risk badge and a destructive primary button", () => {
+    const host = renderCard({
+      interaction: pendingToolActionDestructiveInteraction,
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    expect(host.textContent).toContain("DESTRUCTIVE");
+    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve & run"),
+    );
+    expect(approve?.getAttribute("data-variant")).toBe("destructive");
+  });
+
+  it("reveals redacted args and the hash when the technical drawer is opened", () => {
+    const host = renderCard({
+      interaction: pendingToolActionWriteInteraction,
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    const trigger = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Technical details"),
+    );
+    act(() => {
+      (trigger as HTMLButtonElement).click();
+    });
+
+    expect(host.textContent).toContain("args hash");
+    expect(host.textContent).toContain("sha256:9f2c1a7be4d0c8a3");
+    // Redacted arguments render verbatim, never raw secrets.
+    expect(host.textContent).toContain("[redacted]");
+  });
+
+  it("renders the approved-running state with a spinner and no action buttons", () => {
+    const host = renderCard({ interaction: runningToolActionInteraction });
+
+    expect(host.textContent).toContain("Running…");
+    expect(host.textContent).toContain("running the action now");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.querySelector(".animate-spin")).toBeTruthy();
+  });
+
+  it("renders the executed state with a result summary and never reads Accepted", () => {
+    const host = renderCard({ interaction: executedToolActionInteraction });
+
+    expect(host.textContent).toContain("Executed");
+    expect(host.textContent).toContain("Row 42 added");
+    expect(host.textContent).not.toContain("Accepted");
+    const link = Array.from(host.querySelectorAll("a")).find((a) =>
+      a.textContent?.includes("View result"),
+    );
+    expect(link?.getAttribute("href")).toContain("docs.google.com");
+  });
+
+  it("distinguishes failed (ran + connector error) from declined (did not run)", () => {
+    const failed = renderCard({ interaction: failedToolActionInteraction });
+    expect(failed.textContent).toContain("Failed");
+    expect(failed.textContent).toContain("insufficient_permission");
+    expect(failed.textContent).toContain("but the connector returned an error");
+
+    act(() => root?.unmount());
+    failed.remove();
+    root = null;
+
+    const declined = renderCard({ interaction: declinedToolActionInteraction });
+    expect(declined.textContent).toContain("Declined");
+    expect(declined.textContent).toContain("did");
+    expect(declined.textContent).toContain("not");
+    expect(declined.textContent).toContain("run");
+    expect(declined.textContent).toContain("use the CRM sync instead");
+    expect(declined.textContent).not.toContain("Approve & run");
+  });
+
+  it("renders the expired state with the 60-minute rule and a recovery path", () => {
+    const host = renderCard({ interaction: expiredToolActionInteraction });
+
+    expect(host.textContent).toContain("Expired");
+    expect(host.textContent).toContain("no one responded within 60 minutes");
+    expect(host.textContent).toContain("the agent can request approval again");
+    expect(host.textContent).not.toContain("Approve & run");
+  });
+
+  it("keeps the generic confirmation rendering for cards without a toolAction", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    // Legacy confirmation keeps its own prompt + labels, no tool-action surface.
+    expect(host.textContent).toContain("Approve the plan and let the responsible start implementation?");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).not.toContain("Technical details");
+  });
+
+  it("renders the agents-may-resolve policy badge and addressee chip", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+    });
+
+    const policyBadge = host.querySelector('[data-testid="interaction-policy-badge"]');
+    expect(policyBadge?.textContent).toContain("Agents may resolve");
+
+    const addresseeBadge = host.querySelector('[data-testid="interaction-addressee-badge"]');
+    expect(addresseeBadge?.textContent).toContain("For ");
+  });
+
+  it("omits the policy and addressee badges for a board-only interaction", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+    });
+
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
+    expect(host.querySelector('[data-testid="interaction-addressee-badge"]')).toBeNull();
+  });
+
+  it("marks agent resolution with an audit chip in the resolved footer", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+    });
+
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(
+      host.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders a withdrawn footer with the withdrawer, reason, and agent chip", () => {
+    const host = renderCard({
+      interaction: withdrawnRequestConfirmationInteraction,
+    });
+
+    // Header status reads "Withdrawn", not the raw "Cancelled" status.
+    expect(host.textContent).toContain("Withdrawn");
+    // Withdrawn is a neutral administrative retraction — it must NOT wear the
+    // cancelled/rejected costume (rose/red border + XCircle). The shell is muted
+    // (border-border), never a rose/red alarm colour (design review R2).
+    const cardRoot = host.querySelector("div.rounded-lg.p-5.shadow-none");
+    expect(cardRoot?.className).toContain("border-border");
+    expect(cardRoot?.className).not.toMatch(/border-(rose|red)/);
+    // The header status icon is MinusCircle ("retracted"), never XCircle ("denied").
+    const statusIcon = cardRoot?.querySelector("svg");
+    expect(statusIcon?.getAttribute("class")).toContain("lucide-circle-minus");
+    expect(statusIcon?.getAttribute("class")).not.toContain("lucide-circle-x");
+    const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
+    expect(footer?.textContent).toContain("Withdrawn by");
+    expect(footer?.textContent).toContain("Plan superseded by a newer revision");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+    // The generic "Resolved by" footer must not double-render.
+    expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+
+  it("renders an issue-closed expiry footer for terminal auto-expiry", () => {
+    const host = renderCard({
+      interaction: issueClosedRequestConfirmationInteraction,
+    });
+
+    // Footer is trimmed to just the audit timestamp — the header status badge
+    // already carries the "Expired · issue closed" label, so the footer must
+    // not restate it.
+    const footer = host.querySelector('[data-testid="interaction-issue-closed-footer"]');
+    expect(footer?.textContent).toContain("Apr 20");
+    expect(footer?.textContent).not.toContain("Expired when the issue closed");
+    // The "Expired · issue closed" label survives exactly once (the header
+    // status badge); the duplicate body eyebrow was dropped.
+    const label = "Expired · issue closed";
+    const occurrences = (host.textContent ?? "").split(label).length - 1;
+    expect(occurrences).toBe(1);
   });
 });

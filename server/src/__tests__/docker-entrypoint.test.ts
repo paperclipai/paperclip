@@ -32,7 +32,7 @@ function writeStub(name: string, body: string) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
 }
 
-function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid?: number }) {
+function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid?: number; homeMismatch?: boolean }) {
   writeStub(
     "id",
     [
@@ -46,6 +46,12 @@ function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid
   for (const cmd of ["usermod", "groupmod", "chown"]) {
     writeStub(cmd, `echo "${cmd} $*" >> "${logFile}"`);
   }
+  // The entrypoint's ownership probe is a first-mismatch find over the app
+  // home. An empty result models a fully node-owned tree (image-baked dir,
+  // healthy volume); a path models any uid OR gid mismatch anywhere in the
+  // tree (fresh root-owned mount, root-owned descendant, stale group after
+  // a GID-only remap).
+  writeStub("find", ids.homeMismatch ? `echo "$1/mismatched-entry"` : `true`);
   writeStub("gosu", `echo "gosu $*" >> "${logFile}"\nshift\nexec "$@"`);
 }
 
@@ -79,15 +85,58 @@ describe("docker-entrypoint.sh", () => {
   });
 
   it("remaps the node user and chowns /paperclip before gosu when root requests a different UID/GID", async () => {
-    installStubs({ uid: 0, gid: 0 });
+    // The stubbed node uid stays 1000 while the stat probe reports the old
+    // ownership, modelling the post-remap mismatch that must trigger chown.
+    installStubs({ uid: 0, gid: 0, homeMismatch: true });
 
-    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001" });
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
 
     expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
     expect(calls).toContain("usermod -o -u 1001 node");
     expect(calls).toContain("groupmod -o -g 1001 node");
-    expect(calls).toContain("chown -R node:node /paperclip");
+    expect(calls).toContain(`chown -R node:node ${stubDir}`);
     expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
+  it("chowns a root-owned home before gosu even with the default UID/GID (fresh volume mount)", async () => {
+    // A freshly mounted volume arrives root-owned and shadows the image's
+    // build-time chown; with no remap requested the old entrypoint dropped
+    // privileges onto an unwritable home and the server crashed on its
+    // first mkdir.
+    installStubs({ uid: 0, gid: 0, homeMismatch: true });
+
+    const { stdout, calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls).toContain(`chown -R node:node ${stubDir}`);
+    expect(calls).not.toContain("usermod");
+    expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
+  it("repairs ownership on a GID-only remap (stale group on persisted descendants)", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true });
+
+    const { calls } = await runEntrypoint({ USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls).toContain("groupmod -o -g 1001 node");
+    expect(calls).toContain(`chown -R node:node ${stubDir}`);
+  });
+
+  it("keeps a fully node-owned tree chown-free (no per-boot recursive chown)", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: false });
+
+    const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+    expect(calls).not.toContain("chown");
+    expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
+  it("honours PAPERCLIP_HOME for the ownership probe", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true });
+
+    const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+    expect(calls).toContain(`chown -R node:node ${stubDir}`);
   });
 
   it("execs directly and silently when already running as the requested user (restricted PodSecurity)", async () => {

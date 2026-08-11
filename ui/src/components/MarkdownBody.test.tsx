@@ -158,6 +158,46 @@ describe("MarkdownBody", () => {
     expect(html).toContain("Plain text");
   });
 
+  it("hides markdown HTML comments instead of rendering placeholder text", () => {
+    const html = renderMarkdown("Before\n\n<!-- -->\n\nAfter");
+
+    expect(html).toContain("Before");
+    expect(html).toContain("After");
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides escaped HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- --> ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides incomplete streamed HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+  });
+
+  it("hides incomplete encoded HTML comment placeholders", () => {
+    const html = renderMarkdown("&lt;!-- -- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("&amp;lt;!--");
+  });
+
+  it("keeps HTML comment markers when they are literal code content", () => {
+    const inlineHtml = renderMarkdown("Use `<!-- -->` as a literal.");
+    const blockHtml = renderMarkdown("```html\n<!-- keep this example -->\n```");
+
+    expect(inlineHtml).toContain("&lt;!-- --&gt;");
+    expect(blockHtml).toContain("&lt;!-- keep this example --&gt;");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 
@@ -544,19 +584,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/JIRA-2"');
   });
 
-  it("renders the inline mention status glyph at lg (20px / h-5 w-5)", () => {
+  it("renders the inline mention status glyph at md (16px / h-4 w-4)", () => {
     const html = renderMarkdown("See PAP-1271 for context.", [
       { identifier: "PAP-1271", status: "in_progress" },
     ]);
 
-    // Unified glyph at 20px, with the h-5 w-5 class override so the Tailwind
-    // sizing matches the intrinsic SVG size.
+    // Unified glyph at 16px (PAP-349 round 4: stepped down from lg), with the
+    // h-4 w-4 class override so the Tailwind sizing matches the intrinsic SVG
+    // size.
     expect(html).toContain('viewBox="0 0 24 24"');
-    expect(html).toContain('width="20"');
-    expect(html).toContain('height="20"');
-    expect(html).toContain("h-5");
-    expect(html).toContain("w-5");
-    // PAP-243b: the lg glyph is optically centered to the body text
+    expect(html).toContain('width="16"');
+    expect(html).toContain('height="16"');
+    expect(html).toContain("h-4");
+    expect(html).toContain("w-4");
+    // PAP-243b: the glyph is optically centered to the body text
     // (vertical-align: middle + a 1px lift), not floating off the baseline.
     expect(html).toContain("align-middle");
     expect(html).not.toContain("align-(--va-0_125em)");

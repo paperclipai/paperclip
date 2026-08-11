@@ -12,11 +12,27 @@ const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+const CODEX_REFRESH_TOKEN_REUSED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
+const CODEX_REFRESH_TOKEN_EXPIRED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?expired|refresh token (?:has )?expired|expired refresh token)/i;
+const CODEX_REFRESH_TOKEN_INVALIDATED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?(?:invalidated|revoked|invalid)|refresh token (?:has been )?(?:invalidated|revoked|invalid)|invalid refresh token|missing bearer)/i;
+const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
+const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
+  /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
+
+export type CodexAuthRefreshFailureClass =
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawProtocolEvent = false;
+  let sawProtocolTerminalEvent = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -31,6 +47,10 @@ export function parseCodexJsonl(stdout: string) {
     if (!event) continue;
 
     const type = asString(event.type, "");
+    if (type) sawProtocolEvent = true;
+    if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+      sawProtocolTerminalEvent = true;
+    }
     if (type === "thread.started") {
       sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
       continue;
@@ -70,8 +90,30 @@ export function parseCodexJsonl(stdout: string) {
     sessionId,
     summary: finalMessage?.trim() ?? "",
     usage,
+    usageBasis: "per_run" as const,
     errorMessage,
+    sawProtocolEvent,
+    sawProtocolTerminalEvent,
   };
+}
+
+/**
+ * Structural crash detection: the codex CLI can only report an agent-level
+ * failure through the JSONL protocol (an `error` event, `turn.failed`, or a
+ * finished `turn.completed` followed by a nonzero exit). A nonzero exit after
+ * the protocol stream started but before any terminal event means the process
+ * died out from under the agent (MCP transport crash, worker panic, killed
+ * tool server) — retriable infrastructure, not agent behavior. This
+ * deliberately does not match error text: transport failure strings vary, and
+ * stdout/stderr can quote agent output that merely discusses network errors.
+ */
+export function isCodexHarnessCrash(input: {
+  exitCode: number | null;
+  sawProtocolEvent: boolean;
+  sawProtocolTerminalEvent: boolean;
+}): boolean {
+  if ((input.exitCode ?? 0) === 0) return false;
+  return input.sawProtocolEvent && !input.sawProtocolTerminalEvent;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
@@ -100,6 +142,21 @@ function buildCodexErrorHaystack(input: {
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
+}
+
+export function classifyCodexAuthRefreshFailure(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): CodexAuthRefreshFailureClass | null {
+  const haystack = buildCodexErrorHaystack(input);
+
+  if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
+  if (CODEX_REFRESH_TOKEN_EXPIRED_RE.test(haystack)) return "refresh_token_expired";
+  if (CODEX_REFRESH_TOKEN_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_OAUTH_INVALID_GRANT_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  return null;
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {

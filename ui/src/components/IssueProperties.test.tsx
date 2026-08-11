@@ -33,10 +33,15 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  getDocument: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
+  listAttachments: vi.fn(),
+  listInteractions: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
+  unarchiveFromInbox: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -134,6 +139,8 @@ vi.mock("./AgentIconPicker", () => ({
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
+  useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
+  useLocation: () => ({ hash: "", pathname: "/", search: "", state: null, key: "test" }),
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -202,6 +209,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -290,6 +298,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "PAP-1 workspace",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1",
     repoUrl: null,
     baseRef: "master",
@@ -432,6 +441,10 @@ describe("IssueProperties", () => {
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockIssuesApi.createLabel.mockResolvedValue(createLabel({
       id: "label-new",
@@ -440,6 +453,7 @@ describe("IssueProperties", () => {
     }));
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
+    mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAccessApi.listUserDirectory.mockResolvedValue({
       users: [
@@ -462,6 +476,62 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.listInteractions.mockResolvedValue([
+      {
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { target: { type: "issue_document", key: "plan" } },
+      },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({ workMode: "planning" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(true);
+    });
+
+    const planTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Plan");
+    await act(async () => {
+      // Radix Tabs triggers select on mousedown (button 0), not on click.
+      planTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("This task is in plan mode but no plan document has been written yet.");
+      expect(container.textContent).toContain("A plan confirmation is pending, but the plan document it should confirm is missing.");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("hides the Priority property row while priority UI is off (PAP-411)", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ priority: "high" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      // The Triage section still renders the Status row...
+      expect(container.querySelector('[data-property-label="Status"]')).not.toBeNull();
+      // ...but the Priority row is gated behind SHOW_TASK_PRIORITY_UI (off).
+      expect(container.querySelector('[data-property-label="Priority"]')).toBeNull();
+    });
+
+    act(() => root.unmount());
   });
 
   it("shows assignee and originating without responsible wording", async () => {
@@ -1227,6 +1297,31 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the current archived project visible in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        id: "archived-project",
+        name: "Archived Project",
+        archivedAt: new Date("2026-04-08T00:00:00.000Z"),
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "archived-project" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
@@ -1630,7 +1725,7 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).toContain("Custom · gpt-5.4 · high");
+    expect(container.textContent).toContain("Override · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
     // Wait for the adapter-models query to resolve so the model options render.
@@ -1945,6 +2040,7 @@ describe("IssueProperties", () => {
   });
 
   it("renders monitor controls and clears an existing monitor", async () => {
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-04-11T10:00:00.000Z").getTime());
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue({
@@ -1984,12 +2080,11 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.textContent).toContain("Monitor");
-    expect(container.textContent).toContain("Next check");
+    expect(container.textContent).toContain("In 2h 30m");
     expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
     expect(container.querySelector('input[placeholder="What should the agent re-check?"]')).toBeNull();
 
-    const monitorTrigger = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Next check"));
+    const monitorTrigger = container.querySelector('[data-testid="monitor-row-trigger"]')?.closest("button");
     expect(monitorTrigger).not.toBeUndefined();
 
     await act(async () => {
@@ -2022,6 +2117,100 @@ describe("IssueProperties", () => {
     });
 
     act(() => root.unmount());
+    dateNowSpy.mockRestore();
+  });
+
+  it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00.000Z").getTime());
+    const baseMonitorState = {
+      status: "scheduled" as const,
+      nextCheckAt: "2026-07-17T16:08:00.000Z",
+      lastTriggeredAt: null,
+      attemptCount: 1,
+      notes: "Verify deployment",
+      scheduledBy: "board" as const,
+      clearedAt: null,
+      clearReason: null,
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    const monitorRowText = () => container.querySelector('[data-testid="monitor-row-trigger"]')?.textContent;
+    const renderMonitor = (issue: Issue) => {
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueProperties issue={issue} childIssues={[]} onUpdate={vi.fn()} inline />
+          </QueryClientProvider>,
+        );
+      });
+    };
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
+      executionState: createExecutionState({ monitor: baseMonitorState }),
+      monitorAttemptCount: 1,
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("In 2h 12m");
+    expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00.000Z" } }),
+      monitorNextCheckAt: new Date("2026-07-17T17:08:00.000Z"),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("In 2h 12m");
+    expect(monitorRowText()).toContain("Today, 4:08 PM");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
+      monitorAttemptCount: 3,
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Attempt 3");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Due now");
+    expect(monitorRowText()).toContain("checking momentarily…");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Overdue by 18m");
+    expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy(),
+      executionState: createExecutionState({ monitor: {
+        ...baseMonitorState,
+        status: "cleared",
+        nextCheckAt: null,
+        lastTriggeredAt: "2026-07-17T11:56:00.000Z",
+        attemptCount: 2,
+        clearedAt: "2026-07-17T12:00:00.000Z",
+        clearReason: "manual",
+      } }),
+      monitorAttemptCount: 2,
+      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Cleared");
+    expect(monitorRowText()).toContain("last checked 2h ago · after attempt 2");
+
+    renderMonitor(createIssue());
+    await flush();
+    expect(monitorRowText()).toContain("None");
+
+    act(() => root.unmount());
+    dateNowSpy.mockRestore();
   });
 
   const watchdogAgent = {
@@ -2297,7 +2486,7 @@ describe("IssueProperties", () => {
       inline: true,
       externalObjects: [
         {
-          mentionCount: 1,
+          mentionCount: 2,
           sourceLabels: ["Description"],
           pill: {
             providerKey: "github",
@@ -2314,7 +2503,7 @@ describe("IssueProperties", () => {
           group: {
             object: null,
             mentions: [],
-            mentionCount: 1,
+            mentionCount: 2,
             sourceLabels: ["Description"],
           },
         },
@@ -2362,11 +2551,35 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: "Github PR",
+            iconKey: "github",
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "acme/web#242",
+            url: "https://github.com/acme/web/pull/242",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
       ],
     });
     await flush();
 
-    expect(container.textContent).toContain("Github Pull Request");
+    expect(container.textContent).toContain("Github PR");
+    expect(container.textContent).not.toContain("Github Pull Request");
+    expect(container.textContent).not.toContain("×2");
     expect(container.textContent).toContain("Github Issue");
     expect(container.textContent).toContain("URL");
     expect(container.textContent).not.toContain("URL link");
@@ -2375,17 +2588,126 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Open");
     expect(container.textContent).not.toContain("External objects");
     const label = Array.from(container.querySelectorAll("span"))
-      .find((span) => span.textContent === "Github Pull Request");
+      .find((span) => span.textContent === "Github PR");
     expect(label?.querySelector("svg")).toBeTruthy();
     const pullRequestLink = Array.from(container.querySelectorAll("a"))
       .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/241");
     expect(pullRequestLink?.textContent).toContain("PR 241 - Merged");
     expect(pullRequestLink?.textContent).not.toContain("acme/web#241");
-    expect(pullRequestLink?.textContent).not.toContain("Github Pull Request");
+    expect(pullRequestLink?.textContent).not.toContain("Github PR");
     expect(pullRequestLink?.querySelectorAll("svg")).toHaveLength(1);
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+    const unrefreshedPullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/242");
+    expect(unrefreshedPullRequestLink?.textContent).toContain("PR 242 - Not yet refreshed");
+    expect(unrefreshedPullRequestLink?.textContent).not.toContain("Not yet resolved");
+
+    act(() => root.unmount());
+  });
+
+  it("shows agent-archive attribution and unarchive only in the properties pane", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-9", name: "Gardener", status: "active", adapterType: "codex_local", icon: null },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "agent",
+        archivedByAgentId: "agent-9",
+        archivedByRunId: "run-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Archived");
+      // The value shows just the agent name (the row label already says
+      // "Archived"), giving the name the full column width at 320px.
+      expect(container.textContent).toContain("Gardener");
+      const unarchive = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Unarchive"));
+      expect(unarchive).toBeTruthy();
+    });
+
+    // The tooltip must carry the full "Archived by <name> · <time>" phrasing so
+    // the attribution is recoverable if a long name truncates at the 320px pane
+    // width (PAP-14182 review fix).
+    const attribution = Array.from(container.querySelectorAll("span"))
+      .find((span) => span.getAttribute("title")?.startsWith("Archived by Gardener"));
+    expect(attribution).toBeTruthy();
+
+    const unarchiveButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Unarchive"))!;
+    await act(async () => {
+      unarchiveButton.click();
+    });
+    await flush();
+    expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+
+    act(() => root.unmount());
+  });
+
+  it("surfaces unarchive failures inline", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-9", name: "Gardener", status: "active", adapterType: "codex_local", icon: null },
+    ]);
+    mockIssuesApi.unarchiveFromInbox.mockRejectedValue(new Error("Archive policy denied"));
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "agent",
+        archivedByAgentId: "agent-9",
+        archivedByRunId: "run-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    let unarchiveButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      unarchiveButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Unarchive"));
+      expect(unarchiveButton).toBeTruthy();
+    });
+    await act(async () => {
+      unarchiveButton!.click();
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Archive policy denied");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("does not render archive attribution for user (manual) archives", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "user",
+        archivedByAgentId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Updated");
+    });
+    expect(container.textContent).not.toContain("Archived by");
+    expect(
+      Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("Unarchive")),
+    ).toBe(false);
 
     act(() => root.unmount());
   });

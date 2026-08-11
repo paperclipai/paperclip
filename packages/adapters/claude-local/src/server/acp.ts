@@ -2,25 +2,42 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxRemoteManagedHomeContext,
+  AcpxRemoteManagedHomeResult,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  materializeRemoteClaudeConfig,
+  prepareClaudeConfigSeed,
+} from "./claude-config.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -60,6 +77,20 @@ export async function resolveClaudeExecutionEngineForRun(
   input: ClaudeEngineResolutionInput,
 ): Promise<ClaudeEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultClaudeAcpFallbackReason(input);
@@ -107,8 +138,141 @@ export function buildClaudeAcpConfig(config: Record<string, unknown>): Record<st
   };
 }
 
+/**
+ * Classify billing the same way the Claude CLI lane does so ACP runs land in
+ * the cost ledger with a real provider/billingType instead of acpx/unknown.
+ * Host env only counts for local execution targets; remote targets see just
+ * the adapter-config env.
+ */
+export function resolveClaudeAcpBillingIdentity(
+  ctx: Pick<AdapterExecutionContext, "config"> &
+    Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const considerHostEnv = target?.kind !== "remote";
+  const readEnvValue = (key: string): string => {
+    const fromConfig = envConfig[key];
+    if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
+    const fromHost = considerHostEnv ? process.env[key] : undefined;
+    return typeof fromHost === "string" ? fromHost.trim() : "";
+  };
+  const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
+  const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
+  const billingType: AdapterBillingType = bedrock
+    ? "metered_api"
+    : readEnvValue("ANTHROPIC_API_KEY")
+    ? "api"
+    : "subscription";
+  return {
+    provider: "anthropic",
+    biller: bedrock ? "aws_bedrock" : "anthropic",
+    billingType,
+  };
+}
+
+/**
+ * Claude remote managed-home seed for the runner-backed remote sandbox ACP lane.
+ * Mirrors the Claude CLI lane (`claude-local/execute.ts`): ship a sanitized
+ * config seed (settings.json + CLAUDE.md, no credentials) as the `config-seed`
+ * asset, materialize it into an in-sandbox config dir (copying the sandbox's own
+ * `$HOME/.claude` credentials in), then repoint `CLAUDE_CONFIG_DIR` onto that
+ * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
+ * none — mirroring the CLI is the contract), so no teardown hook.
+ *
+ * An explicit `CLAUDE_CONFIG_DIR` (user-managed) is honored only if it can reach
+ * the remote sandbox; a host-only path cannot, so we do NOT forward it verbatim
+ * (that would start remote Claude with no config/credentials). See the branch
+ * below for the two portable dispositions. The engine's `useRemoteProcessSession`
+ * gate already guarantees the remote sandbox (managed-home) target.
+ */
+async function prepareClaudeRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  const { env, runId, onLog, executionTarget } = input;
+  const envConfig = parseObject(input.config.env);
+  const explicitClaudeConfigDir =
+    typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
+      ? envConfig.CLAUDE_CONFIG_DIR.trim()
+      : "";
+  if (explicitClaudeConfigDir) {
+    // User-managed escape hatch. Unlike the Claude CLI lane
+    // (`claude-local/execute.ts`), which runs the process on the same host and can
+    // forward the operator's path verbatim, the remote ACP lane spawns Claude
+    // inside a sandbox that CANNOT see host paths. Forwarding an absolute host
+    // path unchanged would leave remote Claude without the requested config or
+    // credentials, so we choose one of two portable dispositions:
+    //   1. The path lives INSIDE the staged workspace → remap its prefix onto the
+    //      in-sandbox workspace dir so it resolves against the copied files.
+    //   2. The path is host-only (outside the workspace) → it cannot cross into
+    //      the sandbox, so ignore the un-portable override and seed the managed
+    //      config instead (falling through below), which guarantees working
+    //      config/credentials. Logged loudly so the substitution is diagnosable.
+    const relativeToWorkspace = path.relative(input.workspaceLocalDir, explicitClaudeConfigDir);
+    const isUnderWorkspace =
+      relativeToWorkspace.length > 0 &&
+      !relativeToWorkspace.startsWith("..") &&
+      !path.isAbsolute(relativeToWorkspace);
+    if (isUnderWorkspace) {
+      const stagedRuntime = await input.stage([]);
+      const remoteWorkspaceDir = stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir;
+      const remappedConfigDir = path.posix.join(
+        remoteWorkspaceDir,
+        relativeToWorkspace.split(path.sep).join(path.posix.sep),
+      );
+      env.CLAUDE_CONFIG_DIR = remappedConfigDir;
+      await onLog(
+        "stdout",
+        `[paperclip] Remapped operator CLAUDE_CONFIG_DIR from host path ${explicitClaudeConfigDir} onto the in-sandbox workspace path ${remappedConfigDir} for the remote ACP run.\n`,
+      );
+      return { stagedRuntime };
+    }
+    await onLog(
+      "stderr",
+      `[paperclip] operator-provided CLAUDE_CONFIG_DIR=${explicitClaudeConfigDir} is outside the staged workspace and cannot reach the remote sandbox; ignoring the host-only path and seeding the managed Claude config instead.\n`,
+    );
+  }
+
+  // Content-addressed sanitized seed (managed cache under the instance root, not
+  // a temp dir — reused across runs, so no teardown cleanup).
+  const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  const stagedRuntime = await input.stage([
+    { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+  ]);
+
+  const remoteClaudeRuntimeRoot =
+    stagedRuntime.runtimeRootDir ??
+    path.posix.join(stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir, ".paperclip-runtime", "claude");
+  const remoteClaudeConfigSeedDir =
+    stagedRuntime.assetDirs["config-seed"] ?? path.posix.join(remoteClaudeRuntimeRoot, "config-seed");
+  const remoteClaudeConfigDir = path.posix.join(remoteClaudeRuntimeRoot, "config");
+
+  await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
+  await materializeRemoteClaudeConfig({
+    runId,
+    target: executionTarget,
+    remoteClaudeConfigDir,
+    remoteClaudeConfigSeedDir,
+    options: {
+      cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+      env,
+      timeoutSec: Math.max(input.timeoutSec, 15),
+      graceSec: 20,
+      onLog,
+    },
+  });
+  // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
+  env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  return { stagedRuntime };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
+    prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     ...options,
     adapterType: "claude_local",
     moduleDir,
@@ -179,10 +343,30 @@ async function findAncestorBin(startDir: string, binName: string): Promise<strin
   }
 }
 
-async function commandIsResolvable(command: string): Promise<boolean> {
+async function commandIsResolvable(
+  command: string,
+  input?: ClaudeEngineResolutionInput,
+): Promise<boolean> {
   const trimmed = command.trim();
   if (!trimmed) return false;
   if (looksLikeShellCommand(trimmed)) return true;
+  const target = readAdapterExecutionTarget({
+    executionTarget: input?.executionTarget,
+    legacyRemoteExecution: input?.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") {
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(
+        trimmed,
+        target,
+        resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
+        process.env,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (path.isAbsolute(trimmed) || hasPathSeparator(trimmed)) return pathExists(trimmed);
   return (await findCommandOnPath(trimmed)) !== null;
 }
@@ -197,6 +381,22 @@ async function resolveClaudeAcpCommand(config: Record<string, unknown>): Promise
   );
 }
 
+function sandboxTargetHasProcessSessionBridge(
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): boolean {
+  return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+}
+
+async function resolveClaudeAcpCommandForTarget(
+  config: Record<string, unknown>,
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<string> {
+  const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
+  if (configured) return configured;
+  if (target?.kind === "remote") return "claude-agent-acp";
+  return resolveClaudeAcpCommand(config);
+}
+
 async function defaultClaudeAcpFallbackReason(
   input: ClaudeEngineResolutionInput,
 ): Promise<string | null> {
@@ -204,14 +404,17 @@ async function defaultClaudeAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote") {
-    return "Claude ACP currently supports only the local Paperclip host, but this run targets a remote environment.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
     return `Node ${process.version} does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
-  const command = await resolveClaudeAcpCommand(input.config);
-  if (!(await commandIsResolvable(command))) {
+  const command = await resolveClaudeAcpCommandForTarget(input.config, target);
+  if (!(await commandIsResolvable(command, input))) {
     return `Claude ACP server command is not available: ${command}.`;
   }
   return null;
@@ -244,10 +447,10 @@ export async function testClaudeAcpEnvironment(
 
   if (targetIsRemote) {
     checks.push({
-      code: "claude_acp_remote_target_unsupported",
-      level: "error",
-      message: "Claude ACP currently runs on the local Paperclip host and cannot target a remote execution environment.",
-      hint: "Use engine=cli for remote or sandbox Claude runs.",
+      code: "claude_acp_remote_target",
+      level: "info",
+      message: "Claude ACP will run against the remote execution environment.",
+      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
   }
 
@@ -279,8 +482,11 @@ export async function testClaudeAcpEnvironment(
       : `Run Claude ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
   });
 
-  const command = await resolveClaudeAcpCommand(config);
-  const commandResolvable = await commandIsResolvable(command);
+  const command = await resolveClaudeAcpCommandForTarget(config, target);
+  const commandResolvable = await commandIsResolvable(command, {
+    config,
+    executionTarget: ctx.executionTarget,
+  });
   checks.push({
     code: commandResolvable ? "claude_acp_command_resolvable" : "claude_acp_command_missing",
     level: commandResolvable ? "info" : "error",

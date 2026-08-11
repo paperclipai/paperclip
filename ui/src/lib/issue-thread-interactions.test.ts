@@ -5,10 +5,18 @@ import {
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
   getCheckboxConfirmationSelectedLabels,
+  getItemVerdictProgress,
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
   normalizeRequestConfirmationTargetHref,
 } from "./issue-thread-interactions";
+import type { RequestItemVerdictsInteraction } from "./issue-thread-interactions";
+
+const resolverPolicyFields = {
+  resolverPolicy: "board_only",
+  requestedResolverPolicy: "board_only",
+  effectiveResolverPolicy: "board_only",
+} as const;
 
 describe("buildSuggestedTaskTree", () => {
   it("preserves parent-child relationships from client keys", () => {
@@ -46,6 +54,7 @@ describe("issue thread interaction helpers", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:00:00.000Z",
       payload: {
@@ -64,6 +73,7 @@ describe("issue thread interaction helpers", () => {
       kind: "suggest_tasks",
       status: "accepted",
       continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:00:00.000Z",
       payload: {
@@ -87,6 +97,7 @@ describe("issue thread interaction helpers", () => {
       kind: "ask_user_questions",
       status: "pending",
       continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:00:00.000Z",
       payload: {
@@ -109,6 +120,7 @@ describe("issue thread interaction helpers", () => {
       kind: "ask_user_questions",
       status: "answered",
       continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:00:00.000Z",
       payload: {
@@ -135,6 +147,7 @@ describe("issue thread interaction helpers", () => {
       kind: "ask_user_questions",
       status: "expired",
       continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:05:00.000Z",
       payload: {
@@ -164,6 +177,7 @@ describe("issue thread interaction helpers", () => {
       issueId: "issue-1",
       kind: "request_checkbox_confirmation" as const,
       continuationPolicy: "wake_assignee" as const,
+      ...resolverPolicyFields,
       createdAt: "2026-04-06T12:00:00.000Z",
       updatedAt: "2026-04-06T12:00:00.000Z",
       payload: {
@@ -282,5 +296,80 @@ describe("issue thread interaction helpers", () => {
     });
 
     expect(labels).toEqual(["Option 2", "Option 1", "Other: A written answer"]);
+  });
+});
+
+describe("per-item verdict helpers", () => {
+  function verdictInteraction(
+    overrides: Partial<RequestItemVerdictsInteraction> = {},
+  ): RequestItemVerdictsInteraction {
+    return {
+      id: "interaction-verdicts",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: {
+        version: 1,
+        prompt: "Review the posts.",
+        items: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+          { id: "c", label: "C" },
+        ],
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
+      },
+      ...overrides,
+    } as RequestItemVerdictsInteraction;
+  }
+
+  it("counts decided items and lists still-pending ids in payload order", () => {
+    const progress = getItemVerdictProgress({
+      payload: verdictInteraction().payload,
+      result: {
+        version: 1,
+        outcome: "resolved",
+        complete: false,
+        items: [
+          { id: "a", verdict: "approve", resolvedByUserId: "u", resolvedAt: "2026-04-06T12:01:00.000Z" },
+          { id: "c", verdict: "reject", reason: "no", resolvedByUserId: "u", resolvedAt: "2026-04-06T12:01:00.000Z" },
+        ],
+      },
+    });
+    expect(progress).toMatchObject({ total: 3, decided: 2, approved: 1, rejected: 1, deferred: 0 });
+    expect(progress.pendingItemIds).toEqual(["b"]);
+  });
+
+  it("summarizes pending, complete, and superseded verdict cards", () => {
+    expect(buildIssueThreadInteractionSummary(verdictInteraction())).toBe("0 of 3 decided");
+
+    expect(buildIssueThreadInteractionSummary(verdictInteraction({
+      status: "answered",
+      result: {
+        version: 1,
+        outcome: "resolved",
+        complete: true,
+        items: [
+          { id: "a", verdict: "approve", resolvedByUserId: "u", resolvedAt: "2026-04-06T12:01:00.000Z" },
+          { id: "b", verdict: "approve", resolvedByUserId: "u", resolvedAt: "2026-04-06T12:01:00.000Z" },
+          { id: "c", verdict: "reject", reason: "no", resolvedByUserId: "u", resolvedAt: "2026-04-06T12:01:00.000Z" },
+        ],
+      },
+    }))).toBe("3 decided · 2 approved · 1 rejected");
+
+    expect(buildIssueThreadInteractionSummary(verdictInteraction({
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        complete: false,
+        items: [],
+      },
+    }))).toBe("Verdicts expired after comment");
   });
 });

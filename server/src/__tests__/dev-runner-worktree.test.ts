@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bootstrapDevRunnerWorktreeEnv,
+  isWorktreeSeedPending,
   isLinkedGitWorktreeCheckout,
   resolveWorktreeEnvFilePath,
 } from "../dev-runner-worktree.ts";
@@ -24,6 +25,17 @@ function createTempRoot(prefix: string): string {
 }
 
 describe("dev-runner worktree env bootstrap", () => {
+  it("guards seed-pending worktrees until a seed-complete marker exists", () => {
+    const root = createTempRoot("paperclip-dev-runner-seed-pending-");
+    fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".paperclip", "seed-pending"), "{}\n", "utf8");
+
+    expect(isWorktreeSeedPending(root)).toBe(true);
+
+    fs.writeFileSync(path.join(root, ".paperclip", "seed-complete"), "{}\n", "utf8");
+    expect(isWorktreeSeedPending(root)).toBe(false);
+  });
+
   it("detects linked git worktrees from .git files", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-");
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");

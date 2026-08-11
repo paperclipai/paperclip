@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Profiler, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, DocumentAnnotationThreadWithComments, IssueDocument } from "@paperclipai/shared";
 import { MessageSquare } from "lucide-react";
@@ -7,6 +7,11 @@ import { cn } from "@/lib/utils";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import {
+  initializeSelectionDebug,
+  isSelectionDebugEnabled,
+  recordAnnotationCommit,
+} from "@/lib/document-annotation-debug";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type { CompanyUserProfile } from "@/lib/company-members";
@@ -37,6 +42,8 @@ export interface IssueDocumentAnnotationsProps {
   /** Controlled panel state. Caller owns this so the count chip can live in the doc header. */
   panelOpen: boolean;
   onPanelOpenChange: (open: boolean) => void;
+  /** Keep the panel in document flow for narrow hosts such as the task properties pane. */
+  panelPlacement?: "floating" | "inline";
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
@@ -61,12 +68,15 @@ export function IssueDocumentAnnotations({
   locationHash,
   panelOpen,
   onPanelOpenChange,
+  panelPlacement = "floating",
   agentMap,
   userProfileMap,
   defaultFocusedThreadId,
   initialComposerAnchor,
   onInitialComposerAnchorConsumed,
 }: IssueDocumentAnnotationsProps) {
+  const selectionDebugEnabled = isSelectionDebugEnabled();
+  if (selectionDebugEnabled) initializeSelectionDebug();
   const containerRef = useRef<HTMLElement | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(defaultFocusedThreadId ?? null);
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
@@ -97,7 +107,7 @@ export function IssueDocumentAnnotations({
   }, []);
 
   useEffect(() => {
-    if (!panelOpen || isMobile || typeof window === "undefined") {
+    if (!panelOpen || panelPlacement === "inline" || isMobile || typeof window === "undefined") {
       setDesktopPanelFrame(null);
       return;
     }
@@ -162,11 +172,13 @@ export function IssueDocumentAnnotations({
       window.removeEventListener("scroll", updatePanelFrame, true);
       resizeObserver?.disconnect();
     };
-  }, [doc.key, isMobile, panelOpen]);
+  }, [doc.key, isMobile, panelOpen, panelPlacement]);
 
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, doc.key, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
@@ -275,7 +287,7 @@ export function IssueDocumentAnnotations({
   );
 
   const fallbackDesktopPanelFrame = useMemo(() => {
-    if (!panelOpen || isMobile || desktopPanelFrame || typeof window === "undefined") return null;
+    if (!panelOpen || panelPlacement === "inline" || isMobile || desktopPanelFrame || typeof window === "undefined") return null;
     const width = Math.min(
       DESKTOP_ANNOTATION_PANEL_WIDTH,
       Math.max(
@@ -295,7 +307,7 @@ export function IssueDocumentAnnotations({
       ),
       width,
     };
-  }, [desktopPanelFrame, isMobile, panelOpen]);
+  }, [desktopPanelFrame, isMobile, panelOpen, panelPlacement]);
   const renderedDesktopPanelFrame = desktopPanelFrame ?? fallbackDesktopPanelFrame;
 
   const annotationPanel = panelOpen ? (
@@ -329,13 +341,14 @@ export function IssueDocumentAnnotations({
       newCommentDisabled={newCommentDisabled}
       newCommentDisabledReason={newCommentDisabledReason}
       isMobile={isMobile}
+      inline={panelPlacement === "inline"}
       desktopWidth={renderedDesktopPanelFrame?.width}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
     />
   ) : null;
 
-  return (
+  const content = (
     <div className="paperclip-doc-annotation-host relative">
       <section
         ref={(element) => {
@@ -365,6 +378,11 @@ export function IssueDocumentAnnotations({
           />
         ) : null}
       </section>
+      {panelOpen && panelPlacement === "inline" && !isMobile ? (
+        <div className="mt-3" data-testid="document-annotation-panel-inline">
+          {annotationPanel}
+        </div>
+      ) : null}
       {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
@@ -382,6 +400,12 @@ export function IssueDocumentAnnotations({
       {panelOpen && isMobile ? annotationPanel : null}
     </div>
   );
+
+  return selectionDebugEnabled ? (
+    <Profiler id="IssueDocumentAnnotations" onRender={recordAnnotationCommit}>
+      {content}
+    </Profiler>
+  ) : content;
 }
 
 export interface DocumentAnnotationsCountChipProps {
@@ -406,6 +430,8 @@ export function DocumentAnnotationsCountChip({
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })

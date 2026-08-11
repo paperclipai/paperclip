@@ -69,6 +69,10 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockDecisionsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
@@ -132,6 +136,10 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/decisions", () => ({
+  decisionsApi: mockDecisionsApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -240,6 +248,14 @@ vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
     onWorkModeChange?: (workMode: string) => void;
     issueWorkMode?: string;
+    comments?: Array<{
+      body: string;
+      clientStatus?: string;
+      queueState?: string;
+      queueTargetRunId?: string | null;
+    }>;
+    onAdd?: (body: string) => Promise<void>;
+    onInterruptQueued?: (runId: string) => Promise<void>;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
@@ -272,6 +288,13 @@ vi.mock("../components/IssueChatThread", () => ({
       </div>
     );
   },
+}));
+
+// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
+// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+vi.mock("../components/TaskChatThread", () => ({
+  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
 }));
 
 vi.mock("../components/IssueDocumentsSection", () => ({
@@ -323,13 +346,36 @@ vi.mock("../components/ScrollToBottom", () => ({
 }));
 
 vi.mock("../components/StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
-  ),
+  StatusIcon: ({
+    status,
+    blockerAttention,
+    onChange,
+  }: {
+    status: string;
+    blockerAttention?: Issue["blockerAttention"];
+    onChange?: (status: string) => void;
+  }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change status (current: ${status})`}
+      data-status-icon-state={blockerAttention?.state}
+      onClick={() => onChange("done")}
+    >
+      {status}
+    </button>
+  ) : <span data-status-icon-state={blockerAttention?.state}>{status}</span>,
 }));
 
 vi.mock("../components/PriorityIcon", () => ({
-  PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
+  PriorityIcon: ({ priority, onChange }: { priority: string; onChange?: (priority: string) => void }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change priority (current: ${priority})`}
+      onClick={() => onChange("high")}
+    >
+      {priority}
+    </button>
+  ) : <span>{priority}</span>,
 }));
 
 vi.mock("../components/ApprovalCard", () => ({
@@ -972,6 +1018,7 @@ describe("IssueDetail", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
+    mockDecisionsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
@@ -1026,6 +1073,82 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("does not load or render decision sections in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      reviewAttention: {
+        state: "covered",
+        reason: "Review has a maintained action path.",
+        paths: [
+          {
+            kind: "interaction",
+            label: "Pending request confirmation",
+            responder: "Board",
+            since: "2026-04-21T00:00:00.000Z",
+            ref: "interaction-1",
+          },
+        ],
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Issue detail smoke");
+    expect(container.querySelector('[data-testid="issue-review-panel"]')).toBeNull();
+    expect(mockDecisionsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("updates status from the task header control and hides the priority control (PAP-411)", async () => {
+    const issue = createIssue({ status: "todo", priority: "medium" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
+      ...issue,
+      ...data,
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: todo)"]',
+    );
+    const priorityButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change priority (current: medium)"]',
+    );
+    expect(statusButton).not.toBeNull();
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off), so the header
+    // priority control must not render.
+    expect(priorityButton).toBeNull();
+
+    await act(async () => {
+      statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
+    });
+    expect(mockIssuesApi.update).not.toHaveBeenCalledWith(
+      issue.identifier,
+      expect.objectContaining({ priority: expect.anything() }),
+    );
+
+    mockIssuesApi.update.mockReset();
   });
 
   it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
@@ -1265,6 +1388,95 @@ describe("IssueDetail", () => {
     const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { comments?: Array<{ id: string; queueState?: string }> };
     const freshComment = props.comments?.find((comment) => comment.id === "comment-fresh");
     expect(freshComment?.queueState).toBeUndefined();
+  });
+
+  it("queues messages against a queued live run and interrupts that exact run", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-queued",
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-queued",
+        status: "queued",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      void props.onAdd("Queued run message");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const queuedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const optimisticComment = queuedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(optimisticComment).toMatchObject({
+      clientStatus: "queued",
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Queued run message" }));
+    });
+    await flushReact();
+
+    const persistedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const persistedComment = persistedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(persistedComment).toMatchObject({
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      await persistedProps.onInterruptQueued(persistedComment!.queueTargetRunId!);
+    });
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
+    mockHeartbeatsApi.cancel.mockClear();
   });
 
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {

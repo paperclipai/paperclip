@@ -3,9 +3,17 @@
 import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
+import type { CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscoveryGrid, SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import {
+  DiscoveryGrid,
+  SkillDetailPage,
+  getSkillVersionDiffSelection,
+  resolveDiscoveryTab,
+  withDiscoveryTab,
+  skillDetailBreadcrumbs,
+} from "./CompanySkills";
+import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -50,6 +58,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     <button type="button" onClick={onSelect}>{children}</button>
   ),
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSub: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuSubContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
@@ -111,6 +122,9 @@ function makeVersion(revisionNumber: number, content: string): CompanySkillVersi
     companySkillId: "skill-1",
     revisionNumber,
     label: null,
+    releaseId: null,
+    releaseName: null,
+    releasedAt: null,
     fileInventory: [
       {
         path: "SKILL.md",
@@ -252,6 +266,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
         totalCount={0}
         onCreate={vi.fn()}
         onImport={vi.fn()}
+        onImportFromProject={vi.fn()}
         onBrowseCatalog={vi.fn()}
         onScan={vi.fn()}
         scanPending={false}
@@ -262,6 +277,59 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
   });
 
   return container;
+}
+
+const projectFolderResult: FolderListResult = {
+  kind: "skill",
+  allCount: 1,
+  unfiledCount: 0,
+  folders: [
+    {
+      id: "projects-root",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: null,
+      name: "Projects",
+      slug: "projects",
+      systemKey: "projects",
+      path: "projects",
+      depth: 1,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+    {
+      id: "project-folder",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: "projects-root",
+      name: "Acme",
+      slug: "acme",
+      systemKey: "project:project-1",
+      path: "projects/acme",
+      depth: 2,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+  ],
+};
+
+function projectFolderGridProps() {
+  return {
+    folderResult: projectFolderResult,
+    onFolderSelect: vi.fn(),
+    onCreateFolder: vi.fn(),
+    onCreateFolderIn: vi.fn(),
+    onRenameFolder: vi.fn(),
+    onEditFolder: vi.fn(),
+    onMoveFolder: vi.fn(),
+    onDeleteFolder: vi.fn(),
+  } satisfies Partial<ComponentProps<typeof DiscoveryGrid>>;
 }
 
 function buttonsNamed(node: ParentNode, name: string) {
@@ -325,6 +393,226 @@ describe("DiscoveryGrid Studio entry points", () => {
 
     expect(onCreate).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps folder creation in the compact rail control", async () => {
+    const props = projectFolderGridProps();
+    const node = await renderDiscoveryGrid(props);
+    const compactCreateButton = node.querySelector<HTMLButtonElement>('button[title="New folder"]');
+
+    expect(buttonsNamed(node, "New folder")).toHaveLength(0);
+    expect(compactCreateButton).not.toBeNull();
+
+    await click(compactCreateButton!);
+
+    expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
+    expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps folder creation available when no folder rail exists", async () => {
+    const onCreateFolder = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderResult: { ...projectFolderResult, folders: [] },
+      onCreateFolder,
+    });
+    const createButton = buttonsNamed(node, "New folder")[0] as HTMLButtonElement;
+
+    expect(createButton).toBeDefined();
+
+    await click(createButton);
+
+    expect(onCreateFolder).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes only the project represented by the active project folder", async () => {
+    const onScan = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderSelection: "project-folder",
+      onScan,
+    });
+    const refreshButton = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh Acme project skills"]',
+    );
+
+    expect(refreshButton).not.toBeNull();
+
+    await click(refreshButton!);
+
+    expect(onScan).toHaveBeenCalledOnce();
+    expect(onScan).toHaveBeenCalledWith("project-1");
+  });
+
+  it("does not open a skill when keyboard-activating its actions button", async () => {
+    const onOpenCard = vi.fn();
+    const card = {
+      key: "demo-skill",
+      skillId: "skill-1",
+      folderId: null,
+      catalogRef: null,
+      name: "Demo Skill",
+      slug: "demo-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      onOpenCard,
+      folderResult: { kind: "skill", folders: [], allCount: 1, unfiledCount: 1 },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+    });
+    const actionsButton = node.querySelector<HTMLButtonElement>('[aria-label="More actions for Demo Skill"]');
+
+    await act(async () => {
+      actionsButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onOpenCard).not.toHaveBeenCalled();
+  });
+
+  it("does not offer move actions for skills in the bundled folder", async () => {
+    const card = {
+      key: "bundled-skill",
+      skillId: "skill-1",
+      folderId: "bundled-folder",
+      catalogRef: null,
+      name: "Bundled Skill",
+      slug: "bundled-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      selectMode: true,
+      folderResult: {
+        kind: "skill",
+        folders: [{
+          id: "bundled-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "Bundled",
+          slug: "bundled",
+          systemKey: "bundled",
+          path: "bundled",
+          depth: 1,
+          color: null,
+          position: 0,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+          updatedAt: new Date("2026-01-01T00:00:00Z"),
+          itemCount: 1,
+        }],
+        allCount: 1,
+        unfiledCount: 0,
+      },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onOpenMoveCard: vi.fn(),
+    });
+
+    expect(node.querySelector('[aria-label="More actions for Bundled Skill"]')).toBeNull();
+    expect(node.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(node.textContent).not.toContain("Move to folder");
+  });
+});
+
+describe("skills discovery tab routing", () => {
+  it("opens the folder-first installed view when the URL has no tab", () => {
+    expect(resolveDiscoveryTab(null)).toBe("installed");
+    expect(resolveDiscoveryTab("all")).toBe("all");
+  });
+
+  it("keeps All explicit and makes Installed the canonical default URL", () => {
+    const allParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "all");
+    expect(allParams.toString()).toBe("tab=all");
+
+    const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
+    expect(installedParams.toString()).toBe("folder=my");
+  });
+});
+
+describe("skill detail breadcrumbs", () => {
+  it("links each folder ancestor back to the installed folder view", () => {
+    const folders: FolderListResult = {
+      kind: "skill",
+      allCount: 1,
+      unfiledCount: 0,
+      folders: [
+        {
+          id: "my-root",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "My Skills",
+          slug: "my",
+          systemKey: "my",
+          path: "my",
+          depth: 1,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+        {
+          id: "review-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: "my-root",
+          name: "Review",
+          slug: "review",
+          systemKey: null,
+          path: "my/review",
+          depth: 2,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+      ],
+    };
+
+    expect(skillDetailBreadcrumbs({ name: "Deal with PR", folderId: "review-folder" }, folders)).toEqual([
+      { label: "Skills", href: "/skills" },
+      { label: "My Skills", href: "/skills?folder=my-root" },
+      { label: "Review", href: "/skills?folder=review-folder" },
+      { label: "Deal with PR" },
+    ]);
+  });
+});
+
+describe("skillStudioNewRoute", () => {
+  it("builds a direct fork draft URL for a specific skill", () => {
+    expect(skillStudioNewRoute("skill 1")).toBe("/skills/studio/new?forkFrom=skill%201");
+  });
 });
 
 describe("SkillDetailPage versions tab", () => {
@@ -358,7 +646,62 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
-  it("saves category edits with spaces from the settings dialog", async () => {
+  it("humanizes the server folder path on a cold detail render", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, { folderPath: "engineering/code-review" }),
+    });
+
+    expect(node.textContent).toContain("Company / Engineering / Code Review");
+  });
+
+  it("shows a direct fork action for read-only skills", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onFork = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        editable: false,
+        editableReason: "Remote GitHub skills are read-only. Fork or import locally to edit them.",
+        sourceBadge: "github",
+        sourceLabel: "GitHub",
+        sourceType: "github",
+      }),
+      onFork,
+    });
+
+    expect(node.textContent).not.toContain("Fork or import locally");
+
+    const forkButton = buttonsNamed(node, "Fork")[0] as HTMLButtonElement;
+    expect(forkButton).toBeTruthy();
+
+    await click(forkButton);
+
+    expect(onFork).toHaveBeenCalledOnce();
+  });
+
+  it("renders long source paths in full so they can wrap inside the sidebar", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const longSourcePath = "/srv/paperclip/home/paperclipai/paperclip/.agents/skills/prepare-pr/SKILL.md";
+    const node = await renderSkillDetail([v1], {
+      activeTab: "agents",
+      detail: makeDetail(v1, {
+        sourcePath: longSourcePath,
+        sourceLocator: null,
+      }),
+    });
+
+    const sourceValue = Array.from(node.querySelectorAll("div")).find((element) =>
+      element.textContent === longSourcePath,
+    );
+
+    expect(sourceValue).toBeTruthy();
+    expect(sourceValue?.className).toContain("[overflow-wrap:anywhere]");
+    expect(node.textContent).not.toContain("...");
+  });
+
+  it("saves normalized category edits from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();
     const node = await renderSkillDetail([v1], {

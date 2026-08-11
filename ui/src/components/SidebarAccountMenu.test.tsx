@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -13,11 +14,27 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: mockNavigateTopLevel,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -71,6 +88,10 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
+    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
   });
 
   afterEach(() => {
@@ -79,10 +100,14 @@ describe("SidebarAccountMenu", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the signed-in user and opens the account card menu", async () => {
+  it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
     });
 
     await act(async () => {
@@ -132,6 +157,136 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
+    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
+    const root = createRoot(container);
+    const onOpenChange = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: {
+        managed: true,
+        managedBy: "paperclip-cloud",
+        stackSlug: "acme-labs",
+        cloudBaseUrl: "https://cloud.example.test",
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            open
+            onOpenChange={onOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+    expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
+    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps sign-out hidden outside authenticated deployment mode", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" open />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Sign out");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the short commit sha instead of a version for source builds", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            version="2026.626.0+58.git.518fc71ce"
+            serverGit={{
+              available: true,
+              fullSha: "518fc71ce1234567890abcdef1234567890abcde",
+              shortSha: "518fc71",
+              branchName: "feature/source-build-label",
+              subject: "Show source build label",
+              committedAt: "2026-06-26T00:00:00.000Z",
+              localChanges: {
+                available: true,
+                hasLocalChanges: false,
+                stagedFileCount: 0,
+                unstagedFileCount: 0,
+                untrackedFileCount: 0,
+              },
+            }}
+            open
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
+    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
+      "feature/source-build-label",
+    );
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
+      "518fc71",
+    );
 
     await act(async () => {
       root.unmount();

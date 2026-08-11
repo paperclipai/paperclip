@@ -50,6 +50,17 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
+    title: "Decisions",
+    shortcuts: [
+      { keys: ["j"], label: "Move down" },
+      { keys: ["↓"], label: "Move down" },
+      { keys: ["k"], label: "Move up" },
+      { keys: ["↑"], label: "Move up" },
+      { keys: ["Enter"], label: "Open or close selected decision" },
+      { keys: ["x"], label: "Dismiss selected decision" },
+    ],
+  },
+  {
     title: "Global",
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
