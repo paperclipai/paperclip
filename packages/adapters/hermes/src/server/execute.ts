@@ -687,8 +687,14 @@ export async function execute(
   // The execution workspace selected by Paperclip is authoritative. Older
   // Hermes agents often retain an agent-home `cwd`; letting that value win
   // silently writes task artifacts outside the issue's project workspace.
+  const paperclipWorkspace = ctx.context && typeof ctx.context === "object"
+    ? (ctx.context.paperclipWorkspace as Record<string, unknown> | undefined)
+    : undefined;
   const cwd =
-    cfgString(ctx.config?.workspaceDir) || cfgString(config.cwd) || ".";
+    cfgString(ctx.config?.workspaceDir) ||
+    cfgString(paperclipWorkspace?.cwd) ||
+    cfgString(config.cwd) ||
+    ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
