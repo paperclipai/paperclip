@@ -449,6 +449,29 @@ describeEmbeddedPostgres("attention service", () => {
     expect(snoozedFeed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === interactionIssueId)).toBe(false);
   });
 
+  it("lets blocker attention supersede a generic manual-issue card", async () => {
+    const { companyId } = await seedCompany("ATB");
+    const transitionAt = new Date("2026-07-23T18:30:00.000Z");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATB-1",
+      title: "Blocked board decision",
+      status: "blocked",
+      assigneeUserId: "board-user",
+      unblockDescriptor: { owner: "board", action: "Approve the exception" },
+      blockedTransitionAt: transitionAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items).toContainEqual(expect.objectContaining({
+      sourceKind: "blocker_attention",
+      subject: expect.objectContaining({ id: issueId }),
+      dedupKey: `blocked-owner:${issueId}:${transitionAt.toISOString()}`,
+    }));
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === issueId)).toBe(false);
+  });
+
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
     const { companyId, workerId, reviewerId } = await seedCompany("ATN");
     const baseTime = new Date("2026-07-09T12:00:00.000Z");

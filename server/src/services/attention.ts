@@ -1932,7 +1932,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         for (const row of approvalIssueRows) coveredIssueIds.add(row.issueId);
         for (const row of visibleInteractionRows) coveredIssueIds.add(row.issueId);
         for (const item of collected) {
-          if (item.sourceKind !== "approval" && item.sourceKind !== "decision" && item.sourceKind !== "issue_thread_interaction") {
+          if (item.sourceKind !== "approval"
+            && item.sourceKind !== "decision"
+            && item.sourceKind !== "issue_thread_interaction"
+            && item.sourceKind !== "blocker_attention") {
             continue;
           }
           if (item.relatedIssue) coveredIssueIds.add(item.relatedIssue.id);
