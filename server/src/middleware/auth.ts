@@ -211,44 +211,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .then((rows) => rows[0] ?? null),
             loadActiveUserCompanyMemberships(db, userId),
           ]);
-
-          let effectiveMemberships = memberships;
-          let companyIds = memberships.map((row) => row.companyId);
-          if (companyIds.length === 0) {
-            const allCompanies = await db
-              .select({ id: companies.id })
-              .from(companies);
-            for (const company of allCompanies) {
-              try {
-                await db.insert(companyMemberships).values({
-                  companyId: company.id,
-                  principalType: "user",
-                  principalId: userId,
-                  status: "active",
-                  membershipRole: "member",
-                });
-              } catch {
-                // unique constraint -- membership already exists
-              }
-            }
-            if (allCompanies.length > 0) {
-              effectiveMemberships = await loadActiveUserCompanyMemberships(db, userId);
-              companyIds = effectiveMemberships.map((row) => row.companyId);
-              logger.info(
-                { userId, companiesProvisioned: companyIds.length },
-                "Auto-provisioned SSO user into existing companies",
-              );
-            }
-          }
-
           req.actor = {
             type: "board",
             userId,
             sessionId: session.session.id,
             userName: session.user.name ?? null,
             userEmail: session.user.email ?? null,
-            companyIds,
-            memberships: effectiveMemberships,
+            companyIds: memberships.map((row) => row.companyId),
+            memberships,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",

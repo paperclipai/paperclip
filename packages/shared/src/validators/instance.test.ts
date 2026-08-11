@@ -163,3 +163,42 @@ describe("patchInstanceSsoSettingsSchema", () => {
     });
   });
 });
+
+describe("instanceSsoSettingsSchema provider uniqueness", () => {
+  const provider = {
+    providerId: "keycloak",
+    type: "keycloak",
+    clientId: "client",
+    clientSecret: "secret",
+    issuer: "https://idp.example.com/realms/main",
+  };
+
+  it("rejects two providers that share a providerId", () => {
+    const result = instanceSsoSettingsSchema.safeParse({
+      enabled: true,
+      providers: [provider, { ...provider, displayName: "Second" }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain("keycloak");
+    }
+  });
+
+  it("rejects duplicate providerIds in a patch too", () => {
+    const result = patchInstanceSsoSettingsSchema.safeParse({
+      providers: [provider, { ...provider, type: "oidc", discoveryUrl: "https://idp.example.com/.well-known/openid-configuration" }],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts distinct providerIds", () => {
+    const result = instanceSsoSettingsSchema.safeParse({
+      enabled: true,
+      providers: [provider, { ...provider, providerId: "keycloak-staging" }],
+    });
+
+    expect(result.success).toBe(true);
+  });
+});

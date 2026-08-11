@@ -135,7 +135,7 @@ When SSO is enabled, account linking is automatically activated. If a user signs
 - **SSO enabled**: SSO provider buttons appear on the sign-in page. Email/password sign-in remains available. The sign-up option is hidden (new users are provisioned via SSO).
 - In `local_trusted` mode, SSO is ignored (no login required).
 - SSO users receive the same `board` actor type and permissions as email/password users.
-- Company memberships and permissions are identity-method-agnostic.
+- Company memberships and permissions are identity-method-agnostic. A first-time SSO user starts without company memberships and joins companies through the regular invite and join-request flows.
 
 ## Local Dev with Keycloak (Docker Compose)
 

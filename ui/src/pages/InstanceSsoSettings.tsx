@@ -379,9 +379,15 @@ export function InstanceSsoSettings() {
     setDirty(true);
   }, []);
 
+  // Better Auth registers providers by id, so a duplicate would silently
+  // overwrite the earlier registration. Block save and surface the id.
+  const providerIds = forms.map((f) => f.providerId.trim() || providerIdFromType(f.type));
+  const duplicateProviderId = providerIds.find((id, index) => providerIds.indexOf(id) !== index);
+
   const canSave =
     !saveMutation.isPending &&
     dirty &&
+    !duplicateProviderId &&
     forms.every((f) => f.clientId.trim() && f.clientSecret.trim());
 
   if (ssoQuery.isLoading) {
@@ -463,7 +469,12 @@ export function InstanceSsoSettings() {
         >
           {saveMutation.isPending ? "Saving..." : "Save SSO Settings"}
         </Button>
-        {dirty && (
+        {duplicateProviderId && (
+          <span className="text-xs text-destructive">
+            Provider ID &quot;{duplicateProviderId}&quot; is used more than once — provider IDs must be unique.
+          </span>
+        )}
+        {dirty && !duplicateProviderId && (
           <span className="text-xs text-muted-foreground">Unsaved changes</span>
         )}
         {!dirty && saveMutation.isSuccess && (

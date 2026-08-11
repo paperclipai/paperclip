@@ -110,9 +110,27 @@ export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
     .optional(),
 }).strict();
 
+const ssoProvidersSchema = z
+  .array(ssoProviderConfigSchema)
+  .superRefine((providers, ctx) => {
+    // Better Auth registers providers by id — a duplicate silently
+    // overwrites the earlier registration, so reject it at the boundary.
+    const seen = new Set<string>();
+    providers.forEach((provider, index) => {
+      if (seen.has(provider.providerId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate providerId "${provider.providerId}" — provider ids must be unique`,
+          path: [index, "providerId"],
+        });
+      }
+      seen.add(provider.providerId);
+    });
+  });
+
 export const instanceSsoSettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  providers: z.array(ssoProviderConfigSchema).default([]),
+  providers: ssoProvidersSchema.default([]),
 });
 
 export const patchInstanceSsoSettingsSchema = instanceSsoSettingsSchema.partial();
