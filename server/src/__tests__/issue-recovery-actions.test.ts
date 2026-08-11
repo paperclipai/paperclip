@@ -302,8 +302,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       lastDecisionId: decisionId,
       lastDecisionOutcome: "changes_requested",
     });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
-    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.anything());
+    // Concurrent CAS repair must still not wake a reviewer while the gate is
+    // changes_requested; only participant alignment is restored.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   function createApp(
