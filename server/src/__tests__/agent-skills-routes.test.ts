@@ -947,6 +947,7 @@ describe.sequential("agent skill routes", () => {
           }),
         }),
       }),
+      { ownerUserId: "local-board", ownershipSource: "agent_create" },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -996,6 +997,7 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         role: "security",
       }),
+      { ownerUserId: "local-board", ownershipSource: "agent_create" },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1219,6 +1221,7 @@ describe.sequential("agent skill routes", () => {
           }),
         }),
       }),
+      { ownerUserId: "local-board", ownershipSource: "agent_hire" },
     );
     expect(mockApprovalService.create).toHaveBeenCalledWith(
       "company-1",
