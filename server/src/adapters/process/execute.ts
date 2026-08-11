@@ -15,7 +15,11 @@ import {
   runChildProcess,
 } from "../utils.js";
 
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
+// Agents sometimes append the machine token immediately after Markdown emphasis
+// (for example `**Final check**PAPERCLIP_DISPOSITION {...}`).  Accept that
+// bounded delimiter as well as a line break so a valid terminal disposition is
+// never lost merely because the renderer coalesced output chunks.
+const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 
 type ParsedDisposition = {
   status: string;

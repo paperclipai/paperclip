@@ -132,6 +132,24 @@ describe("process adapter execute", () => {
     expect(String(result.resultJson?.stdout ?? "")).not.toContain("PAPERCLIP_DISPOSITION:");
   });
 
+  it("extracts a disposition concatenated after Markdown emphasis", async () => {
+    const result = await execute(buildContext({
+      config: {
+        command: process.execPath,
+        args: [
+          "-e",
+          "console.log('**Final check**PAPERCLIP_DISPOSITION {\\\"status\\\":\\\"in_review\\\",\\\"hasBlocker\\\":false}');",
+        ],
+      },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({
+      stdout: "**Final check**",
+      disposition: { status: "in_review", hasBlocker: false },
+    });
+  });
+
   it("injects auth and scoped wake env so shell handlers can close the issue", async () => {
     const requests: Array<{
       method: string;
