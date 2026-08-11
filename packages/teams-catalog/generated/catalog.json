@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-06-23T09:48:30.503Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -33,7 +33,7 @@
         "tasks": 0,
         "routines": 1,
         "localSkills": 0,
-        "catalogSkills": 4,
+        "catalogSkills": 5,
         "externalSkillSources": 0
       },
       "rootAgentSlugs": [
@@ -48,6 +48,16 @@
         "first-project"
       ],
       "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "browser-go-no-go",
+          "agentSlugs": [
+            "qa"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:browser-go-no-go",
+          "catalogSkillKey": "paperclipai/bundled/quality/browser-go-no-go"
+        },
         {
           "type": "catalog",
           "ref": "github-pr-workflow",
@@ -114,8 +124,8 @@
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1307,
-          "sha256": "2a139b88b4b98516048395c569c1bc74fd31cdc2da65db410e9779b8d92c0343"
+          "sizeBytes": 1425,
+          "sha256": "8ac8e5cd865adde4cf1e78320b0b367e004b6af37b61179390ad830a635fbef0"
         },
         {
           "path": "projects/first-project/PROJECT.md",
@@ -132,7 +142,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1"
+      "contentHash": "sha256:15f127aff682bdf154cefe9c47ed663da838dbfa03f7c25d6ff7bf46156bca3b"
     },
     {
       "id": "paperclipai:bundled:product:product-design",
@@ -267,7 +277,7 @@
         "tasks": 0,
         "routines": 1,
         "localSkills": 0,
-        "catalogSkills": 4,
+        "catalogSkills": 5,
         "externalSkillSources": 0
       },
       "rootAgentSlugs": [
@@ -282,6 +292,16 @@
         "product-engineering"
       ],
       "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "browser-go-no-go",
+          "agentSlugs": [
+            "qa"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:browser-go-no-go",
+          "catalogSkillKey": "paperclipai/bundled/quality/browser-go-no-go"
+        },
         {
           "type": "catalog",
           "ref": "doc-maintenance",
@@ -349,8 +369,8 @@
         {
           "path": "agents/qa/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1223,
-          "sha256": "2d5738f831aa772befa3471c844a0c9e611584be668e3ec82580ca9e92dc13fc"
+          "sizeBytes": 1341,
+          "sha256": "050fb1ac0b5c4813d70fba9fed03fda51f98fa1a568203a38f748395fcf08951"
         },
         {
           "path": "agents/senior-coder/AGENTS.md",
@@ -373,7 +393,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:74ddeaeb11805835a4a67fc4530b048ab7f8aa1dc7d2b80acea139a933d158d3"
+      "contentHash": "sha256:fdf43cb8716ac9887b9eff3a9903e56f9c89928a1310effa4d5b12835979918d"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

@@ -2608,6 +2608,7 @@ export function createToolGatewayService(
     const child = spawn(input.template.command, input.template.args, {
       env: localStdioEnvironment(input.connection, input.template),
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";

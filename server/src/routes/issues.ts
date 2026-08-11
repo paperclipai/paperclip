@@ -151,7 +151,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -3574,13 +3574,6 @@ export function issueRoutes(
     return false;
   }
 
-  function actorCanAccessCompany(req: Request, companyId: string) {
-    if (req.actor.type === "none") return false;
-    if (req.actor.type === "agent") return req.actor.companyId === companyId;
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-    return (req.actor.companyIds ?? []).includes(companyId);
-  }
-
   type TaskAssignmentAuthorizationScope = {
     issueId?: string | null;
     projectId?: string | null;
@@ -3588,6 +3581,68 @@ export function issueRoutes(
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
   };
+
+  const taskAssignmentPatchFields = new Set(["assigneeAgentId", "assigneeUserId"]);
+
+  function hasTaskAssignmentPatch(body: Record<string, unknown>) {
+    return [...taskAssignmentPatchFields].some((field) => Object.prototype.hasOwnProperty.call(body, field));
+  }
+
+  async function auditCrossTenantTaskAssignmentDenial(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (!hasTaskAssignmentPatch(req.body)) return;
+    await logTaskAssignmentAuthorizationDecision({
+      req,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      decision: "deny",
+      reason: "deny_company_boundary",
+      redactActor: true,
+    });
+  }
+
+  function isTaskAssignmentOnlyPatch(body: Record<string, unknown>) {
+    const fields = Object.keys(body);
+    return fields.length > 0 && fields.every((field) => taskAssignmentPatchFields.has(field));
+  }
+
+  async function logTaskAssignmentAuthorizationDecision(input: {
+    req: Request;
+    companyId: string;
+    issueId?: string | null;
+    decision: "allow" | "deny";
+    reason: string;
+    permissionKey?: string | null;
+    redactActor?: boolean;
+  }) {
+    if (input.req.actor.type === "none") return;
+    const actor = input.redactActor
+      ? {
+          actorType: "system" as const,
+          actorId: "authorization-boundary",
+          agentId: null,
+          runId: null,
+        }
+      : getActorInfo(input.req);
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "authorization.task_assignment_decided",
+      entityType: input.issueId ? "issue" : "company",
+      entityId: input.issueId ?? input.companyId,
+      details: {
+        action: "tasks:assign",
+        decision: input.decision,
+        reason: input.reason,
+        permissionKey: input.permissionKey ?? null,
+      },
+    });
+  }
 
   async function resolveAssignmentProjectId(input: {
     companyId: string;
@@ -3601,6 +3656,8 @@ export function issueRoutes(
     return parent.projectId ?? null;
   }
 
+  // Canonical assignment-policy entry point for issue create, PATCH, and checkout.
+  // Keep all assignment paths routed through this helper so scope and audit behavior cannot drift.
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -3621,7 +3678,15 @@ export function issueRoutes(
       },
       scope: assignmentScope ?? null,
     });
-    if (decision.allowed) return;
+    await logTaskAssignmentAuthorizationDecision({
+      req,
+      companyId,
+      issueId: assignmentScope?.issueId,
+      decision: decision.allowed ? "allow" : "deny",
+      reason: decision.reason,
+      permissionKey: decision.grant?.permissionKey ?? null,
+    });
+    if (decision.allowed) return decision;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
@@ -8420,9 +8485,60 @@ export function issueRoutes(
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
-    if (!existing) return;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!hasCompanyAccess(req, existing.companyId)) {
+      await auditCrossTenantTaskAssignmentDenial(req, existing);
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const assignmentPatchRequested = hasTaskAssignmentPatch(req.body);
+    if (req.actor.type === "agent" && assignmentPatchRequested && existing.hiddenAt !== null) {
+      await logTaskAssignmentAuthorizationDecision({
+        req,
+        companyId: existing.companyId,
+        issueId: existing.id,
+        decision: "deny",
+        reason: "deny_hidden_target",
+        redactActor: true,
+      });
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (isTaskAssignmentOnlyPatch(req.body)) {
+      const watchdogScope = req.actor.type === "agent"
+        ? await resolveTaskWatchdogMutationScope(db, req.actor)
+        : { kind: "none" as const };
+      if (watchdogScope.kind !== "none") {
+        if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+      } else {
+        const readDecision = await decideIssueAccess(req, existing, "issue:read");
+        if (!readDecision.allowed) {
+          await logTaskAssignmentAuthorizationDecision({
+            req,
+            companyId: existing.companyId,
+            issueId: existing.id,
+            decision: "deny",
+            reason: readDecision.reason,
+          });
+          res.status(403).json({ error: "Forbidden" });
+          return;
+        }
+      }
+    } else {
+      const issueMutationAccess = await assertAgentIssueMutationAllowed(
+        req,
+        res,
+        existing,
+        { allowVisibleIssueWrite: true },
+      );
+      if (!issueMutationAccess) return;
+    }
     if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
       await auditAgentIssueCommentAttributionSpoof({
         db,
@@ -8434,16 +8550,11 @@ export function issueRoutes(
       await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
-    const issueMutationAccess = await assertAgentIssueMutationAllowed(
-      req,
-      res,
-      existing,
-      { allowVisibleIssueWrite: true },
-    );
-    if (!issueMutationAccess) return;
-    const issueMutationAuthorizationReason = req.actor.type === "agent"
-      ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
-      : issueWriteAuthorizationReason(req, true);
+    const issueMutationAuthorizationReason = isTaskAssignmentOnlyPatch(req.body)
+      ? issueWriteAuthorizationReason(req, { reason: "allow_field_specific_task_assignment" })
+      : req.actor.type === "agent"
+        ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
+        : issueWriteAuthorizationReason(req, true);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -10949,7 +11060,7 @@ export function issueRoutes(
     }
     const includePayload = parseBooleanQuery(req.query.includePayload) || req.query.includePayload === undefined;
     const trace = await feedback.getFeedbackTraceById(traceId, includePayload);
-    if (!trace || !actorCanAccessCompany(req, trace.companyId)) {
+    if (!trace || !hasCompanyAccess(req, trace.companyId)) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }
@@ -10963,7 +11074,7 @@ export function issueRoutes(
       return;
     }
     const bundle = await feedback.getFeedbackTraceBundle(traceId);
-    if (!bundle || !actorCanAccessCompany(req, bundle.companyId)) {
+    if (!bundle || !hasCompanyAccess(req, bundle.companyId)) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }
