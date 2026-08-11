@@ -7560,9 +7560,10 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      if (issueData.parentId !== undefined && issueData.parentId !== null) {
-        await assertParentIssueExists(dbOrTx, existing.companyId, issueData.parentId, id);
-      }
+      // The descendant-cycle check for parentId is deferred to runUpdate(),
+      // where it runs under the same row locks as the write (see below) --
+      // checking it here, ahead of the transaction, would let two concurrent
+      // requests each observe the pre-update tree and both pass.
       if (issueData.goalId !== undefined && issueData.goalId !== null) {
         await assertGoalExists(dbOrTx, existing.companyId, issueData.goalId);
       }
@@ -7709,6 +7710,22 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (issueData.parentId !== undefined && issueData.parentId !== null) {
+          // Lock the current issue and the proposed parent together, in a
+          // stable order, before re-checking the descendant cycle. A
+          // concurrent request that tries the mirrored update (e.g. setting
+          // the proposed parent's parentId to this issue) needs the same two
+          // rows, so it blocks until this transaction commits or rolls back
+          // instead of racing this check (Greptile finding on PR #11087).
+          const lockIds = [...new Set([id, issueData.parentId])].sort();
+          await tx.execute(
+            sql`SELECT ${issues.id} FROM ${issues}
+                WHERE ${inArray(issues.id, lockIds)}
+                ORDER BY ${issues.id}
+                FOR UPDATE`,
+          );
+          await assertParentIssueExists(tx, existing.companyId, issueData.parentId, id);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
