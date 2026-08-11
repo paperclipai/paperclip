@@ -670,7 +670,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
   const partialBackupFile = `${backupBase}.partial`;
   const backupFile = backupBase;
-  const writer = createBufferedGzipTextFileWriter(partialBackupFile);
+  let writer: ReturnType<typeof createBufferedGzipTextFileWriter> | null = null;
   let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   let sqlClosed = false;
   const closeSql = async () => {
@@ -689,7 +689,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           partialBackupFile,
           connectTimeout,
         });
-        await writer.abort();
         fs.renameSync(partialBackupFile, backupFile);
         const sizeBytes = fs.statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix, maxBackups);
@@ -714,6 +713,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
 
     await sql`SELECT 1`;
+    writer = createBufferedGzipTextFileWriter(partialBackupFile);
 
     const emit = (line: string) => writer.emit(line);
     const emitStatement = (statement: string) => {
@@ -1110,7 +1110,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       prunedCount,
     };
   } catch (error) {
-    await writer.abort();
+    await writer?.abort();
     if (fs.existsSync(partialBackupFile)) {
       try { fs.unlinkSync(partialBackupFile); } catch { /* ignore */ }
     }
