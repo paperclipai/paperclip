@@ -143,6 +143,16 @@ function curve(x1: number, y1: number, x2: number, y2: number): string {
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
 
+/** Right-side bracket for edges between cards stacked in the same column. */
+function sideBracket(x1: number, y1: number, x2: number, y2: number): string {
+  const bulge = Math.min(96, 36 + Math.abs(y2 - y1) * 0.08);
+  return `M ${x1} ${y1} C ${x1 + bulge} ${y1}, ${x2 + bulge} ${y2}, ${x2} ${y2}`;
+}
+
+function isOpenIssueStatus(status: string): boolean {
+  return status !== "done" && status !== "cancelled";
+}
+
 function clampZoom(value: number): number {
   return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
 }
@@ -179,7 +189,33 @@ export function GoalMap() {
     [agentById],
   );
 
-  const layout = useMemo(() => layoutGoalMap(goalMap?.nodes ?? []), [goalMap]);
+  const [showCompleted, setShowCompleted] = useState(true);
+  // Focus mode (toggle off): open tasks plus the completed blockers that
+  // unlocked them, so the "done → next" arrows keep their context.
+  const displayNodes = useMemo(() => {
+    const nodes = goalMap?.nodes ?? [];
+    if (showCompleted) return nodes;
+    const openIssueIds = new Set<string>();
+    for (const node of nodes) {
+      for (const issue of node.rootIssues) {
+        if (isOpenIssueStatus(issue.status)) openIssueIds.add(issue.id);
+      }
+    }
+    const clearedBlockerIds = new Set<string>();
+    for (const edge of goalMap?.issueEdges ?? []) {
+      if (openIssueIds.has(edge.toIssueId) && !openIssueIds.has(edge.fromIssueId)) {
+        clearedBlockerIds.add(edge.fromIssueId);
+      }
+    }
+    return nodes.map((node) => ({
+      ...node,
+      rootIssues: node.rootIssues.filter(
+        (issue) => openIssueIds.has(issue.id) || clearedBlockerIds.has(issue.id),
+      ),
+    }));
+  }, [goalMap, showCompleted]);
+
+  const layout = useMemo(() => layoutGoalMap(displayNodes), [displayNodes]);
   const gateEdges = useMemo(
     () => (goalMap?.edges ?? []).filter((e) => e.kind === "gates"),
     [goalMap],
@@ -332,6 +368,14 @@ export function GoalMap() {
             Tree view
           </Button>
         </Link>
+        <Button
+          variant={showCompleted ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={showCompleted}
+          onClick={() => setShowCompleted((value) => !value)}
+        >
+          Show completed
+        </Button>
         <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--border)" strokeWidth="1.5" /></svg>
@@ -463,10 +507,13 @@ export function GoalMap() {
                 const from = layout.placedIssueById.get(edge.fromIssueId);
                 const to = layout.placedIssueById.get(edge.toIssueId);
                 if (!from || !to) return null;
+                const sameColumn = Math.abs(from.x - to.x) < 1;
                 return (
                   <path
                     key={`blocks-${edge.fromIssueId}-${edge.toIssueId}`}
-                    d={curve(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x, to.y + ISSUE_H / 2)}
+                    d={sameColumn
+                      ? sideBracket(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x + ISSUE_W, to.y + ISSUE_H / 2)
+                      : curve(from.x + ISSUE_W, from.y + ISSUE_H / 2, to.x, to.y + ISSUE_H / 2)}
                     fill="none"
                     stroke={edge.open ? "var(--hex-facc15)" : "var(--hex-4ade80)"}
                     strokeOpacity={edge.open ? 0.9 : 0.55}

@@ -13,7 +13,7 @@ import type {
   GoalMapStatusCounts,
 } from "@paperclipai/shared";
 
-const MAX_ROOT_ISSUES_PER_GOAL = 30;
+const MAX_ROOT_ISSUES_PER_GOAL = 100;
 const MAX_DECOMPOSITIONS_PER_GOAL = 5;
 
 function emptyStatusCounts(): GoalMapStatusCounts {
@@ -90,7 +90,10 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
       updatedAt: issues.updatedAt,
       rowNumber: sql<number>`row_number() over (
         partition by ${issues.goalId}
-        order by ${issues.createdAt} asc, ${issues.id} asc
+        order by
+          case when ${issues.status} in ('done', 'cancelled') then 1 else 0 end,
+          ${issues.createdAt} asc,
+          ${issues.id} asc
       )`.as("goal_map_row_number"),
     })
     .from(issues)
@@ -209,30 +212,69 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     childCountsByIssueId.set(row.parentId, counts);
   }
 
+  // Blocks relations anywhere in the issue trees, rolled up to the displayed
+  // root tasks that contain each endpoint — a subtask dependency still draws
+  // an arrow between the two work streams it connects.
   const issueEdges: GoalMapIssueEdge[] = [];
   if (keptRootIssueIds.length > 0) {
-    const issueEdgeRows = await db
+    const keptRootIssueIdSet = new Set(keptRootIssueIds);
+    const lineageRows = await db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+        goalId: issues.goalId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+    const lineageById = new Map(lineageRows.map((row) => [row.id, row]));
+    const rootMemo = new Map<string, string | null>();
+    const rootIssueIdOf = (issueId: string): string | null => {
+      const memoized = rootMemo.get(issueId);
+      if (memoized !== undefined) return memoized;
+      const seen = new Set<string>();
+      let current = lineageById.get(issueId);
+      if (!current) return null;
+      while (
+        current.parentId &&
+        !seen.has(current.id) &&
+        lineageById.get(current.parentId)?.goalId === current.goalId
+      ) {
+        seen.add(current.id);
+        current = lineageById.get(current.parentId)!;
+      }
+      rootMemo.set(issueId, current.id);
+      return current.id;
+    };
+
+    const relationRows = await db
       .select({
         fromIssueId: issueRelations.issueId,
         toIssueId: issueRelations.relatedIssueId,
-        blockerStatus: blockerIssue.status,
       })
       .from(issueRelations)
-      .innerJoin(blockerIssue, eq(issueRelations.issueId, blockerIssue.id))
       .where(and(
         eq(issueRelations.companyId, companyId),
         eq(issueRelations.type, "blocks"),
-        inArray(issueRelations.issueId, keptRootIssueIds),
-        inArray(issueRelations.relatedIssueId, keptRootIssueIds),
       ));
-    for (const row of issueEdgeRows) {
-      issueEdges.push({
-        kind: "blocks",
-        fromIssueId: row.fromIssueId,
-        toIssueId: row.toIssueId,
-        open: row.blockerStatus !== "done" && row.blockerStatus !== "cancelled",
-      });
+    const edgeByKey = new Map<string, GoalMapIssueEdge>();
+    for (const row of relationRows) {
+      const blocker = lineageById.get(row.fromIssueId);
+      if (!blocker) continue;
+      const fromRootId = rootIssueIdOf(row.fromIssueId);
+      const toRootId = rootIssueIdOf(row.toIssueId);
+      if (!fromRootId || !toRootId || fromRootId === toRootId) continue;
+      if (!keptRootIssueIdSet.has(fromRootId) || !keptRootIssueIdSet.has(toRootId)) continue;
+      const open = blocker.status !== "done" && blocker.status !== "cancelled";
+      const key = `${fromRootId}->${toRootId}`;
+      const existing = edgeByKey.get(key);
+      if (existing) {
+        existing.open = existing.open || open;
+      } else {
+        edgeByKey.set(key, { kind: "blocks", fromIssueId: fromRootId, toIssueId: toRootId, open });
+      }
     }
+    issueEdges.push(...edgeByKey.values());
   }
 
   const rootIssuesByGoalId = new Map<string, GoalMapRootIssue[]>();
