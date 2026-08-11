@@ -1,0 +1,11 @@
+-- Persist the structured delivery evidence a terminal approval can carry.
+--
+-- The execution-policy service can now require {pr, mergedSha, checkRun?} when an
+-- issue's policy sets `evidenceRequired`. Validating that claim and then dropping
+-- it would leave downstream auditors with nothing to confront against the
+-- repository — the whole point of asking for data instead of prose is that it
+-- survives on the decision record.
+--
+-- Nullable by design: every decision made without evidence (the default path,
+-- and all historical rows) stays untouched. No backfill, no rewrite.
+ALTER TABLE "issue_execution_decisions" ADD COLUMN IF NOT EXISTS "evidence" jsonb;

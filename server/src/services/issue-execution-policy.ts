@@ -57,9 +57,14 @@ type TransitionInput = {
   monitorExplicitlyUpdated?: boolean;
 };
 
+type NormalizedEvidence = { pr: string; mergedSha: string; checkRun: string | null; note: string | null };
+
 type TransitionResult = {
   patch: Record<string, unknown>;
-  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body"> & {
+    /** Structured delivery proof — persisted with the decision, null when not provided. */
+    evidence?: NormalizedEvidence | null;
+  };
   workflowControlledAssignment?: boolean;
 };
 
@@ -495,7 +500,7 @@ function nextPendingStageAfter(
  * Errors say what is missing, never just "rejected": an approver who is refused at 3am must
  * be able to act on the message without reading this file.
  */
-function assertTerminalEvidence(evidence: TransitionInput["evidence"]): void {
+function assertTerminalEvidence(evidence: TransitionInput["evidence"]): NormalizedEvidence {
   if (!evidence || typeof evidence !== "object") {
     throw unprocessable(
       "This issue's policy sets evidenceRequired: closing the final stage needs `evidence` "
@@ -518,6 +523,28 @@ function assertTerminalEvidence(evidence: TransitionInput["evidence"]): void {
       `evidence is missing ${missing.join(" and ")}. A terminal approval must name the pull request `
       + "and the SHA that actually landed.",
     );
+  }
+  const checkRun = (evidence as { checkRun?: unknown }).checkRun;
+  const note = (evidence as { note?: unknown }).note;
+  return {
+    pr: String(pr).trim(),
+    mergedSha: shaText,
+    checkRun: checkRun == null || String(checkRun).trim() === "" ? null : String(checkRun).trim(),
+    note: typeof note === "string" && note.trim() !== "" ? note.trim().slice(0, 500) : null,
+  };
+}
+
+/**
+ * Best-effort normalization for the OPTIONAL path: when the policy does not require
+ * evidence but the caller supplies a well-formed one anyway, it is still worth
+ * persisting — never worth failing over.
+ */
+function normalizeOptionalEvidence(evidence: TransitionInput["evidence"]): NormalizedEvidence | null {
+  if (!evidence || typeof evidence !== "object") return null;
+  try {
+    return assertTerminalEvidence(evidence);
+  } catch {
+    return null;
   }
 }
 
@@ -848,9 +875,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           // served version" is accepted today, and the issue closes on an event that has
           // not happened. Six such closures were observed on a single instance in one day,
           // each with a green review and an open pull request.
-          if (input.policy?.evidenceRequired) {
-            assertTerminalEvidence(input.evidence);
-          }
+          const evidence = input.policy?.evidenceRequired
+            ? assertTerminalEvidence(input.evidence)
+            : normalizeOptionalEvidence(input.evidence);
           patch.executionState = approvedState;
           return {
             patch,
@@ -859,6 +886,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
               stageType: activeStage.type,
               outcome: "approved",
               body: input.commentBody.trim(),
+              evidence,
             },
           };
         }
