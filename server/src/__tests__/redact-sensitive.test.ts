@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSensitive } from "../middleware/redact-sensitive.js";
+import { redactSensitive, truncateForLog } from "../middleware/redact-sensitive.js";
 
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
@@ -96,5 +96,32 @@ describe("redactSensitive", () => {
     const json = JSON.stringify(out);
     expect(json).not.toContain("null");
     expect(json).not.toContain("[1,2,3]");
+  });
+});
+
+describe("truncateForLog", () => {
+  it("passes small payloads through unchanged (after redaction)", () => {
+    const body = { status: "in_review", comment: "short comment", password: "x" };
+
+    expect(truncateForLog(body)).toEqual({
+      status: "in_review",
+      comment: "short comment",
+      password: "[REDACTED]",
+    });
+  });
+
+  it("bounds an oversized payload to a preview instead of writing it in full", () => {
+    const body = { comment: "a".repeat(10_000) };
+
+    const out = truncateForLog(body) as { truncated: true; originalLength: number; preview: string };
+
+    expect(out.truncated).toBe(true);
+    expect(out.originalLength).toBeGreaterThan(10_000);
+    expect(out.preview.length).toBeLessThan(out.originalLength);
+    expect(JSON.stringify(out).length).toBeLessThan(JSON.stringify(body).length);
+  });
+
+  it("returns undefined for undefined input", () => {
+    expect(truncateForLog(undefined)).toBe(undefined);
   });
 });

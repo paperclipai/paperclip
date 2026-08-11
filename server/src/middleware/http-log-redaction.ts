@@ -10,4 +10,9 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-csrf-token"]',
   'req.headers["x-xsrf-token"]',
   'req.headers["x-api-key"]',
+  // Cloudflare Access: the JWT assertion is a bearer credential, and the
+  // authenticated-user-email identifies the requester — both belong beside
+  // `authorization` rather than in a plaintext, long-retained log.
+  'req.headers["cf-access-jwt-assertion"]',
+  'req.headers["cf-access-authenticated-user-email"]',
 ] as const;

@@ -1,10 +1,11 @@
 // Redaction for HTTP log payloads.
 //
 // `customProps` in logger.ts copies `req.body` / `req.params` / `req.query`
-// verbatim into the 4xx/5xx log lines so operators can diagnose. That means
-// Better Auth's `POST /api/auth/sign-in/email` body (which has the user's
-// plaintext password) and similar payloads (sign-up, reset-password, API
-// keys via Authorization header equivalents) end up on disk.
+// (via `truncateForLog` below) into the 4xx/5xx log lines so operators can
+// diagnose. That means Better Auth's `POST /api/auth/sign-in/email` body
+// (which has the user's plaintext password) and similar payloads (sign-up,
+// reset-password, API keys via Authorization header equivalents) end up on
+// disk unless redacted first.
 //
 // This walker returns a shallow copy of the input with values for sensitive
 // keys replaced with the literal string "[REDACTED]". Recurses into nested
@@ -75,6 +76,25 @@ function stripSecretBearingUrlParts(value: string): string {
   } catch {
     return value;
   }
+}
+
+// Bound for `reqBody`/`reqParams`/`reqQuery` on 4xx/5xx log lines. Issue
+// descriptions, comments, and other business content can be arbitrarily
+// large; a bounded prefix keeps enough to diagnose the error without letting
+// a single retried request (or a retry loop against one endpoint) blow up
+// server.log.
+const MAX_LOGGED_JSON_CHARS = 4096;
+
+export function truncateForLog(value: unknown): unknown {
+  const redacted = redactSensitive(value);
+  if (redacted === undefined) return redacted;
+  const json = JSON.stringify(redacted);
+  if (json === undefined || json.length <= MAX_LOGGED_JSON_CHARS) return redacted;
+  return {
+    truncated: true,
+    originalLength: json.length,
+    preview: json.slice(0, MAX_LOGGED_JSON_CHARS),
+  };
 }
 
 export function redactSensitive(value: unknown, depth = 0): unknown {
