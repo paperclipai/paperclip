@@ -380,6 +380,17 @@ force one: dispatch `release.yml` with `channel: nightly` (optionally pinning
 If the nightly published to npm but the tag push or Docker dispatch failed,
 push the `nightly/v*` tag manually and run `docker.yml` at that tag.
 
+### If a tag push is rejected with a workflows-permission error
+
+GITHUB_TOKEN may not create refs that point at commits which modify workflow
+files when the run was started by dispatch or schedule (push-triggered runs
+are exempt, which is why canary tags on the same commit succeed). The npm
+publish is already complete and correct when this happens. The failed job's
+summary contains the exact recovery commands: create and push the tag with
+maintainer credentials, then dispatch `docker.yml` at the tag (and for
+stable, run `create-github-release.sh`). This only occurs when a
+release-infrastructure commit itself becomes a promotion source.
+
 ### If a beta looks bad during soak
 
 Do not promote it to stable. Fix forward: land the fix on `master`, let it

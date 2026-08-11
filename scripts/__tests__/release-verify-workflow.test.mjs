@@ -47,6 +47,16 @@ test("promotion selection guards against sources that predate their channel tool
   assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly\|beta\|stable\)'/);
 });
 
+test("every lane's tag push degrades to recovery instructions when rejected", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // GITHUB_TOKEN may not create refs pointing at workflow-modifying commits
+  // from dispatch or scheduled runs; a rejected tag push after a successful
+  // npm publish must surface runbook recovery commands, not a bare error.
+  const occurrences = releaseWorkflow.match(/## Tag push rejected/g) ?? [];
+  assert.equal(occurrences.length, 3, "nightly, beta, and stable each carry the recovery summary");
+});
+
 test("release smoke workflow extends the container readiness budget for CI", () => {
   const smokeWorkflow = readWorkflow("release-smoke.yml");
   const harness = readFileSync(path.join(repoRoot, "scripts/docker-onboard-smoke.sh"), "utf8");

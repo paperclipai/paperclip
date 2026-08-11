@@ -307,7 +307,25 @@ jobs:
             echo "Error: no nightly tag points at HEAD after release." >&2
             exit 1
           fi
-          git push origin "refs/tags/${tag}"
+          if ! git push origin "refs/tags/${tag}"; then
+            sha="$(git rev-parse HEAD)"
+            {
+              echo "## Tag push rejected"
+              echo ""
+              echo "The npm publish succeeded, but pushing \`${tag}\` was rejected."
+              echo "This usually means the tagged commit modifies workflow files,"
+              echo "which GITHUB_TOKEN may not reference when creating refs from"
+              echo "dispatch or scheduled runs. Recover with maintainer credentials:"
+              echo ""
+              echo '```'
+              echo "git tag ${tag} ${sha}"
+              echo "git push origin refs/tags/${tag}"
+              echo "gh workflow run docker.yml --ref refs/tags/${tag}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Tag push rejected; see the job summary for recovery commands." >&2
+            exit 1
+          fi
 
       # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
       # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
@@ -485,7 +503,25 @@ jobs:
             echo "Error: no beta tag points at HEAD after release." >&2
             exit 1
           fi
-          git push origin "refs/tags/${tag}"
+          if ! git push origin "refs/tags/${tag}"; then
+            sha="$(git rev-parse HEAD)"
+            {
+              echo "## Tag push rejected"
+              echo ""
+              echo "The npm publish succeeded, but pushing \`${tag}\` was rejected."
+              echo "This usually means the tagged commit modifies workflow files,"
+              echo "which GITHUB_TOKEN may not reference when creating refs from"
+              echo "dispatch or scheduled runs. Recover with maintainer credentials:"
+              echo ""
+              echo '```'
+              echo "git tag ${tag} ${sha}"
+              echo "git push origin refs/tags/${tag}"
+              echo "gh workflow run docker.yml --ref refs/tags/${tag}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Tag push rejected; see the job summary for recovery commands." >&2
+            exit 1
+          fi
 
       # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
       # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
@@ -743,7 +779,26 @@ jobs:
             echo "Error: no stable tag points at HEAD after release." >&2
             exit 1
           fi
-          git push origin "refs/tags/${tag}"
+          if ! git push origin "refs/tags/${tag}"; then
+            sha="$(git rev-parse HEAD)"
+            {
+              echo "## Tag push rejected"
+              echo ""
+              echo "The npm publish succeeded, but pushing \`${tag}\` was rejected."
+              echo "This usually means the tagged commit modifies workflow files,"
+              echo "which GITHUB_TOKEN may not reference when creating refs from"
+              echo "dispatch or scheduled runs. Recover with maintainer credentials:"
+              echo ""
+              echo '```'
+              echo "git tag ${tag} ${sha}"
+              echo "git push origin refs/tags/${tag}"
+              echo "gh workflow run docker.yml --ref refs/tags/${tag}"
+            echo "./scripts/create-github-release.sh <version>"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Tag push rejected; see the job summary for recovery commands." >&2
+            exit 1
+          fi
 
       # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's tag
       # trigger (GitHub suppresses workflow runs caused by GITHUB_TOKEN
