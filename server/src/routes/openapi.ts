@@ -2047,19 +2047,20 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
-// registerOwnershipTransferResolutionRoute() in agents.ts registers this
-// path with a literal, un-interpolated `${action}` template placeholder in
-// the router call itself (the loop variable is bound at call time via two
-// separate invocations for "decline"/"cancel", but the route string is
-// still written as one shared template literal) -- openapi-routes.test.ts's
-// static source-text scan of `router.post(...)` calls captures that raw
-// literal text, not the two resolved runtime paths, so the spec must
-// document this exact placeholder string rather than "decline"/"cancel".
 registry.registerPath({
   method: "post",
-  path: "/api/agents/{id}/ownership/transfers/{transferId}/${action}",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/decline",
   tags: ["agents"],
-  summary: "Decline or cancel a proposed agent ownership transfer",
+  summary: "Decline a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/cancel",
+  tags: ["agents"],
+  summary: "Cancel a proposed agent ownership transfer",
   request: { params: z.object({ id: z.string(), transferId: z.string() }) },
   responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });

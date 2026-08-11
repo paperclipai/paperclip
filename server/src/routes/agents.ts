@@ -4243,32 +4243,35 @@ export function agentRoutes(
     res.json(grant);
   });
 
-  function registerOwnershipTransferResolutionRoute(action: "decline" | "cancel") {
-    router.post(`/agents/:id/ownership/transfers/:transferId/${action}`, async (req, res) => {
-      assertBoard(req);
-      const id = req.params.id as string;
-      const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
-      if (!agent) return;
-      const actor = getActorInfo(req);
-      await ownership.declineOrCancelTransfer({
-        transferId: req.params.transferId as string,
-        byUserId: actor.actorId,
-        action,
-      });
-      await logActivity(db, {
-        companyId: agent.companyId,
-        actorType: "user",
-        actorId: actor.actorId,
-        action: action === "cancel" ? "agent.ownership_transfer_cancelled" : "agent.ownership_transfer_declined",
-        entityType: "agent",
-        entityId: id,
-        details: { transferId: req.params.transferId },
-      });
-      res.status(204).end();
+  // Registered as two literal `router.post(...)` calls, one per action,
+  // rather than one shared call built from a template literal: this is what
+  // lets openapi-routes.test.ts's static source-text scan of `router.post(...)`
+  // calls see both real paths ("decline" and "cancel") instead of one
+  // unresolved `${action}` placeholder. See openapi.ts's matching entries.
+  async function resolveOwnershipTransfer(req: Request, res: Response, action: "decline" | "cancel") {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    const actor = getActorInfo(req);
+    await ownership.declineOrCancelTransfer({
+      transferId: req.params.transferId as string,
+      byUserId: actor.actorId,
+      action,
     });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      action: action === "cancel" ? "agent.ownership_transfer_cancelled" : "agent.ownership_transfer_declined",
+      entityType: "agent",
+      entityId: id,
+      details: { transferId: req.params.transferId },
+    });
+    res.status(204).end();
   }
-  registerOwnershipTransferResolutionRoute("decline");
-  registerOwnershipTransferResolutionRoute("cancel");
+  router.post("/agents/:id/ownership/transfers/:transferId/decline", (req, res) => resolveOwnershipTransfer(req, res, "decline"));
+  router.post("/agents/:id/ownership/transfers/:transferId/cancel", (req, res) => resolveOwnershipTransfer(req, res, "cancel"));
 
   // Mirrors the allowlist backing `agent_ownership_grants_principal_type_check`
   // (packages/db/src/schema/agent_ownership_grants.ts). Without this, an
