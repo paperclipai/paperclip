@@ -17,6 +17,7 @@ type BaseServerInput = {
   port: number;
   allowedHostnames: string[];
   serveUi: boolean;
+  ssoProviders?: AuthConfig["ssoProviders"];
 };
 
 export function inferConfiguredBind(server?: Partial<ServerConfig>): BindMode {
@@ -68,6 +69,7 @@ export function buildPresetServerConfig(
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      ssoProviders: input.ssoProviders ?? [],
     },
   };
 }
@@ -102,10 +104,12 @@ export function buildCustomServerConfig(input: BaseServerInput & {
           baseUrlMode: "explicit",
           disableSignUp: false,
           publicBaseUrl: input.publicBaseUrl,
+          ssoProviders: input.ssoProviders ?? [],
         }
         : {
           baseUrlMode: "auto",
           disableSignUp: false,
+          ssoProviders: input.ssoProviders ?? [],
         },
   };
 }

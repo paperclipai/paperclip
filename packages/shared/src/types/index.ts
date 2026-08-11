@@ -79,6 +79,7 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
+export type { InstanceSsoSettings, InstanceSsoProviderEntry } from "./instance.js";
 export type {
   InstanceExecutionMode,
   InstanceExperimentalSettings,

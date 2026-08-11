@@ -161,6 +161,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     authBaseUrlMode: "auto",
     authPublicBaseUrl: undefined,
     authDisableSignUp: false,
+    ssoProviders: [],
     databaseMode: "postgres",
     databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
     embeddedPostgresDataDir: "/tmp/paperclip-test-db",
@@ -339,9 +340,33 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+vi.mock("../services/instance-settings.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/instance-settings.js")>();
+  return {
+    ...actual,
+    instanceSettingsService: vi.fn(() => ({
+      getSso: vi.fn(async () => ({ enabled: false, providers: [] })),
+      updateSso: vi.fn(),
+      getExperimental: vi.fn(async () => ({})),
+    })),
+  };
+});
+
 vi.mock("../auth/better-auth.js", () => ({
   createBetterAuthHandler: vi.fn(() => undefined),
   createBetterAuthInstance: createBetterAuthInstanceMock,
+  // Mirror the real manager: it builds its auth instance via
+  // createBetterAuthInstance, so assertions on createBetterAuthInstanceMock
+  // keep observing (db, config, trustedOrigins) through the manager path.
+  createBetterAuthManager: vi.fn((db: unknown, config: unknown, trustedOrigins: unknown) => {
+    createBetterAuthInstanceMock(db, config, trustedOrigins);
+    return {
+      handler: vi.fn(),
+      resolveSession: vi.fn(async () => null),
+      resolveSessionFromHeaders: vi.fn(async () => null),
+      rebuild: vi.fn(),
+    };
+  }),
   deriveAuthTrustedOrigins: deriveAuthTrustedOriginsMock,
   resolveBetterAuthSession: vi.fn(async () => null),
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),

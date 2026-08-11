@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   instanceExperimentalSettingsSchema,
+  instanceSsoSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  patchInstanceSsoSettingsSchema,
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
@@ -138,5 +140,65 @@ describe("instance experimental settings validators", () => {
     ).toEqual({
       enableApps: true,
     });
+  });
+});
+
+describe("instanceSsoSettingsSchema", () => {
+  it("parses the DB default '{}' as SSO disabled with no providers", () => {
+    expect(instanceSsoSettingsSchema.parse({})).toEqual({
+      enabled: false,
+      providers: [],
+    });
+  });
+});
+
+describe("patchInstanceSsoSettingsSchema", () => {
+  it("accepts an empty patch", () => {
+    expect(patchInstanceSsoSettingsSchema.parse({})).toEqual({});
+  });
+
+  it("accepts a partial patch of just enabled", () => {
+    expect(patchInstanceSsoSettingsSchema.parse({ enabled: true })).toEqual({
+      enabled: true,
+    });
+  });
+});
+
+describe("instanceSsoSettingsSchema provider uniqueness", () => {
+  const provider = {
+    providerId: "keycloak",
+    type: "keycloak",
+    clientId: "client",
+    clientSecret: "secret",
+    issuer: "https://idp.example.com/realms/main",
+  };
+
+  it("rejects two providers that share a providerId", () => {
+    const result = instanceSsoSettingsSchema.safeParse({
+      enabled: true,
+      providers: [provider, { ...provider, displayName: "Second" }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain("keycloak");
+    }
+  });
+
+  it("rejects duplicate providerIds in a patch too", () => {
+    const result = patchInstanceSsoSettingsSchema.safeParse({
+      providers: [provider, { ...provider, type: "oidc", discoveryUrl: "https://idp.example.com/.well-known/openid-configuration" }],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts distinct providerIds", () => {
+    const result = instanceSsoSettingsSchema.safeParse({
+      enabled: true,
+      providers: [provider, { ...provider, providerId: "keycloak-staging" }],
+    });
+
+    expect(result.success).toBe(true);
   });
 });

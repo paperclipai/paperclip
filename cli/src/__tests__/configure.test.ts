@@ -45,6 +45,7 @@ function writeBaseConfig(configPath: string) {
     auth: {
       baseUrlMode: "auto",
       disableSignUp: false,
+      ssoProviders: [],
     },
     telemetry: {
       enabled: true,

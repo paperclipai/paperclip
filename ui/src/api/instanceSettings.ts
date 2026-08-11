@@ -1,11 +1,13 @@
 import type {
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
+  InstanceSsoSettings,
   InstanceSettings,
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceSettings,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
+  PatchInstanceSsoSettings,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -22,6 +24,10 @@ export const instanceSettingsApi = {
     api.get<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental", patch),
+  getSso: () =>
+    api.get<InstanceSsoSettings>("/instance/settings/sso"),
+  updateSso: (patch: PatchInstanceSsoSettings) =>
+    api.patch<InstanceSsoSettings>("/instance/settings/sso", patch),
   previewIssueGraphLivenessAutoRecovery: (input: { lookbackHours?: number }) =>
     api.post<IssueGraphLivenessAutoRecoveryPreview>(
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
