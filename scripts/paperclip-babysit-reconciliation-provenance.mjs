@@ -47,6 +47,7 @@ export function createBabysitterArtifactInstance(input) {
     sourceRevision,
     build,
     mediaType: input.mediaType,
+    sourceContentDigest: `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`,
     contentDigest: `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`,
   };
   return {

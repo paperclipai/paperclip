@@ -1,14 +1,19 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { createBabysitterArtifactInstance } from "./paperclip-babysit-reconciliation-provenance.mjs";
 
+const reviewedSourcePath = "scripts/paperclip-babysit-reconciliation.mjs";
+const reviewedSourceBytes = readFileSync(reviewedSourcePath);
 const input = {
   sourceRevision: {
     repository: "paperclipai/paperclip",
-    commit: "8b09fd3117be9d62908360802820649c206ce7e2",
-    path: "scripts/paperclip-babysit-reconciliation.mjs",
+    commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    path: reviewedSourcePath,
   },
-  build: { tool: "node", version: "22", inputsDigest: "sha256:inputs" },
-  artifactBytes: Buffer.from("reviewed babysitter artifact"),
+  build: { tool: process.execPath, version: process.versions.node, inputsDigest: `sha256:${createHash("sha256").update(readFileSync("package.json")).digest("hex")}` },
+  artifactBytes: reviewedSourceBytes,
   mediaType: "application/javascript",
 };
 
@@ -21,6 +26,7 @@ describe("babysitter artifact provenance", () => {
       build: input.build,
       mediaType: input.mediaType,
       contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      sourceContentDigest: `sha256:${createHash("sha256").update(reviewedSourceBytes).digest("hex")}`,
     });
     expect(result.sourceRevisionDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(result.buildDigest).toMatch(/^sha256:[0-9a-f]{64}$/);

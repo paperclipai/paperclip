@@ -308,7 +308,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("does not overwrite a restored pending reviewer on a later reconciliation", async () => {
-    const { managerId, coderId, sourceIssueId } = await seedCompany();
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: unrelatedIssueId,
+      companyId,
+      title: "Unrelated subject",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+      executionState: {
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: coderId },
+        returnAssignee: { type: "agent", agentId: managerId },
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
     const stageId = randomUUID();
     const decisionId = randomUUID();
     const protectedHistory = {
@@ -332,7 +349,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
-    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(1);
+    expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(2);
 
     await db.update(issues).set({
       executionState: {
@@ -352,6 +369,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "pending",
       currentParticipant: { type: "agent", agentId: managerId },
       ...protectedHistory,
+    });
+    const [unrelated] = await db.select().from(issues).where(eq(issues.id, unrelatedIssueId));
+    expect(unrelated?.executionState).toMatchObject({
+      status: "changes_requested",
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
     });
   });
 
