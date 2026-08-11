@@ -425,4 +425,31 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
     expect(children).toHaveLength(2);
   });
+
+  it("keeps unrelated siblings that merely share a leading product or version token", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    // Review case: a coincidental product token is not a batch code.
+    // None of these pairs may collapse — a false positive here silently drops real work.
+    const pairs = [
+      ["GPT-4 pricing update for the billing page", "GPT-4 rate limit fix for the ingest worker"],
+      ["ISO-8601 parsing in the importer", "ISO-8601 output in the export job"],
+      ["SEC-02 handles the prod keys", "SEC-02 handles the lab keys"],
+    ];
+    for (const [first, second] of pairs) {
+      await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: first })
+        .expect(201);
+      await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: second })
+        .expect(201);
+    }
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(6);
+  });
 });
