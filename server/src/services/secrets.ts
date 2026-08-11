@@ -46,7 +46,7 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
-import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, findInErrorCauseChain, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   checkSecretProviders,
@@ -84,21 +84,13 @@ type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
 
 function isUniqueConstraintViolation(error: unknown, constraintName: string) {
-  const seen = new Set<unknown>();
-  let current = error;
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
-    seen.add(current);
-    const maybe = current as {
-      code?: string;
-      constraint?: string;
-      constraint_name?: string;
-      cause?: unknown;
-    };
-    const constraint = maybe.constraint ?? maybe.constraint_name;
-    if (maybe.code === "23505" && constraint === constraintName) return true;
-    current = maybe.cause;
-  }
-  return false;
+  return (
+    findInErrorCauseChain(error, (node) => {
+      const maybe = node as { code?: string; constraint?: string; constraint_name?: string };
+      const constraint = maybe.constraint ?? maybe.constraint_name;
+      return maybe.code === "23505" && constraint === constraintName ? constraint : undefined;
+    }) !== undefined
+  );
 }
 
 function remoteProviderHttpError(error: unknown, context: {

@@ -51,6 +51,7 @@ function company(overrides: Record<string, unknown> = {}) {
     spentMonthlyCents: 0,
     attachmentMaxBytes: 1073741824,
     requireBoardApprovalForNewAgents: false,
+    enforceAgentOwnership: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,

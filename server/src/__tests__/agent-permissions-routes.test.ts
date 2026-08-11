@@ -184,6 +184,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/workspace-operations.js", () => ({
     workspaceOperationService: () => mockWorkspaceOperationService,
+    agentOwnershipService: () => ({}),
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
@@ -210,6 +211,7 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
+    agentOwnershipService: () => ({}),
     environmentService: () => mockEnvironmentService,
   }));
 }
@@ -558,6 +560,58 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
+  // TECH-4930 stage 2, path 2 of 6: this route previously gated wakeups only
+  // on company-wide "agents:create" (assertBoardCanManageAgentsForCompany
+  // above), never on the target agent's own ownership. This test pins the
+  // *new*, additional "agent:wake" ownership check independently of that
+  // pre-existing gate: `canUser` stays `true` (agents:create passes, same as
+  // every other passing test in this file), but the mock `decide` denies
+  // specifically the "agent:wake" action, which only the new call added to
+  // `handleWakeupRoute` in routes/agents.ts issues. Reverting that call (or
+  // the `applyAgentOwnershipEnforcement` intersection in authorization.ts it
+  // exercises for real) makes this test fail by falling through to a 202.
+  it("blocks wakeups when agent-ownership enforcement denies the specific target agent", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "agent:wake") {
+        return {
+          allowed: false,
+          action: "agent:wake",
+          reason: "deny_agent_ownership_required",
+          code: "AGENT_OWNERSHIP_REQUIRED",
+          explanation: `Principal has no active ownership grant on agent ${input.resource?.agentId}.`,
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant",
+      };
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({}));
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("AGENT_OWNERSHIP_REQUIRED");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent:wake",
+        resource: expect.objectContaining({ type: "agent", agentId }),
+      }),
+    );
+  });
+
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {
     const app = await createApp({
       type: "agent",
@@ -864,6 +918,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
+      { ownerUserId: "agent-admin-user", ownershipSource: "agent_create" },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -996,6 +1051,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1058,6 +1114,7 @@ describe.sequential("agent permission routes", () => {
             },
           },
         }),
+        { ownerUserId: "board-user", ownershipSource: "agent_create" },
       );
     } finally {
       unregisterServerAdapter("failing_profile_discovery");
@@ -1096,6 +1153,7 @@ describe.sequential("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1133,6 +1191,7 @@ describe.sequential("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1174,6 +1233,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_hire" },
     );
   });
 
@@ -1397,6 +1457,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1482,6 +1543,7 @@ describe.sequential("agent permission routes", () => {
           adapterType: adapterCase.adapterType,
           defaultEnvironmentId: environmentId,
         }),
+        { ownerUserId: "board-user", ownershipSource: "agent_create" },
       );
     });
   }

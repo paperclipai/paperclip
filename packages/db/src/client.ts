@@ -10,6 +10,31 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url)
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
+/**
+ * Fixed Postgres advisory-lock key pair used to serialize the
+ * check-then-insert sequence in `reconcilePendingMigrationHistory()` that
+ * inserts a brand-new `__drizzle_migrations` row when no existing row (and
+ * no repairable stale orphan) is found for a migration's hash/name. There is
+ * no UNIQUE constraint on `hash` for `ON CONFLICT DO NOTHING` to key off of,
+ * so this is the only thing preventing two concurrent ECS replicas from both
+ * observing "no row yet" and both inserting a duplicate. A single fixed key
+ * (rather than one derived per migration) is sufficient because
+ * reconciliation only ever reaches the insert branch for at most one
+ * migration per call in practice, and serializing the whole operation across
+ * replicas costs nothing meaningful on this rarely-run, startup-time path.
+ * Using the two-int32 overload of `pg_advisory_xact_lock` avoids bigint
+ * precision pitfalls of passing a single 64-bit key through JS numbers.
+ *
+ * IMPORTANT: this exact `(0x706c6970, 1)` key pair is reserved for
+ * migration-reconciliation locking only. The two-int4 `pg_advisory_lock` /
+ * `pg_advisory_xact_lock` overload shares a single lock-key namespace across
+ * an entire Postgres database, so any other code taking an advisory lock via
+ * that same two-int4 overload must use a different key pair - do not reuse
+ * `MIGRATION_RECONCILE_INSERT_LOCK_KEYS` (or the literal `0x706c6970, 1`) for
+ * application-level locking elsewhere.
+ */
+export const MIGRATION_RECONCILE_INSERT_LOCK_KEYS: readonly [number, number] = [0x706c6970, 1];
+
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
@@ -25,6 +50,29 @@ function quoteIdentifier(value: string): string {
 
 function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * Strips a trailing `--` line comment from each line of `text`,
+ * line-by-line, BEFORE any whitespace-collapsing normalization runs. This
+ * must happen per-line, on the raw (newline-preserving) text: if newlines
+ * were collapsed to spaces first, a `--` comment on one line would have
+ * nothing to stop it from swallowing real SQL that originally lived on a
+ * later line, since `.` in `--.*`-style matching does not stop at spaces.
+ *
+ * Does not track single-quoted string literals - a `--` inside a SQL string
+ * literal will be incorrectly treated as a comment. If migration SQL ever
+ * needs `--` inside a string literal, this function needs a quote-aware
+ * rewrite.
+ */
+function stripSqlLineComments(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const commentIndex = line.indexOf("--");
+      return commentIndex === -1 ? line : line.slice(0, commentIndex);
+    })
+    .join("\n");
 }
 
 function splitMigrationStatements(content: string): string[] {
@@ -190,19 +238,31 @@ async function orderMigrationsByJournal(migrationFiles: string[]): Promise<strin
 
 type SqlExecutor = Pick<ReturnType<typeof postgres>, "unsafe">;
 
-async function runInTransaction(sql: SqlExecutor, action: () => Promise<void>): Promise<void> {
-  await sql.unsafe("BEGIN");
-  try {
-    await action();
-    await sql.unsafe("COMMIT");
-  } catch (error) {
-    try {
-      await sql.unsafe("ROLLBACK");
-    } catch {
-      // Ignore rollback failures and surface the original error.
-    }
-    throw error;
-  }
+/**
+ * Runs `action` inside a Postgres transaction using postgres.js's native
+ * `sql.begin()` API, which reserves a single physical connection for the
+ * duration of the callback and issues BEGIN/COMMIT/ROLLBACK on that
+ * reserved connection automatically. `action` receives that
+ * connection-scoped executor (`tx` below) and MUST use it (not the
+ * outer `sql`) for every query it runs, so that statements like
+ * `pg_advisory_xact_lock` - which only serializes callers when run on the
+ * same connection as the surrounding transaction - are guaranteed to share
+ * a connection with the rest of the transaction. This makes that
+ * connection-affinity guarantee an explicit, structural property of
+ * `sql.begin()` rather than an implicit side effect of the utility pool
+ * happening to be configured with `max: 1` (see `createUtilitySql`).
+ *
+ * Error/rollback semantics match the previous hand-rolled
+ * BEGIN/COMMIT/ROLLBACK implementation: `sql.begin()` rolls back the
+ * transaction if `action` throws and rethrows the original error.
+ */
+async function runInTransaction(
+  sql: ReturnType<typeof postgres>,
+  action: (tx: SqlExecutor) => Promise<void>,
+): Promise<void> {
+  await sql.begin(async (tx) => {
+    await action(tx);
+  });
 }
 
 async function latestMigrationCreatedAt(
@@ -323,13 +383,13 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
+      await runInTransaction(sql, async (tx) => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          await tx.unsafe(statement);
         }
 
         await recordMigrationHistoryEntry(
-          sql,
+          tx,
           qualifiedTable,
           columnNames,
           migrationFile,
@@ -404,72 +464,265 @@ async function columnExists(
   return rows[0]?.exists ?? false;
 }
 
+/**
+ * Scoped to `tableName` (in addition to the `public` schema and `relkind`)
+ * so that an index of this name existing on some OTHER table does not cause
+ * a false "already applied" for the DDL statement that targets THIS table.
+ * Without this, a chunk with multiple `CREATE INDEX` statements targeting
+ * different tables (e.g. `0182_connections_v3_schema_core.sql`) could have
+ * every statement in it resolve `true` purely because each index name
+ * happened to exist somewhere in `public`, even if none of them existed on
+ * the specific table the migration actually targets - silently marking real
+ * DDL as already-applied when it never ran. Joined via `pg_index.indrelid`
+ * (the table an index belongs to) rather than name-matching alone, matching
+ * how `constraintExists` below is scoped via `pg_constraint.conrelid`.
+ */
 async function indexExists(
   sql: ReturnType<typeof postgres>,
   indexName: string,
+  tableName: string,
 ): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
       FROM pg_class c
       JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_index i ON i.indexrelid = c.oid
+      JOIN pg_class t ON t.oid = i.indrelid
       WHERE n.nspname = 'public'
         AND c.relkind = 'i'
         AND c.relname = ${indexName}
+        AND t.relname = ${tableName}
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
 }
 
+/**
+ * Scoped to `tableName` (in addition to the `public` schema) so that a
+ * constraint of this name existing on some OTHER table does not cause a
+ * false "already applied" for the DDL statement that targets THIS table.
+ * Real migrations routinely emit several `ADD CONSTRAINT` statements per
+ * chunk (e.g. `0182_connections_v3_schema_core.sql`); without table-scoping,
+ * every statement in such a chunk could resolve `true` purely because a
+ * same-named constraint exists on some unrelated table, marking the whole
+ * chunk (and therefore the whole migration) as already-applied in the
+ * journal even though the real DDL never ran against its actual target
+ * table - silent schema drift with no error surfaced anywhere. Joined via
+ * `pg_constraint.conrelid` (the table a constraint belongs to) rather than
+ * name-matching alone.
+ */
 async function constraintExists(
   sql: ReturnType<typeof postgres>,
   constraintName: string,
+  tableName: string,
 ): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
       FROM pg_constraint c
       JOIN pg_namespace n ON n.oid = c.connamespace
+      JOIN pg_class t ON t.oid = c.conrelid
       WHERE n.nspname = 'public'
         AND c.conname = ${constraintName}
+        AND t.relname = ${tableName}
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
 }
 
-async function migrationStatementAlreadyApplied(
-  sql: ReturnType<typeof postgres>,
-  statement: string,
-): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+/**
+ * Splits comment-stripped SQL text into its constituent individual
+ * statements on top-level `;` terminators, collapsing internal whitespace
+ * and dropping empty fragments. This exists because a single chunk handed to
+ * `migrationStatementAlreadyApplied()` (a chunk being whatever
+ * `splitMigrationStatements()` produced by splitting on `-->
+ * statement-breakpoint`) can legitimately contain MORE than one real SQL
+ * statement: real migrations in this repo (e.g.
+ * `0182_connections_v3_schema_core.sql`) routinely emit several `ALTER
+ * TABLE ... ADD COLUMN` statements - or a `SET ...;` followed by real DDL -
+ * back to back with no `--> statement-breakpoint` between them. Each must be
+ * checked independently rather than only inspecting the chunk's first
+ * statement.
+ *
+ * This is NOT a full SQL parser - it only tracks single-quoted string
+ * literals (`'...'`, with `''` handled as an escaped quote) and
+ * dollar-quoted blocks (`$$...$$`, e.g. a `DO $$ ... END $$;` body) so a
+ * semicolon that appears *inside* either of those is not mistaken for a
+ * statement terminator. That is sufficient for this codebase's real
+ * migration content: a repo-wide check found exactly one statement with a
+ * semicolon inside a string literal
+ * (`0164_plugin_config_company_scope.sql`'s `RAISE EXCEPTION 'Cannot assign
+ * ... row(s); resolve ...'`), and it lives inside its own self-contained `DO
+ * $$ ... $$;` block (already its own `--> statement-breakpoint` chunk, not
+ * mixed with other statements). A bare "split on every `;`" would have cut
+ * that literal apart mid-string; this does not. Building a real SQL
+ * tokenizer for the general case is out of scope given that constraint.
+ *
+ * Only ANONYMOUS `$$...$$` dollar-quotes are recognized. Tagged variants
+ * (`$body$...$body$`, `$func$...$func$`, etc.) are NOT supported and will be
+ * mis-split: a tagged opener is not matched by the `$$` check below, so any
+ * `;` inside a tagged dollar-quoted body - including one inside a nested
+ * string literal within it - is treated as a real statement terminator. This
+ * fails CLOSED, not silently wrong: splitting a tagged body apart produces
+ * fragments that `singleSqlStatementAlreadyApplied()` cannot recognize, so
+ * `migrationStatementAlreadyApplied()` returns `false` (triggering a retry
+ * via the normal migration path), never an incorrect `true`. A repo-wide
+ * grep confirmed no current migration uses tagged dollar-quotes, so this is
+ * a documented limitation, not a live bug.
+ */
+function splitIntoIndividualSqlStatements(text: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDollarQuote = false;
 
-  const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
-  if (createTableMatch) {
-    return tableExists(sql, createTableMatch[1]);
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+
+    if (inSingleQuote) {
+      current += char;
+      if (char === "'") {
+        if (text[index + 1] === "'") {
+          current += text[++index];
+        } else {
+          inSingleQuote = false;
+        }
+      }
+      continue;
+    }
+
+    if (inDollarQuote) {
+      current += char;
+      if (char === "$" && text[index + 1] === "$") {
+        current += text[++index];
+        inDollarQuote = false;
+      }
+      continue;
+    }
+
+    if (char === "'") {
+      inSingleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "$" && text[index + 1] === "$") {
+      inDollarQuote = true;
+      current += "$$";
+      index++;
+      continue;
+    }
+
+    if (char === ";") {
+      statements.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
   }
+
+  if (current.trim().length > 0) statements.push(current);
+
+  return statements
+    .map((statement) => statement.replace(/\s+/g, " ").trim())
+    .filter((statement) => statement.length > 0);
+}
+
+/**
+ * Checks a single, already-isolated SQL statement (no embedded `;` of its
+ * own) against the recognized shapes this module knows how to verify against
+ * live schema state. Callers are responsible for isolating individual
+ * statements first (see `splitIntoIndividualSqlStatements`) - this function
+ * does not (and must not) need to guard against trailing content from a
+ * second statement, because none is possible once isolation has happened.
+ */
+async function singleSqlStatementAlreadyApplied(
+  sql: ReturnType<typeof postgres>,
+  normalized: string,
+): Promise<boolean> {
+  const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
+  if (createTableMatch) return tableExists(sql, createTableMatch[1]);
 
   const addColumnMatch = normalized.match(
     /^ALTER TABLE "([^"]+)" ADD COLUMN(?: IF NOT EXISTS)? "([^"]+)"/i,
   );
-  if (addColumnMatch) {
-    return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
-  }
+  if (addColumnMatch) return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
 
-  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
-  if (createIndexMatch) {
-    return indexExists(sql, createIndexMatch[1]);
-  }
+  const createIndexMatch = normalized.match(
+    /^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)" ON "([^"]+)"/i,
+  );
+  if (createIndexMatch) return indexExists(sql, createIndexMatch[1], createIndexMatch[2]);
 
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
-  if (addConstraintMatch) {
-    return constraintExists(sql, addConstraintMatch[2]);
+  if (addConstraintMatch) return constraintExists(sql, addConstraintMatch[2], addConstraintMatch[1]);
+
+  // Session-scoped runtime parameters (e.g. `SET lock_timeout = '2s';`,
+  // `SET LOCAL statement_timeout = '30s';`, `SET SESSION ... TO ...`) have no
+  // persistent schema effect, so there is nothing to check for "already
+  // applied" - they are trivially always already-applied. Because this
+  // function only ever sees one isolated statement at a time (its caller has
+  // already split multi-statement chunks apart), the regex can stay
+  // end-anchored without needing to worry about a second statement's DDL
+  // trailing behind a leading `SET ...` in the same string.
+  //
+  // The value-capture group (`[^;]+$`) cannot handle a SET value containing
+  // a literal semicolon (e.g. `SET app.config = 'a;b';`): even though
+  // `splitIntoIndividualSqlStatements()` correctly isolates such a statement
+  // as one piece (it tracks single-quoted strings, so it does not split on
+  // the semicolon inside `'a;b'`), the isolated statement text still
+  // literally contains that embedded `;`, which `[^;]+` cannot match through
+  // on the way to the end-anchor. The overall regex then fails to match, and
+  // this function falls through to the `return false` below - this fails
+  // CLOSED (triggers a retry via the normal migration path), not silently
+  // misparsed, so it is a documented limitation for future migration authors
+  // rather than a live bug. A repo-wide grep confirmed no current migration
+  // sets a session parameter to a value containing a literal semicolon.
+  if (/^SET\s+(?:LOCAL\s+|SESSION\s+)?[\w.]+\s*(?:=|TO)\s*[^;]+$/i.test(normalized)) {
+    return true;
   }
 
   // If we cannot reason about a statement safely, require manual migration.
   return false;
 }
 
-async function migrationContentAlreadyApplied(
+/**
+ * True if every individual SQL statement inside `statement` (a chunk as
+ * produced by `splitMigrationStatements()` - i.e. everything between two
+ * `--> statement-breakpoint` markers, which may itself contain more than one
+ * `;`-terminated statement) is independently a recognized, already-applied
+ * shape. A trailing `-- paperclip:migration-safety-ignore <rule>: <reason>`
+ * line comment (this codebase's real convention; see
+ * check-migration-safety.ts) is stripped per-line, before statements are
+ * split apart, so it can never swallow a real statement that happens to live
+ * on a later line of the same chunk (stripping per-line, on
+ * newline-preserving text, is required for that - collapsing newlines to
+ * spaces first would let a `--` comment's `.*`-style matching run on past
+ * where the original line ended).
+ *
+ * If even one statement in the chunk is unrecognized, or recognized but not
+ * yet applied, the whole chunk is reported as NOT already-applied - matching
+ * this function's existing fail-closed posture for statements it cannot
+ * reason about.
+ */
+export async function migrationStatementAlreadyApplied(
+  sql: ReturnType<typeof postgres>,
+  statement: string,
+): Promise<boolean> {
+  const commentStripped = stripSqlLineComments(statement);
+  const individualStatements = splitIntoIndividualSqlStatements(commentStripped);
+  if (individualStatements.length === 0) return false;
+
+  for (const individualStatement of individualStatements) {
+    const applied = await singleSqlStatementAlreadyApplied(sql, individualStatement);
+    if (!applied) return false;
+  }
+
+  return true;
+}
+
+export async function migrationContentAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   migrationContent: string,
 ): Promise<boolean> {
@@ -544,6 +797,13 @@ async function loadAppliedMigrations(
 
 export type MigrationHistoryReconcileResult = {
   repairedMigrations: string[];
+  // Migrations this call found already recorded by a concurrent replica (it
+  // lost the advisory-lock race, so it performed no repair itself) - as
+  // opposed to `repairedMigrations`, which lists migrations THIS call
+  // actually repaired. Callers must treat both as a signal to re-inspect
+  // state: the DB may be fully up to date even though `repairedMigrations`
+  // is empty, if another replica already recorded the row.
+  alreadyRecordedByOtherReplica: string[];
   remainingMigrations: string[];
 };
 
@@ -552,23 +812,75 @@ export async function reconcilePendingMigrationHistory(
 ): Promise<MigrationHistoryReconcileResult> {
   const state = await inspectMigrations(url);
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
-    return { repairedMigrations: [], remainingMigrations: [] };
+    return { repairedMigrations: [], alreadyRecordedByOtherReplica: [], remainingMigrations: [] };
   }
 
   const sql = createUtilitySql(url);
   const repairedMigrations: string[] = [];
+  const alreadyRecordedByOtherReplica: string[] = [];
 
   try {
     const journalEntries = await listJournalMigrationEntries();
     const folderMillisByFile = new Map(journalEntries.map((entry) => [entry.fileName, entry.folderMillis]));
     const migrationTableSchema = await discoverMigrationTableSchema(sql);
     if (!migrationTableSchema) {
-      return { repairedMigrations, remainingMigrations: state.pendingMigrations };
+      return {
+        repairedMigrations,
+        alreadyRecordedByOtherReplica,
+        remainingMigrations: state.pendingMigrations,
+      };
     }
 
     const columnNames = await getMigrationTableColumnNames(sql, migrationTableSchema);
     const qualifiedTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
 
+    // Hashes for every migration file currently on disk. A history row whose
+    // hash matches none of these is "unresolvable" by loadAppliedMigrations()
+    // - either it is stale (its migration file was renamed or its content
+    // was changed after some replicas already recorded a row for the old
+    // version - e.g. via a later consolidation of migrations - so the
+    // recorded hash no longer matches anything on disk) or it is otherwise
+    // corrupt. Either way it is a candidate to be repointed at the migration
+    // we are currently reconciling instead of being left behind as a
+    // permanent orphan while we INSERT a brand-new row for it. `__drizzle_
+    // migrations` has no `name` column in this codebase, so there is no way
+    // to confirm which specific migration a stale orphan row "belongs" to -
+    // see the array-length-based handling below.
+    const currentHashesToFiles = columnNames.has("hash")
+      ? await mapHashesToMigrationFiles(state.availableMigrations)
+      : new Map<string, string>();
+    const validHashes = new Set(currentHashesToFiles.keys());
+
+    // Fetched once up front rather than re-querying per migration: the whole
+    // set of stale orphans is resolved against the whole set of unresolved
+    // migrations together, below, rather than one row at a time.
+    const staleOrphanOrderClauses: string[] = [];
+    if (columnNames.has("created_at")) staleOrphanOrderClauses.push("created_at ASC");
+    if (columnNames.has("id")) staleOrphanOrderClauses.push("id ASC");
+    const staleOrphanOrderBySql =
+      staleOrphanOrderClauses.length > 0 ? ` ORDER BY ${staleOrphanOrderClauses.join(", ")}` : "";
+
+    const staleOrphanSelectColumns = ["hash"];
+    if (columnNames.has("name")) staleOrphanSelectColumns.push("name");
+
+    const staleOrphanRows = columnNames.has("hash")
+      ? await sql.unsafe<{ hash: string; name?: string }[]>(
+          `SELECT ${staleOrphanSelectColumns.join(", ")} FROM ${qualifiedTable}${staleOrphanOrderBySql}`,
+        )
+      : [];
+
+    // First pass: classify every already-applied pending migration as either
+    // already correctly recorded (bump its created_at if needed, below) or
+    // "unresolved" (needs an orphan repoint or a fresh insert). The full
+    // unresolved batch is collected before touching `staleOrphanRows` at all,
+    // so the ambiguity check in the second pass can reason about the whole
+    // batch at once instead of one migration at a time: resolving orphans
+    // one migration at a time as they were encountered let processing order
+    // decide which of several equally-plausible migrations claimed a shared
+    // orphan, which could repoint it at the wrong migration whenever more
+    // than one migration in the same pass lacked a history row.
+    type UnresolvedMigration = { migrationFile: string; hash: string; folderMillis: number };
+    const unresolvedMigrations: UnresolvedMigration[] = [];
     for (const migrationFile of state.pendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
       const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
@@ -607,28 +919,169 @@ export async function reconcilePendingMigrationHistory(
         continue;
       }
 
-      const insertColumns: string[] = [];
-      const insertValues: string[] = [];
+      unresolvedMigrations.push({ migrationFile, hash, folderMillis });
+    }
 
-      if (columnNames.has("hash")) {
-        insertColumns.push(quoteIdentifier("hash"));
-        insertValues.push(quoteLiteral(hash));
-      }
-      if (columnNames.has("name")) {
-        insertColumns.push(quoteIdentifier("name"));
-        insertValues.push(quoteLiteral(migrationFile));
-      }
-      if (columnNames.has("created_at")) {
-        insertColumns.push(quoteIdentifier("created_at"));
-        insertValues.push(quoteLiteral(String(folderMillis)));
-      }
+    // Second pass: resolve the unresolved batch against the stale orphan
+    // rows. Before inserting brand-new rows, look for stale orphan rows left
+    // behind by a pre-rewrite hash and repoint them at the current hash via
+    // UPDATE ... WHERE hash = <stale hash> rather than DELETE + INSERT so
+    // the operation is race-safe under concurrent ECS replicas: if two
+    // replicas race this UPDATE, only the first affects a row (it moves the
+    // row's hash away from the stale value); the second then matches zero
+    // rows and becomes a safe no-op instead of creating a duplicate.
+    //
+    // `__drizzle_migrations` has no `name` column here, so there is no
+    // reliable way to confirm which specific migration a given orphan row
+    // "belongs" to beyond counting how many candidates exist. Matching
+    // orphans to migrations by count or position is NOT safe once more than
+    // one migration is unresolved in the same pass: an unrelated leftover
+    // orphan (cruft from something else entirely) can make the counts
+    // coincidentally line up while still being the wrong row to pair, and
+    // pairing "by chronological position" has no basis beyond that
+    // coincidence either. So only the original, narrow single-migration case
+    // is auto-resolved:
+    //   - Exactly one migration unresolved: reason about it exactly as
+    //     before -- zero orphan candidates falls through to the
+    //     advisory-lock-guarded INSERT path below; exactly one candidate is
+    //     unambiguous (there is nothing else it could be) and gets repointed;
+    //     more than one candidate is ambiguous and throws.
+    //   - More than one migration unresolved at once: if no orphan exists at
+    //     all, every migration is unambiguous on its own and falls through
+    //     to its own INSERT. If ANY orphan exists, there is no way to
+    //     establish which migration (if any) it belongs to without risking
+    //     exactly the misattribution above, so refuse to guess entirely and
+    //     require manual resolution, rather than attempting to disambiguate
+    //     multiple migrations against multiple orphans automatically.
+    const invalidOrphanIndexes = staleOrphanRows.reduce<number[]>((acc, row, index) => {
+      if (!validHashes.has(row.hash)) acc.push(index);
+      return acc;
+    }, []);
 
-      if (insertColumns.length === 0) break;
-
-      await sql.unsafe(
-        `INSERT INTO ${qualifiedTable} (${insertColumns.join(", ")}) VALUES (${insertValues.join(", ")})`,
+    if (unresolvedMigrations.length > 1 && invalidOrphanIndexes.length > 0) {
+      throw new Error(
+        `Cannot reconcile migration history: found ${invalidOrphanIndexes.length} stale orphan row(s) in ${qualifiedTable} with hashes that match no migration on disk, alongside ${unresolvedMigrations.length} pending migrations (${unresolvedMigrations.map((m) => m.migrationFile).join(", ")}) with no history row at all. There is no \`name\` column to determine which orphan (if any) belongs to which migration when more than one migration is unresolved at once - refusing to guess. Resolve the ambiguity manually.`,
       );
-      repairedMigrations.push(migrationFile);
+    }
+
+    for (const unresolved of unresolvedMigrations) {
+      const { migrationFile, hash, folderMillis } = unresolved;
+      let staleOrphan: { hash: string; name?: string } | undefined;
+
+      if (unresolvedMigrations.length === 1) {
+        if (invalidOrphanIndexes.length > 1) {
+          throw new Error(
+            `Cannot reconcile migration history for "${migrationFile}": found ${invalidOrphanIndexes.length} stale orphan rows in ${qualifiedTable} with hashes that match no migration on disk. There is no \`name\` column to determine which (if any) belongs to this migration - refusing to guess which one to repair. Resolve the ambiguity manually.`,
+          );
+        }
+        staleOrphan = invalidOrphanIndexes.length === 1 ? staleOrphanRows[invalidOrphanIndexes[0]] : undefined;
+      }
+
+      if (staleOrphan) {
+        const updateAssignments: string[] = [`hash = ${quoteLiteral(hash)}`];
+        if (columnNames.has("name")) updateAssignments.push(`name = ${quoteLiteral(migrationFile)}`);
+        if (columnNames.has("created_at")) {
+          updateAssignments.push(`created_at = ${quoteLiteral(String(folderMillis))}`);
+        }
+        const updatedRows = await sql.unsafe<{ hash: string }[]>(
+          `UPDATE ${qualifiedTable} SET ${updateAssignments.join(", ")} WHERE hash = ${quoteLiteral(staleOrphan.hash)} RETURNING hash`,
+        );
+        if (updatedRows.length > 0) {
+          repairedMigrations.push(migrationFile);
+          continue;
+        }
+
+        // The UPDATE matched zero rows: some other racer got to this exact
+        // orphan row first (it matched on the pre-update
+        // `hash = <stale hash>` WHERE clause, which only one racer can
+        // satisfy). Since there is no `name` column, we cannot assume that
+        // winning racer was reconciling THIS migration - it could have been
+        // a different replica reconciling a different pending migration
+        // that happened to see the same single orphan candidate. So we
+        // cannot conclude `migrationFile` is now recorded just because we
+        // lost this race; check explicitly.
+        const nowRecorded = await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, migrationFile, hash);
+        if (nowRecorded) {
+          // Our migration really was the one the winning racer recorded -
+          // mirroring the INSERT path's `alreadyRecordedByOtherReplica`
+          // handling below, it must not be counted in `repairedMigrations`.
+          alreadyRecordedByOtherReplica.push(migrationFile);
+          continue;
+        }
+
+        // The orphan we tried to claim was taken by someone reconciling a
+        // different migration, and `migrationFile` itself is still
+        // unrecorded. Fall through to the advisory-lock-guarded INSERT path
+        // below rather than incorrectly reporting this as already handled.
+      }
+
+      if (!columnNames.has("hash") && !columnNames.has("name") && !columnNames.has("created_at")) {
+        break;
+      }
+
+      // There is no UNIQUE constraint on `hash` in `__drizzle_migrations`, so
+      // Postgres has no conflict to infer here - `ON CONFLICT DO NOTHING`
+      // alone does NOT make this insert race-safe (it is a pure no-op
+      // without a matching unique index). Concurrent races on an
+      // already-recorded migration are handled above via UPDATE ... WHERE
+      // hash = <stale hash>, which is safe on its own; this INSERT path is
+      // reached only when no such row exists yet, which is exactly the
+      // scenario where two replicas could both observe "nothing to update"
+      // and both insert. Guard against that by serializing the
+      // re-check-then-insert sequence with a transaction-scoped Postgres
+      // advisory lock: only one replica can hold
+      // MIGRATION_RECONCILE_INSERT_LOCK_KEYS at a time, so the re-check
+      // immediately below is guaranteed accurate for whoever holds it, and a
+      // second replica - once it acquires the lock after the first commits -
+      // will see the row the first one inserted and skip its own insert.
+      //
+      // NOTE: `pg_advisory_xact_lock` only serializes callers that run it on
+      // the same connection as each other for the duration of their
+      // transactions; `runInTransaction` uses `sql.begin()` so every query
+      // below runs on the `tx` executor it hands back, guaranteeing this
+      // lock call and the re-check/insert that follow all share that same
+      // reserved connection.
+      await runInTransaction(sql, async (tx) => {
+        await tx.unsafe(
+          // Reserved lock key - see MIGRATION_RECONCILE_INSERT_LOCK_KEYS's
+          // doc comment: this exact (0x706c6970, 1) pair must not be reused
+          // by other two-int4 pg_advisory_lock/pg_advisory_xact_lock callers.
+          `SELECT pg_advisory_xact_lock(${MIGRATION_RECONCILE_INSERT_LOCK_KEYS[0]}, ${MIGRATION_RECONCILE_INSERT_LOCK_KEYS[1]})`,
+        );
+
+        const alreadyRecordedByAnotherReplica = await migrationHistoryEntryExists(
+          tx,
+          qualifiedTable,
+          columnNames,
+          migrationFile,
+          hash,
+        );
+        // If another replica inserted the row for this migration while we
+        // were waiting on the lock, there is nothing left for us to do - and
+        // this call did not actually perform any repair, so it must not be
+        // counted in `repairedMigrations` (that would over-count "repaired"
+        // migrations under concurrent replicas). It is still recorded in
+        // `alreadyRecordedByOtherReplica` so callers can tell "another
+        // replica already handled it, schema is fine" apart from "nothing
+        // happened, still genuinely pending" - both of which would otherwise
+        // collapse to the same empty `repairedMigrations` signal and cause
+        // this (losing) replica to skip re-inspecting state.
+        if (alreadyRecordedByAnotherReplica) {
+          alreadyRecordedByOtherReplica.push(migrationFile);
+          return;
+        }
+
+        // Delegate to `recordMigrationHistoryEntry` (used elsewhere for the
+        // exact same insert-a-new-history-row job) rather than
+        // hand-building the INSERT here, so this path gets the same
+        // monotonicity guarantee: `created_at` is computed from the latest
+        // row's `created_at` under the advisory lock we now hold, not from
+        // the raw `folderMillis` alone. Drizzle orders applied migrations by
+        // `created_at ASC`, so a non-monotonic `created_at` here would
+        // produce non-deterministic ordering on next startup.
+        await recordMigrationHistoryEntry(tx, qualifiedTable, columnNames, migrationFile, hash, folderMillis);
+        repairedMigrations.push(migrationFile);
+      });
     }
   } finally {
     await sql.end();
@@ -637,6 +1090,7 @@ export async function reconcilePendingMigrationHistory(
   const refreshed = await inspectMigrations(url);
   return {
     repairedMigrations,
+    alreadyRecordedByOtherReplica,
     remainingMigrations:
       refreshed.status === "needsMigrations" ? refreshed.pendingMigrations : [],
   };
@@ -738,7 +1192,7 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     if (bootstrappedState.status === "upToDate") return;
     if (bootstrappedState.reason === "pending-migrations") {
       const repair = await reconcilePendingMigrationHistory(url);
-      if (repair.repairedMigrations.length > 0) {
+      if (repair.repairedMigrations.length > 0 || repair.alreadyRecordedByOtherReplica.length > 0) {
         bootstrappedState = await inspectMigrations(url);
       }
       if (bootstrappedState.status === "needsMigrations" && bootstrappedState.reason === "pending-migrations") {
@@ -762,7 +1216,7 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   if (state.status === "upToDate") return;
 
   const repair = await reconcilePendingMigrationHistory(url);
-  if (repair.repairedMigrations.length > 0) {
+  if (repair.repairedMigrations.length > 0 || repair.alreadyRecordedByOtherReplica.length > 0) {
     state = await inspectMigrations(url);
     if (state.status === "upToDate") return;
   }

@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentOwnershipGrants,
   agents,
   agentWakeupRequests,
   companies,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentOwnershipGrants);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -346,6 +348,54 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
+  });
+
+  // TECH-4930 stage 2, path 4 of 6: retry-now was gated only by `assertBoard`
+  // -- any board actor, no role or ownership check at all -- even though it
+  // directly re-runs the issue's assignee agent. This uses the real
+  // authorizationService (embedded Postgres, no mocks) end to end: a
+  // company with `enforce_agent_ownership` on, and a board actor with no
+  // ownership grant on the assignee agent. Reverting the ownership-decide
+  // call added to this route (or the `applyAgentOwnershipEnforcement`
+  // intersection it exercises) makes this fall through to a 200.
+  it("blocks retry-now when the company has enabled agent-ownership enforcement and the caller has no grant", async () => {
+    const { companyId, issueId, agentId } = await seedIssueWithRetry();
+    await db.update(companies).set({ enforceAgentOwnership: true }).where(eq(companies.id, companyId));
+    // Someone else owns the agent -- "board-user" (the actor below) does not.
+    await db.insert(agentOwnershipGrants).values({
+      companyId,
+      agentId,
+      principalType: "user",
+      principalId: "someone-else",
+      role: "owner",
+      source: "agent_create",
+    });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe("AGENT_OWNERSHIP_REQUIRED");
+  });
+
+  it("still allows retry-now once the caller holds an active ownership grant on the assignee agent", async () => {
+    const { companyId, issueId, agentId } = await seedIssueWithRetry();
+    await db.update(companies).set({ enforceAgentOwnership: true }).where(eq(companies.id, companyId));
+    await db.insert(agentOwnershipGrants).values({
+      companyId,
+      agentId,
+      principalType: "user",
+      principalId: "board-user",
+      role: "owner",
+      source: "agent_create",
+    });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
   it("enforces company scoping for retry-now with a uniform 404", async () => {

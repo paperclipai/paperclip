@@ -1278,6 +1278,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-ownership/enforcement-dry-run",
+  tags: ["companies"],
+  summary: "Preview the impact of enabling agent-ownership enforcement",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}",
   tags: ["companies"],
@@ -2006,6 +2015,99 @@ registry.registerPath({
   summary: "Delete an agent API key",
   request: { params: z.object({ id: z.string(), keyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/ownership",
+  tags: ["agents"],
+  summary: "List agent ownership grants",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers",
+  tags: ["agents"],
+  summary: "Propose an agent ownership transfer",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ toUserId: z.string().min(1) })),
+  },
+  responses: { 201: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/accept",
+  tags: ["agents"],
+  summary: "Accept a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/decline",
+  tags: ["agents"],
+  summary: "Decline a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/transfers/{transferId}/cancel",
+  tags: ["agents"],
+  summary: "Cancel a proposed agent ownership transfer",
+  request: { params: z.object({ id: z.string(), transferId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/agents/{id}/ownership/roles/{principalType}/{principalId}",
+  tags: ["agents"],
+  summary: "Set an agent ownership role for a principal",
+  request: {
+    params: z.object({ id: z.string(), principalType: z.string(), principalId: z.string() }),
+    body: jsonBody(z.object({ role: z.enum(["admin", "user"]) })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/agents/{id}/ownership/roles/{principalType}/{principalId}",
+  tags: ["agents"],
+  summary: "Revoke an agent ownership role from a principal",
+  request: { params: z.object({ id: z.string(), principalType: z.string(), principalId: z.string() }) },
+  responses: { 204: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/bootstrap",
+  tags: ["agents"],
+  summary: "Instance-admin: bootstrap the first owner grant for a pre-existing agent",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ ownerUserId: z.string().min(1) })),
+  },
+  responses: { 201: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/ownership/force-transfer",
+  tags: ["agents"],
+  summary: "Instance-admin: force an agent ownership transfer without acceptance",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ toUserId: z.string().min(1), reason: z.string().optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
 });
 
 registry.registerPath({

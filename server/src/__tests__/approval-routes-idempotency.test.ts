@@ -267,6 +267,83 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  // TECH-4930 stage 2, path 5 of 6: approve/reject was gated only by
+  // `assertBoard` + company membership, then unconditionally woke
+  // `approval.requestedByAgentId`. This pins the new
+  // `assertApprovalResolutionOwnershipAllowed` call added to
+  // routes/approvals.ts: `decide` denies specifically the "agent:wake"
+  // action for the requesting agent, and the route must refuse before ever
+  // calling `svc.approve`. Reverting that call in routes/approvals.ts makes
+  // this fail (the mock's default allow for `decide` lets `svc.approve` run
+  // and return 200).
+  it("blocks approve when agent-ownership enforcement denies the requesting agent", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-ownership-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "agent:wake") {
+        return {
+          allowed: false,
+          action: "agent:wake",
+          reason: "deny_agent_ownership_required",
+          code: "AGENT_OWNERSHIP_REQUIRED",
+          explanation: `Principal has no active ownership grant on agent ${input.resource?.agentId}.`,
+        };
+      }
+      return { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed by test mock." };
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-ownership-1/approve")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("AGENT_OWNERSHIP_REQUIRED");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent:wake",
+        resource: expect.objectContaining({ type: "agent", agentId: "agent-1" }),
+      }),
+    );
+  });
+
+  it("blocks reject when agent-ownership enforcement denies the requesting agent", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-ownership-2",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string; resource?: { agentId?: string } }) => {
+      if (input.action === "agent:wake") {
+        return {
+          allowed: false,
+          action: "agent:wake",
+          reason: "deny_agent_ownership_required",
+          code: "AGENT_OWNERSHIP_REQUIRED",
+          explanation: `Principal has no active ownership grant on agent ${input.resource?.agentId}.`,
+        };
+      }
+      return { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed by test mock." };
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-ownership-2/reject")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("AGENT_OWNERSHIP_REQUIRED");
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",

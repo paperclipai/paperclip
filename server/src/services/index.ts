@@ -7,6 +7,7 @@ export { companySkillService } from "./company-skills.js";
 export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
 export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
+export { agentOwnershipService } from "./agent-ownership.js";
 export {
   builtInAgentService,
   deriveBuiltInAgentStatus,

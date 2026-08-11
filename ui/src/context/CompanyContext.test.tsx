@@ -41,6 +41,7 @@ function makeCompany(id: string): Company {
     attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: null,
     requireBoardApprovalForNewAgents: false,
+    enforceAgentOwnership: false,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,

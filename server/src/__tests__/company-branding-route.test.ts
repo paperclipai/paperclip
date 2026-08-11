@@ -44,6 +44,7 @@ const mockFeedbackService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentOwnershipService: () => ({ buildEnforcementDryRunReport: vi.fn() }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,

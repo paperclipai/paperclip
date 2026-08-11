@@ -76,6 +76,7 @@ vi.mock("../services/feedback.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentOwnershipService: () => ({ buildEnforcementDryRunReport: vi.fn() }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,
@@ -90,6 +91,7 @@ vi.mock("../services/index.js", () => ({
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentOwnershipService: () => ({ buildEnforcementDryRunReport: vi.fn() }),
     agentService: () => mockAgentService,
     budgetService: () => mockBudgetService,
     companyArtifactsService: () => mockCompanyArtifactsService,
