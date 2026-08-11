@@ -112,6 +112,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
+  inferIntendedDoneDispositionFromFinalReport,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
@@ -4163,6 +4164,102 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.disposition_applied")).toBe(true);
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
+  });
+
+  it("applies a narrow intended-done control-plane outage receipt without a second generation run", async () => {
+    expect(inferIntendedDoneDispositionFromFinalReport(JSON.stringify({
+      status: "blocked",
+      disposition: "intended_done",
+      blockers: [{ type: "control-plane-write-failed" }],
+      artifact: [{ path: "work-products/TSR-5380/submission-checklist.md" }],
+    }))).toEqual({ status: "done", hasBlocker: false });
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Paperclip App", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    await db.update(issues).set({ projectId, projectWorkspaceId }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Produced the governed checklist before the run-scoped API bridge dropped.",
+      resultJson: {
+        summary: JSON.stringify({
+          status: "blocked",
+          disposition: "intended_done",
+          blockers: [{
+            type: "control-plane-write-failed",
+            details: "Paperclip API at 127.0.0.1 was unreachable for the final PATCH.",
+          }],
+          artifact: [{ path: "work-products/TSR-5380/submission-checklist.md", type: "checklist.md" }],
+        }),
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const settledRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+    expect(settledRun).toMatchObject({
+      status: "succeeded",
+      resultJson: expect.objectContaining({
+        summary: expect.stringContaining("intended_done"),
+      }),
+    });
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "done" ? row : null;
+      }),
+      5_000,
+    );
+    expect(issue?.status).toBe("done");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toContainEqual(expect.objectContaining({
+      action: "issue.disposition_applied",
+      details: expect.objectContaining({
+        appliedStatus: "done",
+        dispositionSource: "intended_done_control_plane_outage_receipt",
+      }),
+    }));
+  });
+
+  it("does not infer intended-done without the exact transient blocker and artifact proof", () => {
+    expect(inferIntendedDoneDispositionFromFinalReport(JSON.stringify({
+      status: "blocked",
+      disposition: "intended_done",
+      blockers: [{ type: "control-plane-write-failed" }],
+    }))).toBeNull();
+    expect(inferIntendedDoneDispositionFromFinalReport(JSON.stringify({
+      status: "blocked",
+      disposition: "intended_done",
+      blockers: [{ type: "renderer-failed" }],
+      artifact: [{ path: "work-products/output.md" }],
+    }))).toBeNull();
+    expect(inferIntendedDoneDispositionFromFinalReport(
+      "I intended to finish, but the API was unavailable.",
+    )).toBeNull();
   });
 
   it("treats the stage 12 blocked-dedup no-op as a quiet blocked wait with no recovery loop", async () => {

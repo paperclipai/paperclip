@@ -3389,6 +3389,48 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Narrow deterministic fallback for a completed run whose final control-plane
+ * write failed after it produced a durable artifact. This receipt is granted no
+ * more authority than the normal PAPERCLIP_DISPOSITION token, but it prevents a
+ * transient localhost write failure from buying a second LLM handoff.
+ */
+export function inferIntendedDoneDispositionFromFinalReport(
+  finalReport: string | null,
+): { status: "done"; hasBlocker: false; blocker?: never; reviewer?: never } | null {
+  if (!finalReport) return null;
+  let receipt: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(finalReport) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    receipt = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  if (receipt.status !== "blocked" || receipt.disposition !== "intended_done") return null;
+  const blockers = Array.isArray(receipt.blockers) ? receipt.blockers : [];
+  if (
+    blockers.length === 0 ||
+    !blockers.every((blocker) => parseObject(blocker).type === "control-plane-write-failed")
+  ) {
+    return null;
+  }
+  const artifacts = Array.isArray(receipt.artifact)
+    ? receipt.artifact
+    : Array.isArray(receipt.artifacts)
+      ? receipt.artifacts
+      : [];
+  if (
+    artifacts.length === 0 ||
+    !artifacts.every((artifact) => Boolean(readNonEmptyString(parseObject(artifact).path)))
+  ) {
+    return null;
+  }
+
+  return { status: "done", hasBlocker: false } as const;
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -10267,12 +10309,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       currentUserRedactionOptions,
     );
     const resultJson = parseObject(run.resultJson);
+    const rawFinalReport = [
+      readNonEmptyString(resultJson.summary),
+      readNonEmptyString(resultJson.result),
+      readNonEmptyString(resultJson.message),
+    ].find((value): value is string => Boolean(value)) ?? null;
     const finalReport = redactSuccessfulRunHandoffEvidence(
-      [
-        readNonEmptyString(resultJson.summary),
-        readNonEmptyString(resultJson.result),
-        readNonEmptyString(resultJson.message),
-      ].find((value): value is string => Boolean(value)) ?? null,
+      rawFinalReport,
       currentUserRedactionOptions,
     );
     const nextAction = redactSuccessfulRunHandoffEvidence(
@@ -10478,11 +10521,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // the issue immediately, even when the successful-run handoff heuristics would
     // otherwise skip the missing-state path. Record the token presence either way,
     // then apply the stated disposition before considering a corrective re-wake.
-    const statedDisposition = (
+    const explicitStatedDisposition = (
       parseObject(run.resultJson) as {
         disposition?: { status?: unknown; hasBlocker?: unknown; blocker?: unknown; reviewer?: unknown } | null;
       }
     ).disposition ?? null;
+    const inferredIntendedDoneDisposition = inferIntendedDoneDispositionFromFinalReport(rawFinalReport);
+    const statedDisposition = explicitStatedDisposition ?? inferredIntendedDoneDisposition;
     const statedStatus =
       statedDisposition && typeof statedDisposition.status === "string"
         ? statedDisposition.status
@@ -10612,8 +10657,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             entityType: "issue",
             entityId: issue.id,
             details: {
-              label: "Disposition enforced from stated token",
+              label: inferredIntendedDoneDisposition && !explicitStatedDisposition
+                ? "Intended-done control-plane outage receipt applied"
+                : "Disposition enforced from stated token",
               appliedStatus,
+              dispositionSource: inferredIntendedDoneDisposition && !explicitStatedDisposition
+                ? "intended_done_control_plane_outage_receipt"
+                : "paperclip_disposition_token",
               ...(createdBlockerId ? { createdBlockerId } : {}),
               ...(reviewerAssigned ? { reviewerAssigned } : {}),
               sourceRunId: run.id,
