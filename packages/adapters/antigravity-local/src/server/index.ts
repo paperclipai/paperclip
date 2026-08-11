@@ -1,8 +1,15 @@
-export { execute, buildAntigravityArgs } from "./execute.js";
+export {
+  execute,
+  buildAntigravityArgs,
+  resolveAntigravityMaxTokensPerRun,
+  DEFAULT_ANTIGRAVITY_MAX_TOKENS_PER_RUN,
+} from "./execute.js";
+export { getConfigSchema } from "./config-schema.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   parseAntigravityOutput,
+  inspectAntigravityStream,
   isAntigravityUnknownSessionError,
   detectAntigravityQuotaExhausted,
 } from "./parse.js";

@@ -33,15 +33,24 @@ import {
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipDesiredSkillNames,
+  runningProcesses,
+  signalRunningProcess,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  inspectAntigravityStream,
   parseAntigravityOutput,
   isAntigravityUnknownSessionError,
   detectAntigravityQuotaExhausted,
 } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+export const DEFAULT_ANTIGRAVITY_MAX_TOKENS_PER_RUN = 100_000;
+const ANTIGRAVITY_FINALIZATION_REMINDER =
+  "Before ending this run, record the real issue state through Paperclip. " +
+  "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
+  "PAPERCLIP_DISPOSITION JSON record (done, cancelled, in_review, or blocked); " +
+  "a prose status line or comment is not a disposition.";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -159,8 +168,27 @@ export function buildAntigravityArgs(input: {
   // Emitted before extraArgs so an explicit extraArgs --model still wins — that was the
   // pre-existing workaround and some agents/bench entries may still rely on it.
   if (input.model && input.model.trim().length > 0) args.push("--model", input.model.trim());
-  if (input.extraArgs.length > 0) args.push(...input.extraArgs);
+  // Stream-json is mandatory: it is the only Antigravity mode that exposes
+  // usage while a multi-step turn is still running. Strip caller overrides so
+  // the configured token ceiling cannot be silently disabled with extraArgs.
+  for (let index = 0; index < input.extraArgs.length; index += 1) {
+    const value = input.extraArgs[index];
+    if (value === "--output-format") {
+      index += 1;
+      continue;
+    }
+    if (value.startsWith("--output-format=")) continue;
+    args.push(value);
+  }
+  args.push("--output-format", "stream-json");
   return args;
+}
+
+export function resolveAntigravityMaxTokensPerRun(config: Record<string, unknown>): number {
+  return Math.max(
+    1,
+    Math.floor(asNumber(config.maxTokensPerRun, DEFAULT_ANTIGRAVITY_MAX_TOKENS_PER_RUN)),
+  );
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -179,6 +207,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = executionTarget?.kind === "remote";
+  if (executionTargetIsRemote) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "antigravity_live_token_cancellation_unavailable",
+      errorMessage:
+        "Antigravity remote execution is disabled because Paperclip cannot yet enforce live in-turn token cancellation on that target. Use a local Antigravity target or an ACP adapter.",
+      resultJson: {
+        stopReason: "antigravity_live_token_cancellation_unavailable",
+        modelDispatched: false,
+      },
+    };
+  }
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -335,6 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       renderPaperclipEnvNote(env),
       renderApiAccessNote(env),
       renderedPrompt,
+      ANTIGRAVITY_FINALIZATION_REMINDER,
     ]);
     const printTimeout = asString(config.printTimeout, "5m0s").trim();
     const autoApprove = asBoolean(config.autoApprove, true);
@@ -349,6 +392,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Read the configured model so it can be passed to `agy --model`. Previously nothing read
     // config.model for this adapter, so setting it on an agent did nothing and said nothing.
     const model = asString(config.model, "").trim();
+    const maxTokensPerRun = resolveAntigravityMaxTokensPerRun(config);
+    let tokenBudgetExceeded = false;
+    let tokenBudgetObserved = 0;
+    let observedStdout = "";
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const boundedOnLog: AdapterExecutionContext["onLog"] = async (stream, chunk) => {
+      await onLog(stream, chunk);
+      if (stream !== "stdout" || tokenBudgetExceeded) return;
+      observedStdout = `${observedStdout}${chunk}`.slice(-1024 * 1024);
+      const observedUsage = inspectAntigravityStream(observedStdout).usage;
+      const observed = observedUsage.inputTokens + observedUsage.cachedInputTokens + observedUsage.outputTokens;
+      tokenBudgetObserved = Math.max(tokenBudgetObserved, observed);
+      if (observed <= maxTokensPerRun) return;
+
+      tokenBudgetExceeded = true;
+      await onLog(
+        "stderr",
+        `[paperclip] Antigravity maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}); stopping before another model turn.\n`,
+      );
+      const running = runningProcesses.get(runId);
+      if (running) signalRunningProcess(running, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        const stillRunning = runningProcesses.get(runId);
+        if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
+      }, Math.max(1, graceSec) * 1000);
+    };
 
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildAntigravityArgs({
@@ -393,12 +463,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec,
         graceSec,
         onSpawn,
-        onLog,
+        onLog: boundedOnLog,
       });
-      return {
-        proc,
-        parsed: parseAntigravityOutput(proc.stdout, proc.stderr),
-      };
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+      const parsed = parseAntigravityOutput(proc.stdout, proc.stderr);
+      const finalObserved = parsed.usage.inputTokens + parsed.usage.cachedInputTokens + parsed.usage.outputTokens;
+      tokenBudgetObserved = Math.max(tokenBudgetObserved, finalObserved);
+      if (finalObserved > maxTokensPerRun) tokenBudgetExceeded = true;
+      return { proc, parsed };
     };
 
     const toResult = (
@@ -443,24 +518,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: failed ? fallbackErrorMessage : null,
-        errorCode: failed && quotaMeta.exhausted ? "antigravity_quota_exhausted" : null,
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
-        },
+        errorMessage: tokenBudgetExceeded
+          ? `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`
+          : failed ? fallbackErrorMessage : null,
+        errorCode: tokenBudgetExceeded
+          ? "antigravity_token_budget_exhausted"
+          : failed && quotaMeta.exhausted ? "antigravity_quota_exhausted" : null,
+        usage: attempt.parsed.usage,
+        usageBasis: "per_run",
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: "google",
         biller: "antigravity",
-        model: "antigravity",
+        model: model || "antigravity",
         billingType: "subscription",
         costUsd: null,
-        resultJson: failed
+        resultJson: failed || tokenBudgetExceeded
           ? {
             stderr: attempt.proc.stderr,
+            ...(attempt.parsed.disposition ? { disposition: attempt.parsed.disposition } : {}),
+            ...(tokenBudgetExceeded
+              ? {
+                tokenBudget: {
+                  exhausted: true,
+                  maxTokensPerRun,
+                  observedTokens: tokenBudgetObserved,
+                },
+              }
+              : {}),
             ...(quotaMeta.exhausted
               ? {
                 quotaFailure: {
@@ -472,7 +558,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               }
               : {}),
           }
-          : {},
+          : {
+            ...(attempt.parsed.disposition ? { disposition: attempt.parsed.disposition } : {}),
+          },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
       };
@@ -481,6 +569,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const initial = await runAttempt(sessionId);
     if (
       sessionId &&
+      !tokenBudgetExceeded &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       isAntigravityUnknownSessionError(initial.proc.stdout, initial.proc.stderr)

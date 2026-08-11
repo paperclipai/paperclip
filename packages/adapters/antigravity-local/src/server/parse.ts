@@ -2,6 +2,17 @@ export interface ParsedAntigravityOutput {
   sessionId: string | null;
   summary: string;
   errorMessage: string | null;
+  usage: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+  };
+  disposition: {
+    status: string;
+    hasBlocker: boolean;
+    blocker?: string;
+    reviewer?: string;
+  } | null;
 }
 
 export interface AntigravityQuotaExhaustedMatch {
@@ -16,16 +27,164 @@ const ANTIGRAVITY_QUOTA_EXHAUSTED_RE =
   /(?:resource[ _-]?exhausted|resource has been exhausted|quota (?:exceeded|exhausted|reached)|individual quota reached|exceeded your[^.\n]{0,40}quota|ineligible[ _-]?tier|upgrade your subscription to increase your limits)/i;
 const ANTIGRAVITY_RESET_IN_RE =
   /resets?\s+in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i;
+const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_STATUSES = new Set(["done", "cancelled", "in_review", "blocked"]);
+
+type TokenUsage = ParsedAntigravityOutput["usage"];
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function asFiniteTokenCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.floor(value));
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) return Math.max(0, Number(value));
+  return 0;
+}
+
+function firstTokenCount(record: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const count = asFiniteTokenCount(record[key]);
+    if (count > 0) return count;
+  }
+  return 0;
+}
+
+function readUsageRecord(value: unknown): TokenUsage {
+  const root = asRecord(value);
+  const candidates = [
+    root,
+    asRecord(root.usage),
+    asRecord(root.usage_metadata),
+    asRecord(root.usageMetadata),
+    asRecord(root.token_usage),
+    asRecord(root.tokenUsage),
+    asRecord(asRecord(root.response).usage),
+    asRecord(asRecord(root.response).usageMetadata),
+  ];
+  let inputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
+  for (const candidate of candidates) {
+    inputTokens = Math.max(inputTokens, firstTokenCount(candidate, [
+      "inputTokens", "input_tokens", "promptTokens", "prompt_tokens", "promptTokenCount",
+      "numInputTokens", "num_input_tokens",
+    ]));
+    cachedInputTokens = Math.max(cachedInputTokens, firstTokenCount(candidate, [
+      "cachedInputTokens", "cached_input_tokens", "cachedTokens", "cached_tokens",
+      "cachedContentTokenCount", "cacheReadInputTokens",
+    ]));
+    outputTokens = Math.max(outputTokens, firstTokenCount(candidate, [
+      "outputTokens", "output_tokens", "completionTokens", "completion_tokens",
+      "candidatesTokenCount", "numOutputTokens", "num_output_tokens",
+    ]));
+  }
+  return { inputTokens, cachedInputTokens, outputTokens };
+}
+
+function parseDispositionRecord(value: unknown): ParsedAntigravityOutput["disposition"] {
+  const record = asRecord(value);
+  const status = typeof record.status === "string" ? record.status.trim() : "";
+  if (!PAPERCLIP_DISPOSITION_STATUSES.has(status)) return null;
+  const blocker = [record.blocker, record.reason, record.statusReason]
+    .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+    ?.trim();
+  const reviewer = typeof record.reviewer === "string" && record.reviewer.trim().length > 0
+    ? record.reviewer.trim()
+    : undefined;
+  return {
+    status,
+    hasBlocker: record.hasBlocker === true || status === "blocked",
+    ...(blocker ? { blocker } : {}),
+    ...(reviewer ? { reviewer } : {}),
+  };
+}
+
+function extractPaperclipDisposition(text: string): {
+  disposition: ParsedAntigravityOutput["disposition"];
+  cleanedText: string;
+} {
+  let match: RegExpExecArray | null;
+  let lastValid: { disposition: NonNullable<ParsedAntigravityOutput["disposition"]>; index: number; fullMatch: string } | null = null;
+  PAPERCLIP_DISPOSITION_RE.lastIndex = 0;
+  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
+    try {
+      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
+      if (disposition) lastValid = { disposition, index: match.index, fullMatch: match[0] };
+    } catch {
+      // Malformed prose is not lifecycle data.
+    }
+  }
+  if (!lastValid) return { disposition: null, cleanedText: text.trim() };
+  return {
+    disposition: lastValid.disposition,
+    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  };
+}
+
+function readEventText(event: Record<string, unknown>): string | null {
+  const type = typeof event.type === "string" ? event.type.toLowerCase() : "";
+  const role = typeof event.role === "string" ? event.role.toLowerCase() : "";
+  const terminalLike = /result|final|assistant|message|text/.test(type) || role === "assistant";
+  if (!terminalLike) return null;
+  for (const value of [event.result, event.text, event.message, event.content, asRecord(event.response).text]) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * Parse Antigravity's line-delimited stream-json protocol. Usage field names
+ * have changed between agy builds, so the reader deliberately accepts the
+ * documented Gemini names and the common snake/camel-case CLI variants.
+ */
+export function inspectAntigravityStream(stdout: string) {
+  let sessionId: string | null = null;
+  let summary: string | null = null;
+  const usage: TokenUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+  let sawJsonEvent = false;
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = asRecord(JSON.parse(line));
+      if (Object.keys(event).length === 0) continue;
+      sawJsonEvent = true;
+    } catch {
+      continue;
+    }
+    sessionId = [event.conversation_id, event.conversationId, event.session_id, event.sessionId]
+      .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+      ?.trim() ?? sessionId;
+    const eventUsage = readUsageRecord(event);
+    usage.inputTokens = Math.max(usage.inputTokens, eventUsage.inputTokens);
+    usage.cachedInputTokens = Math.max(usage.cachedInputTokens, eventUsage.cachedInputTokens);
+    usage.outputTokens = Math.max(usage.outputTokens, eventUsage.outputTokens);
+    summary = readEventText(event) ?? summary;
+  }
+  return { sessionId, summary, usage, sawJsonEvent };
+}
 
 export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntigravityOutput {
+  const stream = inspectAntigravityStream(stdout);
   const sessionId =
+    stream.sessionId ??
     CONVERSATION_ID_RE.exec(stdout)?.[1]?.trim() ??
     CONVERSATION_ID_RE.exec(stderr)?.[1]?.trim() ??
     null;
+  const rawSummary = stream.summary ?? (stream.sawJsonEvent ? "" : stdout.trim());
+  const { disposition, cleanedText } = extractPaperclipDisposition(rawSummary);
   return {
     sessionId,
-    summary: stdout.trim(),
+    summary: cleanedText,
     errorMessage: null,
+    usage: stream.usage,
+    disposition,
   };
 }
 

@@ -56,6 +56,11 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): Record<strin
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   ac.timeoutSec = 0;
   ac.graceSec = 20;
+  const schemaMaxTokens = Number(v.adapterSchemaValues?.maxTokensPerRun);
+  ac.maxTokensPerRun = Math.max(
+    1,
+    Math.floor(Number.isFinite(schemaMaxTokens) ? schemaMaxTokens : 100_000),
+  );
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {

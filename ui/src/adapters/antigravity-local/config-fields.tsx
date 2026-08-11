@@ -22,6 +22,37 @@ export function AntigravityLocalConfigFields({
   if (hideInstructionsFile) return null;
   return (
     <>
+      <Field
+        label="Maximum tokens per run"
+        hint="Required hard ceiling. Defaults to 100K; Paperclip stops the Antigravity process before another model step once streamed usage crosses it."
+      >
+        <DraftInput
+          value={String(
+            isCreate
+              ? Number(values!.adapterSchemaValues?.maxTokensPerRun ?? 100_000)
+              : eff(
+                  "adapterConfig",
+                  "maxTokensPerRun",
+                  Number(config.maxTokensPerRun ?? 100_000),
+                ),
+          )}
+          onCommit={(v) => {
+            const parsed = Math.max(1, Math.floor(Number(v) || 100_000));
+            if (isCreate) {
+              set!({
+                adapterSchemaValues: {
+                  ...(values!.adapterSchemaValues ?? {}),
+                  maxTokensPerRun: parsed,
+                },
+              });
+            }
+            else mark("adapterConfig", "maxTokensPerRun", parsed);
+          }}
+          immediate
+          className={inputClass}
+          inputMode="numeric"
+        />
+      </Field>
       <Field label="Agent instructions file" hint={instructionsFileHint}>
         <div className="flex items-center gap-2">
           <DraftInput

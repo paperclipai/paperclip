@@ -1661,6 +1661,66 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("preserves an intentional in-progress disposition while resolving its stale recovery action", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_state",
+      fingerprint: "intentional-in-progress",
+      evidence: { sourceRunId: "run-intentional" },
+      nextAction: "Record the existing live continuation.",
+      wakePolicy: { type: "manual" },
+    });
+
+    const resolved = await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_progress",
+        resolutionNote: "The agent already recorded a valid live continuation.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({ id: sourceIssueId, status: "in_progress" });
+    expect(resolved.body.recoveryAction).toMatchObject({ status: "resolved", outcome: "restored" });
+  });
+
+  it("cancels a superseded failed source and its recovery action atomically", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_state",
+      fingerprint: "superseded-pilot",
+      evidence: { replacementIssueId: "replacement" },
+      nextAction: "Cancel the failed pilot after its replacement ships.",
+      wakePolicy: { type: "manual" },
+    });
+
+    const resolved = await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "cancelled",
+        sourceIssueStatus: "cancelled",
+        resolutionNote: "Replacement shipped; do not retry the failed pilot.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({ id: sourceIssueId, status: "cancelled" });
+    expect(resolved.body.recoveryAction).toMatchObject({ status: "cancelled", outcome: "cancelled" });
+  });
+
   it("hands restored work back to the recorded return owner and records the outcome", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db

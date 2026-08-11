@@ -80,9 +80,10 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- maxTokensPerRun (number, required-by-default): live stream-json token ceiling. Defaults to 100000; Paperclip terminates the local run before another model step after the ceiling is crossed.
 
 Notes:
-- Runs use \`agy --print --prompt <prompt>\` for non-interactive execution.
+- Runs use \`agy --print <prompt> --output-format stream-json\` for non-interactive execution and enforceable usage telemetry.
 - Sessions resume with \`--conversation <sessionId>\` when the saved session cwd matches the current cwd.
 - Authentication is managed by the local Antigravity CLI. Run \`agy\` login/setup on the host before assigning this adapter.
 `;

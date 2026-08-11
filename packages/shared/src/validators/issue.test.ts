@@ -203,6 +203,16 @@ describe("issue validators", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
         outcome: "restored",
+        sourceIssueStatus: "in_progress",
+      }),
+    ).toMatchObject({
+      outcome: "restored",
+      sourceIssueStatus: "in_progress",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "restored",
         sourceIssueStatus: "todo",
       }),
     ).toMatchObject({
@@ -219,6 +229,16 @@ describe("issue validators", () => {
   });
 
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "cancelled",
+        sourceIssueStatus: "cancelled",
+      }),
+    ).toMatchObject({
+      outcome: "cancelled",
+      sourceIssueStatus: "cancelled",
+    });
+
     expect(
       resolveIssueRecoveryActionSchema.parse({
         outcome: "cancelled",

@@ -128,6 +128,7 @@ import {
   sessionCodec as antigravitySessionCodec,
   listAntigravitySkills,
   syncAntigravitySkills,
+  getConfigSchema as getAntigravityConfigSchema,
 } from "@paperclipai/adapter-antigravity-local/server";
 import {
   agentConfigurationDoc as antigravityAgentConfigurationDoc,
@@ -373,6 +374,7 @@ const antigravityLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: antigravityAgentConfigurationDoc,
+  getConfigSchema: getAntigravityConfigSchema,
   // The `agy` CLI is resolved from PATH (config.command="agy"), not an npm package —
   // so no getRuntimeCommandSpec (same as the hermes adapter).
 };

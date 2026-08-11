@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   decideHighInputTokenRunGuard,
+  decideIssueGenerationAdmission,
   HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+  ISSUE_GENERATION_RUN_CEILING,
+  resolveIssueScopedRunTokenCap,
   totalInputTokensIncludingCache,
 } from "../services/heartbeat.js";
 
@@ -38,5 +41,47 @@ describe("high input-token run guard", () => {
       inputTokens: 105_209,
       highRunCount: 1,
     })).toBe("none");
+  });
+});
+
+describe("per-issue generation admission", () => {
+  it("allows at most three generation runs", () => {
+    expect(decideIssueGenerationAdmission({
+      aggregateInputTokens: 100_000,
+      priorGenerationRuns: ISSUE_GENERATION_RUN_CEILING - 1,
+    }).decision).toBe("allow");
+    expect(decideIssueGenerationAdmission({
+      aggregateInputTokens: 100_000,
+      priorGenerationRuns: ISSUE_GENERATION_RUN_CEILING,
+    })).toMatchObject({ decision: "deny", reason: "generation_run_ceiling" });
+  });
+
+  it("denies another generation once aggregate input including cache reaches 1M", () => {
+    expect(decideIssueGenerationAdmission({
+      aggregateInputTokens: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+      priorGenerationRuns: 1,
+    })).toEqual({
+      decision: "deny",
+      reason: "aggregate_input_ceiling",
+      remainingInputTokens: 0,
+    });
+  });
+
+  it("shrinks an enforceable adapter cap to the remaining issue budget without loosening its default", () => {
+    expect(resolveIssueScopedRunTokenCap({
+      adapterType: "codex_local",
+      configuredMaxTokensPerRun: undefined,
+      remainingIssueInputTokens: 75_000,
+    })).toBe(75_000);
+    expect(resolveIssueScopedRunTokenCap({
+      adapterType: "antigravity_local",
+      configuredMaxTokensPerRun: undefined,
+      remainingIssueInputTokens: 900_000,
+    })).toBe(100_000);
+    expect(resolveIssueScopedRunTokenCap({
+      adapterType: "paperclip_shell_handler",
+      configuredMaxTokensPerRun: undefined,
+      remainingIssueInputTokens: 10_000,
+    })).toBeNull();
   });
 });

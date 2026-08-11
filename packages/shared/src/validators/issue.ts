@@ -440,18 +440,19 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
 export const resolveIssueRecoveryActionSchema = z.object({
   actionId: z.string().uuid().optional(),
   outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-  sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
+  sourceIssueStatus: z.enum(["todo", "in_progress", "done", "in_review", "blocked", "cancelled"]),
   resolutionNote: multilineTextSchema.optional().nullable(),
 }).strict().superRefine((value, ctx) => {
   if (value.outcome === "restored") {
     if (
       value.sourceIssueStatus !== "todo" &&
+      value.sourceIssueStatus !== "in_progress" &&
       value.sourceIssueStatus !== "done" &&
       value.sourceIssueStatus !== "in_review"
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Restored recovery actions must move the source issue to todo, done, or in_review",
+        message: "Restored recovery actions must move the source issue to todo, in_progress, done, or in_review",
         path: ["sourceIssueStatus"],
       });
     }
@@ -471,12 +472,14 @@ export const resolveIssueRecoveryActionSchema = z.object({
 
   if (value.outcome === "false_positive" || value.outcome === "cancelled") {
     if (
+      value.sourceIssueStatus !== "in_progress" &&
       value.sourceIssueStatus !== "done" &&
-      value.sourceIssueStatus !== "in_review"
+      value.sourceIssueStatus !== "in_review" &&
+      !(value.outcome === "cancelled" && value.sourceIssueStatus === "cancelled")
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "This recovery outcome requires sourceIssueStatus to be done or in_review",
+        message: "This recovery outcome requires sourceIssueStatus to be in_progress, done, or in_review; cancelled outcomes may also cancel the source",
         path: ["sourceIssueStatus"],
       });
     }

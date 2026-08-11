@@ -68,6 +68,7 @@ import {
   toolMcpGateways,
   toolMcpGatewayTokens,
   toolConnections,
+  toolCallEvents,
   toolProfiles,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -95,6 +96,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { NativeToolCallTelemetryCollector } from "./native-tool-call-telemetry.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import {
   buildQuotaCooldownCopy,
@@ -364,6 +366,43 @@ const HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES = 256 * 1024;
  * routed to a deterministic handler, or explicitly approved as an exception.
  */
 export const HIGH_INPUT_TOKEN_RUN_THRESHOLD = 1_000_000;
+export const ISSUE_GENERATION_RUN_CEILING = 3;
+
+export type IssueGenerationAdmissionDecision =
+  | { decision: "allow"; remainingInputTokens: number }
+  | { decision: "deny"; reason: "aggregate_input_ceiling" | "generation_run_ceiling"; remainingInputTokens: number };
+
+export function decideIssueGenerationAdmission(input: {
+  aggregateInputTokens: number;
+  priorGenerationRuns: number;
+}): IssueGenerationAdmissionDecision {
+  const remainingInputTokens = Math.max(0, HIGH_INPUT_TOKEN_RUN_THRESHOLD - Math.max(0, input.aggregateInputTokens));
+  if (input.aggregateInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+    return { decision: "deny", reason: "aggregate_input_ceiling", remainingInputTokens };
+  }
+  if (input.priorGenerationRuns >= ISSUE_GENERATION_RUN_CEILING) {
+    return { decision: "deny", reason: "generation_run_ceiling", remainingInputTokens };
+  }
+  return { decision: "allow", remainingInputTokens };
+}
+
+export function resolveIssueScopedRunTokenCap(input: {
+  adapterType: string;
+  configuredMaxTokensPerRun: unknown;
+  remainingIssueInputTokens: number;
+}): number | null {
+  const configured = typeof input.configuredMaxTokensPerRun === "number" && Number.isFinite(input.configuredMaxTokensPerRun)
+    ? Math.floor(input.configuredMaxTokensPerRun)
+    : 0;
+  const adapterDefault = input.adapterType === "antigravity_local"
+    ? 100_000
+    : ["codex_local", "claude_local", "gemini_local", "custom_acp"].includes(input.adapterType)
+      ? 400_000
+      : 0;
+  const existingCap = configured > 0 ? configured : adapterDefault;
+  if (existingCap <= 0) return null;
+  return Math.max(1, Math.min(existingCap, Math.floor(input.remainingIssueInputTokens)));
+}
 
 export type HighInputTokenRunGuardDecision = "none" | "review" | "block";
 
@@ -9865,29 +9904,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     // Exceptions must name a task, so an unscoped run never receives one.
-    if (!config.hardStopEnabled || !issueId || input.inputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+    if (!config.hardStopEnabled || !issueId) {
       return { decision: "none" as const, highRunCount: 0 };
     }
 
-    // Cost events are written immediately before this guard runs. Counting
-    // distinct runs therefore includes this run and stays correct if a provider
-    // emits more than one ledger row while an adapter implementation evolves.
-    const [highRunCountRow] = await db
-      .select({ count: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int` })
+    // Cost events are written immediately before this guard runs. Aggregate
+    // fresh input and cache reads across the whole issue, rather than checking
+    // only this run's fresh-input field (the old check contradicted its own UI
+    // copy and allowed cached continuation burn through the ceiling).
+    const [aggregateRow] = await db
+      .select({
+        inputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0)), 0)::bigint`,
+        runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+      })
       .from(costEvents)
       .where(
         and(
           eq(costEvents.companyId, input.run.companyId),
           eq(costEvents.issueId, issueId),
-          gte(
-            costEvents.inputTokens,
-            HIGH_INPUT_TOKEN_RUN_THRESHOLD,
-          ),
         ),
       );
-    const highRunCount = Number(highRunCountRow?.count ?? 0);
+    const aggregateInputTokens = Number(aggregateRow?.inputTokens ?? 0);
+    const highRunCount = Number(aggregateRow?.runCount ?? 0);
+    if (aggregateInputTokens < HIGH_INPUT_TOKEN_RUN_THRESHOLD) {
+      return { decision: "none" as const, highRunCount };
+    }
     const decision = decideHighInputTokenRunGuard({
-      inputTokens: input.inputTokens,
+      inputTokens: aggregateInputTokens,
       highRunCount,
     });
     if (decision === "none") return { decision, highRunCount };
@@ -9941,7 +9984,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           revokedAt: exceptionRow.revokedAt,
         }
         : null,
-      totalInputTokens: input.inputTokens,
+      totalInputTokens: aggregateInputTokens,
       now: new Date(),
     });
     if (exceptionDecision === "allow" && exceptionRow) {
@@ -9951,7 +9994,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "Oversized run permitted by an active board token exception",
         payload: {
-          totalInputTokens: input.inputTokens,
+          totalInputTokens: aggregateInputTokens,
           freshInputTokens: input.inputTokens,
           cachedInputTokens: input.cachedInputTokens,
           threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
@@ -9973,7 +10016,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         entityId: issue.id,
         details: {
           label: "Oversized run allowed by board token exception",
-          totalInputTokens,
+          totalInputTokens: aggregateInputTokens,
           threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
           exceptionId: exceptionRow.id,
           capTokens: Number(exceptionRow.capTokens),
@@ -9985,59 +10028,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { decision: "exception_allowed" as const, highRunCount, exceptionId: exceptionRow.id };
     }
 
-    const millionTokens = (input.inputTokens / 1_000_000).toFixed(2);
+    const millionTokens = (aggregateInputTokens / 1_000_000).toFixed(2);
     const interactionsSvc = issueThreadInteractionService(db);
-    const isRepeat = decision === "block";
-    const action = isRepeat
-      ? "This is the second ≥1M-input run on this task. Automatic continuation is blocked."
-      : "This is the first ≥1M-input run on this task. Split or reroute it before more autonomous work.";
+    const action = "The issue reached the ≥1M aggregate-input ceiling. Automatic continuation is blocked.";
     const interaction = await interactionsSvc.create(issue, {
       kind: "request_confirmation",
       continuationPolicy: "wake_assignee",
-      idempotencyKey: `high_input_token_run:${issue.id}:${isRepeat ? "block" : "review"}:${input.run.id}`,
+      idempotencyKey: `aggregate_input_token_ceiling:${issue.id}:${input.run.id}`,
       sourceRunId: input.run.id,
-      title: isRepeat ? "Second oversized run stopped" : "High-token run needs split / route review",
+      title: "Issue aggregate-input ceiling reached",
       summary: action,
       payload: {
         version: 1,
-        prompt: isRepeat
-          ? "Approve a concrete split or non-LLM route before this task is resumed."
-          : "Confirm a concrete split or non-LLM route before this task is resumed.",
+        prompt: "Approve a concrete split or non-LLM route before this task is resumed.",
         acceptLabel: "Resume with approved route",
         rejectLabel: "Keep stopped",
         rejectRequiresReason: true,
         allowDeclineReason: true,
         supersedeOnUserComment: false,
         detailsMarkdown:
-          `Run ${input.run.id} recorded **${millionTokens}M total input tokens (including cache reads)**. `
+          `Issue aggregate reached **${millionTokens}M total input tokens (including cache reads)** after run ${input.run.id}. `
           + `${action}\n\n`
           + "Required decision: split the task into bounded issues, route deterministic work to a shell handler/script, or document why this is an approved exception.",
       },
     }, { agentId: input.agent.id });
 
-    if (isRepeat) {
-      await issuesSvc.update(issue.id, {
-        status: "blocked",
-        unblockDescriptor: {
-          owner: "board",
-          action: "Approve a split or deterministic route after the second oversized run, then explicitly resume the task.",
-        },
-        actorAgentId: input.agent.id,
-      });
-    } else {
-      await issuesSvc.update(issue.id, {
-        status: "in_review",
-        actorAgentId: input.agent.id,
-      });
-    }
+    await issuesSvc.update(issue.id, {
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve a split or deterministic route after the aggregate input ceiling, then explicitly resume the task.",
+      },
+      actorAgentId: input.agent.id,
+    });
 
     await issuesSvc.addComment(
       issue.id,
-      `## ${isRepeat ? "Second oversized run stopped" : "High-token run review required"}\n\n`
+      "## Issue aggregate-input ceiling reached\n\n"
         + `- Run: \`${input.run.id}\`\n`
-        + `- Total input tokens (including cache reads): **${millionTokens}M**\n`
-        + `- Fresh input: ${input.inputTokens.toLocaleString("en-US")}; cache reads: ${input.cachedInputTokens.toLocaleString("en-US")}\n`
-        + `- Task threshold: **${(HIGH_INPUT_TOKEN_RUN_THRESHOLD / 1_000_000).toFixed(0)}M** input tokens\n`
+        + `- Issue aggregate input (including cache reads): **${millionTokens}M**\n`
+        + `- This run — fresh input: ${input.inputTokens.toLocaleString("en-US")}; cache reads: ${input.cachedInputTokens.toLocaleString("en-US")}\n`
+        + `- Issue threshold: **${(HIGH_INPUT_TOKEN_RUN_THRESHOLD / 1_000_000).toFixed(0)}M** input tokens\n`
         + (exceptionDecision === "none"
           ? "- Board exception: none on record\n"
           : `- Board exception on record but **not honoured (${exceptionDecision})**; record a task/cap/reason/expiry exception that covers this run to permit it\n`)
@@ -10050,11 +10081,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: isRepeat
-        ? "Second oversized task run stopped pending board split/route decision"
-        : "Oversized task run paused pending split/route decision",
+      message: "Issue aggregate-input ceiling stopped continuation pending board split/route decision",
       payload: {
-        inputTokens: totalInputTokens,
+        inputTokens: aggregateInputTokens,
         freshInputTokens: input.inputTokens,
         cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
@@ -10069,12 +10098,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       actorId: "heartbeat",
       agentId: input.agent.id,
       runId: input.run.id,
-      action: isRepeat ? "issue.high_input_run_blocked" : "issue.high_input_run_review_required",
+      action: "issue.high_input_run_blocked",
       entityType: "issue",
       entityId: issue.id,
       details: {
-        label: isRepeat ? "Second high-input run blocked" : "High-input run review required",
-        inputTokens: totalInputTokens,
+        label: "Issue aggregate-input ceiling blocked",
+        inputTokens: aggregateInputTokens,
         freshInputTokens: input.inputTokens,
         cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
@@ -15994,6 +16023,95 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return promise;
   }
 
+  async function readIssueGenerationAdmission(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    currentRunId: string;
+  }) {
+    const [tokenRow, runRow, exceptionRow] = await Promise.all([
+      db
+        .select({
+          aggregateInputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0)), 0)::bigint`,
+        })
+        .from(costEvents)
+        .where(and(
+          eq(costEvents.companyId, input.companyId),
+          eq(costEvents.issueId, input.issueId),
+        ))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ count: sql<number>`count(distinct ${heartbeatRuns.id})::int` })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+        .where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          isNotNull(heartbeatRuns.startedAt),
+          sql`${heartbeatRuns.id} <> ${input.currentRunId}`,
+          sql`${agents.adapterType} <> 'paperclip_shell_handler'`,
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${input.issueId}`,
+          ),
+        ))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: boardTokenExceptions.id,
+          capTokens: boardTokenExceptions.capTokens,
+          expiresAt: boardTokenExceptions.expiresAt,
+          revokedAt: boardTokenExceptions.revokedAt,
+        })
+        .from(boardTokenExceptions)
+        .where(and(
+          eq(boardTokenExceptions.companyId, input.companyId),
+          eq(boardTokenExceptions.issueId, input.issueId),
+          isNull(boardTokenExceptions.revokedAt),
+          or(
+            isNull(boardTokenExceptions.agentId),
+            eq(boardTokenExceptions.agentId, input.agentId),
+          ),
+        ))
+        .orderBy(
+          sql`(${boardTokenExceptions.agentId} is not null) desc`,
+          desc(boardTokenExceptions.createdAt),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    const aggregateInputTokens = Number(tokenRow?.aggregateInputTokens ?? 0);
+    const priorGenerationRuns = Number(runRow?.count ?? 0);
+    const baseDecision = decideIssueGenerationAdmission({ aggregateInputTokens, priorGenerationRuns });
+    if (baseDecision.decision === "deny" && baseDecision.reason === "aggregate_input_ceiling" && exceptionRow) {
+      const exceptionDecision = decideBoardTokenException({
+        exception: {
+          capTokens: Number(exceptionRow.capTokens),
+          expiresAt: exceptionRow.expiresAt,
+          revokedAt: exceptionRow.revokedAt,
+        },
+        totalInputTokens: aggregateInputTokens,
+        now: new Date(),
+      });
+      if (exceptionDecision === "allow" && priorGenerationRuns < ISSUE_GENERATION_RUN_CEILING) {
+        return {
+          aggregateInputTokens,
+          priorGenerationRuns,
+          decision: "allow" as const,
+          remainingInputTokens: Math.max(1, Number(exceptionRow.capTokens) - aggregateInputTokens),
+          exceptionId: exceptionRow.id,
+          effectiveInputTokenCeiling: Number(exceptionRow.capTokens),
+        };
+      }
+    }
+    return {
+      aggregateInputTokens,
+      priorGenerationRuns,
+      ...baseDecision,
+      exceptionId: null,
+      effectiveInputTokenCeiling: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+    };
+  }
+
   async function executeRun(runId: string) {
     if ((await getSchedulingSuppression()).suppressed) return;
 
@@ -16036,6 +16154,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    const issueGenerationAdmission = issueId && agent.adapterType !== "paperclip_shell_handler"
+      ? await readIssueGenerationAdmission({
+          companyId: agent.companyId,
+          issueId,
+          agentId: agent.id,
+          currentRunId: run.id,
+        })
+      : null;
+    if (issueGenerationAdmission?.decision === "deny") {
+      const reasonLabel = issueGenerationAdmission.reason === "aggregate_input_ceiling"
+        ? `the issue already recorded ${issueGenerationAdmission.aggregateInputTokens.toLocaleString("en-US")} aggregate input tokens (including cache)`
+        : `the issue already used ${issueGenerationAdmission.priorGenerationRuns} generation runs`;
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: "Issue generation ceiling rejected the run before model dispatch",
+        payload: {
+          reason: issueGenerationAdmission.reason,
+          issueId,
+          aggregateInputTokens: issueGenerationAdmission.aggregateInputTokens,
+          priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
+          inputTokenCeiling: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+          generationRunCeiling: ISSUE_GENERATION_RUN_CEILING,
+        },
+      });
+      const error = `Cancelled before model dispatch: ${reasonLabel}; board disposition is required before more generation.`;
+      await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(),
+        error,
+        errorCode: "issue_generation_ceiling_exceeded",
+        resultJson: {
+          stopReason: "issue_generation_ceiling_exceeded",
+          reason: issueGenerationAdmission.reason,
+          aggregateInputTokens: issueGenerationAdmission.aggregateInputTokens,
+          priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
+          modelDispatched: false,
+        },
+      });
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: new Date(),
+        error,
+      });
+      if (issueId && issueContext && !["done", "cancelled"].includes(issueContext.status)) {
+        const wasAlreadyBlocked = issueContext.status === "blocked";
+        await issuesSvc.update(issueId, {
+          status: "blocked",
+          unblockDescriptor: {
+            owner: "board",
+            action: "Record the business disposition, split the remaining work into bounded issues, or approve a deterministic route before resuming generation.",
+          },
+          actorAgentId: agent.id,
+        });
+        if (!wasAlreadyBlocked) {
+          await issuesSvc.addComment(
+            issueId,
+            "## Generation ceiling reached\n\n" +
+              `Paperclip rejected run \`${run.id}\` before model dispatch because ${reasonLabel}.\n\n` +
+              `Limits: **${HIGH_INPUT_TOKEN_RUN_THRESHOLD.toLocaleString("en-US")} aggregate input tokens including cache** or **${ISSUE_GENERATION_RUN_CEILING} generation runs per issue**. ` +
+              "Record the business disposition, split the remainder into bounded issues, or route deterministic work to a script before resuming.",
+            { runId: run.id },
+            { authorType: "system" },
+          );
+        }
+      }
+      const cancelledRun = await getRun(run.id);
+      if (cancelledRun) await releaseIssueExecutionAndPromote(cancelledRun);
+      return;
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
@@ -16660,6 +16847,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    if (issueGenerationAdmission?.decision === "allow") {
+      const issueScopedCap = resolveIssueScopedRunTokenCap({
+        adapterType: agent.adapterType,
+        configuredMaxTokensPerRun: runtimeConfig.maxTokensPerRun,
+        remainingIssueInputTokens: issueGenerationAdmission.remainingInputTokens,
+      });
+      if (issueScopedCap) {
+        runtimeConfig.maxTokensPerRun = issueScopedCap;
+        context.paperclipIssueGenerationBudget = {
+          aggregateInputTokensBeforeRun: issueGenerationAdmission.aggregateInputTokens,
+          priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
+          remainingInputTokens: issueGenerationAdmission.remainingInputTokens,
+          maxTokensPerRun: issueScopedCap,
+          inputTokenCeiling: issueGenerationAdmission.effectiveInputTokenCeiling,
+          generationRunCeiling: ISSUE_GENERATION_RUN_CEILING,
+          exceptionId: issueGenerationAdmission.exceptionId,
+        };
+      }
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
@@ -17581,7 +17787,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const nativeToolTelemetry = new NativeToolCallTelemetryCollector();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        const nativeToolCalls = nativeToolTelemetry.ingest(stream, chunk);
+        if (nativeToolCalls.length > 0) {
+          try {
+            await db.insert(toolCallEvents).values(nativeToolCalls.map((event) => ({
+              companyId: run.companyId,
+              eventType: event.eventType,
+              outcome: event.outcome,
+              actorType: "agent",
+              actorId: agent.id,
+              agentId: agent.id,
+              runId: run.id,
+              issueId: issueId ?? null,
+              toolName: event.toolName,
+              reasonCode: "adapter_native_tool_call",
+              metadata: {
+                source: "adapter_native",
+                adapterType: agent.adapterType,
+                toolCallId: event.toolCallId,
+                protocolType: event.protocolType,
+                status: event.status,
+              },
+            })));
+          } catch (err) {
+            // Observability must not turn a valid task into a failed run. Keep
+            // the execution moving, but make the ledger gap visible in logs.
+            logger.warn(
+              { err, runId: run.id, agentId: agent.id, count: nativeToolCalls.length },
+              "failed to persist adapter-native tool-call telemetry",
+            );
+          }
+        }
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
         );
