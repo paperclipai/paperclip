@@ -379,6 +379,13 @@
       "when": 1775663797690,
       "tag": "0053_regular_robin_chapel",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1786139106019,
+      "tag": "0054_add_instance_settings_sso_safety_guard",
+      "breakpoints": true
     }
   ]
 }
