@@ -40,7 +40,8 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
 - model (string, optional): Claude model id
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high|xhigh|max)
-- chrome (boolean, optional): pass --chrome when running Claude
+- chrome (boolean, optional, default false): CLI lane only — pass --chrome to enable Claude's native browser. The default (ACP) lane has no --chrome flag; use mcpConfigPath for a browser there.
+- mcpConfigPath (string, optional): absolute path to an MCP config JSON ({"mcpServers":{...}}), e.g. a Playwright/computer-use browser server. Strongest cross-lane browser access. CLI lane passes --mcp-config <path>. See "Browser access" below for the ACP lane.
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
@@ -65,4 +66,10 @@ Notes:
 - The Claude ACP lane requires Node >=22.12.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Auto engine selection falls back to CLI when those prerequisites are unavailable; explicit engine="acp" fails loudly.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+
+Browser access (MCP path):
+- The Claude CLI's native --chrome browser is a CLI-lane-only flag. The default (ACP) lane runs claude-agent-acp, which has no --chrome flag.
+- Both lanes can drive a browser through an MCP server (e.g. Playwright MCP or a computer-use server). Point mcpConfigPath at a JSON file shaped like {"mcpServers": {"browser": {"command": "npx", "args": ["-y", "@playwright/mcp@latest", "--headless"]}}}.
+  - CLI lane: passed as --mcp-config <path>.
+  - ACP lane: claude-agent-acp runs the Claude Agent SDK with settingSources ["user","project","local"], so it discovers a project .mcp.json and .claude/settings.json. Place the same mcpServers block in a project .mcp.json at the agent cwd. Non-interactive runs also need the server allow-listed (settings enabledMcpjsonServers) so the SDK does not block an unapproved project server.
 `;

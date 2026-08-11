@@ -405,6 +405,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
+  const mcpConfigPath = asString(config.mcpConfigPath, "").trim();
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
@@ -742,6 +743,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       targetIsRemote: executionTargetIsRemote,
     }));
     if (chrome) args.push("--chrome");
+    // Strongest cross-lane browser access: hand the Claude CLI an MCP config
+    // (e.g. a Playwright/computer-use browser server). The ACP lane cannot take
+    // this flag — there it must arrive via a project .mcp.json / settings source.
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
     // on Bedrock, so skip them and let the CLI use its own configured model.
