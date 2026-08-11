@@ -56,6 +56,16 @@ docker pull ghcr.io/paperclipai/paperclip:canary
 Every image is also published as `:sha-<short-sha>` for exact pinning, and
 stable images additionally get `:YYYY.MDD.P` version tags.
 
+## Seeing where you are
+
+```bash
+npx paperclipai channels
+```
+
+prints every channel with the version it currently resolves to, the install
+command for each, and which channel your install follows (with `--json` for
+scripting).
+
 ## Switching channels
 
 Channel choice is per-install: install from a different tag and you're on that
