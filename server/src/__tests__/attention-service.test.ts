@@ -259,7 +259,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
   });
 
-  it("surfaces WAT-shaped board-owned manual issues once and leaves in-review work to the review source", async () => {
+  it("surfaces WAT-shaped board-owned manual issues once and leaves blocker and review work to their specialized sources", async () => {
     const { companyId, workerId } = await seedCompany("ATM");
     const expectedIssueIds = await Promise.all([
       ["ATM-1", "Backlog board decision", "backlog"],
@@ -311,13 +311,15 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const manualItems = feed.items.filter((item) => item.sourceKind === "manual_issue");
 
-    expect(manualItems).toHaveLength(5);
-    expect(feed.countsBySourceKind.manual_issue).toBe(5);
+    expect(manualItems).toHaveLength(4);
+    expect(feed.countsBySourceKind.manual_issue).toBe(4);
     expect(new Set(manualItems.map((item) => item.subject.id))).toEqual(new Set([
       ...expectedIssueIds,
-      blockedIssueId,
       requestedUserDecisionIssueId,
     ]));
+    expect(feed.items.filter((item) => item.subject.id === blockedIssueId)).toEqual([
+      expect.objectContaining({ sourceKind: "blocker_attention" }),
+    ]);
     expect(feed.items.filter((item) => item.subject.id === inReviewIssueId)).toEqual([
       expect.objectContaining({ sourceKind: "review" }),
     ]);
