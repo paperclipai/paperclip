@@ -344,6 +344,21 @@ function appendCapturedStderr(previous: string, chunk: Buffer | string): string 
   return Buffer.from(next, "utf8").subarray(-BACKUP_CLI_STDERR_BYTES).toString("utf8");
 }
 
+async function waitForWritableDrain(stream: NodeJS.EventEmitter): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onDrain = () => {
+      stream.removeListener("error", onError);
+      resolve();
+    };
+    const onError = (error: unknown) => {
+      stream.removeListener("drain", onDrain);
+      reject(error);
+    };
+    stream.once("drain", onDrain);
+    stream.once("error", onError);
+  });
+}
+
 async function waitForChildExit(child: ReturnType<typeof spawn>, label: string): Promise<void> {
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
@@ -582,12 +597,7 @@ export function createBufferedGzipTextFileWriter(filePath: string, maxBufferedBy
   let pendingWrite = Promise.resolve();
 
   const writeChunk = async (chunk: string | Buffer): Promise<void> => {
-    if (!gzip.write(chunk)) {
-      await new Promise<void>((resolve, reject) => {
-        gzip.once("drain", resolve);
-        gzip.once("error", reject);
-      });
-    }
+    if (!gzip.write(chunk)) await waitForWritableDrain(gzip);
   };
 
   const flushBufferedLines = () => {
