@@ -22,8 +22,10 @@ const input = {
     tool: "pnpm --filter @paperclipai/server build",
     version: execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
     inputsDigest: `sha256:${createHash("sha256").update(Buffer.concat([
+      readFileSync(reviewedSourcePath),
       readFileSync("server/tsconfig.json"),
       readFileSync("server/package.json"),
+      readFileSync("pnpm-lock.yaml"),
     ])).digest("hex")}`,
   },
   sourceBytes: reviewedSourceBytes,
