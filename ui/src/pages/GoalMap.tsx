@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { List, Lock, Maximize2, Minus, Plus, Target } from "lucide-react";
+import { List, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
 import type { Agent, GoalMapIssueNode, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -146,7 +146,17 @@ function issueNodeHeight(trees: IssueTreeInfo, issue: GoalMapIssueNode): number 
   return (trees.childrenById.get(issue.id)?.length ?? 0) > 0 ? PARENT_H : LEAF_H;
 }
 
-function layoutGoalMap(nodes: GoalMapNode[], trees: IssueTreeInfo): GoalMapLayout {
+type PositionOverrides = Record<string, { dx: number; dy: number }>;
+
+function positionsStorageKey(companyId: string): string {
+  return `paperclip:goal-map-positions:${companyId}`;
+}
+
+function layoutGoalMap(
+  nodes: GoalMapNode[],
+  trees: IssueTreeInfo,
+  overrides: PositionOverrides,
+): GoalMapLayout {
   const nodeIds = new Set(nodes.map((n) => n.goal.id));
   const goalChildren = new Map<string, GoalMapNode[]>();
   for (const node of nodes) {
@@ -239,6 +249,15 @@ function layoutGoalMap(nodes: GoalMapNode[], trees: IssueTreeInfo): GoalMapLayou
 
   const placedGoals = [...placedGoalById.values()];
   const placedIssues = [...placedIssueById.values()];
+  // Manual placement: offsets committed by dropping a card on empty space.
+  for (const p of placedGoals) {
+    const override = overrides[`g:${p.node.goal.id}`];
+    if (override) { p.x += override.dx; p.y += override.dy; }
+  }
+  for (const p of placedIssues) {
+    const override = overrides[`i:${p.issue.id}`];
+    if (override) { p.x += override.dx; p.y += override.dy; }
+  }
   let width = 800;
   let height = 600;
   for (const p of placedGoals) {
@@ -346,8 +365,35 @@ export function GoalMap() {
     return all.filter((issue) => keep.has(issue.id));
   }, [goalMap, hideCompleted]);
 
+  const [positionOverrides, setPositionOverrides] = useState<PositionOverrides>({});
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    try {
+      const raw = window.localStorage.getItem(positionsStorageKey(selectedCompanyId));
+      setPositionOverrides(raw ? (JSON.parse(raw) as PositionOverrides) : {});
+    } catch {
+      setPositionOverrides({});
+    }
+  }, [selectedCompanyId]);
+  const persistOverrides = useCallback((next: PositionOverrides) => {
+    setPositionOverrides(next);
+    if (!selectedCompanyId) return;
+    try {
+      if (Object.keys(next).length === 0) {
+        window.localStorage.removeItem(positionsStorageKey(selectedCompanyId));
+      } else {
+        window.localStorage.setItem(positionsStorageKey(selectedCompanyId), JSON.stringify(next));
+      }
+    } catch {
+      // Position overrides are cosmetic; ignore storage failures.
+    }
+  }, [selectedCompanyId]);
+
   const trees = useMemo(() => buildIssueTrees(visibleIssues), [visibleIssues]);
-  const layout = useMemo(() => layoutGoalMap(goalMap?.nodes ?? [], trees), [goalMap, trees]);
+  const layout = useMemo(
+    () => layoutGoalMap(goalMap?.nodes ?? [], trees, positionOverrides),
+    [goalMap, trees, positionOverrides],
+  );
   const issueById = useMemo(
     () => new Map((goalMap?.issues ?? []).map((issue) => [issue.id, issue])),
     [goalMap],
@@ -437,8 +483,9 @@ export function GoalMap() {
   const [zoom, setZoom] = useState(1);
   const [panning, setPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
-  const dragState = useRef<{ issueId: string; startX: number; startY: number; moved: boolean } | null>(null);
-  const [draggingIssueId, setDraggingIssueId] = useState<string | null>(null);
+  const dragState = useRef<{ kind: "issue" | "goal"; id: string; startX: number; startY: number; moved: boolean } | null>(null);
+  const [dragging, setDragging] = useState<{ kind: "issue" | "goal"; id: string } | null>(null);
+  const [dragDelta, setDragDelta] = useState({ dx: 0, dy: 0 });
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
   const suppressNextClick = useRef(false);
 
@@ -491,7 +538,19 @@ export function GoalMap() {
     const issueCard = target.closest<HTMLElement>("[data-map-issue-id]");
     if (issueCard) {
       dragState.current = {
-        issueId: issueCard.dataset.mapIssueId!,
+        kind: "issue",
+        id: issueCard.dataset.mapIssueId!,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
+      return;
+    }
+    const goalCard = target.closest<HTMLElement>("[data-map-goal-id]");
+    if (goalCard) {
+      dragState.current = {
+        kind: "goal",
+        id: goalCard.dataset.mapGoalId!,
         startX: e.clientX,
         startY: e.clientY,
         moved: false,
@@ -511,9 +570,15 @@ export function GoalMap() {
         return;
       }
       drag.moved = true;
-      setDraggingIssueId(drag.issueId);
-      const target = hitTest(e.clientX, e.clientY, drag.issueId);
-      setDropTarget(isValidDropTarget(drag.issueId, target) ? target : null);
+      setDragging({ kind: drag.kind, id: drag.id });
+      setDragDelta({
+        dx: (e.clientX - drag.startX) / zoom,
+        dy: (e.clientY - drag.startY) / zoom,
+      });
+      if (drag.kind === "issue") {
+        const target = hitTest(e.clientX, e.clientY, drag.id);
+        setDropTarget(isValidDropTarget(drag.id, target) ? target : null);
+      }
       return;
     }
     if (!panning) return;
@@ -521,7 +586,7 @@ export function GoalMap() {
       x: panStart.current.panX + e.clientX - panStart.current.x,
       y: panStart.current.panY + e.clientY - panStart.current.y,
     });
-  }, [panning, hitTest, isValidDropTarget]);
+  }, [panning, zoom, hitTest, isValidDropTarget]);
 
   const handleMouseUp = useCallback(() => {
     const drag = dragState.current;
@@ -530,22 +595,31 @@ export function GoalMap() {
     if (drag?.moved) {
       suppressNextClick.current = true;
       window.setTimeout(() => { suppressNextClick.current = false; }, 300);
-      if (dropTarget) {
+      if (drag.kind === "issue" && dropTarget) {
         if (dropTarget.kind === "issue") {
           const targetIssue = issueById.get(dropTarget.id);
           updateIssue.mutate({
-            issueId: drag.issueId,
+            issueId: drag.id,
             data: { parentId: dropTarget.id, ...(targetIssue ? { goalId: targetIssue.goalId } : {}) },
           });
         } else {
-          updateIssue.mutate({ issueId: drag.issueId, data: { parentId: null, goalId: dropTarget.id } });
+          updateIssue.mutate({ issueId: drag.id, data: { parentId: null, goalId: dropTarget.id } });
         }
-        setSelection({ kind: "issue", id: drag.issueId });
+        setSelection({ kind: "issue", id: drag.id });
+      } else {
+        // Empty-space drop: keep the card exactly where it was released.
+        const key = `${drag.kind === "issue" ? "i" : "g"}:${drag.id}`;
+        const previous = positionOverrides[key] ?? { dx: 0, dy: 0 };
+        persistOverrides({
+          ...positionOverrides,
+          [key]: { dx: previous.dx + dragDelta.dx, dy: previous.dy + dragDelta.dy },
+        });
       }
     }
-    setDraggingIssueId(null);
+    setDragging(null);
     setDropTarget(null);
-  }, [dropTarget, issueById, updateIssue]);
+    setDragDelta({ dx: 0, dy: 0 });
+  }, [dropTarget, issueById, updateIssue, dragDelta, positionOverrides, persistOverrides]);
 
   const zoomTowardPoint = useCallback((newZoom: number, point: { x: number; y: number }) => {
     const clamped = clampZoom(newZoom);
@@ -623,6 +697,15 @@ export function GoalMap() {
         >
           Hide completed
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={Object.keys(positionOverrides).length === 0}
+          onClick={() => persistOverrides({})}
+        >
+          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+          Reset layout
+        </Button>
         {goalMap.issuesTruncated && (
           <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
         )}
@@ -648,7 +731,7 @@ export function GoalMap() {
           data-testid="goal-map-viewport"
           className="relative min-h-(--sz-280px) flex-1 overflow-hidden bg-muted/20"
           style={{
-            cursor: draggingIssueId ? "grabbing" : panning ? "grabbing" : "grab",
+            cursor: dragging || panning ? "grabbing" : "grab",
             touchAction: "none",
             overscrollBehavior: "contain",
           }}
@@ -806,11 +889,13 @@ export function GoalMap() {
               const pct = denom > 0 ? Math.round((node.subtreeCounts.done / denom) * 100) : 0;
               const isSelected = selection?.kind === "goal" && selection.id === node.goal.id;
               const isDropTarget = dropTarget?.kind === "goal" && dropTarget.id === node.goal.id;
+              const isDraggingThis = dragging?.kind === "goal" && dragging.id === node.goal.id;
               const depth = trees.maxDepthByGoalId.get(node.goal.id) ?? 0;
               return (
                 <Card
                   key={node.goal.id}
                   data-goal-map-card
+                  data-map-goal-id={node.goal.id}
                   role="button"
                   tabIndex={0}
                   aria-label={`Goal ${node.goal.title}`}
@@ -818,8 +903,15 @@ export function GoalMap() {
                     "absolute block cursor-pointer overflow-hidden py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
                     isSelected && "border-ring ring-2 ring-ring/40",
                     isDropTarget && "border-ring ring-2 ring-ring",
+                    isDraggingThis && "shadow-lg opacity-90",
                   )}
-                  style={{ left: x, top: y, width: GOAL_W, height: GOAL_H }}
+                  style={{
+                    left: x + (isDraggingThis ? dragDelta.dx : 0),
+                    top: y + (isDraggingThis ? dragDelta.dy : 0),
+                    width: GOAL_W,
+                    height: GOAL_H,
+                    zIndex: isDraggingThis ? 10 : undefined,
+                  }}
                   onClick={() => {
                     if (!suppressNextClick.current) setSelection({ kind: "goal", id: node.goal.id });
                   }}
@@ -850,7 +942,7 @@ export function GoalMap() {
             {layout.placedIssues.map(({ issue, x, y, h }) => {
               const isSelected = selection?.kind === "issue" && selection.id === issue.id;
               const isDropTarget = dropTarget?.kind === "issue" && dropTarget.id === issue.id;
-              const isDragging = draggingIssueId === issue.id;
+              const isDragging = dragging?.kind === "issue" && dragging.id === issue.id;
               const stats = trees.subtreeStatsById.get(issue.id);
               const hasKids = (trees.childrenById.get(issue.id)?.length ?? 0) > 0;
               const pct = stats && stats.denom > 0 ? Math.round((stats.done / stats.denom) * 100) : 0;
@@ -870,9 +962,15 @@ export function GoalMap() {
                     issue.status === "cancelled" && "opacity-60",
                     isSelected && "border-ring ring-2 ring-ring/40",
                     isDropTarget && "border-ring ring-2 ring-ring",
-                    isDragging && "opacity-50",
+                    isDragging && "shadow-lg opacity-90",
                   )}
-                  style={{ left: x, top: y, width: TASK_W, height: h }}
+                  style={{
+                    left: x + (isDragging ? dragDelta.dx : 0),
+                    top: y + (isDragging ? dragDelta.dy : 0),
+                    width: TASK_W,
+                    height: h,
+                    zIndex: isDragging ? 10 : undefined,
+                  }}
                   onClick={() => selectIssue(issue.id)}
                   onDoubleClick={() => navigate(`/issues/${issue.id}`)}
                   onKeyDown={(e) => {
@@ -908,9 +1006,11 @@ export function GoalMap() {
             })}
           </div>
 
-          {draggingIssueId && (
+          {dragging && (
             <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
-              Drop on a task to nest under it, or on a goal to move it there.
+              {dragging.kind === "issue"
+                ? "Drop on a task to nest under it, on a goal to move it there, or on empty space to place it freely."
+                : "Release to place the goal. Reset layout restores automatic positions."}
             </div>
           )}
         </div>
