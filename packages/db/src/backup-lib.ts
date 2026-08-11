@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -71,9 +72,14 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
-const DEFAULT_MAX_BACKUPS = 7;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
+
+let statfsSyncImpl: typeof fs.statfsSync = fs.statfsSync;
+
+export function __setBackupStatfsSyncForTests(impl: typeof fs.statfsSync | null): void {
+  statfsSyncImpl = impl ?? fs.statfsSync;
+}
 
 type BackupEntry = {
   name: string;
@@ -149,7 +155,7 @@ function ensureSufficientBackupFreeSpace(backupDir: string, filenamePrefix: stri
   if (!latestBackup || latestBackup.sizeBytes <= 0) return;
 
   const requiredBytes = Math.ceil(latestBackup.sizeBytes * 1.5);
-  const stat = fs.statfsSync(backupDir);
+  const stat = statfsSyncImpl(backupDir);
   const availableBytes = stat.bavail * stat.bsize;
   if (availableBytes >= requiredBytes) return;
 
@@ -359,6 +365,23 @@ async function waitForWritableDrain(stream: NodeJS.EventEmitter): Promise<void> 
   });
 }
 
+async function waitForWriteStreamOpen(stream: fs.WriteStream): Promise<void> {
+  if (typeof stream.fd === "number") return;
+
+  await new Promise<void>((resolve, reject) => {
+    const onOpen = () => {
+      stream.removeListener("error", onError);
+      resolve();
+    };
+    const onError = (error: unknown) => {
+      stream.removeListener("open", onOpen);
+      reject(error);
+    };
+    stream.once("open", onOpen);
+    stream.once("error", onError);
+  });
+}
+
 async function waitForChildExit(child: ReturnType<typeof spawn>, label: string): Promise<void> {
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
@@ -376,6 +399,10 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   if (result.code !== 0) {
     throw new Error(`${label} failed with exit code ${result.code ?? "unknown"}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
   }
+}
+
+function createBackupFileBase(filenamePrefix: string): string {
+  return `${filenamePrefix}-${timestamp()}-${process.pid}-${randomUUID().slice(0, 8)}.sql.gz`;
 }
 
 async function runPgDumpBackup(opts: {
@@ -407,10 +434,19 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), fs.createWriteStream(opts.partialBackupFile, { flags: "wx" })),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  const output = fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
+  await waitForWriteStreamOpen(output);
+
+  const pipelineResult = pipeline(child.stdout, createGzip(), output);
+  const childResult = waitForChildExit(child, pgDumpBin);
+  const [pipelineState, childState] = await Promise.allSettled([pipelineResult, childResult]);
+
+  if (childState.status === "rejected") {
+    throw childState.reason;
+  }
+  if (pipelineState.status === "rejected") {
+    throw pipelineState.reason;
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -669,7 +705,9 @@ export function createBufferedGzipTextFileWriter(filePath: string, maxBufferedBy
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
-  const maxBackups = Math.max(1, Math.trunc(opts.maxBackups ?? DEFAULT_MAX_BACKUPS));
+  const maxBackups = typeof opts.maxBackups === "number"
+    ? Math.max(1, Math.trunc(opts.maxBackups))
+    : undefined;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
   const canUsePgDump = !hasBackupTransforms(opts);
@@ -677,7 +715,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   fs.mkdirSync(opts.backupDir, { recursive: true });
   ensureSufficientBackupFreeSpace(opts.backupDir, filenamePrefix);
-  const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
+  const backupBase = resolve(opts.backupDir, createBackupFileBase(filenamePrefix));
   const partialBackupFile = `${backupBase}.partial`;
   const backupFile = backupBase;
   let writer: ReturnType<typeof createBufferedGzipTextFileWriter> | null = null;

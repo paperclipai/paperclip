@@ -5,6 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import {
+  __setBackupStatfsSyncForTests,
   createBufferedGzipTextFileWriter,
   createBufferedTextFileWriter,
   runDatabaseBackup,
@@ -44,6 +45,7 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
 }
 
 afterEach(async () => {
+  __setBackupStatfsSyncForTests(null);
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
     await cleanup?.();
@@ -102,13 +104,13 @@ describe("createBufferedGzipTextFileWriter", () => {
   });
 });
 
-describeEmbeddedPostgres("runDatabaseBackup", () => {
+describe("runDatabaseBackup preflight", () => {
   it("fails fast when free space is below 1.5x the latest completed backup", async () => {
     const backupDir = createTempDir("paperclip-db-backup-preflight-");
     const latestBackup = path.join(backupDir, "paperclip-test-20260811-100000.sql.gz");
     fs.writeFileSync(latestBackup, Buffer.alloc(1024));
 
-    const statfsSpy = vi.spyOn(fs, "statfsSync").mockReturnValue({
+    __setBackupStatfsSyncForTests(() => ({
       type: 0,
       bsize: 1,
       blocks: 0,
@@ -116,20 +118,18 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       bavail: 1400,
       files: 0,
       ffree: 0,
-    } as ReturnType<typeof fs.statfsSync>);
+    }) as ReturnType<typeof fs.statfsSync>);
 
-    try {
-      await expect(runDatabaseBackup({
-        connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
-        backupDir,
-        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-        filenamePrefix: "paperclip-test",
-      })).rejects.toThrow(/Insufficient free space/);
-    } finally {
-      statfsSpy.mockRestore();
-    }
+    await expect(runDatabaseBackup({
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      filenamePrefix: "paperclip-test",
+    })).rejects.toThrow(/Insufficient free space/);
   });
+});
 
+describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
     "removes partial gzip files when pg_dump fails",
     async () => {
@@ -289,7 +289,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           backupEngine: "javascript",
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
+        expect(path.basename(result.backupFile)).toMatch(/^paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
