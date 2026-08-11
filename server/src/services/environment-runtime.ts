@@ -985,6 +985,11 @@ function createSandboxEnvironmentDriver(
             });
           }
         }
+        // `providerLease` is non-null here only when the resume call above
+        // actually returned an existing provider-side lease. That is the real
+        // per-lease freshness signal, independent of `resolvedLeasePolicy`
+        // below (a config-level setting, not a fact about this lease).
+        const wasResumed = providerLease !== null;
         const acquiredLease = providerLease ?? await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
           "environmentAcquireLease",
@@ -1057,6 +1062,7 @@ function createSandboxEnvironmentDriver(
             ...sandboxConfigForLeaseMetadata(storedConfig),
             ...sanitizedProviderMetadata,
             ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+            wasResumed,
           },
         });
       }
@@ -1165,6 +1171,14 @@ function createSandboxEnvironmentDriver(
         });
       }
 
+      // The real per-lease freshness signal: the provider lease id only
+      // matches the candidate reusable lease's id when `acquireSandboxProviderLease`
+      // actually resumed that existing provider-side lease above. Any mismatch
+      // (or no candidate at all) means a brand new provider lease was acquired,
+      // regardless of `resolvedLeasePolicy` below (a config-level setting, not
+      // a fact about this specific lease).
+      const wasResumed = Boolean(reusableLease) && providerLease.providerLeaseId === reusableLease.providerLeaseId;
+
       // Same ephemeral-policy-for-tests guard as the plugin-backed path:
       // ad-hoc test leases must not be publishable for reuse.
       const resolvedLeasePolicy = supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
@@ -1199,6 +1213,7 @@ function createSandboxEnvironmentDriver(
           executionWorkspaceMode: input.executionWorkspaceMode,
           ...providerLease.metadata,
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+          wasResumed,
         },
       });
     },

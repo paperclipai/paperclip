@@ -684,6 +684,81 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(runtime.execute).toHaveBeenCalledOnce();
   });
 
+  it("still runs the remote provision command on a reusable sandbox's very first lease, even though the policy is already reuse_by_environment", async () => {
+    // A `reuseLease: true` sandbox environment's very first-ever lease has
+    // `leasePolicy: "reuse_by_environment"` from the moment it's acquired —
+    // that's a config-level setting, not a fact about this specific lease.
+    // The driver only sets `metadata.wasResumed` when it actually resumed an
+    // existing provider-side lease (environment-runtime.ts); a lease with no
+    // such flag was freshly acquired and must still be provisioned, or the
+    // adapter starts without required tools/dependencies (regression caught
+    // by Greptile on the prior fix for this gate).
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "task_session",
+        localPath: "/workspace/worktrees/issue-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "sandbox",
+            remote: { path: "/remote/workspace" },
+            // No isNew/created freshness flag — matches built-in realization records.
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+      // Policy is already reuse_by_environment (the environment is configured
+      // with reuseLease: true), but this specific lease was freshly acquired —
+      // metadata carries no wasResumed flag, since the sandbox driver only sets
+      // it to true when it actually resumed an existing provider lease.
+      lease: makeLease({ leasePolicy: "reuse_by_environment", metadata: { wasResumed: false } }),
+      executionWorkspace: makeExecutionWorkspace("/workspace/worktrees/issue-1", {
+        strategy: "git_worktree",
+        branchName: "issue-1",
+        worktreePath: "/workspace/worktrees/issue-1",
+        created: false,
+      }),
+    }));
+
+    expect(runtime.execute).toHaveBeenCalledOnce();
+  });
+
   it("still runs the remote provision command for a shared project_primary workspace even though its local directory is never reported as freshly \"created\"", async () => {
     // `project_primary` (shared workspace) realizations always report `created: false` for the
     // local directory (see workspace-runtime.ts) because it is the project's long-lived primary

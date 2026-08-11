@@ -436,17 +436,24 @@ export function environmentRunOrchestrator(
     // unless that lease is explicitly using a reuse policy; "ephemeral" leases in
     // particular are fresh every time by construction. When the driver's own
     // realization result reports an explicit `isNew`/`created` flag for the
-    // remote side, trust it. Built-in realization records carry no such field,
-    // so fall back to `lease.leasePolicy`: only a reuse-style policy can mean the
-    // remote side might already be provisioned; anything else fails safe toward
-    // re-provisioning rather than silently skipping it.
+    // remote side, trust it.
+    //
+    // Built-in realization records carry no such field, so fall back to a
+    // genuine per-lease signal: `lease.metadata.wasResumed`, set by the sandbox
+    // driver only when it actually resumed an existing provider-side lease
+    // (environment-runtime.ts). `lease.leasePolicy` is a config-level setting —
+    // "does this environment's config say to reuse a lease when one exists" —
+    // not a fact about whether THIS lease was actually just created or is truly
+    // being reused. A brand new sandbox with `reuseLease: true` has policy
+    // `reuse_by_environment` on its very first, never-provisioned lease, so
+    // policy alone must never stand in for freshness. Anything without an
+    // explicit `wasResumed: true` fails safe toward re-provisioning.
     const hasRemoteFreshnessSignal =
       typeof workspaceRealization.isNew === "boolean" || typeof workspaceRealization.created === "boolean";
-    const isReusableLeasePolicy =
-      lease.leasePolicy === "reuse_by_environment" || lease.leasePolicy === "reuse_by_execution_workspace";
+    const leaseWasResumed = lease.metadata?.wasResumed === true;
     const remoteRealizationIsFresh = hasRemoteFreshnessSignal
       ? workspaceRealization.isNew === true || workspaceRealization.created === true
-      : !isReusableLeasePolicy;
+      : !leaseWasResumed;
     const isNew =
       executionWorkspace.strategy !== "git_worktree" ||
       executionWorkspace.created === true ||
