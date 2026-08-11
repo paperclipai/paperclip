@@ -1,0 +1,23 @@
+name: Provision Dokploy CI runner
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  provision:
+    # Bootstrap remains GitHub-hosted because this job creates the runner that
+    # later trusted-branch validation jobs will use.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision private trusted-branch runner
+        env:
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/provision-dokploy-ci-runner.sh
