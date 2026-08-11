@@ -78,7 +78,7 @@ describe("buildTurnSummary", () => {
     expect(summary.toolCount).toBe(1);
     expect(summary.added).toBe(1);
     expect(summary.removed).toBe(1);
-    expect(summary.tokensLabel).toBe("12.3k total (12.0k input · 0 cached input · 300 output)");
+    expect(summary.tokensLabel).toBe("12.3k total (12.0k fresh input · 0 cached input · 300 output)");
     expect(summary.durationLabel).toBe("38s");
   });
 
@@ -86,6 +86,22 @@ describe("buildTurnSummary", () => {
     const summary = buildTurnSummary([], { durationMs: 95_000, failed: true });
     expect(summary.durationLabel).toBe("1m 35s");
     expect(summary.failed).toBe(true);
+  });
+
+  it("does not double-count cached input in the total", () => {
+    const summary = buildTurnSummary([{
+      kind: "result",
+      ts: "2026-07-29T10:00:38Z",
+      text: "done",
+      inputTokens: 13212,
+      cachedTokens: 9984,
+      outputTokens: 13,
+      costUsd: 0,
+      subtype: "success",
+      isError: false,
+      errors: [],
+    }]);
+    expect(summary.tokensLabel).toBe("13.2k total (3.2k fresh input · 10.0k cached input · 13 output)");
   });
 });
 

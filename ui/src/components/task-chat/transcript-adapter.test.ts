@@ -406,7 +406,7 @@ describe("buildMergedTurnSummary (PAP-362)", () => {
     ]);
     expect(summary.toolCount).toBe(3);
     expect(summary.added).toBe(1);
-    expect(summary.tokensLabel).toBe("1.2k total (800 input · 0 cached input · 400 output)");
+    expect(summary.tokensLabel).toBe("1.2k total (800 fresh input · 0 cached input · 400 output)");
     expect(summary.durationLabel).toBe("45s");
     expect(summary.failed).toBeUndefined();
   });

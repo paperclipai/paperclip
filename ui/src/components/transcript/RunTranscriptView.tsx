@@ -30,8 +30,9 @@ const RAW_ESTIMATED_ROW_HEIGHT = 36;
 const RAW_INITIAL_ROWS = 180;
 
 function formatUsageBreakdown(entry: Extract<TranscriptEntry, { kind: "result" }>) {
-  const total = entry.inputTokens + entry.cachedTokens + entry.outputTokens;
-  return `input ${formatTokens(entry.inputTokens)} · cached input ${formatTokens(entry.cachedTokens)} · output ${formatTokens(entry.outputTokens)} · total ${formatTokens(total)} · $${entry.costUsd.toFixed(6)}`;
+  const freshInput = Math.max(0, entry.inputTokens - entry.cachedTokens);
+  const total = entry.inputTokens + entry.outputTokens;
+  return `fresh input ${formatTokens(freshInput)} · cached input ${formatTokens(entry.cachedTokens)} · output ${formatTokens(entry.outputTokens)} · total ${formatTokens(total)} · $${entry.costUsd.toFixed(6)}`;
 }
 
 interface RunTranscriptViewProps {

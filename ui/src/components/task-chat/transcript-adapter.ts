@@ -357,9 +357,11 @@ function formatTokenCount(tokens: number): string {
 }
 
 function formatTokensLabel(inputTokens: number, cachedInputTokens: number, outputTokens: number): string | undefined {
-  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  // Codex reports cached input as a subset of input, not an additional bucket.
+  const freshInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+  const totalTokens = inputTokens + outputTokens;
   if (!Number.isFinite(totalTokens) || totalTokens <= 0) return undefined;
-  return `${formatTokenCount(totalTokens)} total (${formatTokenCount(inputTokens)} input · ${formatTokenCount(cachedInputTokens)} cached input · ${formatTokenCount(outputTokens)} output)`;
+  return `${formatTokenCount(totalTokens)} total (${formatTokenCount(freshInputTokens)} fresh input · ${formatTokenCount(cachedInputTokens)} cached input · ${formatTokenCount(outputTokens)} output)`;
 }
 
 /** First→last ts span of a transcript, or undefined when unknowable. */

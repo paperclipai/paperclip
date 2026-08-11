@@ -262,7 +262,7 @@ export interface TaskChatTurnItem {
     toolCount: number;
     added: number;
     removed: number;
-    /** e.g. "12.3k total (10.0k input · 2.0k cached input · 0.3k output)". */
+    /** e.g. "12.3k total (10.0k fresh input · 2.0k cached input · 0.3k output)". */
     tokensLabel?: string;
     /** Failed/interrupted turns get a ✗ affordance instead of ✓. */
     failed?: boolean;
