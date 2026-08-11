@@ -2388,6 +2388,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       companyId,
       title: "Run assigned work",
       status: "todo",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentIds[0],
       createdAt: now,
       updatedAt: now,
