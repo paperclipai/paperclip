@@ -8716,6 +8716,7 @@ export function issueRoutes(
       },
       allowBoardOverride: req.actor.type === "board",
       commentBody,
+      evidence: req.body.evidence === undefined ? undefined : req.body.evidence,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
     });
@@ -8942,6 +8943,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
+            evidence: decision.evidence ?? null,
             createdByRunId: actor.runId ?? null,
           });
 
@@ -11196,6 +11198,7 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
         commentBody: req.body.body,
+        evidence: req.body.evidence === undefined ? undefined : req.body.evidence,
       });
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
@@ -11258,6 +11261,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
+              evidence: transition.decision.evidence ?? null,
               createdByRunId: actor.runId ?? null,
             });
           }

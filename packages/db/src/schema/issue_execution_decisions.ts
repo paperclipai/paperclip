@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -16,6 +16,12 @@ export const issueExecutionDecisions = pgTable(
     actorUserId: text("actor_user_id"),
     outcome: text("outcome").notNull(),
     body: text("body").notNull(),
+    // Structured delivery evidence carried by a terminal approval when the issue's
+    // policy sets `evidenceRequired` — {pr, mergedSha, checkRun?, note?}. Null for
+    // every decision made without it. This is what downstream auditors confront
+    // with the repository; without persistence the predicate validates a claim
+    // and then loses it.
+    evidence: jsonb("evidence"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -51,13 +51,20 @@ type TransitionInput = {
   actor: ActorLike;
   allowBoardOverride?: boolean;
   commentBody?: string | null;
+  /** Structured proof of delivery, required when `policy.evidenceRequired` is set. */
+  evidence?: { pr?: unknown; mergedSha?: unknown; checkRun?: unknown; note?: unknown } | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
 };
 
+type NormalizedEvidence = { pr: string; mergedSha: string; checkRun: string | null; note: string | null };
+
 type TransitionResult = {
   patch: Record<string, unknown>;
-  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body"> & {
+    /** Structured delivery proof — persisted with the decision, null when not provided. */
+    evidence?: NormalizedEvidence | null;
+  };
   workflowControlledAssignment?: boolean;
 };
 
@@ -481,6 +488,66 @@ function nextPendingStageAfter(
   return policy.stages.find((stage, index) => index > completedIndex && !completed.has(stage.id)) ?? null;
 }
 
+/**
+ * Enforces the delivery evidence a terminal approval must carry.
+ *
+ * The server cannot reach GitHub, so it does not attempt to verify that the SHA was really
+ * merged — it enforces that the claim is *typed and complete* rather than narrative. That is
+ * already the difference between a statement an auditor can check and one they cannot: the
+ * fields end up on the decision record, where a downstream checker can confront them with
+ * the repository.
+ *
+ * Errors say what is missing, never just "rejected": an approver who is refused at 3am must
+ * be able to act on the message without reading this file.
+ */
+function assertTerminalEvidence(evidence: TransitionInput["evidence"]): NormalizedEvidence {
+  if (!evidence || typeof evidence !== "object") {
+    throw unprocessable(
+      "This issue's policy sets evidenceRequired: closing the final stage needs `evidence` "
+      + "with `pr` and `mergedSha` (and optionally `checkRun`).",
+    );
+  }
+  const missing: string[] = [];
+  const pr = (evidence as { pr?: unknown }).pr;
+  if (pr == null || (typeof pr !== "number" && String(pr).trim() === "")) missing.push("pr");
+
+  const sha = (evidence as { mergedSha?: unknown }).mergedSha;
+  const shaText = typeof sha === "string" ? sha.trim() : "";
+  if (!shaText) missing.push("mergedSha");
+  else if (!/^[0-9a-f]{7,40}$/i.test(shaText)) {
+    throw unprocessable(`evidence.mergedSha must be a git SHA (7-40 hex chars), received "${shaText}".`);
+  }
+
+  if (missing.length > 0) {
+    throw unprocessable(
+      `evidence is missing ${missing.join(" and ")}. A terminal approval must name the pull request `
+      + "and the SHA that actually landed.",
+    );
+  }
+  const checkRun = (evidence as { checkRun?: unknown }).checkRun;
+  const note = (evidence as { note?: unknown }).note;
+  return {
+    pr: String(pr).trim(),
+    mergedSha: shaText,
+    checkRun: checkRun == null || String(checkRun).trim() === "" ? null : String(checkRun).trim(),
+    note: typeof note === "string" && note.trim() !== "" ? note.trim().slice(0, 500) : null,
+  };
+}
+
+/**
+ * Best-effort normalization for the OPTIONAL path: when the policy does not require
+ * evidence but the caller supplies a well-formed one anyway, it is still worth
+ * persisting — never worth failing over.
+ */
+function normalizeOptionalEvidence(evidence: TransitionInput["evidence"]): NormalizedEvidence | null {
+  if (!evidence || typeof evidence !== "object") return null;
+  try {
+    return assertTerminalEvidence(evidence);
+  } catch {
+    return null;
+  }
+}
+
 function selectStageParticipant(
   stage: IssueExecutionStage,
   opts?: {
@@ -797,6 +864,20 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const nextStage = nextPendingStageAfter(input.policy, activeStage, approvedState);
 
         if (!nextStage) {
+          // Terminal approval: this is the transition that makes an issue `done`.
+          //
+          // Without `evidenceRequired`, behaviour is unchanged — the comment alone closes
+          // the issue, exactly as before. With it, the approver must hand over facts the
+          // platform can record and an external checker can verify, instead of prose that
+          // asserts them.
+          //
+          // Why this predicate exists: an approval reading "the workflow will publish the
+          // served version" is accepted today, and the issue closes on an event that has
+          // not happened. Six such closures were observed on a single instance in one day,
+          // each with a green review and an open pull request.
+          const evidence = input.policy?.evidenceRequired
+            ? assertTerminalEvidence(input.evidence)
+            : normalizeOptionalEvidence(input.evidence);
           patch.executionState = approvedState;
           return {
             patch,
@@ -805,6 +886,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
               stageType: activeStage.type,
               outcome: "approved",
               body: input.commentBody.trim(),
+              evidence,
             },
           };
         }
