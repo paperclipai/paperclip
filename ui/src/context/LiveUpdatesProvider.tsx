@@ -955,6 +955,8 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    // Issue changes move the goal-map rollups (counts, gates, root issues).
+    queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(companyId) });
     if (entityId) {
       const selfCommentActivity =
         ((action === "issue.comment_added") ||

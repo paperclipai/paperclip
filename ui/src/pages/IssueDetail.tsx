@@ -4556,6 +4556,22 @@ export function IssueDetail() {
             }}
           />
         )}
+
+        {(issue.rationale || !taskChatShellEnabled) && (
+          <div className="flex items-start gap-2">
+            <span className="mt-1 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Why
+            </span>
+            <InlineEditor
+              value={issue.rationale ?? ""}
+              onSave={(rationale) => updateIssue.mutateAsync({ rationale })}
+              as="p"
+              className="text-sm leading-6 text-muted-foreground"
+              placeholder="Why does this task exist? What goal does it serve?"
+              multiline
+            />
+          </div>
+        )}
       </div>
   );
 

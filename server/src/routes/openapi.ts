@@ -2825,6 +2825,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/goal-map",
+  tags: ["goals"],
+  summary: "Get the goal map: goals with issue rollups, plus decomposition and gating edges",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/goals/{id}",
   tags: ["goals"],
   summary: "Get a goal",

@@ -148,6 +148,7 @@ export interface AcceptedPlanDecompositionChild {
   blockedByIssueIds?: string[];
   title: string;
   description?: string | null;
+  rationale?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
   harnessKind?: IssueHarnessKind | null;
@@ -779,6 +780,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  rationale?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;

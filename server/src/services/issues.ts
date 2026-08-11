@@ -3116,6 +3116,7 @@ const issueListSelect = {
       )
     END
   `,
+  rationale: issues.rationale,
   status: issues.status,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,

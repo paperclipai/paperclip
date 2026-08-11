@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@/lib/router";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -9,7 +10,7 @@ import { GoalTree } from "../components/GoalTree";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
-import { Target, Plus } from "lucide-react";
+import { Map, Target, Plus } from "lucide-react";
 
 export function Goals() {
   const { selectedCompanyId } = useCompany();
@@ -49,11 +50,17 @@ export function Goals() {
 
       {goals && goals.length > 0 && (
         <>
-          <div className="flex items-center justify-start">
+          <div className="flex items-center justify-start gap-2">
             <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
               <Plus className="h-3.5 w-3.5 mr-1.5" />
               New Goal
             </Button>
+            <Link to="/goals/map">
+              <Button size="sm" variant="outline">
+                <Map className="h-3.5 w-3.5 mr-1.5" />
+                Map view
+              </Button>
+            </Link>
           </div>
           <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
         </>

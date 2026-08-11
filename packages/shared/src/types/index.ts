@@ -706,6 +706,14 @@ export type {
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
 export type { Goal } from "./goal.js";
+export type {
+  GoalMapStatusCounts,
+  GoalMapRootIssue,
+  GoalMapDecompositionSummary,
+  GoalMapNode,
+  GoalMapEdge,
+  GoalMapResponse,
+} from "./goal-map.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
   BudgetPolicy,

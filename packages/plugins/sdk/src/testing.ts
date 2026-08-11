@@ -1600,6 +1600,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           parentId: input.parentId ?? null,
           title: input.title,
           description: input.description ?? null,
+          rationale: null,
           status: input.status ?? "todo",
           workMode: "standard",
           priority: input.priority ?? "medium",
