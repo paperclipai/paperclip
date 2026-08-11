@@ -7,6 +7,7 @@ import { createBabysitterArtifactInstance } from "./paperclip-babysit-reconcilia
 const reviewedSourcePath = "server/src/services/recovery/service.ts";
 const retainedBuildOutputPath = "server/dist/services/recovery/service.js";
 const manifestPath = "artifacts/babysitter-reconciliation/build-execution.json";
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 execFileSync("pnpm", ["--filter", "@paperclipai/server", "build"], { stdio: "inherit" });
 const reviewedSourceBytes = readFileSync(reviewedSourcePath);
 // Read the retained output emitted by the real server BuildExecution. The
@@ -16,7 +17,10 @@ const retainedBuildOutputBytes = readFileSync(retainedBuildOutputPath);
 const input = {
   sourceRevision: {
     repository: "paperclipai/paperclip",
-    commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    // The checked-in manifest records the reviewed source revision. Using the
+    // mutable checkout HEAD here makes the manifest self-invalidating every
+    // time this test or the manifest is committed after the reviewed build.
+    commit: manifest.sourceRevision.commit,
     path: reviewedSourcePath,
   },
   build: {
@@ -32,7 +36,7 @@ const input = {
   sourceBytes: reviewedSourceBytes,
   buildOutputBytes: retainedBuildOutputBytes,
   mediaType: "application/javascript",
-  buildExecutionId: `build-eco-1123-${execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()}`,
+  buildExecutionId: `build-eco-1123-${manifest.sourceRevision.commit}`,
 };
 
 describe("babysitter artifact provenance", () => {
@@ -98,7 +102,6 @@ describe("babysitter artifact provenance", () => {
   });
 
   it("verifies the checked-in manifest and links BuildExecution to retained attachments", () => {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     const result = createBabysitterArtifactInstance(input);
     expect(manifest.sourceRevision.commit).toBe(input.sourceRevision.commit);
     expect(manifest.sourceRevision.contentDigest).toBe(result.sourceContentDigest);
