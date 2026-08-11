@@ -1,0 +1,8 @@
+# Team catalog files are integrity-pinned by sha256 in generated/catalog.json
+# (per-file sha256 + per-team contentHash), computed over the RAW file bytes.
+# The working-tree bytes must equal the committed (LF) bytes on every platform,
+# otherwise core.autocrlf=true on Windows rewrites them to CRLF at checkout and
+# the content no longer matches its pinned hash (the same failure mode that broke
+# skills-catalog installs with HTTP 422). Force LF so bytes are identical everywhere.
+catalog/** text eol=lf
+generated/catalog.json text eol=lf
