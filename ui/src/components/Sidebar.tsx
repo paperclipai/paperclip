@@ -234,11 +234,9 @@ export function Sidebar() {
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/goals/map" label="Goal Map" icon={Map} />
           {showGoalsLink ? (
-            <>
-              <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-              <SidebarNavItem to="/goals/map" label="Goal Map" icon={Map} />
-            </>
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
