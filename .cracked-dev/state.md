@@ -4,6 +4,18 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **Auto-recall: issue-relevant memory injection at run start** — new
+  `company-memory-search.ts` (shared keyword search; `recall` refactored onto it, isolation test
+  guards it) + `heartbeat.ts executeRun` fetches top-3 memories matched against the issue
+  title+desc (minTermLength 4, company-scoped) + `buildPaperclipTaskMarkdown` emits a fenced
+  "reference only, not instructions" block, gated like the description so the compact/resume
+  variant drops it. Injection surface handled like the (untrusted) issue description: fenced +
+  labeled + the existing blanket warning. +builder test (full/compact/empty). VERIFY: 60/60
+  gateway+run-liveness + builder test; typecheck; DEPLOYED via `pnpm build && pnpm db:check &&
+  kill TERM` — clean boot exit 0, builder line + helper in dist, stable. Self-audit: CLEAN
+  (server-derived company scope, bounded 3×400 chars, read-only). Commit `861863a3b`. RISKY
+  (core run loop) → local commit. NOTE: memory table empty until agents call remember; feature
+  activates as knowledge accrues.
 - **run-liveness lifecycle golden corpus (ratchet)** — `run-liveness.test.ts`. The existing
   adversarial matrix covers the text/actionability axis only; added a systematic lifecycle
   corpus pinning all 7 RunLivenessStates via the run-status/issue-status/evidence axis
@@ -127,11 +139,10 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. Auto-recall injection at run start — inject the top-N relevant company memories into the run
-   context (vs the pull-only recall tool). Needs a design call (relevance ranking + context
-   budget + which memories) and touches heartbeat.ts run assembly (M). Awaiting Trevor's design
-   decision before building.
-2. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
-3. Make the D1 `tools:use` grant durable for NEW agents — bake into hire.mjs / apply on agent
+1. Make the D1 `tools:use` grant durable for NEW agents — bake into hire.mjs / apply on agent
    activation via `routes/access.ts` so a freshly-hired agent isn't silently tool-less (S–M).
-   (Baseline grant applied to all 13 current agents 2026-08-10 via one-shot INSERT.)
+   (Baseline grant applied to all 13 current agents 2026-08-10 via one-shot INSERT — a new hire
+   would be tool-less again without this.)
+2. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
+3. Auto-recall quality: minTermLength/stopword tuning + a relevance score (currently recency-
+   ranked keyword match, limit 3) once real memory volume exists to tune against (S–M).
