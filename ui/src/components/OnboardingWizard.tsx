@@ -142,7 +142,7 @@ export function OnboardingWizard() {
   const saved = useMemo(loadSavedState, []);
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
-  const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
+  const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | "template" | null>((saved?.onboardingPath as "create" | "grow" | "template" | null) ?? null);
 
   // "Grow existing" questionnaire fields
   const [growWorkflows, setGrowWorkflows] = useState((saved?.growWorkflows as string) ?? "");
@@ -777,7 +777,11 @@ export function OnboardingWizard() {
             <div className="w-full flex flex-col overflow-y-auto">
               <FrontDoor onChoose={(path) => {
                 setOnboardingPath(path);
-                setStep(1);
+                if (path === "template") {
+                  navigate(prefix ? `/${prefix}/teams-catalog` : "/teams-catalog");
+                } else {
+                  setStep(1);
+                }
               }} />
             </div>
           )}

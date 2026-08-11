@@ -65,7 +65,7 @@ const BLOCKER_RE =
   /\b(?:blocked|can't proceed|cannot proceed|unable to proceed|waiting on|need(?:s|ed)? .{0,80}\b(?:approval|access|credential|credentials|secret|api key|token|input|clarification)|requires? .{0,80}\b(?:approval|access|credential|credentials|secret|api key|token|input|clarification))\b/i;
 const NEGATED_BLOCKER_RE = /\b(?:not blocked|no blocker|no blockers|unblocked)\b/i;
 const APPROVAL_REQUIRED_RE =
-  /\b(?:approval required|requires? .{0,80}\bapproval|need(?:s|ed)? .{0,80}\bapproval|waiting on .{0,80}\bapproval|pending approval|board approval|human approval|user approval|operator approval)\b/i;
+  /\b(?:approval required|requires? .{0,80}\bapproval|need(?:s|ed)? .{0,80}\bapproval|waiting on .{0,80}\bapproval|pending .{0,80}\bapproval|is .{0,80}\bapproval|board approval|human approval|user approval|operator approval)\b/i;
 const EXTERNAL_BLOCKER_RE =
   /\b(?:can't proceed|cannot proceed|unable to proceed|waiting on|blocked by|blocked on|need(?:s|ed)?|requires?) .{0,120}\b(?:access|credential|credentials|secret|secrets|api key|token|password|login|account|permission|permissions|input|clarification)\b/i;
 const MANAGER_REVIEW_RE =
@@ -167,7 +167,7 @@ export function hasUsefulOutput(input: RunLivenessClassificationInput) {
 export function declaredBlocker(input: RunLivenessClassificationInput) {
   if (input.issue?.status === "blocked") return true;
   const actionability = classifyRunActionability(input);
-  return actionability === "blocked_external" || actionability === "approval_required";
+  return actionability === "blocked_external" || actionability === "approval_required" || actionability === "manager_review";
 }
 
 export function looksLikePlanningOnly(input: RunLivenessClassificationInput) {
@@ -296,9 +296,6 @@ export function classifyRunActionability(input: RunLivenessClassificationInput):
   // manager-review signal.
   if (APPROVAL_REQUIRED_RE.test(text)) return "approval_required";
   if (MANAGER_REVIEW_RE.test(text)) return "manager_review";
-  if (NEGATED_BLOCKER_RE.test(text)) {
-    return RUNNABLE_RE.test(text) ? "runnable" : "unknown";
-  }
   if (EXTERNAL_BLOCKER_RE.test(text) || (BLOCKER_RE.test(text) && /\b(?:credential|secret|api key|token|access|input|clarification)\b/i.test(text))) {
     return "blocked_external";
   }
@@ -342,6 +339,12 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   }
 
   if (declaredBlocker(input)) {
+    if (actionability === "manager_review") {
+      return output("needs_followup", "Run flagged a change that needs manager or human review before it is safe to continue", nextAction);
+    }
+    if (actionability === "approval_required") {
+      return output("blocked", "Board approval is required before continuing review", nextAction);
+    }
     return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", nextAction);
   }
 

@@ -13082,6 +13082,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continuationAttempt: classification.continuationAttempt,
         lastUsefulActionAt: classification.lastUsefulActionAt,
         nextAction: classification.nextAction,
+        actionability: classification.actionability,
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, run.id))

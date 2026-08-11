@@ -1,8 +1,8 @@
-import { Rocket, Zap } from "lucide-react";
+import { Rocket, Zap, Layers } from "lucide-react";
 import { cn } from "../lib/utils";
 
 interface FrontDoorProps {
-  onChoose: (path: "create" | "grow") => void;
+  onChoose: (path: "create" | "grow" | "template") => void;
 }
 
 export function FrontDoor({ onChoose }: FrontDoorProps) {
@@ -17,7 +17,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg w-full">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-lg w-full">
         <button
           className={cn(
             "flex flex-col items-center gap-3 rounded-lg border-2 border-border p-6",
@@ -52,6 +52,25 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
             <h3 className="font-semibold text-sm">Add agents to your org</h3>
             <p className="text-xs text-muted-foreground mt-1">
               Bring AI agents into your existing team or workflows.
+            </p>
+          </div>
+        </button>
+
+        <button
+          className={cn(
+            "flex flex-col items-center gap-3 rounded-lg border-2 border-border p-6",
+            "hover:border-foreground hover:bg-accent/30 transition-all",
+            "text-center group cursor-pointer",
+          )}
+          onClick={() => onChoose("template")}
+        >
+          <div className="rounded-full bg-muted/50 p-3 group-hover:bg-accent transition-colors">
+            <Layers className="h-6 w-6" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-sm">Start from a template</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Install a pre-built team from the catalog and customize it for your needs.
             </p>
           </div>
         </button>

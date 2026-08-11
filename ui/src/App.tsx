@@ -41,6 +41,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
+import { TeamCatalog } from "./pages/TeamCatalog";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
@@ -90,6 +91,7 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
+import { TemplateTeamGate } from "./components/TemplateTeamGate";
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -265,6 +267,7 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<CompanyActivity />} />
+      <Route path="teams-catalog" element={<TeamCatalog />} />
       {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
           links keep working, preset to the agent-actions scope. */}
       <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
@@ -583,6 +586,7 @@ export function App() {
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
           <Route path="decisions" element={<UnprefixedBoardRedirect />} />
+      <Route path="teams-catalog" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio/new" element={<UnprefixedBoardRedirect />} />
