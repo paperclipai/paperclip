@@ -7,6 +7,8 @@ import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecomposit
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesPlansTabProps {
@@ -47,10 +49,14 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
     queryKey: queryKeys.issues.interactions(issue.id),
     queryFn: () => issuesApi.listInteractions(issue.id),
   });
+  const { data: documents } = useIssueDocuments(issue.id);
   const hasPlans = (data?.length ?? 0) > 0;
   const pendingPlanConfirmation = hasPendingPlanConfirmation(interactions);
+  // Every other non-system document (e.g. `synthesis`) renders below the plan;
+  // the `plan` doc itself stays on its dedicated annotated surface above.
+  const otherDocuments = (documents ?? []).filter((doc) => doc.key !== "plan");
 
-  if (!planDocument && !hasPlans) {
+  if (!planDocument && !hasPlans && otherDocuments.length === 0) {
     return (
       <div className="px-1 py-6 text-sm text-muted-foreground">
         {planDocumentLoading ? (
@@ -113,6 +119,22 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
           </IssueDocumentAnnotations>
         </section>
       ) : null}
+      {otherDocuments.map((doc) => (
+        <section key={doc.key} data-testid="issue-other-document" className="space-y-2 border-t border-border pt-4 first:border-t-0 first:pt-0">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold">{documentDisplayTitle(doc)}</h3>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {`Revision ${doc.latestRevisionNumber ?? 1} · updated ${new Date(doc.updatedAt).toLocaleString([], {
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}`}
+            </span>
+          </div>
+          <MarkdownBody>{doc.body}</MarkdownBody>
+        </section>
+      ))}
       {hasPlans ? (
         <IssuePlanDecompositionsSection issueId={issue.id} issueIdentifier={issue.identifier} />
       ) : null}
