@@ -169,6 +169,45 @@ async function raceWithTimeout<T>(promise: Promise<T>, ms: number, message: stri
   }
 }
 
+// Short backoff for retrying a secret rotation that fails fast (e.g. a
+// dropped connection), not one that's genuinely hanging -- the retry loop
+// this feeds into is itself wrapped in raceWithTimeout, so a hung first
+// attempt already consumes the whole budget and never reaches a retry.
+const SECRET_ROTATION_RETRY_DELAYS_MS = [200, 500];
+
+// Retries a secret rotation a couple of times within a single time budget
+// before giving up. Once the refresh token secret is rotated, we're holding
+// a valid new access token in memory (token.accessToken) that a transient
+// failure shouldn't waste -- retrying immediately, while we still hold the
+// lease, turns a fast/transient failure into a same-call recovery instead of
+// an avoidable reconnect prompt that would've cleared up on the very next
+// attempt anyway. The whole loop, backoff included, runs inside one
+// raceWithTimeout call, so a genuinely hung attempt still can't blow past
+// the per-rotation time budget -- it just never reaches a retry.
+async function rotateSecretWithRetry(
+  secrets: { rotate: (secretId: string, input: { value?: string | null }, actor: object) => Promise<unknown> },
+  secretId: string,
+  value: string,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<void> {
+  await raceWithTimeout(
+    (async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await secrets.rotate(secretId, { value }, {});
+          return;
+        } catch (err) {
+          if (attempt >= SECRET_ROTATION_RETRY_DELAYS_MS.length) throw err;
+          await new Promise((resolve) => setTimeout(resolve, SECRET_ROTATION_RETRY_DELAYS_MS[attempt]));
+        }
+      }
+    })(),
+    timeoutMs,
+    timeoutMessage,
+  );
+}
+
 type OAuthProviderEndpoints = {
   provider: string;
   scopes: string[];
@@ -6396,6 +6435,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           refreshToken: refreshTokenValue,
         });
 
+        // Revalidate lease ownership right before the side effects below --
+        // acquiring the lease only proves we held it at that moment, not
+        // that we still do after the network round-trip above. The 30s
+        // exchange timeout keeps this from ever legitimately expiring in
+        // between, but re-checking here is cheap insurance against acting
+        // on a lease we no longer hold (e.g. after an unexpected pause) --
+        // fail closed the same as any other lost-lease case rather than
+        // proceeding to rotate secrets a losing racer no longer owns.
+        const [leaseCheck] = await db
+          .select({ refreshLease: connectionGrants.refreshLease })
+          .from(connectionGrants)
+          .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, input.companyId)))
+          .limit(1);
+        if (leaseCheck?.refreshLease?.id !== leaseId) return null;
+
         // Rotate secrets before persisting the new expiry, matching
         // refreshOAuthCredentials' ordering for the connection-level path.
         // Grant refs are always stored with versionSelector "latest" (set
@@ -6425,14 +6479,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // on their old (still-matching) generation, and the access-token
         // rotation below never runs.
         if (token.refreshToken) {
-          await raceWithTimeout(
-            secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {}),
+          await rotateSecretWithRetry(
+            secrets,
+            refreshTokenRef.secretId,
+            token.refreshToken,
             SECRET_ROTATION_TIMEOUT_MS,
             "Timed out rotating a connection grant's refresh token secret",
           );
         }
-        await raceWithTimeout(
-          secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {}),
+        await rotateSecretWithRetry(
+          secrets,
+          accessTokenRef.secretId,
+          token.accessToken,
           SECRET_ROTATION_TIMEOUT_MS,
           "Timed out rotating a connection grant's access token secret",
         );
