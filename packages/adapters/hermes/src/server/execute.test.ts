@@ -5,7 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
-const runChildProcessMock = vi.hoisted(() => vi.fn());
+const processMocks = vi.hoisted(() => ({
+  runChildProcess: vi.fn(),
+  signalRunningProcess: vi.fn(),
+  runningProcesses: new Map<string, unknown>(),
+}));
+const runChildProcessMock = processMocks.runChildProcess;
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -13,7 +18,9 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   );
   return {
     ...actual,
-    runChildProcess: runChildProcessMock,
+    runChildProcess: processMocks.runChildProcess,
+    signalRunningProcess: processMocks.signalRunningProcess,
+    runningProcesses: processMocks.runningProcesses,
   };
 });
 
@@ -37,6 +44,8 @@ async function makeHermesHome(configLines: string[]) {
 
 afterEach(async () => {
   runChildProcessMock.mockReset();
+  processMocks.signalRunningProcess.mockReset();
+  processMocks.runningProcesses.clear();
   if (previousHome === undefined) delete process.env.HOME;
   else process.env.HOME = previousHome;
   if (previousUserProfile === undefined) delete process.env.USERPROFILE;
@@ -108,7 +117,7 @@ describe("hermes execute", () => {
       "--provider",
       "xai-oauth",
       "--source",
-      "tool",
+      "paperclip_run-1",
       "--yolo",
       "--ignore-rules",
     ]));
@@ -383,5 +392,73 @@ describe("hermes execute", () => {
       sessionParams: { sessionId: "sess-max-turns" },
     });
     expect(result.errorMessage).toContain("maximum tool turns");
+  });
+
+  it("stops a live Hermes run from its run-scoped usage ledger at the configured cap", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const stateDbPath = path.join(root, ".hermes", "state.db");
+    process.env.HERMES_STATE_DB = stateDbPath;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL,",
+        "input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0);",
+        "CREATE TABLE session_model_usage (session_id TEXT NOT NULL, model TEXT NOT NULL, billing_provider TEXT NOT NULL DEFAULT '',",
+        "billing_base_url TEXT NOT NULL DEFAULT '', billing_mode TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '',",
+        "input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0);",
+        "INSERT INTO sessions VALUES ('sess-live-cap', 'paperclip_run-live-cap', 1, 30000, 5000, 65000);",
+        "INSERT INTO session_model_usage VALUES ('sess-live-cap', 'grok-4.5', '', '', '', '', 30000, 5000, 65000);",
+      ].join(" "),
+    ]);
+    processMocks.runningProcesses.set("run-live-cap", { child: {}, graceSec: 1, processGroupId: null });
+    let releaseProcess!: () => void;
+    const processReleased = new Promise<void>((resolve) => {
+      releaseProcess = resolve;
+    });
+    processMocks.signalRunningProcess.mockImplementation(() => {
+      releaseProcess();
+    });
+    runChildProcessMock.mockImplementation(async () => {
+      await processReleased;
+      return {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-live-cap",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        cwd: root,
+        model: "grok-4.5",
+        maxTokensPerRun: 100_000,
+        liveUsagePollIntervalMs: 5,
+      },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(processMocks.signalRunningProcess).toHaveBeenCalledTimes(1);
+    expect(result.errorCode).toBe("token_budget_exhausted");
+    expect(result.clearSession).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 30_000, outputTokens: 5_000, cachedInputTokens: 65_000 });
+    expect(result.resultJson).toMatchObject({
+      stopReason: "token_budget_exhausted",
+      maxTokensPerRun: 100_000,
+      observedTokens: 100_000,
+      session_id: "sess-live-cap",
+    });
   });
 });

@@ -41,6 +41,8 @@ import {
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  runningProcesses,
+  signalRunningProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -456,6 +458,47 @@ async function readHermesSessionUsage(sessionId: string): Promise<UsageSummary |
   }
 }
 
+async function readHermesRunUsageBySource(
+  source: string,
+): Promise<{ sessionId: string; usage: UsageSummary } | undefined> {
+  if (!/^[A-Za-z0-9_-]+$/.test(source)) return undefined;
+  const stateDbPath = process.env.HERMES_STATE_DB || path.join(os.homedir(), ".hermes", "state.db");
+  try {
+    await fs.access(stateDbPath);
+    const query = [
+      "SELECT id AS sessionId, input_tokens AS inputTokens,",
+      "output_tokens AS outputTokens, cache_read_tokens AS cachedInputTokens",
+      "FROM sessions",
+      `WHERE source = '${source}'`,
+      "ORDER BY started_at DESC LIMIT 1;",
+    ].join(" ");
+    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, query], {
+      timeout: 2_000,
+      maxBuffer: 16 * 1024,
+    });
+    const row = (JSON.parse(stdout) as Array<Record<string, unknown>>)[0];
+    const sessionId = cfgString(row?.sessionId);
+    if (!row || !sessionId) return undefined;
+    return {
+      sessionId,
+      usage: {
+        inputTokens: cfgNumber(row.inputTokens) ?? 0,
+        outputTokens: cfgNumber(row.outputTokens) ?? 0,
+        cachedInputTokens: cfgNumber(row.cachedInputTokens) ?? 0,
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function totalUsageTokens(usage: UsageSummary | undefined): number {
+  if (!usage) return 0;
+  return Math.max(0, Math.floor(
+    (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0),
+  ));
+}
+
 // ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
@@ -471,6 +514,11 @@ export async function execute(
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
+  const maxTokensPerRun = Math.max(0, Math.floor(cfgNumber(config.maxTokensPerRun) ?? 0));
+  const liveUsagePollIntervalMs = Math.max(
+    5,
+    Math.min(5_000, Math.floor(cfgNumber(config.liveUsagePollIntervalMs) ?? 250)),
+  );
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
@@ -584,9 +632,13 @@ export async function execute(
   if (checkpoints) args.push("--checkpoints");
   if (cfgBoolean(config.verbose) === true) args.push("-v");
 
-  // Tag sessions as "tool" source so they don't clutter the user's session history.
-  // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
-  args.push("--source", "tool");
+  // A unique source lets Paperclip read the live Hermes usage ledger for this
+  // exact run without confusing concurrent sessions. It also keeps these
+  // integration sessions separate from the user's ordinary CLI history.
+  const runSource = ctx.runId
+    ? `paperclip_${ctx.runId.replace(/[^A-Za-z0-9_-]/g, "_")}`
+    : "paperclip_tool";
+  args.push("--source", runSource);
 
   // Bypass Hermes dangerous-command approval prompts.
   // Paperclip agents run as non-interactive subprocesses with no TTY,
@@ -679,18 +731,64 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
+  let tokenBudgetExceeded = false;
+  let tokenBudgetObserved = 0;
+  let monitoredSessionId: string | undefined;
+  let monitoredUsage: UsageSummary | undefined;
+  let monitorBusy = false;
+  let forceKillTimer: NodeJS.Timeout | null = null;
+  const pollLiveUsage = async () => {
+    if (monitorBusy || tokenBudgetExceeded || maxTokensPerRun <= 0) return;
+    monitorBusy = true;
+    try {
+      const live = await readHermesRunUsageBySource(runSource);
+      if (!live) return;
+      monitoredSessionId = live.sessionId;
+      monitoredUsage = live.usage;
+      tokenBudgetObserved = Math.max(tokenBudgetObserved, totalUsageTokens(live.usage));
+      if (tokenBudgetObserved < maxTokensPerRun) return;
+
+      tokenBudgetExceeded = true;
+      await ctx.onLog(
+        "stderr",
+        `[paperclip] Hermes maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}); stopping before another model turn.\n`,
+      );
+      const running = runningProcesses.get(ctx.runId);
+      if (running) signalRunningProcess(running, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        const stillRunning = runningProcesses.get(ctx.runId);
+        if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
+      }, Math.max(1, graceSec) * 1000);
+    } finally {
+      monitorBusy = false;
+    }
+  };
+  const liveUsageTimer = maxTokensPerRun > 0
+    ? setInterval(() => void pollLiveUsage(), liveUsagePollIntervalMs)
+    : null;
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    }).finally(() => {
+      if (liveUsageTimer) clearInterval(liveUsageTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+    });
+  await pollLiveUsage();
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
-  const sessionUsage = parsed.sessionId ? await readHermesSessionUsage(parsed.sessionId) : undefined;
+  const resolvedSessionId = parsed.sessionId ?? monitoredSessionId;
+  const sessionUsage = resolvedSessionId
+    ? await readHermesSessionUsage(resolvedSessionId) ?? monitoredUsage
+    : monitoredUsage;
+  tokenBudgetObserved = Math.max(tokenBudgetObserved, totalUsageTokens(sessionUsage));
+  if (maxTokensPerRun > 0 && tokenBudgetObserved >= maxTokensPerRun) {
+    tokenBudgetExceeded = true;
+  }
 
   await ctx.onLog(
     "stdout",
@@ -718,6 +816,13 @@ export async function execute(
     executionResult.errorMessage = "Hermes reached its configured maximum tool turns before recording a terminal Paperclip disposition.";
   }
 
+  if (tokenBudgetExceeded) {
+    executionResult.errorCode = "token_budget_exhausted";
+    executionResult.errorMessage =
+      `Hermes maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`;
+    executionResult.clearSession = true;
+  }
+
   if (sessionUsage || parsed.usage) {
     executionResult.usage = sessionUsage ?? parsed.usage;
     // The state database holds cumulative usage for a persisted Hermes session;
@@ -737,16 +842,20 @@ export async function execute(
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
     result: parsed.response || "",
-    session_id: parsed.sessionId || null,
+    session_id: resolvedSessionId || null,
     usage: sessionUsage ?? parsed.usage ?? null,
     cost_usd: parsed.costUsd ?? null,
-    ...(parsed.stopReason ? { stopReason: parsed.stopReason } : {}),
+    ...(tokenBudgetExceeded
+      ? { stopReason: "token_budget_exhausted", maxTokensPerRun, observedTokens: tokenBudgetObserved }
+      : parsed.stopReason
+        ? { stopReason: parsed.stopReason }
+        : {}),
   };
 
   // Store session ID for next run
-  if (persistSession && parsed.sessionId) {
-    executionResult.sessionParams = { sessionId: parsed.sessionId };
-    executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+  if (persistSession && resolvedSessionId && !tokenBudgetExceeded) {
+    executionResult.sessionParams = { sessionId: resolvedSessionId };
+    executionResult.sessionDisplayId = resolvedSessionId.slice(0, 16);
   }
 
   return executionResult;
