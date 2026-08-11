@@ -92,6 +92,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Pass Hermes --quiet for cleaner Paperclip run transcripts.",
       },
       {
+        key: "ignoreRules",
+        label: "Isolate Hermes rules and memory",
+        type: "toggle",
+        default: true,
+        hint: "Pass Hermes --ignore-rules so host AGENTS.md files and persistent Hermes memory cannot leak into a Paperclip-scoped run. Paperclip supplies the managed instructions itself.",
+      },
+      {
         key: "verbose",
         label: "Verbose output",
         type: "toggle",

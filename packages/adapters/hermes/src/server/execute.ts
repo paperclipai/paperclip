@@ -474,6 +474,13 @@ export async function execute(
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
+  // Paperclip already injects the scoped task, managed instructions, and wake
+  // contract into the query. Letting Hermes inject host AGENTS.md files and
+  // persistent personal memory as well can both duplicate context and steer a
+  // run toward an unrelated previous task. Keep provider/user configuration
+  // available, but isolate rules and memory unless an operator explicitly
+  // opts out for a compatibility case.
+  const ignoreRules = cfgBoolean(config.ignoreRules) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
   const prevSessionId = cfgString(
@@ -587,6 +594,8 @@ export async function execute(
   // (curl, python3 -c, etc.). Agents operate in a sandbox — the approval
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
+
+  if (ignoreRules) args.push("--ignore-rules");
 
   if (persistSession && prevSessionId) {
     args.push("--resume", prevSessionId);

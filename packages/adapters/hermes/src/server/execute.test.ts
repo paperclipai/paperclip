@@ -110,6 +110,7 @@ describe("hermes execute", () => {
       "--source",
       "tool",
       "--yolo",
+      "--ignore-rules",
     ]));
 
     expect(result).toMatchObject({
@@ -171,6 +172,39 @@ describe("hermes execute", () => {
 
     const call = runChildProcessMock.mock.calls[0] as [string, string, string[]];
     expect(call[2]).not.toContain("-Q");
+  });
+
+  it("isolates host rules and persistent Hermes memory by default, with an explicit opt-out", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-isolated\nOK",
+      stderr: "",
+    });
+
+    const makeContext = (ignoreRules?: boolean): AdapterExecutionContext => ({
+      runId: `run-isolated-${ignoreRules === false ? "opt-out" : "default"}`,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5", ...(ignoreRules === false ? { ignoreRules: false } : {}) },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    await execute(makeContext());
+    expect((runChildProcessMock.mock.calls[0] as [string, string, string[]])[2]).toContain("--ignore-rules");
+
+    await execute(makeContext(false));
+    expect((runChildProcessMock.mock.calls[1] as [string, string, string[]])[2]).not.toContain("--ignore-rules");
   });
 
   it("caps recovery-only wakes to two turns and does not inject managed instructions", async () => {
