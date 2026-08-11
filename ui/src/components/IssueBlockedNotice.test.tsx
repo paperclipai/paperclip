@@ -704,3 +704,187 @@ describe("IssueBlockedNotice", () => {
     expect(indicator?.textContent).toContain("Workspace recovery needed");
   });
 });
+
+describe("IssueBlockedNotice — interrupted leaf naming (PAP-16730 §4)", () => {
+  const leaf = {
+    id: "leaf-1",
+    identifier: "PAP-16728",
+    title: "The task that is actually stuck",
+    status: "in_progress" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+  const parentBlocker = {
+    id: "blocker-1",
+    identifier: "PAP-16720",
+    title: "Direct blocker",
+    status: "blocked" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+
+  it("names the exact unhealthy leaf, not the direct blocker", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            ...parentBlocker,
+            terminalBlockers: [{ ...leaf, interruptedRunRecoveryState: "retry_exhausted" }],
+          },
+        ]}
+      />,
+    );
+    const row = node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-row"]');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toContain("Blocked on an interrupted task");
+    expect(row!.textContent).toContain("PAP-16728");
+    expect(row!.textContent).not.toContain("PAP-16720");
+    expect(row!.querySelector('[data-testid="issue-blocked-notice-interruption-indicator"]')!.textContent)
+      .toContain("Retry exhausted");
+    // The sharper row replaces the generic one instead of duplicating the leaf.
+    expect(node.textContent).not.toContain("Ultimately waiting on");
+  });
+
+  it("tells a C/D leaf apart from an A leaf in the body sentence", () => {
+    const needsOwner = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[{ ...leaf, interruptedRunRecoveryState: "retry_exhausted" }]}
+      />,
+    );
+    expect(
+      needsOwner.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-body"]')!.textContent,
+    ).toBe("PAP-16728 needs a recovery owner before this task can continue.");
+
+    const resumes = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[{ ...leaf, interruptedRunRecoveryState: "retry_queued" }]}
+      />,
+    );
+    expect(
+      resumes.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-body"]')!.textContent,
+    ).toBe("Work resumes automatically when PAP-16728 recovers.");
+  });
+
+  it("labels a suppressed leaf as Retry withheld", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[{ ...leaf, interruptedRunRecoveryState: "suppressed" }]}
+      />,
+    );
+    expect(
+      node.querySelector('[data-testid="issue-blocked-notice-interruption-indicator"]')!.textContent,
+    ).toContain("Retry withheld");
+  });
+
+  it("pluralizes the row label and prefers the server's sampled terminal blocker", () => {
+    const other = {
+      id: "leaf-2",
+      identifier: "PAP-16729",
+      title: "Another stuck task",
+      status: "in_progress" as const,
+      priority: "medium" as const,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      interruptedRunRecoveryState: "retry_queued" as const,
+    };
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 2,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 2,
+          sampleBlockerIdentifier: "PAP-16729",
+          sampleStalledBlockerIdentifier: null,
+          terminalBlockerIssueId: "leaf-2",
+        }}
+        blockers={[
+          { ...other },
+          { ...leaf, interruptedRunRecoveryState: "retry_exhausted" },
+        ]}
+      />,
+    );
+    const row = node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-row"]')!;
+    expect(row.textContent).toContain("Blocked on interrupted tasks");
+    // terminalBlockerIssueId wins the primary slot even though the other leaf
+    // needs an owner.
+    expect(
+      node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-body"]')!.textContent,
+    ).toBe("Work resumes automatically when PAP-16729 recovers.");
+  });
+
+  it("keeps an unhealthy chain out of the blue waiting-on-live-work variant", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["blocker-1"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-16720",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            ...parentBlocker,
+            terminalBlockers: [{ ...leaf, interruptedRunRecoveryState: "pathless" }],
+          },
+        ]}
+      />,
+    );
+    expect(node.querySelector('[data-testid="issue-blocked-notice-live"]')).toBeNull();
+    expect(node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-row"]')).not.toBeNull();
+  });
+
+  it("keeps a recovered leaf healthy: blue variant stays, no interrupted row", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["blocker-1"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-16720",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            ...parentBlocker,
+            terminalBlockers: [{ ...leaf, interruptedRunRecoveryState: "recovered" }],
+          },
+        ]}
+      />,
+    );
+    expect(node.querySelector('[data-testid="issue-blocked-notice-live"]')).not.toBeNull();
+    expect(node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-row"]')).toBeNull();
+  });
+
+  it("renders today's notice unchanged when the payload carries no leaf state", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[{ ...parentBlocker, terminalBlockers: [leaf] }]}
+      />,
+    );
+    expect(node.querySelector('[data-testid="issue-blocked-notice-interrupted-leaf-row"]')).toBeNull();
+    expect(node.querySelector('[data-testid="issue-blocked-notice-interruption-indicator"]')).toBeNull();
+    expect(node.textContent).toContain("Ultimately waiting on");
+  });
+});

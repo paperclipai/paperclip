@@ -126,12 +126,22 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  expectedIssueAssigneeAgentId?: string | null;
+  expectedIssueStatuses?: readonly string[];
 };
 
 type RecoveryWakeup = (
   agentId: string,
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
+
+type EnsureInterruptedRunHandoff = (
+  interruptedRunId: string,
+  options?: { issueId?: string },
+) => Promise<{
+  receipt: { status: string } | null;
+  successor: typeof heartbeatRuns.$inferSelect | null;
+}>;
 
 type ResolvedDependencyWakeBackstopSource =
   | "issue_graph_liveness.backstop"
@@ -179,6 +189,31 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   handoffAttempt: number;
   maxHandoffAttempts: number;
 };
+
+export const LIVENESS_RECONCILIATION_DECISION_ACTION = "issue.liveness_reconciliation_decided";
+
+export type LivenessReconciliationOutcome =
+  | "queued"
+  | "already_exists"
+  | "waiting"
+  | "terminal"
+  | "suppressed"
+  | "escalated";
+
+const MAX_RECONCILIATION_REASON_LENGTH = 120;
+
+function boundedReconciliationReason(reason: string) {
+  return reason.trim().slice(0, MAX_RECONCILIATION_REASON_LENGTH);
+}
+
+function wasQueuedBeforeAttempt(
+  queued: Pick<typeof heartbeatRuns.$inferSelect, "createdAt"> | null,
+  attemptedAt: Date,
+) {
+  return queued?.createdAt instanceof Date
+    && Number.isFinite(queued.createdAt.getTime())
+    && queued.createdAt.getTime() < attemptedAt.getTime();
+}
 
 function compactRecoveryPresentation(title: string): IssueCommentPresentation {
   const normalizedTitle = title.trim();
@@ -762,7 +797,13 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: {
+    enqueueWakeup: RecoveryWakeup;
+    ensureInterruptedRunHandoff?: EnsureInterruptedRunHandoff;
+  },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -781,6 +822,67 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+  }
+
+  async function recordLivenessReconciliationDecision(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId">;
+    outcome: LivenessReconciliationOutcome;
+    reason: string;
+    ownerAgentId?: string | null;
+    sourceRunId?: string | null;
+    successorRunId?: string | null;
+  }) {
+    const reason = boundedReconciliationReason(input.reason);
+    const sourceRunId = input.sourceRunId ?? null;
+    const successorRunId = input.successorRunId ?? null;
+    const attributableRunId = sourceRunId
+      ? await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, sourceRunId),
+          eq(heartbeatRuns.companyId, input.issue.companyId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0]?.id ?? null)
+      : null;
+    const existing = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.issue.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issue.id),
+        eq(activityLog.action, LIVENESS_RECONCILIATION_DECISION_ACTION),
+        sql`${activityLog.details} ->> 'outcome' = ${input.outcome}`,
+        sql`${activityLog.details} ->> 'reason' = ${reason}`,
+        sql`coalesce(${activityLog.details} ->> 'sourceRunId', '') = ${sourceRunId ?? ""}`,
+        sql`coalesce(${activityLog.details} ->> 'successorRunId', '') = ${successorRunId ?? ""}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: attributableRunId,
+      action: LIVENESS_RECONCILIATION_DECISION_ACTION,
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        version: 1,
+        source: "recovery.reconcile_stranded_assigned_issues",
+        outcome: input.outcome,
+        reason,
+        issueStatus: input.issue.status,
+        ownerAgentId: input.ownerAgentId ?? input.issue.assigneeAgentId,
+        sourceRunId,
+        successorRunId,
+      },
+    });
   }
 
   async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
@@ -1122,7 +1224,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function enqueueStrandedIssueRecovery(input: {
-    issueId: string;
+    issue: typeof issues.$inferSelect;
     agentId: string;
     reason: "issue_assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     retryReason: "assignment_recovery" | "issue_continuation_needed" | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
@@ -1130,27 +1232,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    const attemptedAt = new Date();
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
       payload: withRecoveryModelProfileHint({
-        issueId: input.issueId,
+        issueId: input.issue.id,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
         ...(input.extraContext ?? {}),
       }, "normal_model"),
       requestedByActorType: "system",
       requestedByActorId: null,
       contextSnapshot: withRecoveryModelProfileHint({
-        issueId: input.issueId,
-        taskId: input.issueId,
+        issueId: input.issue.id,
+        taskId: input.issue.id,
         wakeReason: input.reason,
         retryReason: input.retryReason,
         source: input.source,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
         ...(input.extraContext ?? {}),
       }, "normal_model"),
+      expectedIssueAssigneeAgentId: input.issue.assigneeAgentId,
+      expectedIssueStatuses: [input.issue.status],
     });
+
+    const currentIssue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (currentIssue) {
+      const outcome: LivenessReconciliationOutcome = queued
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
+          ? "already_exists"
+          : "queued"
+        : currentIssue.status === "done" || currentIssue.status === "cancelled"
+          ? "terminal"
+          : "suppressed";
+      const reason = outcome === "queued"
+        ? "continuation_queued"
+        : outcome === "already_exists"
+          ? "continuation_already_exists"
+          : outcome === "terminal"
+            ? "issue_became_terminal"
+            : currentIssue.assigneeAgentId !== input.issue.assigneeAgentId || currentIssue.status !== input.issue.status
+              ? "candidate_owner_or_status_changed"
+              : "wake_enqueue_suppressed";
+      await recordLivenessReconciliationDecision({
+        issue: currentIssue,
+        outcome,
+        reason,
+        ownerAgentId: input.agentId,
+        sourceRunId: input.retryOfRunId ?? null,
+        successorRunId: queued?.id ?? null,
+      });
+    }
 
     if (queued && input.retryOfRunId) {
       return db
@@ -1168,7 +1311,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
-    return deps.enqueueWakeup(agentId, {
+    const attemptedAt = new Date();
+    const queued = await deps.enqueueWakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -1184,7 +1328,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         wakeReason: "issue_assigned",
         source: "issue.assigned_todo_liveness_dispatch",
       }, "normal_model"),
+      expectedIssueAssigneeAgentId: issue.assigneeAgentId,
+      expectedIssueStatuses: [issue.status],
     });
+    await recordLivenessReconciliationDecision({
+      issue,
+      outcome: queued
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
+          ? "already_exists"
+          : "queued"
+        : "suppressed",
+      reason: queued
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
+          ? "assignment_dispatch_already_exists"
+          : "assignment_dispatch_queued"
+        : "assignment_dispatch_suppressed",
+      ownerAgentId: agentId,
+      successorRunId: queued?.id ?? null,
+    });
+    return queued;
   }
 
   async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
@@ -1192,6 +1354,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueId: issue.id,
       projectId: issue.projectId,
     });
+    if (budgetBlock) {
+      await recordLivenessReconciliationDecision({
+        issue,
+        outcome: "suppressed",
+        reason: "budget_blocked",
+        ownerAgentId: agentId,
+      });
+    }
     return Boolean(budgetBlock);
   }
 
@@ -3342,6 +3512,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
+    await recordLivenessReconciliationDecision({
+      issue: updated,
+      outcome: "escalated",
+      reason: boundedReconciliationReason(recoveryCause),
+      ownerAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      sourceRunId: input.latestRun?.id ?? null,
+    });
     if (isProviderQuotaWait) return updated;
 
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
@@ -3694,6 +3871,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? await isAgentInvokable(agent)
         : false;
       if (issue.status !== "in_review" && !agentInvokable) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "suppressed",
+          reason: agent?.companyId === issue.companyId ? "agent_not_invokable" : "owner_company_mismatch",
+          ownerAgentId: agentId,
+        });
         result.skipped += 1;
         continue;
       }
@@ -3703,26 +3886,58 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue.id,
         issue.status === "in_review" ? agentId : null,
       )) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "already_exists",
+          reason: "active_execution_path",
+          ownerAgentId: agentId,
+        });
         result.skipped += 1;
         continue;
       }
 
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "waiting",
+          reason: "pending_interaction_wake",
+          ownerAgentId: agentId,
+        });
         result.skipped += 1;
         continue;
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "suppressed",
+          reason: "pause_hold_active",
+          ownerAgentId: agentId,
+        });
         result.skipped += 1;
         continue;
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isOperatorCancelledRun(latestRun)) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "suppressed",
+          reason: "operator_cancelled",
+          ownerAgentId: agentId,
+          sourceRunId: latestRun?.id ?? null,
+        });
         result.operatorCancelExempted += 1;
         continue;
       }
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "waiting",
+          reason: "durable_wait_path",
+          ownerAgentId: agentId,
+          sourceRunId: latestRun.id,
+        });
         result.skipped += 1;
         continue;
       }
@@ -3734,6 +3949,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? participantLatestRunForRecovery
         : latestRun;
       if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+        await recordLivenessReconciliationDecision({
+          issue,
+          outcome: "waiting",
+          reason: "provider_quota_monitor",
+          ownerAgentId: agentId,
+          sourceRunId: providerQuotaMonitorRun?.id ?? null,
+        });
         result.skipped += 1;
         continue;
       }
@@ -3866,7 +4088,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
 
           const queued = await enqueueStrandedIssueRecovery({
-            issueId: issue.id,
+            issue,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
@@ -4013,7 +4235,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issue,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -4094,7 +4316,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issue,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -4182,7 +4404,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         const queued = await enqueueStrandedIssueRecovery({
-          issueId: issue.id,
+          issue,
           agentId,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
@@ -4281,7 +4503,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const queued = await enqueueStrandedIssueRecovery({
-        issueId: issue.id,
+        issue,
         agentId,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
@@ -5622,7 +5844,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     } catch (error) {
       logger.error(
         { err: error, runId: run.id, previousStatus: run.status },
-        "failed to append recovery run event after terminalizing orphaned run; run stays terminal and the sweep clears the lock",
+        "failed to append recovery run event after terminalizing orphaned run; run stays terminal and liveness handoff continues",
       );
     }
     logger.warn(
@@ -5652,6 +5874,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
@@ -5675,7 +5898,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
     const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const runById = new Map<string, typeof heartbeatRuns.$inferSelect>();
+    for (const row of runRows) {
+      runStatusById.set(row.id, row.status);
+      runById.set(row.id, row);
+    }
 
     // Collect the runs that a non-terminal issue still references. Such a run is
     // the live run of an active issue. A different, terminal issue can also hold
@@ -5737,6 +5964,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const interruptedRunId = issue.executionRunId ?? issue.checkoutRunId;
+      const interruptedRun = interruptedRunId ? runById.get(interruptedRunId) : null;
+      if (
+        interruptedRun &&
+        deps.ensureInterruptedRunHandoff &&
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatusById.get(interruptedRun.id) ?? interruptedRun.status)
+      ) {
+        const handoff = await deps.ensureInterruptedRunHandoff(interruptedRun.id, { issueId: issue.id });
+        if (!handoff.receipt) {
+          // Clearing the final persisted path without a durable receipt would
+          // recreate the original liveness gap. Leave the stale pointer for the
+          // next reconciliation pass instead.
+          continue;
+        }
+        if (handoff.successor) {
+          // The handoff primitive promoted the issue to the successor while it
+          // held the issue row lock. This stale snapshot must not clear it.
+          continue;
+        }
+      }
+
       const updated = await db
         .update(issues)
         .set({
@@ -5780,6 +6028,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           clearedExecutionRunId: issue.executionRunId,
           referencedRunStatuses: Object.fromEntries(runStatusById),
         },
+      });
+
+      await recordLivenessReconciliationDecision({
+        issue,
+        outcome: issue.status === "done" || issue.status === "cancelled" ? "terminal" : "suppressed",
+        reason: issue.status === "done" || issue.status === "cancelled"
+          ? "terminal_issue_lock_cleared"
+          : "stale_lock_cleared_pending_reconciliation",
+        sourceRunId: issue.executionRunId ?? issue.checkoutRunId,
       });
     }
 

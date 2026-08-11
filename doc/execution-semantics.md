@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-07-23
+Date: 2026-08-07
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -561,19 +561,30 @@ Cheap model profiles are only for status-only operational recovery overhead. Pap
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
+### 9.4 Interrupted-run handoff receipt
+
+Process loss and guarded shutdown use one durable handoff receipt keyed by `(companyId, issueId, interruptedRunId, process_loss_handoff)`. That fingerprint may create at most one automatic successor. The receipt records the source run, current owner, bounded reason, successor run when one exists, and a typed recovery action when automatic continuation is unsafe or exhausted. Company binding between the receipt, issue, source run, and successor run is enforced structurally.
+
+When Paperclip owns terminalization of a live process, it persists the terminal run state, terminal wake state, receipt, and either the queued successor or bounded recovery action in one transaction. The transaction locks and re-reads the source run and issue before evaluating status, ownership, dependency, pause, invokability, budget, and retry gates. A successor is promoted only while those gates and the issue's execution claim still match. Deliverable continuation always uses the normal model lane; cheap recovery remains limited to status triage.
+
+A successor that is itself interrupted or fails does not create an equivalent retry chain. The original receipt becomes `escalated` and points to one bounded recovery action. Deliberate gates such as a pause hold or unresolved dependency produce a typed waiting receipt; terminal state produces a terminal receipt; ownership or state changes suppress the stale source owner rather than waking it. Startup and stale-lock cleanup may call the same primitive repeatedly, but the fingerprint and row locks make those calls idempotent.
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does five things in sequence:
+On startup and on the periodic recovery loop, Paperclip performs liveness work in this order:
 
-1. reap orphaned `running` runs
-2. resume persisted `queued` runs
-3. reconcile stranded assigned work
-4. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
-5. reconcile productivity reviews
+1. reap orphaned `running` runs, atomically creating an interrupted-run receipt when a successor is required
+2. promote due scheduled retries
+3. normalize stale issue locks through the interrupted-run handoff primitive, so removing the final execution pointer cannot precede its successor or recovery receipt
+4. reconcile terminal process-loss and guarded-shutdown runs that may predate the receipt migration or a completed shutdown transaction
+5. resume persisted `queued` runs, including newly created normal-model successors
+6. run the general stranded-assigned-work pass as the final liveness backstop
+7. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
+8. reconcile productivity reviews
 
-The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
+This ordering is part of the contract: stale-lock normalization cannot create a pathless interval, interrupted-run receipts are repaired before queued work resumes, and the general stranded-work pass runs only after those narrower repairs. The stranded-work pass closes any remaining gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
 ## 11. Task Watchdog for Issue Trees
 

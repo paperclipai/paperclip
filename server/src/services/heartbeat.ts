@@ -48,6 +48,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  interruptedRunHandoffs,
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
@@ -2465,6 +2466,8 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  expectedIssueAssigneeAgentId?: string | null;
+  expectedIssueStatuses?: readonly string[];
 }
 
 type UsageTotals = {
@@ -6642,7 +6645,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
-  const recovery = recoveryService(db, { enqueueWakeup });
+  const recovery = recoveryService(db, { enqueueWakeup, ensureInterruptedRunHandoff });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -8796,6 +8799,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  async function syncInterruptedRunHandoffSuccessor(run: typeof heartbeatRuns.$inferSelect) {
+    const mappedStatus = run.status === "running"
+      ? "running"
+      : run.status === "succeeded"
+        ? "succeeded"
+        : ["failed", "interrupted", "cancelled", "timed_out"].includes(run.status)
+          ? "escalated"
+          : null;
+    if (!mappedStatus) return;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from interrupted_run_handoffs
+        where company_id = ${run.companyId} and successor_run_id = ${run.id}
+        for update
+      `);
+      const handoff = await tx
+        .select()
+        .from(interruptedRunHandoffs)
+        .where(and(
+          eq(interruptedRunHandoffs.companyId, run.companyId),
+          eq(interruptedRunHandoffs.successorRunId, run.id),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!handoff || handoff.status === "succeeded") return;
+
+      if (mappedStatus !== "escalated") {
+        await tx
+          .update(interruptedRunHandoffs)
+          .set({
+            status: mappedStatus,
+            reason: mappedStatus === "running" ? "successor_running" : "successor_succeeded",
+            updatedAt: new Date(),
+          })
+          .where(eq(interruptedRunHandoffs.id, handoff.id));
+        return;
+      }
+
+      await tx.execute(sql`
+        select id from issues
+        where id = ${handoff.issueId} and company_id = ${handoff.companyId}
+        for update
+      `);
+      const issue = await tx
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, handoff.issueId), eq(issues.companyId, handoff.companyId)))
+        .then((rows) => rows[0] ?? null);
+      const recoveryAction = await ensureProcessLossRecoveryAction(tx, {
+        companyId: handoff.companyId,
+        issueId: handoff.issueId,
+        interruptedRunId: handoff.interruptedRunId,
+        ownerAgentId: issue?.assigneeAgentId ?? null,
+        reason: "automatic_successor_exhausted",
+        now: new Date(),
+      });
+      await tx
+        .update(interruptedRunHandoffs)
+        .set({
+          status: "escalated",
+          reason: "automatic_successor_exhausted",
+          recoveryActionId: recoveryAction?.id ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(interruptedRunHandoffs.id, handoff.id));
+    });
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -8812,6 +8884,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
       }
+      await syncInterruptedRunHandoffSuccessor(updated);
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -8853,6 +8926,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
       }
+      await syncInterruptedRunHandoffSuccessor(updated);
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -10027,151 +10101,549 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
 
-  async function enqueueProcessLossRetry(
-    run: typeof heartbeatRuns.$inferSelect,
-    agent: typeof agents.$inferSelect,
-    now: Date,
+  const PROCESS_LOSS_HANDOFF_KIND = "process_loss_handoff";
+  const PROCESS_LOSS_HANDOFF_MAX_REASON_LENGTH = 120;
+
+  function boundedProcessLossHandoffReason(reason: string) {
+    return reason.trim().slice(0, PROCESS_LOSS_HANDOFF_MAX_REASON_LENGTH) || "handoff_unknown";
+  }
+
+  async function ensureProcessLossRecoveryAction(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    input: {
+      companyId: string;
+      issueId: string;
+      interruptedRunId: string;
+      ownerAgentId: string | null;
+      reason: string;
+      now: Date;
+    },
   ) {
-    const existingRetry = await db
+    const existing = await tx
       .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.retryOfRunId, run.id)))
-      .orderBy(asc(heartbeatRuns.createdAt))
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, input.companyId),
+        eq(issueRecoveryActions.sourceIssueId, input.issueId),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      ))
+      .orderBy(desc(issueRecoveryActions.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (existingRetry) {
-      await appendRunEvent(run, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: "Process-loss retry already exists; skipping duplicate retry enqueue",
-        payload: {
-          retryRunId: existingRetry.id,
-          retryRunStatus: existingRetry.status,
+    if (existing) return existing;
+
+    const fingerprint = `${PROCESS_LOSS_HANDOFF_KIND}:${input.interruptedRunId}`;
+    const created = await tx
+      .insert(issueRecoveryActions)
+      .values({
+        companyId: input.companyId,
+        sourceIssueId: input.issueId,
+        kind: "stranded_assigned_issue",
+        status: "escalated",
+        ownerType: input.ownerAgentId ? "agent" : "board",
+        ownerAgentId: input.ownerAgentId,
+        previousOwnerAgentId: input.ownerAgentId,
+        returnOwnerAgentId: input.ownerAgentId,
+        cause: "process_loss_handoff_exhausted",
+        fingerprint,
+        evidence: {
+          version: 1,
+          interruptedRunId: input.interruptedRunId,
+          handoffKind: PROCESS_LOSS_HANDOFF_KIND,
+          reason: boundedProcessLossHandoffReason(input.reason),
         },
-      });
-      return existingRetry;
-    }
+        nextAction: "Inspect the interrupted run and restore one authorized normal-model execution or a valid waiting disposition.",
+        wakePolicy: { kind: "manual_recovery", automaticRetryAllowed: false },
+        attemptCount: 1,
+        maxAttempts: 1,
+        lastAttemptAt: input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoNothing()
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (created) return created;
 
-    const invokability = await getAgentInvokability(agent);
-    if (!invokability.invokable) {
-      await appendRunEvent(run, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: "Process-loss retry suppressed because the agent is not invokable",
-        payload: {
-          reason: invokability.reason,
-          invalidOrgChain: invokability.invalidOrgChain,
-          ...invokability.details,
-        },
-      });
-      await releaseIssueExecutionAndPromote(run);
-      return null;
-    }
+    return tx
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, input.companyId),
+        eq(issueRecoveryActions.sourceIssueId, input.issueId),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      ))
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
-      ? "issue_continuation_needed"
-      : "process_lost";
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
-    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
-      ...contextSnapshot,
-      retryOfRunId: run.id,
-      wakeReason: "process_lost_retry",
-      retryReason,
-    }, "normal_model");
-    const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
+  async function ensureInterruptedRunHandoff(
+    interruptedRunId: string,
+    options: {
+      now?: Date;
+      issueId?: string;
+      terminalizeIfRunning?: {
+        status: "failed" | "interrupted";
+        error: string;
+        errorCode: string;
+        signal?: string | null;
+        resultJson?: Record<string, unknown> | null;
+        wakeupStatus?: "failed" | "cancelled";
+      };
+    } = {},
+  ) {
+    const now = options.now ?? new Date();
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${interruptedRunId} for update`);
+      let sourceRun = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, interruptedRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceRun) return { receipt: null, successor: null, terminalizedRun: null };
 
-    const queued = await db.transaction(async (tx) => {
+      let terminalizedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      if (options.terminalizeIfRunning && sourceRun.status === "running") {
+        terminalizedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: options.terminalizeIfRunning.status,
+            finishedAt: now,
+            error: options.terminalizeIfRunning.error,
+            errorCode: options.terminalizeIfRunning.errorCode,
+            signal: options.terminalizeIfRunning.signal ?? null,
+            resultJson: options.terminalizeIfRunning.resultJson ?? sourceRun.resultJson,
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, sourceRun.id), eq(heartbeatRuns.status, "running")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!terminalizedRun) throw new Error("Interrupted run changed while terminalizing process-loss handoff");
+        sourceRun = terminalizedRun;
+        if (sourceRun.wakeupRequestId) {
+          const wakeupStatus = options.terminalizeIfRunning.wakeupStatus ?? "cancelled";
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: wakeupStatus,
+              finishedAt: now,
+              error: wakeupStatus === "failed" ? options.terminalizeIfRunning.error : null,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, sourceRun.wakeupRequestId));
+        }
+      }
+
+      const sourceContext = parseObject(sourceRun.contextSnapshot);
+      const issueId = options.issueId ??
+        readNonEmptyString(sourceContext.issueId) ??
+        readNonEmptyString(sourceContext.taskId);
+      if (!issueId) return { receipt: null, successor: null, terminalizedRun };
+
+      await tx.execute(sql`select id from issues where id = ${issueId} and company_id = ${sourceRun.companyId} for update`);
+      const issue = await tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, sourceRun.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return { receipt: null, successor: null, terminalizedRun };
+
+      const parentReceipt = await tx
+        .select()
+        .from(interruptedRunHandoffs)
+        .where(and(
+          eq(interruptedRunHandoffs.companyId, sourceRun.companyId),
+          eq(interruptedRunHandoffs.issueId, issue.id),
+          eq(interruptedRunHandoffs.successorRunId, sourceRun.id),
+          eq(interruptedRunHandoffs.kind, PROCESS_LOSS_HANDOFF_KIND),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (parentReceipt && ["failed", "interrupted", "cancelled", "timed_out"].includes(sourceRun.status)) {
+        const recoveryAction = await ensureProcessLossRecoveryAction(tx, {
+          companyId: sourceRun.companyId,
+          issueId: issue.id,
+          interruptedRunId: parentReceipt.interruptedRunId,
+          ownerAgentId: issue.assigneeAgentId,
+          reason: "automatic_successor_exhausted",
+          now,
+        });
+        await tx
+          .update(interruptedRunHandoffs)
+          .set({
+            status: "escalated",
+            reason: "automatic_successor_exhausted",
+            recoveryActionId: recoveryAction?.id ?? null,
+            updatedAt: now,
+          })
+          .where(eq(interruptedRunHandoffs.id, parentReceipt.id))
+          .returning();
+        const receipt = await tx
+          .insert(interruptedRunHandoffs)
+          .values({
+            companyId: sourceRun.companyId,
+            issueId: issue.id,
+            interruptedRunId: sourceRun.id,
+            kind: PROCESS_LOSS_HANDOFF_KIND,
+            status: "escalated",
+            reason: "automatic_successor_exhausted",
+            ownerAgentId: issue.assigneeAgentId,
+            recoveryActionId: recoveryAction?.id ?? null,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [
+              interruptedRunHandoffs.companyId,
+              interruptedRunHandoffs.issueId,
+              interruptedRunHandoffs.interruptedRunId,
+              interruptedRunHandoffs.kind,
+            ],
+            set: {
+              status: "escalated",
+              reason: "automatic_successor_exhausted",
+              recoveryActionId: recoveryAction?.id ?? null,
+              updatedAt: now,
+            },
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        return { receipt, successor: null, terminalizedRun };
+      }
+
+      const existingReceipt = await tx
+        .select()
+        .from(interruptedRunHandoffs)
+        .where(and(
+          eq(interruptedRunHandoffs.companyId, sourceRun.companyId),
+          eq(interruptedRunHandoffs.issueId, issue.id),
+          eq(interruptedRunHandoffs.interruptedRunId, sourceRun.id),
+          eq(interruptedRunHandoffs.kind, PROCESS_LOSS_HANDOFF_KIND),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingReceipt) {
+        const successor = existingReceipt.successorRunId
+          ? await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, existingReceipt.successorRunId),
+            eq(heartbeatRuns.companyId, sourceRun.companyId),
+          )).then((rows) => rows[0] ?? null)
+          : null;
+        return { receipt: existingReceipt, successor, terminalizedRun };
+      }
+
+      const claimedReceipt = await tx
+        .insert(interruptedRunHandoffs)
+        .values({
+          companyId: sourceRun.companyId,
+          issueId: issue.id,
+          interruptedRunId: sourceRun.id,
+          kind: PROCESS_LOSS_HANDOFF_KIND,
+          status: "suppressed",
+          reason: "handoff_claimed",
+          ownerAgentId: issue.assigneeAgentId,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({
+          target: [
+            interruptedRunHandoffs.companyId,
+            interruptedRunHandoffs.issueId,
+            interruptedRunHandoffs.interruptedRunId,
+            interruptedRunHandoffs.kind,
+          ],
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimedReceipt) {
+        const receipt = await tx
+          .select()
+          .from(interruptedRunHandoffs)
+          .where(and(
+            eq(interruptedRunHandoffs.companyId, sourceRun.companyId),
+            eq(interruptedRunHandoffs.issueId, issue.id),
+            eq(interruptedRunHandoffs.interruptedRunId, sourceRun.id),
+            eq(interruptedRunHandoffs.kind, PROCESS_LOSS_HANDOFF_KIND),
+          ))
+          .then((rows) => rows[0] ?? null);
+        const successor = receipt?.successorRunId
+          ? await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, receipt.successorRunId),
+            eq(heartbeatRuns.companyId, sourceRun.companyId),
+          )).then((rows) => rows[0] ?? null)
+          : null;
+        return { receipt, successor, terminalizedRun };
+      }
+
+      const finishReceipt = async (
+        status: "waiting" | "terminal" | "suppressed" | "escalated",
+        reason: string,
+        recoveryActionId: string | null = null,
+      ) => {
+        const receipt = await tx
+          .update(interruptedRunHandoffs)
+          .set({
+            status,
+            reason: boundedProcessLossHandoffReason(reason),
+            recoveryActionId,
+            updatedAt: now,
+          })
+          .where(eq(interruptedRunHandoffs.id, claimedReceipt.id))
+          .returning()
+          .then((rows) => rows[0]);
+        return { receipt, successor: null, terminalizedRun };
+      };
+
+      if (["done", "cancelled"].includes(issue.status)) {
+        return finishReceipt("terminal", `issue_${issue.status}`);
+      }
+      if (issue.assigneeUserId || !issue.assigneeAgentId) {
+        return finishReceipt("waiting", issue.assigneeUserId ? "user_owned" : "unassigned");
+      }
+      if (issue.assigneeAgentId !== sourceRun.agentId) {
+        return finishReceipt("suppressed", "owner_changed");
+      }
+      if (["blocked", "in_review"].includes(issue.status)) {
+        return finishReceipt("waiting", `issue_${issue.status}`);
+      }
+      if (issue.status !== "in_progress") {
+        return finishReceipt("suppressed", `issue_status_${issue.status}`);
+      }
+
+      const issuePointsAtSource = issue.executionRunId === sourceRun.id;
+      if (!issuePointsAtSource && issue.executionRunId) {
+        return finishReceipt("waiting", "newer_execution_path_exists");
+      }
+      if (!issuePointsAtSource) {
+        const latestIssueRun = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, sourceRun.companyId),
+            sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issue.id}`,
+          ))
+          .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (latestIssueRun?.id !== sourceRun.id) {
+          return finishReceipt("suppressed", "source_run_not_current");
+        }
+      }
+
+      const dependencyReadiness = await issuesSvc.getDependencyReadiness(issue.id, tx);
+      if (!dependencyReadiness.isDependencyReady) {
+        return finishReceipt("waiting", "unresolved_dependencies");
+      }
+      if (await isAutomaticRecoverySuppressedByPauseHold(
+        tx as unknown as Db,
+        issue.companyId,
+        issue.id,
+        issueTreeControlService(tx as unknown as Db),
+      )) {
+        return finishReceipt("waiting", "pause_hold_active");
+      }
+
+      const txAgent = await tx
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, sourceRun.agentId), eq(agents.companyId, sourceRun.companyId)))
+        .then((rows) => rows[0] ?? null);
+      const invokability = await evaluateAgentInvokabilityFromDb(tx as unknown as Db, txAgent);
+      const budgetBlock = txAgent
+        ? await budgetService(tx as unknown as Db).getInvocationBlock(sourceRun.companyId, sourceRun.agentId, {
+          issueId: issue.id,
+          projectId: issue.projectId,
+        })
+        : null;
+      const automaticRetryExhausted = (sourceRun.processLossRetryCount ?? 0) >= 1;
+      if (!txAgent || !invokability.invokable || budgetBlock || automaticRetryExhausted) {
+        const reason = automaticRetryExhausted
+          ? "automatic_retry_exhausted"
+          : budgetBlock
+            ? "budget_blocked"
+            : !txAgent
+              ? "owner_missing"
+              : `agent_${invokability.invokable ? "unknown" : invokability.reason}`;
+        const recoveryAction = await ensureProcessLossRecoveryAction(tx, {
+          companyId: sourceRun.companyId,
+          issueId: issue.id,
+          interruptedRunId: sourceRun.id,
+          ownerAgentId: invokability.invokable && !budgetBlock ? issue.assigneeAgentId : null,
+          reason,
+          now,
+        });
+        return finishReceipt("escalated", reason, recoveryAction?.id ?? null);
+      }
+
+      const existingLegacyRetry = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, sourceRun.companyId),
+          eq(heartbeatRuns.retryOfRunId, sourceRun.id),
+        ))
+        .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingLegacyRetry) {
+        const receipt = await tx
+          .update(interruptedRunHandoffs)
+          .set({
+            status: existingLegacyRetry.status === "running" ? "running" : "queued",
+            reason: "existing_successor_adopted",
+            successorRunId: existingLegacyRetry.id,
+            updatedAt: now,
+          })
+          .where(eq(interruptedRunHandoffs.id, claimedReceipt.id))
+          .returning()
+          .then((rows) => rows[0]);
+        return { receipt, successor: existingLegacyRetry, terminalizedRun };
+      }
+
+      const retryReason = readNonEmptyString(sourceContext.wakeReason) === "issue_monitor_due"
+        ? "issue_continuation_needed"
+        : "process_lost";
+      const retryContextSnapshot = withRecoveryModelProfileHint({
+        ...sourceContext,
+        issueId: issue.id,
+        taskId: readNonEmptyString(sourceContext.taskId) ? issue.id : sourceContext.taskId,
+        retryOfRunId: sourceRun.id,
+        interruptedRunHandoffId: claimedReceipt.id,
+        wakeReason: "process_lost_retry",
+        retryReason,
+      }, "normal_model");
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
-          companyId: run.companyId,
-          agentId: run.agentId,
+          companyId: sourceRun.companyId,
+          agentId: sourceRun.agentId,
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
           payload: withRecoveryModelProfileHint({
-            ...(issueId ? { issueId } : {}),
-            retryOfRunId: run.id,
+            issueId: issue.id,
+            retryOfRunId: sourceRun.id,
+            interruptedRunHandoffId: claimedReceipt.id,
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
+          idempotencyKey: `${PROCESS_LOSS_HANDOFF_KIND}:${sourceRun.id}`,
           updatedAt: now,
         })
         .returning()
         .then((rows) => rows[0]);
-
       const retryRun = await tx
         .insert(heartbeatRuns)
         .values({
-          companyId: run.companyId,
-          agentId: run.agentId,
+          companyId: sourceRun.companyId,
+          agentId: sourceRun.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
-          responsibleUserId,
-          sessionIdBefore: sessionBefore,
-          retryOfRunId: run.id,
-          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          responsibleUserId: issue.responsibleUserId ?? sourceRun.responsibleUserId,
+          sessionIdBefore: sourceRun.sessionIdAfter ?? sourceRun.sessionIdBefore,
+          retryOfRunId: sourceRun.id,
+          processLossRetryCount: (sourceRun.processLossRetryCount ?? 0) + 1,
           updatedAt: now,
         })
         .returning()
         .then((rows) => rows[0]);
-
       await tx
         .update(agentWakeupRequests)
+        .set({ runId: retryRun.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      const promoted = await tx
+        .update(issues)
         .set({
-          runId: retryRun.id,
+          checkoutRunId: null,
+          executionRunId: retryRun.id,
+          executionAgentNameKey: normalizeAgentNameKey(txAgent.name),
+          executionLockedAt: now,
           updatedAt: now,
         })
-        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-
-      if (issueId) {
-        await tx
-          .update(issues)
-          .set({
-            checkoutRunId: null,
-            executionRunId: retryRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
-      }
-
-      return retryRun;
+        .where(and(
+          eq(issues.id, issue.id),
+          eq(issues.companyId, sourceRun.companyId),
+          eq(issues.assigneeAgentId, sourceRun.agentId),
+          isNull(issues.assigneeUserId),
+          eq(issues.status, "in_progress"),
+          issuePointsAtSource ? eq(issues.executionRunId, sourceRun.id) : isNull(issues.executionRunId),
+        ))
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (!promoted) throw new Error("Issue execution claim changed during process-loss handoff");
+      const receipt = await tx
+        .update(interruptedRunHandoffs)
+        .set({
+          status: "queued",
+          reason: "successor_queued",
+          successorRunId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(interruptedRunHandoffs.id, claimedReceipt.id))
+        .returning()
+        .then((rows) => rows[0]);
+      return { receipt, successor: retryRun, terminalizedRun };
     });
+
+    if (result.terminalizedRun) {
+      clearHeartbeatRunRuntimeStatus(result.terminalizedRun.id);
+      publishLiveEvent({
+        companyId: result.terminalizedRun.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(result.terminalizedRun),
+      });
+      publishRunLifecyclePluginEvent(result.terminalizedRun);
+    }
+    return result;
+  }
+
+  async function enqueueProcessLossRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    _agent: typeof agents.$inferSelect,
+    now: Date,
+  ) {
+    const { receipt, successor } = await ensureInterruptedRunHandoff(run.id, { now });
+    if (!successor) {
+      if (receipt) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: receipt.status === "escalated" ? "error" : "warn",
+          message: `Process-loss handoff recorded ${receipt.status}; no automatic successor queued`,
+          payload: {
+            handoffId: receipt.id,
+            handoffStatus: receipt.status,
+            handoffReason: receipt.reason,
+            recoveryActionId: receipt.recoveryActionId,
+          },
+        });
+      }
+      return null;
+    }
 
     publishLiveEvent({
-      companyId: queued.companyId,
+      companyId: successor.companyId,
       type: "heartbeat.run.queued",
       payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
+        runId: successor.id,
+        agentId: successor.agentId,
+        invocationSource: successor.invocationSource,
+        triggerDetail: successor.triggerDetail,
+        wakeupRequestId: successor.wakeupRequestId,
       },
     });
-
-    await appendRunEvent(queued, 1, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
-      payload: {
-        retryOfRunId: run.id,
-      },
-    });
-
-    return queued;
+    if (successor.createdAt.getTime() === now.getTime()) {
+      await appendRunEvent(successor, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Queued the durable normal-model successor for an interrupted run",
+        payload: { retryOfRunId: run.id, handoffId: receipt?.id ?? null },
+      });
+    }
+    return successor;
   }
 
   function toHotRestartIntentRun(input: {
@@ -10602,24 +11074,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runningProcesses.delete(run.id);
       }
 
-      const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
-      const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
-        finishedAt: now,
-        error: message,
-        errorCode: "server_shutdown_interrupted",
-        signal,
-        resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: parseObject(run.resultJson),
+      const message = `Interrupted by graceful server shutdown (${signal}); durable restart handoff required`;
+      const handoff = await ensureInterruptedRunHandoff(run.id, {
+        now,
+        terminalizeIfRunning: {
+          status: "interrupted",
+          error: message,
           errorCode: "server_shutdown_interrupted",
-          errorMessage: message,
-        }),
+          signal,
+          resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "server_shutdown_interrupted",
+            errorMessage: message,
+          }),
+        },
       });
-      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
-      let interrupted = interruptedStatus.run;
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: now,
-        error: null,
-      });
+      if (!handoff.terminalizedRun) continue;
+      let interrupted = handoff.terminalizedRun;
       interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
 
       await releaseEnvironmentLeasesForRun({
@@ -10630,7 +11101,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: interrupted.error ?? undefined,
       });
 
-      const retry = await enqueueProcessLossRetry(interrupted, agent, now);
+      const retry = handoff.successor
+        ? await enqueueProcessLossRetry(interrupted, agent, now)
+        : null;
       if (!retry) {
         await releaseIssueExecutionAndPromote(interrupted);
       } else {
@@ -13203,33 +13676,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+      const processLossError = shouldRetry ? `${baseMessage}; retrying once` : baseMessage;
+      const processLossResultJson = (() => {
+        const result = mergeRunStopMetadataForAgent(
+          { adapterType, adapterConfig },
+          "failed",
+          {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "process_lost",
+            errorMessage: processLossError,
+          },
+        );
+        return unmanagedBackgroundTaskEvidence
+          ? {
+            ...result,
+            stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+            unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+          }
+          : result;
+      })();
+      const atomicHandoff = shouldRetry
+        ? await ensureInterruptedRunHandoff(run.id, {
+          now,
+          terminalizeIfRunning: {
+            status: "failed",
+            error: processLossError,
+            errorCode: "process_lost",
+            resultJson: processLossResultJson,
+            wakeupStatus: "failed",
+          },
+        })
+        : null;
+      let finalizedRun = atomicHandoff?.terminalizedRun ?? await setRunStatus(run.id, "failed", {
+        error: processLossError,
         errorCode: "process_lost",
         finishedAt: now,
-        resultJson: (() => {
-          const result = mergeRunStopMetadataForAgent(
-            { adapterType, adapterConfig },
-            "failed",
-            {
-              resultJson: parseObject(run.resultJson),
-              errorCode: "process_lost",
-              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-            },
-          );
-          return unmanagedBackgroundTaskEvidence
-            ? {
-              ...result,
-              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
-            }
-            : result;
-        })(),
+        resultJson: processLossResultJson,
       });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-      });
+      if (!atomicHandoff) {
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: processLossError,
+        });
+      }
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
@@ -13241,13 +13730,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: finalizedRun.error ?? undefined,
       });
 
-      let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      let retriedRun: typeof heartbeatRuns.$inferSelect | null = atomicHandoff?.successor ?? null;
       const retryAgent = await getAgent(run.agentId);
-      if (shouldRetry) {
-        if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
-        }
-      } else if (retryAgent) {
+      if (!shouldRetry && retryAgent) {
         const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
         retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
       }
@@ -13307,6 +13792,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+  }
+
+  async function reconcileInterruptedRunHandoffs() {
+    const cutoff = await getWorktreeExecutionCutoff();
+    const sourceRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        inArray(heartbeatRuns.status, ["failed", "interrupted", "cancelled", "timed_out"]),
+        inArray(heartbeatRuns.errorCode, ["process_lost", "server_shutdown_interrupted"]),
+        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+      ));
+    const result = { inspected: sourceRuns.length, queued: 0, escalated: 0, settled: 0 };
+    for (const sourceRun of sourceRuns) {
+      const handoff = await ensureInterruptedRunHandoff(sourceRun.id);
+      if (handoff.receipt?.status === "queued" || handoff.receipt?.status === "running") result.queued += 1;
+      else if (handoff.receipt?.status === "escalated") result.escalated += 1;
+      else if (handoff.receipt) result.settled += 1;
+    }
+
+    const successorRows = await db
+      .select({ run: heartbeatRuns })
+      .from(interruptedRunHandoffs)
+      .innerJoin(heartbeatRuns, and(
+        eq(heartbeatRuns.id, interruptedRunHandoffs.successorRunId),
+        eq(heartbeatRuns.companyId, interruptedRunHandoffs.companyId),
+      ))
+      .where(inArray(interruptedRunHandoffs.status, ["queued", "running"]));
+    for (const { run } of successorRows) {
+      await syncInterruptedRunHandoffSuccessor(run);
+    }
+    return result;
   }
 
   async function sweepStaleIssueLocks() {
@@ -17465,6 +17982,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        if (
+          opts.expectedIssueAssigneeAgentId !== undefined &&
+          issue.assigneeAgentId !== opts.expectedIssueAssigneeAgentId
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_reconciliation_owner_changed",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (opts.expectedIssueStatuses && !opts.expectedIssueStatuses.includes(issue.status)) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_reconciliation_status_changed",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
@@ -18968,6 +19522,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+    reconcileInterruptedRunHandoffs,
 
     terminalizeRunOnLeaseRelease,
 

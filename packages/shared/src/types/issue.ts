@@ -22,6 +22,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
+  HeartbeatRunStatus,
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
@@ -216,6 +217,7 @@ export interface IssueRelationIssueSummary {
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
+  interruptedRunRecoveryState?: InterruptedRunRecoveryState | null;
 }
 
 export type IssueBlockerDiagnosticFlag =
@@ -568,6 +570,48 @@ export interface IssueRecoveryAction {
   updatedAt: Date | string;
 }
 
+export type InterruptedRunRecoveryState =
+  | "retry_queued"
+  | "recovered"
+  | "retry_exhausted"
+  | "suppressed"
+  | "recovery_owner_required"
+  | "pathless";
+
+export type InterruptedRunRecoveryReceiptOutcome =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "already_exists"
+  | "waiting"
+  | "terminal"
+  | "suppressed"
+  | "escalated";
+
+export interface InterruptedRunRecoveryOwner {
+  type: IssueRecoveryActionOwnerType;
+  agentId: string | null;
+  userId: string | null;
+}
+
+export interface InterruptedRunRecovery {
+  state: InterruptedRunRecoveryState;
+  interruptedRunId: string | null;
+  interruptedAt: Date | string | null;
+  errorCode: string | null;
+  successorRunId: string | null;
+  successorStatus: HeartbeatRunStatus | null;
+  receiptId: string | null;
+  receiptOutcome: InterruptedRunRecoveryReceiptOutcome | null;
+  suppressionReason: string | null;
+  escalationReason: string | null;
+  attempt: number | null;
+  maxAttempts: number | null;
+  recoveryActionId: string | null;
+  owner: InterruptedRunRecoveryOwner | null;
+  nextAction: string | null;
+}
+
 export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
 
 export interface SuccessfulRunHandoffState {
@@ -828,6 +872,7 @@ export interface Issue {
   blockedOwnerNotifiedAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  interruptedRunRecovery?: InterruptedRunRecovery | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -908,6 +953,7 @@ export type CompactIssue = Pick<
   archivedByAgentId?: string | null;
   archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
+  interruptedRunRecovery: InterruptedRunRecovery | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
 };
 

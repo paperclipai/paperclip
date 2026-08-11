@@ -162,6 +162,7 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
       activityEvents={props.activityEvents}
       renderActivityEvent={props.renderActivityEvent}
       resolveUserLabel={props.resolveUserLabel}
+      interruptedRunRecovery={props.interruptedRunRecovery}
       pendingWatchdogDecision={props.pendingWatchdogDecision}
       canRecordWatchdogDecisions={props.canRecordWatchdogDecisions}
       watchdogDecisionError={props.watchdogDecisionError}
@@ -284,6 +285,65 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Stop Still running");
     expect(container.textContent).not.toContain("Liveness pending");
     expect(container.textContent).not.toContain("initial attempt");
+  });
+
+  it("attaches the recovery receipt to the runs it names, and to no others", () => {
+    renderLedger({
+      runs: [
+        createRun({ runId: "run-interrupted", status: "failed", errorCode: "server_shutdown_interrupted" }),
+        createRun({ runId: "run-unrelated", status: "succeeded", createdAt: "2026-04-18T19:40:00.000Z" }),
+      ],
+      interruptedRunRecovery: {
+        state: "retry_queued",
+        interruptedRunId: "run-interrupted",
+        interruptedAt: "2026-04-18T19:55:13.000Z",
+        errorCode: "server_shutdown_interrupted",
+        successorRunId: "run-successor",
+        successorStatus: null,
+        receiptId: "receipt-abcdefgh-1234",
+        receiptOutcome: "queued",
+        suppressionReason: null,
+        escalationReason: null,
+        attempt: 1,
+        maxAttempts: 3,
+        recoveryActionId: null,
+        owner: null,
+        nextAction: null,
+      },
+    });
+
+    const receipts = container.querySelectorAll('[data-testid="issue-run-ledger-receipt"]');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.textContent).toContain("receipt-");
+    expect(receipts[0]!.querySelector("span")!.getAttribute("title")).toBe(
+      "receipt-abcdefgh-1234 · queued",
+    );
+  });
+
+  it("keeps the interrupted run chip in history — recovery never rewrites the ledger", () => {
+    renderLedger({
+      runs: [createRun({ runId: "run-interrupted", status: "interrupted" })],
+      interruptedRunRecovery: {
+        state: "recovered",
+        interruptedRunId: "run-interrupted",
+        interruptedAt: "2026-04-18T19:55:13.000Z",
+        errorCode: "server_shutdown_interrupted",
+        successorRunId: "run-successor",
+        successorStatus: "running",
+        receiptId: null,
+        receiptOutcome: null,
+        suppressionReason: null,
+        escalationReason: null,
+        attempt: 1,
+        maxAttempts: 3,
+        recoveryActionId: null,
+        owner: null,
+        nextAction: null,
+      },
+    });
+
+    expect(container.textContent).toContain("interrupted");
+    expect(container.querySelectorAll('[data-testid="issue-run-ledger-receipt"]')).toHaveLength(0);
   });
 
   it("surfaces scheduled retry timing and exhaustion state without opening logs", () => {

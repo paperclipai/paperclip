@@ -159,6 +159,60 @@ describe("BlockedInboxView", () => {
     container.remove();
   });
 
+  it("names the exact leaf task the row is stuck on, and omits it when the leaf is the row itself", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-parent",
+        "PAP-16717",
+        "Blocked parent row",
+        attention({
+          reason: "blocked_chain_stalled",
+          leafIssue: {
+            id: "issue-leaf",
+            identifier: "PAP-16728",
+            title: "The task that is actually stuck",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        }),
+      ),
+      makeIssue(
+        "issue-self",
+        "PAP-16719",
+        "Self-leaf row",
+        attention({
+          reason: "blocked_chain_stalled",
+          leafIssue: {
+            id: "issue-self",
+            identifier: "PAP-16719",
+            title: "Self-leaf row",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} />,
+      container,
+    );
+    await waitFor(() => container.querySelectorAll('[data-testid="blocked-row-leaf"]').length === 1);
+
+    const leaves = container.querySelectorAll('[data-testid="blocked-row-leaf"]');
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]!.textContent).toContain("PAP-16728");
+    expect(leaves[0]!.getAttribute("title")).toBe(
+      "PAP-16728 — The task that is actually stuck",
+    );
+
+    act(() => root.unmount());
+  });
+
   it("shows the empty state when no blocked issues are returned", async () => {
     mockIssuesApi.list.mockResolvedValue([]);
     const { root } = renderWithClient(

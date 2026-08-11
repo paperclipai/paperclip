@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  interruptedRunHandoffs,
   issueComments,
   issueRelations,
   issues,
@@ -21,6 +23,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { LIVENESS_RECONCILIATION_DECISION_ACTION } from "../services/recovery/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,6 +52,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -226,7 +230,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(second.cleared).toBe(0);
   });
 
-  it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
+  it("terminalizes an orphaned running run whose process is gone, then hands off before clearing", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid, but the process and its sandbox are gone. A pid
     // this large never maps to a live process, so isPidAlive returns false.
@@ -252,7 +256,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     const result = await heartbeat.sweepStaleIssueLocks();
 
     expect(result.terminalizedRunIds).toEqual([runningRunId]);
-    expect(result.cleared).toBe(1);
+    expect(result.cleared).toBe(0);
 
     const run = await db
       .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
@@ -268,7 +272,17 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
-    expect(lock).toEqual({ checkoutRunId: null, executionRunId: null });
+    expect(lock).toEqual({ checkoutRunId: null, executionRunId: expect.any(String) });
+    const receipt = await db
+      .select()
+      .from(interruptedRunHandoffs)
+      .where(eq(interruptedRunHandoffs.interruptedRunId, runningRunId))
+      .then((rows) => rows[0]);
+    expect(receipt).toMatchObject({
+      status: "queued",
+      reason: "successor_queued",
+      successorRunId: lock?.executionRunId,
+    });
 
     const event = await db
       .select({ message: heartbeatRunEvents.message })
@@ -331,6 +345,21 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
+
+    const receipt = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, issueId),
+        eq(activityLog.action, LIVENESS_RECONCILIATION_DECISION_ACTION),
+      ))
+      .then((rows) => rows[0]?.details as Record<string, unknown> | undefined);
+    expect(receipt).toMatchObject({
+      version: 1,
+      outcome: "terminal",
+      reason: "terminal_issue_lock_cleared",
+      sourceRunId: runningRunId,
+    });
   });
 
   it("terminalizes a running run to cancelled when its issue is cancelled (reuse-lease path)", async () => {
@@ -524,7 +553,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(activeLock).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
-  it("still clears the lock when the audit write fails after terminalization", async () => {
+  it("still persists a handoff when the audit write fails after terminalization", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid that never maps to a live process, so the sweep
     // decides to terminalize it. The issue is not terminal, so the
@@ -537,7 +566,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Audit write fails — still clear the lock",
+      title: "Audit write fails — still preserve liveness",
       status: "in_progress",
       priority: "high",
       assigneeAgentId: agentId,
@@ -548,7 +577,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
     // Make only the audit-event insert fail. The run update commits the
     // terminal status first, so the audit write is best-effort. The sweep must
-    // catch the failure and still clear the lock.
+    // catch the failure and still persist the handoff.
     const realInsert = db.insert.bind(db);
     const insertSpy = vi.spyOn(db, "insert").mockImplementation((table) => {
       if (table === heartbeatRunEvents) {
@@ -562,7 +591,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       const result = await heartbeat.sweepStaleIssueLocks();
 
       expect(result.terminalizedRunIds).toEqual([runningRunId]);
-      expect(result.cleared).toBe(1);
+      expect(result.cleared).toBe(0);
     } finally {
       insertSpy.mockRestore();
     }
@@ -575,13 +604,13 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("interrupted");
 
-    // The sweep cleared the lock in the same pass.
+    // The sweep replaced the stale lock with a durable successor in the same pass.
     const lock = await db
       .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
-    expect(lock).toEqual({ checkoutRunId: null, executionRunId: null });
+    expect(lock).toEqual({ checkoutRunId: null, executionRunId: expect.any(String) });
 
     // The audit write failed, so no run event exists for this run.
     const events = await db

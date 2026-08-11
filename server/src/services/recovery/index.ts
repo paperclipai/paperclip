@@ -29,7 +29,11 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
+  LIVENESS_RECONCILIATION_DECISION_ACTION,
   recoveryService,
+} from "./service.js";
+export type {
+  LivenessReconciliationOutcome,
 } from "./service.js";
 export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
