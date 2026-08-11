@@ -352,10 +352,14 @@ function formatDurationLabel(ms: number): string | undefined {
   return sec === 0 ? `${min}m` : `${min}m ${sec}s`;
 }
 
-function formatTokensLabel(tokens: number): string | undefined {
-  if (!Number.isFinite(tokens) || tokens <= 0) return undefined;
-  const label = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-  return `${label} tokens`;
+function formatTokenCount(tokens: number): string {
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+}
+
+function formatTokensLabel(inputTokens: number, cachedInputTokens: number, outputTokens: number): string | undefined {
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return undefined;
+  return `${formatTokenCount(totalTokens)} total (${formatTokenCount(inputTokens)} input · ${formatTokenCount(cachedInputTokens)} cached input · ${formatTokenCount(outputTokens)} output)`;
 }
 
 /** First→last ts span of a transcript, or undefined when unknowable. */
@@ -369,7 +373,7 @@ function transcriptSpanMs(entries: readonly TranscriptEntry[]): number | undefin
 
 /**
  * Aggregate a turn's transcript into the folded one-line summary
- * ("✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens"). Duration prefers the
+ * ("✓ Worked · 38s · 3 tools · +34 −3 · 12.3k total (…breakdown…)"). Duration prefers the
  * caller-supplied run duration and falls back to the transcript's ts span.
  */
 export function buildTurnSummary(
@@ -379,7 +383,9 @@ export function buildTurnSummary(
   const toolIds = new Set<string>();
   let added = 0;
   let removed = 0;
-  let tokens = 0;
+  let inputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
   for (const [i, entry] of entries.entries()) {
     // Each status change of a call logs its own tool_call entry sharing the
     // toolUseId; count unique calls so the folded summary matches the rows the
@@ -389,7 +395,9 @@ export function buildTurnSummary(
       if (entry.changeType === "add") added += 1;
       else if (entry.changeType === "remove") removed += 1;
     } else if (entry.kind === "result") {
-      tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
+      inputTokens += entry.inputTokens || 0;
+      cachedInputTokens += entry.cachedTokens || 0;
+      outputTokens += entry.outputTokens || 0;
     }
   }
   const durationMs = opts.durationMs ?? transcriptSpanMs(entries);
@@ -398,7 +406,7 @@ export function buildTurnSummary(
     toolCount: toolIds.size,
     added,
     removed,
-    tokensLabel: formatTokensLabel(tokens),
+    tokensLabel: formatTokensLabel(inputTokens, cachedInputTokens, outputTokens),
     failed: opts.failed || undefined,
   };
 }

@@ -22,7 +22,7 @@ interface TaskChatTurnProps {
   leading?: ReactNode;
 }
 
-/** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k tokens". */
+/** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k total (…breakdown…)". */
 export function turnSummaryMetrics(summary: TaskChatTurnItem["summary"]): string {
   const parts: string[] = [];
   if (summary.durationLabel) parts.push(summary.durationLabel);

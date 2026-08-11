@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { configuredRuntimeIdentityReply } from "../services/runtime-identity.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -14073,6 +14074,50 @@ export function issueRoutes(
         }),
       },
     });
+
+    // Model identity is configuration metadata, not work for a coding agent.
+    // Resolve it locally and return before the normal comment wake-up fan-out.
+    // Restrict the shortcut to a plain board/user question: a resume, reopen,
+    // or interrupt must always retain its normal execution semantics.
+    if (
+      actor.actorType === "user" &&
+      !reopenRequested &&
+      !resumeRequested &&
+      !interruptRequested &&
+      currentIssue.assigneeAgentId
+    ) {
+      const assignee = await agentsSvc.getById(currentIssue.assigneeAgentId);
+      const identityReply = assignee && assignee.companyId === currentIssue.companyId
+        ? configuredRuntimeIdentityReply({
+            body: req.body.body,
+            adapterType: assignee.adapterType,
+            agentAdapterConfig: assignee.adapterConfig,
+            issueAssigneeAdapterOverrides: currentIssue.assigneeAdapterOverrides,
+          })
+        : null;
+      if (identityReply) {
+        const identityComment = await svc.addComment(currentIssue.id, identityReply, {}, {
+          authorType: "system",
+        });
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: "system",
+          actorId: "runtime_identity",
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            commentId: identityComment.id,
+            identifier: currentIssue.identifier,
+            source: "runtime_identity_fast_path",
+            assigneeAgentId: assignee.id,
+          },
+        });
+        await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
+        res.status(201).json(comment);
+        return;
+      }
+    }
 
     const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
       currentIssue,

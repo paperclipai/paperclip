@@ -78,7 +78,7 @@ describe("buildTurnSummary", () => {
     expect(summary.toolCount).toBe(1);
     expect(summary.added).toBe(1);
     expect(summary.removed).toBe(1);
-    expect(summary.tokensLabel).toBe("12.3k tokens");
+    expect(summary.tokensLabel).toBe("12.3k total (12.0k input · 0 cached input · 300 output)");
     expect(summary.durationLabel).toBe("38s");
   });
 

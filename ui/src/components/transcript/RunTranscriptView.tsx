@@ -29,6 +29,11 @@ const RAW_OVERSCAN_ROWS = 40;
 const RAW_ESTIMATED_ROW_HEIGHT = 36;
 const RAW_INITIAL_ROWS = 180;
 
+function formatUsageBreakdown(entry: Extract<TranscriptEntry, { kind: "result" }>) {
+  const total = entry.inputTokens + entry.cachedTokens + entry.outputTokens;
+  return `input ${formatTokens(entry.inputTokens)} · cached input ${formatTokens(entry.cachedTokens)} · output ${formatTokens(entry.outputTokens)} · total ${formatTokens(total)} · $${entry.costUsd.toFixed(6)}`;
+}
+
 interface RunTranscriptViewProps {
   entries: TranscriptEntry[];
   toolDecisions?: readonly ToolRunDecision[];
@@ -666,7 +671,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         text: entry.text.trim() || entry.errors[0] || (entry.isError ? "Run failed" : "Completed"),
         detail:
           !entry.isError && entry.text.trim().length > 0
-            ? `${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
+            ? formatUsageBreakdown(entry)
             : undefined,
       });
       continue;
@@ -1624,7 +1629,7 @@ function rawEntryContent(entry: TranscriptEntry): string {
     return formatToolPayload(entry.content);
   }
   if (entry.kind === "result") {
-    return `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`;
+    return `${entry.text}\n${formatUsageBreakdown(entry)}`;
   }
   if (entry.kind === "init") {
     return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
