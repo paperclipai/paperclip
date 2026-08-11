@@ -8,6 +8,8 @@ const input = {
     path: "scripts/paperclip-babysit-reconciliation.mjs",
   },
   build: { tool: "node", version: "22", inputsDigest: "sha256:inputs" },
+  artifactBytes: Buffer.from("reviewed babysitter artifact"),
+  mediaType: "application/javascript",
 };
 
 describe("babysitter artifact provenance", () => {
@@ -17,6 +19,8 @@ describe("babysitter artifact provenance", () => {
       kind: "ArtifactInstance",
       sourceRevision: input.sourceRevision,
       build: input.build,
+      mediaType: input.mediaType,
+      contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
     });
     expect(result.sourceRevisionDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(result.buildDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -35,5 +39,13 @@ describe("babysitter artifact provenance", () => {
   it("requires both lineage anchors", () => {
     expect(() => createBabysitterArtifactInstance({ sourceRevision: input.sourceRevision })).toThrow();
     expect(() => createBabysitterArtifactInstance({ build: input.build })).toThrow();
+    expect(() => createBabysitterArtifactInstance({ ...input, artifactBytes: Buffer.alloc(0) })).toThrow();
+  });
+
+  it("is content-addressed by retained artifact bytes", () => {
+    const original = createBabysitterArtifactInstance(input);
+    const changed = createBabysitterArtifactInstance({ ...input, artifactBytes: Buffer.from("different") });
+    expect(changed.contentDigest).not.toBe(original.contentDigest);
+    expect(changed.artifactInstanceDigest).not.toBe(original.artifactInstanceDigest);
   });
 });

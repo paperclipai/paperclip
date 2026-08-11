@@ -3566,7 +3566,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const executionState = effectiveIssue.status === "in_review"
         ? parseIssueExecutionState(effectiveExecutionState)
         : null;
-      const pendingExecutionState = executionState?.currentParticipant ? executionState : null;
+      // A participant is recoverable only while the execution gate is pending.
+      // `changes_requested` belongs to the executor until resubmission; a
+      // recovery wake must not manufacture a validator adjudication path.
+      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;

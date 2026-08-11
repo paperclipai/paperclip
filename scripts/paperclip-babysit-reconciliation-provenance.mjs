@@ -10,8 +10,14 @@ function digest(value) {
  * digest is content-addressed and cannot be changed by later reconciliation.
  */
 export function createBabysitterArtifactInstance(input) {
-  if (!input?.sourceRevision || !input?.build) {
-    throw new TypeError("sourceRevision and build provenance are required");
+  if (!input?.sourceRevision || !input?.build || input.artifactBytes == null) {
+    throw new TypeError("sourceRevision, build provenance, and retained artifact bytes are required");
+  }
+  const artifactBytes = Buffer.isBuffer(input.artifactBytes)
+    ? input.artifactBytes
+    : Buffer.from(input.artifactBytes);
+  if (artifactBytes.length === 0 || !input.mediaType) {
+    throw new TypeError("a non-empty artifact and mediaType are required");
   }
   const sourceRevision = {
     repository: input.sourceRevision.repository,
@@ -27,6 +33,8 @@ export function createBabysitterArtifactInstance(input) {
     kind: "ArtifactInstance",
     sourceRevision,
     build,
+    mediaType: input.mediaType,
+    contentDigest: `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`,
   };
   return {
     ...artifact,

@@ -256,12 +256,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       comments: [{ id: "protected-comment", body: "review evidence" }],
     });
     expect(repairs.filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
-    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.anything());
+    // Repairing the return participant does not authorize a review wake while
+    // the execution gate is still changes_requested; the executor must
+    // resubmit first.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
 
     const second = await recovery.reconcileStrandedAssignedIssues();
     expect(second.changesRequestedRepaired).toBe(0);
     expect((await db.select().from(activityLog)).filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("uses the winning live state when concurrent reconciliation races restoration", async () => {
