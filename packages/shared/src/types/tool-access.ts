@@ -696,6 +696,25 @@ export interface ToolRuntimeMetricSnapshot {
   averageToolLatencyMsLastHour: number | null;
   p95ToolLatencyMsLastHour: number | null;
   missingSecretFailuresLastHour: number;
+  /**
+   * Count of personal-credential failures with reasonCode
+   * "secret_resolution_failed" specifically (not all personal-credential-
+   * resolution failure reason codes) in the last hour. Other reason codes
+   * under the tool_gateway.personal_credential_resolution_error action
+   * (e.g. "grant_missing_credential_ref", "token_expired_no_refresh_hook",
+   * "grant_refresh_returned_null", "agent_not_personal",
+   * "runid_invariant_violation", "gallery_identity_model_override" -- the
+   * last of which is a policy reclassification/success, not a failure at
+   * all) are NOT included in this count. This list is illustrative, not
+   * exhaustive -- any other reason code under that action is also excluded.
+   *
+   * This metric is informational/dashboard-only by design: it is
+   * intentionally NOT wired into buildRuntimeAlerts and never degrades
+   * health.status, because personal-credential failures are routine
+   * per-user conditions (e.g. an expired personal OAuth grant) that
+   * shouldn't page on-call.
+   */
+  personalCredentialFailuresLastHour: number;
   auditWriteFailuresLastHour: number;
   activeConnections: number;
   disabledConnections: number;

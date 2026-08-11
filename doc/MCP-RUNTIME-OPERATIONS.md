@@ -30,8 +30,15 @@ Metrics surfaced there include:
 - Runtime events: capacity deferrals, restart attempts, restart suppression, idle evictions.
 - Tool-call health: call count, timeout count/rate, failure count/rate, average latency, p95 latency.
 - Connection health: active, disabled, degraded, `remote_http`, and `local_stdio` connection counts.
-- Secret failures: missing-secret failures in the last hour.
+- Secret failures: missing-secret failures in the last hour (`missingSecretFailuresLastHour`).
+- Personal credential failures: `reasonCode: 'secret_resolution_failed'` personal-credential-resolution failures in the last hour (`personalCredentialFailuresLastHour`) — see note below.
 - Audit write failures: durable `audit_write_failed` counter increments whenever MCP audit-event persistence fails.
+
+Personal-credential-resolution failures (`reasonCode: 'secret_resolution_failed'` on a per-user personal credential, e.g. an expired personal OAuth grant) are excluded from `missingSecretFailuresLastHour` and the `mcp_runtime_missing_secret_failures` alert below. They are a routine, per-user condition — not an infrastructure problem — so they should not page on-call.
+
+`personalCredentialFailuresLastHour` tracks ONLY the `secret_resolution_failed` reason code, not personal-credential-resolution failures in general. The broader `tool_gateway.personal_credential_resolution_error` action also covers other reason codes — including but not limited to `grant_missing_credential_ref`, `token_expired_no_refresh_hook`, `grant_refresh_returned_null`, `agent_not_personal`, `runid_invariant_violation`, `responsible_user_unknown`, and `gallery_identity_model_override` (a policy reclassification, not a failure) — and none of these are counted by this specific metric. This list is illustrative, not exhaustive; any other reason code under that action is also excluded. They are still recorded in the audit trail, just not rolled up here. This metric is informational/dashboard-only by design and does not currently drive a paging alert; if the volume needs to be watched, do so via the metrics/dashboard, not the existing alert.
+
+Two related log lines to know when reading application logs: `getRuntimeHealth` logs a WARN ("Suppressed personal-credential-resolution failures from missing-secret runtime alert") only when this count *increases* since the last poll, and an INFO ("Personal-credential-resolution failure count decreased ...") when it decreases as failures age out of the trailing-hour window — the WARN never fires on a decrease, so it can't be mistaken for a new onset.
 
 ## Alerts
 

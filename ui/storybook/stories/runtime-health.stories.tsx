@@ -153,6 +153,7 @@ function health(overrides: Partial<ToolRuntimeHealthSummary> = {}): ToolRuntimeH
       averageToolLatencyMsLastHour: 1200,
       p95ToolLatencyMsLastHour: 2100,
       missingSecretFailuresLastHour: 0,
+      personalCredentialFailuresLastHour: 0,
       auditWriteFailuresLastHour: 0,
       activeConnections: 4,
       disabledConnections: 0,
@@ -243,4 +244,23 @@ export const NeedsAttention: Story = {
 export const RowExpanded: Story = {
   name: "Row expanded (use the chevron)",
   render: () => <Seeded slots={SLOTS} connections={CONNECTIONS} summary={health()} />,
+};
+
+export const PersonalCredentialFailures: Story = {
+  name: "Personal credential failures",
+  // Renders as its own neutral, clearly-labeled line below the summary strip —
+  // deliberately not folded into the "Errors in the last hour" card, since a
+  // routine per-user credential expiry isn't the same category as a tool/infra error.
+  render: () => (
+    <Seeded
+      slots={SLOTS}
+      connections={CONNECTIONS}
+      summary={health({
+        metrics: {
+          ...health().metrics,
+          personalCredentialFailuresLastHour: 3,
+        },
+      })}
+    />
+  ),
 };
